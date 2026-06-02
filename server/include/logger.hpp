@@ -30,6 +30,7 @@ namespace LogModule {
     constexpr const char* EVENT_MGR = "event_mgr";
     constexpr const char* PING = "ping";
     constexpr const char* INTERFACE = "interface";
+    constexpr const char* BLUETOOTH = "bluetooth";
 }
 
 // 日志初始化类

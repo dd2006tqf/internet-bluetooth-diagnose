@@ -28,6 +28,7 @@
 #include "event_manager.hpp"
 #include "logger.hpp"
 #include "network_quality_assessor.hpp"
+#include "bt_monitor.hpp"
 #include <iomanip>
 
 using namespace std::chrono_literals;
@@ -391,6 +392,9 @@ int start_server() {
     // 启动网络质量监控线程
     LOG_INFO(LogModule::WEAK_MGR, "starting network quality monitor thread (interval=15s)");
     start_network_quality_thread(&ctx);
+    // 启动蓝牙监测线程 (通过 BlueZ D-Bus API)
+    LOG_INFO(LogModule::BLUETOOTH, "starting bluetooth monitor thread");
+    start_bt_monitor_thread(&ctx);
     // 主线程进入阻塞式 looper
     auto* lp = Looper::current();
     lp->attach(ctx.connection);

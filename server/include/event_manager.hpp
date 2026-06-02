@@ -19,7 +19,8 @@ enum class EventType {
     NetworkQualityChanged,   // 网络质量变化
     TcpLossRateChanged,      // TCP丢包率变化
     RttChanged,             // RTT变化
-    RssiChanged             // RSSI变化
+    RssiChanged,            // RSSI变化
+    BluetoothDeviceChanged  // 蓝牙设备变化
 };
 
 // 事件数据结构
@@ -64,6 +65,7 @@ public:
     void emitTcpLossRateChanged(const std::string& message, const std::string& source = "");
     void emitRttChanged(const std::string& message, const std::string& source = "");
     void emitRssiChanged(const std::string& message, const std::string& source = "");
+    void emitBluetoothDeviceChanged(const std::string& message, const std::string& source = "");
     
     // 启动事件监控（集成到ServerContext中）
     void startEventMonitoring(struct ServerContext* ctx);
@@ -78,6 +80,7 @@ private:
     std::vector<EventCallback> tcp_loss_callbacks_;
     std::vector<EventCallback> rtt_callbacks_;
     std::vector<EventCallback> rssi_callbacks_;
+    std::vector<EventCallback> bluetooth_callbacks_;
     
     struct ServerContext* server_ctx_;
     bool monitoring_active_;

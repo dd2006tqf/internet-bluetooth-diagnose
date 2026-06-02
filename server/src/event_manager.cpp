@@ -46,6 +46,9 @@ void NetworkEventManager::registerCallback(EventType type, EventCallback callbac
         case EventType::RssiChanged:
             rssi_callbacks_.push_back(callback);
             break;
+        case EventType::BluetoothDeviceChanged:
+            bluetooth_callbacks_.push_back(callback);
+            break;
     }
     LOG_INFO(LogModule::EVENT_MGR, "registered callback for event type " << static_cast<int>(type));
 }
@@ -70,6 +73,9 @@ void NetworkEventManager::unregisterCallback(EventType type) {
         case EventType::RssiChanged:
             rssi_callbacks_.clear();
             break;
+        case EventType::BluetoothDeviceChanged:
+            bluetooth_callbacks_.clear();
+            break;
     }
     LOG_INFO(LogModule::EVENT_MGR, "unregistered all callbacks for event type " << static_cast<int>(type));
 }
@@ -82,6 +88,8 @@ std::string NetworkEventManager::getSignalName(EventType type) const {
             return kSignalConnectionModeChanged;
         case EventType::NetworkQualityChanged:
             return kSignalNetworkQualityChanged;
+        case EventType::BluetoothDeviceChanged:
+            return kSignalBluetoothDeviceChanged;
         default:
             return kSignalChanged; // 默认使用通用信号
     }
@@ -136,6 +144,10 @@ void NetworkEventManager::emitRssiChanged(const std::string& message, const std:
     emitEvent(NetworkEvent(EventType::RssiChanged, message, source, 4));
 }
 
+void NetworkEventManager::emitBluetoothDeviceChanged(const std::string& message, const std::string& source) {
+    emitEvent(NetworkEvent(EventType::BluetoothDeviceChanged, message, source, 5));
+}
+
 void NetworkEventManager::startEventMonitoring(struct ServerContext* ctx) {
     server_ctx_ = ctx;
     monitoring_active_ = true;
@@ -186,6 +198,11 @@ void NetworkEventManager::invokeCallbacks(EventType type, const NetworkEvent& ev
             break;
         case EventType::RssiChanged:
             for (const auto& callback : rssi_callbacks_) {
+                callback(event);
+            }
+            break;
+        case EventType::BluetoothDeviceChanged:
+            for (const auto& callback : bluetooth_callbacks_) {
                 callback(event);
             }
             break;
