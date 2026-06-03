@@ -16,8 +16,18 @@ all: dirs $(BPF_TARGET) $(TARGET)
 dirs:
 	mkdir -p $(BIN_DIR) $(BUILD_DIR)
 
-$(BPF_TARGET): src/flow_rate.bpf.c
-	clang -g -O2 -target bpf -c $< -o $@
+# 自动生成 vmlinux.h（需要 bpftool 和 /sys/kernel/btf/vmlinux）
+$(BUILD_DIR)/vmlinux.h:
+	@if [ -f /sys/kernel/btf/vmlinux ]; then \
+		bpftool btf dump file /sys/kernel/btf/vmlinux format c > $@; \
+		echo "Generated vmlinux.h"; \
+	else \
+		echo "Warning: /sys/kernel/btf/vmlinux not found, vmlinux.h not generated"; \
+		echo "You may need to: sudo apt install linux-tools-generic bpftool"; \
+	fi
+
+$(BPF_TARGET): src/flow_rate.bpf.c $(BUILD_DIR)/vmlinux.h
+	clang -g -O2 -target bpf -I$(BUILD_DIR) -c $< -o $@
 
 $(TARGET): $(SRC) $(INC) $(BPF_TARGET)
 	$(CC) $(CXXFLAGS) $(INCLUDES) -Iinclude -o $@ $(SRC) $(LDFLAGS)
