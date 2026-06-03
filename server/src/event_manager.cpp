@@ -162,6 +162,10 @@ void NetworkEventManager::startEventMonitoring(struct ServerContext* ctx) {
     registerCallback(EventType::ConnectionModeChanged, [](const NetworkEvent& event) {
         LOG_INFO(LogModule::EVENT_MGR, "Connection mode change event: " << event.message);
     });
+
+    registerCallback(EventType::BluetoothDeviceChanged, [](const NetworkEvent& event) {
+        LOG_INFO(LogModule::EVENT_MGR, "Bluetooth device event: " << event.message);
+    });
 }
 
 void NetworkEventManager::stopEventMonitoring() {

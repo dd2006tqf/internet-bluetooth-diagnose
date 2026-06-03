@@ -1059,31 +1059,28 @@ void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** outMonitor) {
                 // 获取事件并转发到 EventManager
                 auto events = monitor->fetchEvents();
                 for (const auto& ev : events) {
-                    // 根据事件类型选择对应的 WEAK_NET 事件
                     switch (ev.type) {
                         case BtEvent::Type::DeviceConnected:
                         case BtEvent::Type::DeviceDisconnected:
                         case BtEvent::Type::DeviceFound:
                         case BtEvent::Type::DeviceLost:
-                            // 蓝牙设备变化 → 发送通用信号
-                            if (ctx->service) {
-                                std::thread([ctx, ev]() {
-                                    ctx->service->emitSpecificSignal(
-                                        kSignalInterfaceChanged,  // 复用接口变化信号
-                                        std::string("[BT] ") + ev.message,
-                                        0);
-                                }).detach();
-                            }
-                            break;
-
                         case BtEvent::Type::DeviceRssiChanged:
-                            // RSSI 变化信号
-                            getEventManager().emitRssiChanged(
-                                std::string("[BT] ") + ev.message,
-                                ev.deviceName);
+                        case BtEvent::Type::DiscoveryStarted:
+                        case BtEvent::Type::DiscoveryStopped:
+                            // 所有蓝牙事件统一走 EventManager，发射正确的信号
+                            getEventManager().emitBluetoothDeviceChanged(
+                                ev.message,
+                                ev.deviceName.empty() ? ev.deviceMac : ev.deviceName);
                             break;
 
-                        default:
+                        case BtEvent::Type::AdapterAdded:
+                        case BtEvent::Type::AdapterRemoved:
+                        case BtEvent::Type::AdapterPowered:
+                            // 适配器事件直接发射 D-Bus 信号
+                            if (ctx->service) {
+                                ctx->service->emitSpecificSignal(
+                                    kSignalBluetoothDeviceChanged, ev.message, 0);
+                            }
                             break;
                     }
                 }
