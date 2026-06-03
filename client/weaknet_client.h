@@ -230,6 +230,38 @@ bool weaknet_get_version(char* buffer, size_t buffer_size);
  */
 bool weaknet_get_build_info(char* buffer, size_t buffer_size);
 
+// ============== 蓝牙设备 API ==============
+
+/**
+ * 获取蓝牙设备列表
+ *
+ * @param buffer 结果缓冲区，每行格式: "MAC|Name|RSSI|Connected|Type|Level"
+ * @param buffer_size 缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size 错误信息缓冲区大小
+ * @return true-成功, false-失败（无适配器时返回空列表）
+ */
+bool weaknet_get_bluetooth_devices(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
+/**
+ * 获取蓝牙适配器信息
+ *
+ * @param buffer 结果缓冲区，格式: "Powered:1|Name:xxx|Address:xx:xx:..."
+ * @param buffer_size 缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size 错误信息缓冲区大小
+ * @return true-成功, false-失败
+ */
+bool weaknet_get_bluetooth_adapter(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
+/**
+ * 订阅蓝牙设备变化事件
+ *
+ * @param callback 事件回调函数
+ * @return true-成功, false-失败
+ */
+bool weaknet_subscribe_bluetooth_events(weaknet_event_callback_t callback);
+
 #ifdef __cplusplus
 }
 #endif

@@ -263,6 +263,7 @@ private:
 // 启动蓝牙监测线程 (在 server.cpp 中调用)
 // ============================================================================
 struct ServerContext;
-void start_bt_monitor_thread(ServerContext* ctx);
+// 启动蓝牙监测线程，outMonitor 回传 BtMonitor 实例指针供 DbusService 查询
+void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** outMonitor = nullptr);
 
 }  // namespace weaknet_dbus

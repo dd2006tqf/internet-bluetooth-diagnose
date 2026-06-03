@@ -447,7 +447,8 @@ public:
         // 检查是否为事件信号
         if (dbus_message_is_signal(msg, kInterface, kSignalInterfaceChanged) ||
             dbus_message_is_signal(msg, kInterface, kSignalConnectionModeChanged) ||
-            dbus_message_is_signal(msg, kInterface, kSignalNetworkQualityChanged)) {
+            dbus_message_is_signal(msg, kInterface, kSignalNetworkQualityChanged) ||
+            dbus_message_is_signal(msg, kInterface, kSignalBluetoothDeviceChanged)) {
             
             const char* signal_name = dbus_message_get_member(msg);
             const char* text = nullptr;
@@ -467,6 +468,149 @@ public:
 
         dbus_message_unref(msg);
         return false;
+    }
+
+    // ----- 蓝牙设备查询 -----
+
+    // 获取蓝牙设备列表
+    bool getBluetoothDevices(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) {
+            errorMsg = "客户端未连接";
+            return false;
+        }
+
+        DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodGetBluetoothDevices);
+        if (!msg) {
+            errorMsg = "创建蓝牙设备查询消息失败";
+            return false;
+        }
+
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 3000, &err);
+        dbus_message_unref(msg);
+
+        if (dbus_error_is_set(&err)) {
+            errorMsg = std::string("蓝牙设备查询失败: ") + err.message;
+            dbus_error_free(&err);
+            return false;
+        }
+        if (!reply) {
+            errorMsg = "未收到蓝牙设备查询应答";
+            return false;
+        }
+
+        DBusMessageIter iter;
+        if (!dbus_message_iter_init(reply, &iter) ||
+            dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_ARRAY) {
+            errorMsg = "解析蓝牙设备列表失败";
+            dbus_message_unref(reply);
+            return false;
+        }
+
+        DBusMessageIter array_iter;
+        dbus_message_iter_recurse(&iter, &array_iter);
+        result.clear();
+        while (dbus_message_iter_get_arg_type(&array_iter) == DBUS_TYPE_STRING) {
+            const char* dev = nullptr;
+            dbus_message_iter_get_basic(&array_iter, &dev);
+            if (dev && dev[0] != '\0') {
+                if (!result.empty()) result += "\n";
+                result += dev;
+            }
+            dbus_message_iter_next(&array_iter);
+        }
+        dbus_message_unref(reply);
+        return true;
+    }
+
+    // 获取蓝牙适配器信息
+    bool getBluetoothAdapter(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) {
+            errorMsg = "客户端未连接";
+            return false;
+        }
+
+        DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodGetBluetoothAdapter);
+        if (!msg) {
+            errorMsg = "创建蓝牙适配器查询消息失败";
+            return false;
+        }
+
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 3000, &err);
+        dbus_message_unref(msg);
+
+        if (dbus_error_is_set(&err)) {
+            errorMsg = std::string("蓝牙适配器查询失败: ") + err.message;
+            dbus_error_free(&err);
+            return false;
+        }
+        if (!reply) {
+            errorMsg = "未收到蓝牙适配器查询应答";
+            return false;
+        }
+
+        const char* s = nullptr;
+        if (!dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &s, DBUS_TYPE_INVALID)) {
+            errorMsg = "解析蓝牙适配器信息失败";
+            dbus_message_unref(reply);
+            return false;
+        }
+        result = s ? s : "";
+        dbus_message_unref(reply);
+        return true;
+    }
+
+    // 订阅蓝牙设备变化事件
+    bool subscribeToBluetoothEvents(bool (*callback)(const std::string& message, int32_t counter) = nullptr) {
+        if (!isConnected()) return false;
+
+        DBusError err;
+        dbus_error_init(&err);
+        std::string rule = std::string("type='signal',interface='") + kInterface + "',member='" + kSignalBluetoothDeviceChanged + "'";
+        dbus_bus_add_match(conn_, rule.c_str(), &err);
+        dbus_connection_flush(conn_);
+        if (dbus_error_is_set(&err)) {
+            LOG_ERROR(LogModule::CLIENT, "添加蓝牙事件匹配规则失败: " << err.message);
+            dbus_error_free(&err);
+            return false;
+        }
+        LOG_INFO(LogModule::CLIENT, "已订阅蓝牙设备变化事件");
+
+        auto lastStatusTime = std::chrono::steady_clock::now();
+        const auto statusInterval = std::chrono::seconds(5);
+
+        while (true) {
+            dbus_connection_read_write(conn_, 100);
+            DBusMessage* signal = dbus_connection_pop_message(conn_);
+
+            auto now = std::chrono::steady_clock::now();
+            if (now - lastStatusTime >= statusInterval) {
+                LOG_INFO(LogModule::CLIENT, "BT_CLIENT_STATUS: 等待蓝牙设备变化信号...");
+                lastStatusTime = now;
+            }
+            if (!signal) continue;
+
+            if (dbus_message_is_signal(signal, kInterface, kSignalBluetoothDeviceChanged)) {
+                const char* text = nullptr;
+                int32_t counter = 0;
+                DBusError e;
+                dbus_error_init(&e);
+                if (dbus_message_get_args(signal, &e, DBUS_TYPE_STRING, &text, DBUS_TYPE_INT32, &counter, DBUS_TYPE_INVALID)) {
+                    LOG_INFO(LogModule::CLIENT, "收到蓝牙设备变化: '" << (text ? text : "<null>") << "', counter=" << counter);
+                    if (callback && callback(text ? std::string(text) : "", counter)) {
+                        dbus_message_unref(signal);
+                        break;
+                    }
+                } else if (dbus_error_is_set(&e)) {
+                    dbus_error_free(&e);
+                }
+            }
+            dbus_message_unref(signal);
+        }
+        return true;
     }
 
 private:
@@ -609,10 +753,11 @@ extern "C" bool weaknet_unsubscribe_event(const char* event_type) {
 
 // 获取支持的事件类型列表
 extern "C" bool weaknet_get_event_types(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
-    snprintf(buffer, buffer_size, "%s,%s,%s", 
-             weaknet_dbus::kSignalInterfaceChanged, 
-             weaknet_dbus::kSignalConnectionModeChanged, 
-             weaknet_dbus::kSignalNetworkQualityChanged);
+    snprintf(buffer, buffer_size, "%s,%s,%s,%s",
+             weaknet_dbus::kSignalInterfaceChanged,
+             weaknet_dbus::kSignalConnectionModeChanged,
+             weaknet_dbus::kSignalNetworkQualityChanged,
+             weaknet_dbus::kSignalBluetoothDeviceChanged);
     return true;
 }
 
@@ -710,6 +855,47 @@ extern "C" bool weaknet_check_network_quality(char* quality_buffer, size_t quali
     dbus_message_unref(msg);
     snprintf(error_buffer, error_size, "没有检测到网络质量事件");
     return false;
+}
+
+// ============== 蓝牙设备 API ==============
+
+extern "C" bool weaknet_get_bluetooth_devices(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getBluetoothDevices(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    } else {
+        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+        return false;
+    }
+}
+
+extern "C" bool weaknet_get_bluetooth_adapter(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getBluetoothAdapter(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    } else {
+        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+        return false;
+    }
+}
+
+extern "C" bool weaknet_subscribe_bluetooth_events(weaknet_event_callback_t callback) {
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        return false;
+    }
+    // 先添加 D-Bus 信号订阅
+    weaknet_dbus::g_client->subscribeToEvent(weaknet_dbus::kSignalBluetoothDeviceChanged);
+    return true;
 }
 
 // 注意: 此文件现在作为动态库使用，不包含main函数

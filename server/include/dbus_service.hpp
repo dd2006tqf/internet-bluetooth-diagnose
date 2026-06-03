@@ -38,6 +38,8 @@ public:
     bool handleListInterfaces(DBusConnection* conn, DBusMessage* msg);
     bool handleHealthCheck(DBusConnection* conn, DBusMessage* msg);
     bool handlePing(DBusConnection* conn, DBusMessage* msg);
+    bool handleGetBluetoothDevices(DBusConnection* conn, DBusMessage* msg);
+    bool handleGetBluetoothAdapter(DBusConnection* conn, DBusMessage* msg);
 
 private:
     // 将字符串数组作为返回

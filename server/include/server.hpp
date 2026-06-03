@@ -17,6 +17,7 @@ namespace weaknet_dbus {
 class DbusService;  // 前置声明
 class WeakNetMgr;   // 前置声明
 class NetInfo;      // 前置声明
+class BtMonitor;    // 前置声明
 
 struct ServerContext {
     // DBus 连接
@@ -47,6 +48,9 @@ struct ServerContext {
 
     // 弱网管理器
     WeakNetMgr* weak_mgr = nullptr;
+
+    // 蓝牙监测器
+    BtMonitor* bt_monitor = nullptr;
 };
 
 // 初始化 DBus（线程支持、连接、请求服务名、注册对象路径与回调）

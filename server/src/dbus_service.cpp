@@ -14,6 +14,7 @@
 #include "net_info.hpp"
 #include "network_quality_assessor.hpp"
 #include "net_ping.h"
+#include "bt_monitor.hpp"
 
 namespace weaknet_dbus {
 
@@ -41,6 +42,14 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodPing)) {
         self->handlePing(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetBluetoothDevices)) {
+        self->handleGetBluetoothDevices(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetBluetoothAdapter)) {
+        self->handleGetBluetoothAdapter(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -295,6 +304,76 @@ bool DbusService::handlePing(DBusConnection* conn, DBusMessage* msg) {
     
     std::printf("[dbus] Ping reply sent: %s\n", ok ? "success" : "failed");
     return ok;
+}
+
+// ============================================================================
+// 蓝牙设备相关方法
+// ============================================================================
+
+bool DbusService::handleGetBluetoothDevices(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetBluetoothDevices called");
+
+    if (!ctx_ || !ctx_->bt_monitor) {
+        // 无蓝牙监测器 → 返回空数组
+        DBusMessage* reply = dbus_message_new_method_return(msg);
+        if (reply) {
+            DBusMessageIter iter;
+            dbus_message_iter_init_append(reply, &iter);
+            DBusMessageIter arr;
+            dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &arr);
+            dbus_message_iter_close_container(&iter, &arr);
+            dbus_connection_send(conn, reply, nullptr);
+            dbus_connection_flush(conn);
+            dbus_message_unref(reply);
+        }
+        return true;
+    }
+
+    // 获取设备列表，格式化为 JSON 风格字符串数组
+    auto devices = ctx_->bt_monitor->getDevices();
+    std::vector<std::string> lines;
+    lines.reserve(devices.size());
+    for (const auto& dev : devices) {
+        // 格式: "MAC|Name|RSSI|Connected|Type|Level"
+        std::string line = dev.macAddress + "|"
+            + (dev.name.empty() ? dev.alias : dev.name) + "|"
+            + std::to_string(dev.rssiDbm) + "|"
+            + (dev.connected ? "1" : "0") + "|"
+            + (dev.deviceType == BtDeviceType::BLE ? "BLE" :
+               dev.deviceType == BtDeviceType::Classic ? "Classic" : "Dual") + "|"
+            + dev.rssiLevel();
+        lines.push_back(line);
+    }
+    return replyStringArray(conn, msg, lines);
+}
+
+bool DbusService::handleGetBluetoothAdapter(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetBluetoothAdapter called");
+
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    std::string result;
+    if (ctx_ && ctx_->bt_monitor && ctx_->bt_monitor->isInitialized()) {
+        auto state = ctx_->bt_monitor->getAdapterState();
+        result = std::string("Powered:") + (state.powered ? "1" : "0")
+            + "|Name:" + state.name
+            + "|Address:" + state.macAddress
+            + "|Discovering:" + (state.discovering ? "1" : "0")
+            + "|Discoverable:" + (state.discoverable ? "1" : "0")
+            + "|Pairable:" + (state.pairable ? "1" : "0");
+    } else {
+        result = "No Bluetooth adapter available";
+    }
+
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = result.c_str();
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
 }
 
 }  // namespace weaknet_dbus

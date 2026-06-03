@@ -1009,12 +1009,14 @@ std::vector<std::string> BtMonitor::getStringArrayProperty(DBusConnection* conn,
 // 蓝牙监测线程入口 (集成到 server.cpp)
 // ============================================================================
 
-void start_bt_monitor_thread(ServerContext* ctx) {
-    std::thread([ctx]() {
+void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** outMonitor) {
+    std::thread([ctx, outMonitor]() {
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread started");
 
         // 创建独立的 BtMonitor 实例
         auto monitor = std::make_unique<BtMonitor>();
+        // 将原始指针写回 ServerContext，供 DbusService 查询
+        if (outMonitor) *outMonitor = monitor.get();
 
         if (!monitor->initialize()) {
             LOG_INFO(LogModule::BLUETOOTH, "BT monitor: no Bluetooth adapter available, "
@@ -1119,6 +1121,7 @@ void start_bt_monitor_thread(ServerContext* ctx) {
         }
 
         monitor->cleanup();
+        if (outMonitor) *outMonitor = nullptr;
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread stopped");
     }).detach();
 }

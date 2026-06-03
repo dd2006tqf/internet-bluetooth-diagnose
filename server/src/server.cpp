@@ -394,7 +394,7 @@ int start_server() {
     start_network_quality_thread(&ctx);
     // 启动蓝牙监测线程 (通过 BlueZ D-Bus API)
     LOG_INFO(LogModule::BLUETOOTH, "starting bluetooth monitor thread");
-    start_bt_monitor_thread(&ctx);
+    start_bt_monitor_thread(&ctx, &ctx.bt_monitor);
     // 主线程进入阻塞式 looper
     auto* lp = Looper::current();
     lp->attach(ctx.connection);
