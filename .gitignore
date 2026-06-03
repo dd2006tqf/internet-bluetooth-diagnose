@@ -1,0 +1,40 @@
+# 编译产物
+*.o
+*.so
+*.a
+*.ko
+*.bpf.o
+*.bpf.o.d
+*.elf
+bin/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 日志
+logs/
+*.log
+
+# 运行时序列化文件
+*.bin
+signal_changed.bin
+get_reply.bin
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# CMake
+CMakeFiles/
+cmake-build-*/
+CMakeCache.txt
+
+# 生成文件
+Makefile.autogen
