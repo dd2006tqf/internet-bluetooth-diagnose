@@ -37,10 +37,14 @@ run-server: $(BIN_DIR)/weaknet-dbus-server
 
 test-client: server-client-lib
 	@if [ "$(COMMAND)" = "" ]; then \
-		echo "用法: make test-client COMMAND=[all|get|health|file|ping|check|events|event-types|test-*]"; \
+		echo "用法: make test-client COMMAND=[all|get|health|file|ping|check|events|bt-devices|bt-adapter|bt-events|event-types|test-*]"; \
 		echo "示例: make test-client COMMAND=all"; \
 		echo "      make test-client COMMAND=get"; \
 		echo "      make test-client COMMAND=ping google.com"; \
+		echo "      make test-client COMMAND=bt-devices"; \
+		echo "      make test-client COMMAND=bt-adapter"; \
+		echo "      make test-client COMMAND=bt-events"; \
+		echo "      make test-client COMMAND=test-bt"; \
 		echo "      make test-client COMMAND=test-basic"; \
 	else \
 		echo "运行客户端测试程序: $(COMMAND)"; \
@@ -70,6 +74,22 @@ test-performance: server-client-lib
 run-client: server-client-lib
 	@echo "运行客户端订阅模式..."
 	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client subscribe
+
+test-bt: server-client-lib
+	@echo "运行蓝牙功能测试..."
+	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client test-bt
+
+test-bt-callback: server-client-lib
+	@echo "运行蓝牙事件回调测试..."
+	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client test-bt-callback
+
+test-bt-devices: server-client-lib
+	@echo "获取蓝牙设备列表..."
+	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client bt-devices
+
+test-bt-adapter: server-client-lib
+	@echo "获取蓝牙适配器信息..."
+	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client bt-adapter
 
 
 

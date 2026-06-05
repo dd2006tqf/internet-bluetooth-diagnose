@@ -292,29 +292,120 @@ bool testErrorHandling() {
     return true;
 }
 
+// 测试蓝牙设备功能
+bool testBluetoothDevices() {
+    TEST_CASE("蓝牙设备获取");
+
+    char buffer[4096], error[256];
+
+    // 测试获取蓝牙设备列表
+    TEST_API_CALL(weaknet_get_bluetooth_devices, buffer, sizeof(buffer), error, sizeof(error));
+    printf("   📱 蓝牙设备列表: %s\n", buffer);
+
+    return true;
+}
+
+// 测试蓝牙适配器信息
+bool testBluetoothAdapter() {
+    TEST_CASE("蓝牙适配器信息");
+
+    char buffer[4096], error[256];
+
+    // 测试获取蓝牙适配器信息
+    TEST_API_CALL(weaknet_get_bluetooth_adapter, buffer, sizeof(buffer), error, sizeof(error));
+    printf("   📡 蓝牙适配器: %s\n", buffer);
+
+    return true;
+}
+
+// 测试蓝牙事件监听
+bool testBluetoothEvents() {
+    TEST_CASE("蓝牙事件监听测试");
+
+    char buffer[512], error[256];
+
+    // 测试订阅蓝牙事件
+    printf("   🔔 订阅蓝牙设备变化事件...\n");
+    if (weaknet_subscribe_bluetooth_events(nullptr)) {
+        printf("     ✅ 蓝牙事件订阅成功\n");
+    } else {
+        printf("     ❌ 蓝牙事件订阅失败\n");
+        return false;
+    }
+
+    // 监听蓝牙事件（15秒）
+    printf("   🔍 监听蓝牙事件 (15秒)...\n");
+    char eventType[64], message[512], source[64];
+    int32_t counter;
+
+    for (int i = 0; i < 15; i++) {
+        if (weaknet_check_events(eventType, sizeof(eventType), message, sizeof(message),
+                                 &counter, source, sizeof(source), error, sizeof(error))) {
+            printf("     🎯 检测到事件: type=%s counter=%d source=%s message=%s\n",
+                   eventType, counter, source, message);
+        } else {
+            printf("     ⏳ 第%d秒: 无蓝牙事件\n", i+1);
+        }
+        sleep(1);
+    }
+
+    return true;
+}
+
+// 蓝牙设备回调测试
+bool testBluetoothCallback() {
+    TEST_CASE("蓝牙事件回调测试");
+
+    static int bt_callback_count = 0;
+    auto bt_callback = [](const char* event_type, const char* message, int32_t counter, const char* source) {
+        bt_callback_count++;
+        printf("     🎯 回调收到蓝牙事件 #%d:\n", bt_callback_count);
+        printf("       事件类型: %s\n", event_type);
+        printf("       消息内容: %s\n", message);
+        printf("       事件计数: %d\n", counter);
+        printf("       事件来源: %s\n", source);
+    };
+
+    printf("   🔔 订阅蓝牙事件回调（按Ctrl+C停止）...\n");
+    if (weaknet_subscribe_bluetooth_events(bt_callback)) {
+        printf("     ✅ 蓝牙事件回调订阅成功\n");
+    } else {
+        printf("     ❌ 蓝牙事件回调订阅失败\n");
+        return false;
+    }
+
+    // 保持运行30秒
+    printf("   🔍 等待蓝牙事件 (30秒)...\n");
+    for (int i = 0; i < 30; i++) {
+        sleep(1);
+    }
+
+    return true;
+}
+
 // 性能测试
 bool testPerformance() {
     TEST_CASE("性能测试");
-    
+
     char buffer[512], error[256];
     int testCount = 10;
-    
+
     printf("   ⚡ 执行%d次get_interfaces调用\n", testCount);
     auto start = std::chrono::high_resolution_clock::now();
-    
+
     for (int i = 0; i < testCount; i++) {
         if (!weaknet_get_interfaces(buffer, sizeof(buffer), error, sizeof(error))) {
             printf("     ❌ 第%d次调用失败: %s\n", i+1, error);
             return false;
         }
     }
-    
+
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    
-    printf("     ✅ 完成%d次调用，耗时%ldms，平均%.2fms/次\n", 
+
+    printf("     ✅ 完成%d次调用，耗时%ldms，平均%.2fms/次\n",
            testCount, duration.count(), duration.count() / (double)testCount);
-    
+
     return true;
 }
 
@@ -334,6 +425,10 @@ void runAllTests() {
     testNetworkInfo();
     testPingFunction();
     testEventSystem();
+    testBluetoothDevices();
+    testBluetoothAdapter();
+    testBluetoothEvents();
+    testBluetoothCallback();
     testNetworkQualityEvents();
     testNetworkQualityCallback();
     testChangeMonitoring();
@@ -467,6 +562,51 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
             count++;
         }
     }
+    else if (command == "bt-devices") {
+        if (weaknet_get_bluetooth_devices(buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ 蓝牙设备列表: %s\n", buffer);
+        } else {
+            printf("❌ 获取蓝牙设备失败: %s\n", error);
+            return false;
+        }
+    }
+    else if (command == "bt-adapter") {
+        if (weaknet_get_bluetooth_adapter(buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ 蓝牙适配器信息: %s\n", buffer);
+        } else {
+            printf("❌ 获取蓝牙适配器失败: %s\n", error);
+            return false;
+        }
+    }
+    else if (command == "bt-events") {
+        printf("🔄 开始监听蓝牙设备变化（按Ctrl+C停止）...\n");
+        // 订阅蓝牙事件
+        if (!weaknet_subscribe_bluetooth_events(nullptr)) {
+            printf("❌ 订阅蓝牙事件失败\n");
+            return false;
+        }
+        printf("✅ 蓝牙事件订阅成功\n");
+        int count = 0;
+        while (count < 60) {
+            char eventType[64], message[512], source[64];
+            if (weaknet_check_events(eventType, sizeof(eventType), message, sizeof(message),
+                                     &counter, source, sizeof(source), error, sizeof(error))) {
+                printf("📢 蓝牙设备变化: type=%s counter=%d source=%s message=%s\n",
+                       eventType, counter, source, message);
+            }
+            usleep(1000000);
+            count++;
+        }
+    }
+    else if (command == "test-bt") {
+        testBluetoothDevices();
+        testBluetoothAdapter();
+        testBluetoothEvents();
+        return true;
+    }
+    else if (command == "test-bt-callback") {
+        return testBluetoothCallback();
+    }
     else if (command == "test-basic") {
         return testBasicFunctions();
     }
@@ -516,6 +656,10 @@ int main(int argc, char* argv[]) {
         printf("  %s quality-sub            - 持续监听网络质量事件\n", argv[0]);
         printf("  %s event-types            - 获取支持的事件类型\n", argv[0]);
         printf("  %s event-sub EVENT_TYPE   - 订阅特定事件类型\n", argv[0]);
+        printf("\n蓝牙功能:\n");
+        printf("  %s bt-devices             - 获取蓝牙设备列表\n", argv[0]);
+        printf("  %s bt-adapter             - 获取蓝牙适配器信息\n", argv[0]);
+        printf("  %s bt-events              - 持续监听蓝牙设备变化\n", argv[0]);
         printf("\n测试模式:\n");
         printf("  %s test-basic             - 基础功能测试\n", argv[0]);
         printf("  %s test-network           - 网络信息测试\n", argv[0]);
@@ -523,6 +667,8 @@ int main(int argc, char* argv[]) {
         printf("  %s test-events            - 事件系统测试\n", argv[0]);
         printf("  %s test-quality           - 网络质量事件测试\n", argv[0]);
         printf("  %s test-quality-callback  - 网络质量事件回调测试\n", argv[0]);
+        printf("  %s test-bt                - 蓝牙功能测试\n", argv[0]);
+        printf("  %s test-bt-callback       - 蓝牙事件回调测试\n", argv[0]);
         printf("  %s test-errors            - 错误处理测试\n", argv[0]);
         printf("  %s test-performance       - 性能测试\n", argv[0]);
         return 1;
