@@ -12,8 +12,14 @@ SRC_CLIENT_TEST=client/test_client.cpp
 
 all: dirs server-client-lib
 
-server-client-lib:
+server-client-lib: client-lib
+
+# 单独编译服务端
+server-bin:
 	@$(MAKE) -C server
+
+# 单独编译客户端动态库和测试程序（不依赖服务端编译）
+client-lib: dirs
 	@echo "编译WeakNet客户端动态库..."
 	@mkdir -p $(CLIENT_LIB_DIR) $(CLIENT_BIN_DIR)
 	$(CC) $(CXXFLAGS) $(INCLUDES) -I$(SERVER_DIR)/include -I$(CLIENT_DIR) -fPIC -shared -o $(CLIENT_LIB_DIR)/libweaknet.so $(SRC_CLIENT_LIB) $(LDFLAGS)
@@ -35,7 +41,7 @@ clean:
 run-server: $(BIN_DIR)/weaknet-dbus-server
 	DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(BIN_DIR)/weaknet-dbus-server
 
-test-client: server-client-lib
+test-client: client-lib
 	@if [ "$(COMMAND)" = "" ]; then \
 		echo "用法: make test-client COMMAND=[all|get|health|file|ping|check|events|bt-devices|bt-adapter|bt-events|event-types|test-*]"; \
 		echo "示例: make test-client COMMAND=all"; \
@@ -51,43 +57,43 @@ test-client: server-client-lib
 		LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client $(COMMAND); \
 	fi
 
-test-lib: server-client-lib
+test-lib: client-lib
 	@echo "运行动态库基本功能测试..."
 	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client lib-test
 
-test-events: server-client-lib
+test-events: client-lib
 	@echo "运行事件监听功能测试..."
 	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client test-events
 
-test-all: server-client-lib
+test-all: client-lib
 	@echo "运行完整接口验证测试..."
 	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client all
 
-test-ping: server-client-lib
+test-ping: client-lib
 	@echo "运行Ping功能测试..."
 	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client test-ping
 
-test-performance: server-client-lib
+test-performance: client-lib
 	@echo "运行性能测试..."
 	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client test-performance
 
-run-client: server-client-lib
+run-client: client-lib
 	@echo "运行客户端订阅模式..."
 	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client subscribe
 
-test-bt: server-client-lib
+test-bt: client-lib
 	@echo "运行蓝牙功能测试..."
 	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client test-bt
 
-test-bt-callback: server-client-lib
+test-bt-callback: client-lib
 	@echo "运行蓝牙事件回调测试..."
 	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client test-bt-callback
 
-test-bt-devices: server-client-lib
+test-bt-devices: client-lib
 	@echo "获取蓝牙设备列表..."
 	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client bt-devices
 
-test-bt-adapter: server-client-lib
+test-bt-adapter: client-lib
 	@echo "获取蓝牙适配器信息..."
 	LD_LIBRARY_PATH=$(CLIENT_LIB_DIR):$$LD_LIBRARY_PATH DBUS_SESSION_BUS_ADDRESS=$$DBUS_SESSION_BUS_ADDRESS $(CLIENT_BIN_DIR)/test-client bt-adapter
 

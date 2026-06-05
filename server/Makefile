@@ -18,7 +18,9 @@ dirs:
 
 # 自动生成 vmlinux.h（需要 bpftool 和 /sys/kernel/btf/vmlinux）
 $(BUILD_DIR)/vmlinux.h:
-	@if [ -f /sys/kernel/btf/vmlinux ]; then \
+	@if [ -f $@ ]; then \
+		echo "vmlinux.h already exists, skipping generation"; \
+	elif [ -f /sys/kernel/btf/vmlinux ]; then \
 		bpftool btf dump file /sys/kernel/btf/vmlinux format c > $@; \
 		echo "Generated vmlinux.h"; \
 	else \
