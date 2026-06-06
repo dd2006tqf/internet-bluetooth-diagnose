@@ -18,13 +18,24 @@ server-client-lib: client-lib
 server-bin:
 	@$(MAKE) -C server
 
-# 单独编译客户端动态库和测试程序（不依赖服务端编译）
-client-lib: dirs
+# 输出文件路径
+LIBWEAKNET_SO = $(CLIENT_LIB_DIR)/libweaknet.so
+TEST_CLIENT_BIN = $(CLIENT_BIN_DIR)/test-client
+
+# 客户端动态库（仅在源文件变化时重新编译）
+$(LIBWEAKNET_SO): $(SRC_CLIENT_LIB)
+	@mkdir -p $(CLIENT_LIB_DIR)
 	@echo "编译WeakNet客户端动态库..."
-	@mkdir -p $(CLIENT_LIB_DIR) $(CLIENT_BIN_DIR)
-	$(CC) $(CXXFLAGS) $(INCLUDES) -I$(SERVER_DIR)/include -I$(CLIENT_DIR) -fPIC -shared -o $(CLIENT_LIB_DIR)/libweaknet.so $(SRC_CLIENT_LIB) $(LDFLAGS)
+	$(CC) $(CXXFLAGS) $(INCLUDES) -I$(SERVER_DIR)/include -I$(CLIENT_DIR) -fPIC -shared -o $@ $(SRC_CLIENT_LIB) $(LDFLAGS)
+
+# 客户端测试程序（仅在源文件或动态库变化时重新编译）
+$(TEST_CLIENT_BIN): $(SRC_CLIENT_TEST) $(LIBWEAKNET_SO)
+	@mkdir -p $(CLIENT_BIN_DIR)
 	@echo "编译WeakNet客户端测试程序..."
-	$(CC) $(CXXFLAGS) $(INCLUDES) -I$(SERVER_DIR)/include -I$(CLIENT_DIR) -o $(CLIENT_BIN_DIR)/test-client $(SRC_CLIENT_TEST) -L$(CLIENT_LIB_DIR) -lweaknet $(LDFLAGS)
+	$(CC) $(CXXFLAGS) $(INCLUDES) -I$(SERVER_DIR)/include -I$(CLIENT_DIR) -o $@ $(SRC_CLIENT_TEST) -L$(CLIENT_LIB_DIR) -lweaknet $(LDFLAGS)
+
+# 单独编译客户端（保持兼容性）
+client-lib: $(LIBWEAKNET_SO) $(TEST_CLIENT_BIN)
 
 # 支持原来的命名，保持兼容性
 server-client: server-client-lib
