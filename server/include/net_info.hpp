@@ -79,6 +79,13 @@ public:
     uint64_t trafficTotalPps() const { return traffic_total_pps_; }
     uint32_t trafficActiveFlows() const { return traffic_active_flows_; }
 
+    // 网络抖动(Jitter)相关 - RTT的标准差，反映网络延迟稳定性
+    void setJitterMs(double jitter) { jitter_ms_ = jitter; }
+    double jitterMs() const { return jitter_ms_; }
+    
+    void setJitterLevel(const std::string& level) { jitter_level_ = level; }
+    const std::string& jitterLevel() const { return jitter_level_; }
+
     // 用于比较是否同一网卡（以 ifname 为键）
     bool sameKey(const NetInfo& other) const { return ifname_ == other.ifname_; }
 
@@ -104,6 +111,10 @@ private:
     uint64_t traffic_total_bps_ = 0; // 总带宽 (bytes per second)
     uint64_t traffic_total_pps_ = 0; // 总包速率 (packets per second)
     uint32_t traffic_active_flows_ = 0; // 活跃连接数
+
+    // 网络抖动(RTT标准差,毫秒)
+    double jitter_ms_ = -1.0;
+    std::string jitter_level_; // 抖动等级 (good/degraded/poor/unknown)
 };
 
 }  // namespace weaknet_dbus

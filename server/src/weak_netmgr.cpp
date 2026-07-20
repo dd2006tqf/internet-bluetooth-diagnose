@@ -173,6 +173,35 @@ bool WeakNetMgr::updateTcpLossRate(std::vector<NetInfo>& list,
     return changed;
 }
 
+bool WeakNetMgr::updateJitter(std::vector<NetInfo>& list,
+                              const std::string& iface_name,
+                              double jitter_ms,
+                              const std::string& jitter_level) {
+    bool changed = false;
+    for (auto& x : list) {
+        if (x.ifName() == iface_name) {
+            bool valueChanged = false, levelChanged = false;
+            if (x.jitterMs() != jitter_ms) {
+                x.setJitterMs(jitter_ms);
+                valueChanged = true;
+            }
+            if (x.jitterLevel() != jitter_level) {
+                x.setJitterLevel(jitter_level);
+                levelChanged = true;
+            }
+            if (valueChanged || levelChanged) {
+                changed = true;
+                if (x.usingNow()) {
+                    LOG_INFO(LogModule::NETWORK, "using iface " << iface_name
+                             << " jitter updated: " << jitter_ms << "ms (" << jitter_level << ")");
+                }
+            }
+            break;
+        }
+    }
+    return changed;
+}
+
 // 流量分析相关函数实现
 void WeakNetMgr::startTrafficAnalysis(const std::string& interface, int interval_seconds) {
     if (!traffic_analyzer_) {
@@ -271,6 +300,11 @@ bool WeakNetMgr::updateWifiRssiSafe(const std::string& ctrlDir) {
 bool WeakNetMgr::updateTcpLossRateSafe(const std::string& iface_name, double loss_rate, const std::string& loss_level) {
     std::lock_guard<std::mutex> lock(iface_mutex_);
     return updateTcpLossRate(current_interfaces_, iface_name, loss_rate, loss_level);
+}
+
+bool WeakNetMgr::updateJitterSafe(const std::string& iface_name, double jitter_ms, const std::string& jitter_level) {
+    std::lock_guard<std::mutex> lock(iface_mutex_);
+    return updateJitter(current_interfaces_, iface_name, jitter_ms, jitter_level);
 }
 
 bool WeakNetMgr::updateTrafficAnalysisSafe() {

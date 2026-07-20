@@ -52,10 +52,17 @@ public:
 
     // 更新指定接口的丢包率：根据接口名查找并更新TCP丢包率和等级
     // 返回是否有变化
-    bool updateTcpLossRate(std::vector<NetInfo>& list, 
-                          const std::string& iface_name, 
-                          double loss_rate, 
+    bool updateTcpLossRate(std::vector<NetInfo>& list,
+                          const std::string& iface_name,
+                          double loss_rate,
                           const std::string& loss_level);
+
+    // 更新指定接口的网络抖动(Jitter)与等级
+    // 返回是否有变化
+    bool updateJitter(std::vector<NetInfo>& list,
+                      const std::string& iface_name,
+                      double jitter_ms,
+                      const std::string& jitter_level);
 
     // 流量分析相关函数
     // 启动流量分析器
@@ -85,6 +92,9 @@ public:
     
     // 线程安全的TCP丢包率更新
     bool updateTcpLossRateSafe(const std::string& iface_name, double loss_rate, const std::string& loss_level);
+    
+    // 线程安全的网络抖动更新
+    bool updateJitterSafe(const std::string& iface_name, double jitter_ms, const std::string& jitter_level);
     
     // 线程安全的流量分析更新
     bool updateTrafficAnalysisSafe();

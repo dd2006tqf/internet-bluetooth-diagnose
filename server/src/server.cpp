@@ -25,6 +25,7 @@
 #include "rtt_monitor.hpp"
 #include "rssi_monitor.hpp"
 #include "tcp_loss_monitor.hpp"
+#include "jitter_monitor.hpp"
 #include "event_manager.hpp"
 #include "logger.hpp"
 #include "network_quality_assessor.hpp"
@@ -163,6 +164,7 @@ void start_iface_monitor_thread(ServerContext* ctx) {
                 if (net.usingNow()) {
                     LOG_INFO(LogModule::INTERFACE, "ACTIVE: " << net.ifName() 
                         << " | RTT: " << net.rttMs() << "ms" 
+                        << " | Jitter: " << net.jitterMs() << "ms (" << net.jitterLevel() << ")"
                         << " | Quality: " << static_cast<int>(net.quality())
                         << " | RSSI: " << net.rssiDbm() << "dBm"
                         << " | TCP Loss: " << net.tcpLossRate() << "% (" << net.tcpLossLevel() << ")"
@@ -171,6 +173,7 @@ void start_iface_monitor_thread(ServerContext* ctx) {
                 } else {
                     LOG_INFO(LogModule::INTERFACE, "INACTIVE: " << net.ifName() 
                         << " | RTT: " << net.rttMs() << "ms" 
+                        << " | Jitter: " << net.jitterMs() << "ms (" << net.jitterLevel() << ")"
                         << " | Quality: " << static_cast<int>(net.quality())
                         << " | RSSI: " << net.rssiDbm() << "dBm"
                         << " | TCP Loss: " << net.tcpLossRate() << "% (" << net.tcpLossLevel() << ")");
@@ -380,6 +383,9 @@ int start_server() {
     // 启动 RTT 监控线程：使用阿里云 DNS 223.5.5.5 作为目标
     LOG_INFO(LogModule::RTT, "starting monitor thread (target=223.5.5.5, interval=10s)");
     start_rtt_monitor_thread(&ctx, "223.5.5.5", /*intervalMs*/10000, /*timeoutMs*/800);
+    // 启动网络抖动(Jitter)监控线程：基于 RTT 样本标准差评估延迟稳定性
+    LOG_INFO(LogModule::NETWORK, "starting jitter monitor thread (target=223.5.5.5, interval=2s, window=30)");
+    start_jitter_monitor_thread(&ctx, "223.5.5.5", /*intervalMs*/2000, /*timeoutMs*/800, /*windowSize*/30);
     // 启动 Wi-Fi RSSI 监控线程（wpa_supplicant ctrl 目录自动探测）
     LOG_INFO(LogModule::RSSI, "starting RSSI monitor thread (interval=10s)");
     start_rssi_monitor_thread(&ctx);
