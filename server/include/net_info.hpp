@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace weaknet_dbus {
 
@@ -93,6 +94,38 @@ public:
     bool equals(const NetInfo& other) const {
         return ifname_ == other.ifname_ && is_default_ == other.is_default_ && type_ == other.type_ && rtt_ms_ == other.rtt_ms_ && state_ == other.state_;
     }
+
+    // ==================== 数据验证接口 ====================
+
+    // 校验当前对象所有字段是否处于合法取值区间（不要求已被采集）
+    bool isValid() const;
+
+    // 各指标是否已被采集（按约定：负值/极小值表示未测量）
+    bool hasRtt() const { return rtt_ms_ >= 0; }
+    bool hasTcpLoss() const { return tcp_loss_rate_ >= 0.0; }
+    bool hasRssi() const { return rssi_dbm_ > -1000; }
+    bool hasTraffic() const { return traffic_total_bps_ > 0 || traffic_total_pps_ > 0 || traffic_active_flows_ > 0; }
+    bool hasJitter() const { return jitter_ms_ >= 0.0; }
+
+    // 是否具备进行质量评估所需的最低指标集合（RTT 与丢包率）
+    bool hasEnoughMetricsForAssessment() const { return hasRtt() && hasTcpLoss(); }
+
+    // 与另一对象相比，是否存在需要重新评估/上报的变化
+    bool needsUpdate(const NetInfo& other) const;
+
+    // ==================== 序列化/反序列化接口 ====================
+
+    // 序列化为 JSON 字符串（与 NetworkQualityAssessor 输出格式保持兼容）
+    std::string toJson() const;
+
+    // 从 JSON 字符串反序列化，失败返回 false 且不修改当前对象
+    bool fromJson(const std::string& json);
+
+    // 序列化为二进制缓冲区（复用 serializer 工具函数，含版本号头）
+    std::vector<uint8_t> toBinary() const;
+
+    // 从二进制缓冲区反序列化，失败返回 false 且不修改当前对象
+    bool fromBinary(const std::vector<uint8_t>& buffer);
 
 private:
     std::string ifname_;
