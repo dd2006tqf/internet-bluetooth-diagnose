@@ -1,6 +1,7 @@
 
 #if defined(__linux__)
 #include "net_iface.h"
+#include "logger.hpp"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -21,6 +22,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+using namespace weaknet_dbus;
 
 #ifndef IFF_LOWER_UP
 #define IFF_LOWER_UP 0x10000
@@ -85,16 +88,41 @@ std::string ifFlagsToString(unsigned int flags) {
 class SnapshotCollector {
 public:
     std::vector<std::string> collect() {
-        openSocket();
-        sendGetLinkDump();
-        receiveDump();
-        sendGetRouteDump(AF_INET);
-        receiveDump();
-        sendGetRouteDump(AF_INET6);
-        receiveDump();
-        recomputeManagedInterfaces(false);
-        ::close(nlSocket_);
-        return namesOfManaged();
+        LOG_INFO(LogModule::INTERFACE, "SnapshotCollector::collect begin");
+        const int maxRetries = 2;
+        for (int attempt = 0; attempt <= maxRetries; ++attempt) {
+            resetState();
+            try {
+                openSocket();
+                sendGetLinkDump();
+                receiveDump();
+                sendGetRouteDump(AF_INET);
+                receiveDump();
+                sendGetRouteDump(AF_INET6);
+                receiveDump();
+                recomputeManagedInterfaces(false);
+                auto result = namesOfManaged();
+                LOG_INFO(LogModule::INTERFACE,
+                         "collect success: up=" << upInterfaces_.size()
+                         << " v4_default=" << defaultRouteIfacesV4_.size()
+                         << " v6_default=" << defaultRouteIfacesV6_.size()
+                         << " managed=" << result.size());
+                if (nlSocket_ >= 0) { ::close(nlSocket_); nlSocket_ = -1; }
+                return result;
+            } catch (const std::exception& e) {
+                LOG_ERROR(LogModule::INTERFACE,
+                          "collect attempt " << (attempt + 1) << "/" << (maxRetries + 1)
+                          << " failed: " << e.what());
+                if (nlSocket_ >= 0) { ::close(nlSocket_); nlSocket_ = -1; }
+                if (attempt < maxRetries) {
+                    continue;
+                }
+                LOG_ERROR(LogModule::INTERFACE,
+                          "collect exhausted retries, returning empty list");
+                return {};
+            }
+        }
+        return {};
     }
 
 private:
@@ -106,9 +134,18 @@ private:
     std::unordered_set<int> defaultRouteIfacesV6_;
     std::unordered_set<int> managedIfaces_; // up ∩ (v4默认网关 ∪ v6默认网关)
 
+    void resetState() {
+        ifindexToName_.clear();
+        upInterfaces_.clear();
+        defaultRouteIfacesV4_.clear();
+        defaultRouteIfacesV6_.clear();
+        managedIfaces_.clear();
+    }
+
     void openSocket() {
         nlSocket_ = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
         if (nlSocket_ < 0) {
+            LOG_ERROR(LogModule::INTERFACE, "socket(AF_NETLINK) failed: errno=" << errno);
             throw std::runtime_error("socket(AF_NETLINK) 失败");
         }
 
@@ -117,6 +154,7 @@ private:
         addr.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_ROUTE | RTMGRP_IPV6_ROUTE;
 
         if (bind(nlSocket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+            LOG_ERROR(LogModule::INTERFACE, "bind(AF_NETLINK) failed: errno=" << errno);
             throw std::runtime_error("bind(AF_NETLINK) 失败");
         }
 
@@ -148,6 +186,9 @@ private:
         msg.msg_iovlen = 1;
 
         if (sendmsg(nlSocket_, &msg, 0) < 0) {
+            LOG_ERROR(LogModule::INTERFACE,
+                      "sendmsg failed: nlmsg_type=" << nlmsgType << " family=" << static_cast<int>(family)
+                      << " errno=" << errno);
             throw std::runtime_error("sendmsg 失败");
         }
     }
@@ -170,6 +211,7 @@ private:
             if (len < 0) {
                 if (errno == EINTR) continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                LOG_ERROR(LogModule::INTERFACE, "recvmsg failed: errno=" << errno);
                 throw std::runtime_error("recvmsg 失败");
             }
             if (len == 0) break;
@@ -179,51 +221,19 @@ private:
                  hdr = NLMSG_NEXT(hdr, len)) {
                 if (hdr->nlmsg_type == NLMSG_DONE) return;
                 if (hdr->nlmsg_type == NLMSG_ERROR) {
+                    LOG_WARNING(LogModule::INTERFACE, "netlink reported NLMSG_ERROR");
                     continue;
                 }
                 dispatchNetlinkMessage(hdr);
             }
         }
-    }
-
-    void receiveAndProcess(NetlinkMessageBuffer& buffer) {
-        while (true) {
-            sockaddr_nl nladdr{};
-            struct iovec iov{ buffer.data.data(), buffer.data.size() };
-            struct msghdr msg{};
-            msg.msg_name = &nladdr;
-            msg.msg_namelen = sizeof(nladdr);
-            msg.msg_iov = &iov;
-            msg.msg_iovlen = 1;
-
-            ssize_t len = recvmsg(nlSocket_, &msg, 0);
-            if (len < 0) {
-                if (errno == EINTR) continue;
-                if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-                throw std::runtime_error("recvmsg 失败");
-            }
-            if (len == 0) break;
-
-            bool seenDone = false;
-            for (nlmsghdr* hdr = reinterpret_cast<nlmsghdr*>(buffer.data.data());
-                 NLMSG_OK(hdr, static_cast<unsigned>(len));
-                 hdr = NLMSG_NEXT(hdr, len)) {
-                if (hdr->nlmsg_type == NLMSG_DONE) { seenDone = true; break; }
-                if (hdr->nlmsg_type == NLMSG_ERROR) {
-                    continue;
-                }
-                dispatchNetlinkMessage(hdr);
-            }
-            if (seenDone) break;
-        }
-        recomputeManagedInterfaces(/*announceChanges=*/true);
     }
 
     void dispatchNetlinkMessage(struct nlmsghdr* hdr) {
         switch (hdr->nlmsg_type) {
             case RTM_NEWLINK:
             case RTM_DELLINK:
-                handleLink(reinterpret_cast<ifinfomsg*>(NLMSG_DATA(hdr)), IFLA_RTA(reinterpret_cast<ifinfomsg*>(NLMSG_DATA(hdr))), IFLA_PAYLOAD(hdr));
+                handleLink(reinterpret_cast<ifinfomsg*>(NLMSG_DATA(hdr)), IFLA_RTA(reinterpret_cast<ifinfomsg*>(NLMSG_DATA(hdr))), IFLA_PAYLOAD(hdr), hdr->nlmsg_type);
                 break;
             case RTM_NEWROUTE:
             case RTM_DELROUTE:
@@ -234,7 +244,7 @@ private:
         }
     }
 
-    void handleLink(ifinfomsg* info, void* attrHead, int attrLen) {
+    void handleLink(ifinfomsg* info, void* attrHead, int attrLen, int nlmsgType) {
         struct rtattr* attrs[IFLA_MAX + 1];
         parseRtAttributes(reinterpret_cast<struct rtattr*>(attrHead), attrLen, attrs);
 
@@ -253,20 +263,28 @@ private:
         bool isLoopback = (info->ifi_flags & IFF_LOOPBACK) != 0;
         bool isUp = (info->ifi_flags & IFF_UP) != 0;
 
+        // 直接依据消息类型判断链路删除，避免依赖内核 ifi_change/flags 启发式
+        if (nlmsgType == RTM_DELLINK) {
+            upInterfaces_.erase(ifindex);
+            defaultRouteIfacesV4_.erase(ifindex);
+            defaultRouteIfacesV6_.erase(ifindex);
+            ifindexToName_.erase(ifindex);
+            LOG_INFO(LogModule::INTERFACE,
+                     "Link removed: ifindex=" << ifindex << " name=" << ifname);
+            return;
+        }
+
         if (isUp && !isLoopback) {
             upInterfaces_.insert(ifindex);
         } else {
             upInterfaces_.erase(ifindex);
         }
 
-        // 如果是删除链路，把所有相关状态清理
-        if (info->ifi_change == ~0U || (info->ifi_flags == 0)) {
-            // Heuristic: DELLINK 通常会带来 flags = 0 或者 ifi_change=~0
-            defaultRouteIfacesV4_.erase(ifindex);
-            defaultRouteIfacesV6_.erase(ifindex);
-        }
-
-        (void)ifname; // 保留局部变量以兼容日志需求，但不输出
+        LOG_INFO(LogModule::INTERFACE,
+                 "Link update: ifindex=" << ifindex << " name=" << ifname
+                 << " up=" << (isUp ? 1 : 0)
+                 << " loopback=" << (isLoopback ? 1 : 0)
+                 << " flags=0x" << std::hex << info->ifi_flags << std::dec);
     }
 
     static bool isDefaultRoute(const rtmsg* rtm) {
@@ -294,18 +312,31 @@ private:
 
         if (oif <= 0 || !hasGateway) {
             // 没有明确网关或未绑定接口，视为无上网能力
+            LOG_WARNING(LogModule::INTERFACE,
+                        "Default route ignored: oif=" << oif
+                        << " has_gateway=" << (hasGateway ? 1 : 0)
+                        << " family=" << (rtm->rtm_family == AF_INET ? "IPv4" : "IPv6"));
             return;
         }
 
+        const char* family = (rtm->rtm_family == AF_INET) ? "IPv4" : "IPv6";
         auto& targetSet = (rtm->rtm_family == AF_INET) ? defaultRouteIfacesV4_ : defaultRouteIfacesV6_;
-        if (nlmsgType == RTM_NEWROUTE) {
-            targetSet.insert(oif);
-        } else if (nlmsgType == RTM_DELROUTE) {
-            targetSet.erase(oif);
+        std::string ifname;
+        if (auto it = ifindexToName_.find(oif); it != ifindexToName_.end()) {
+            ifname = it->second;
         }
 
-        (void)nlmsgType;
-        (void)rtm;
+        if (nlmsgType == RTM_NEWROUTE) {
+            targetSet.insert(oif);
+            LOG_INFO(LogModule::INTERFACE,
+                     "Default route added: " << family << " ifindex=" << oif
+                     << " name=" << (ifname.empty() ? "(unknown)" : ifname));
+        } else if (nlmsgType == RTM_DELROUTE) {
+            targetSet.erase(oif);
+            LOG_INFO(LogModule::INTERFACE,
+                     "Default route removed: " << family << " ifindex=" << oif
+                     << " name=" << (ifname.empty() ? "(unknown)" : ifname));
+        }
     }
 
     void recomputeManagedInterfaces(bool announceChanges) {
@@ -317,6 +348,11 @@ private:
             }
         }
         managedIfaces_.swap(newManaged);
+        LOG_INFO(LogModule::INTERFACE,
+                 "recomputeManaged: up=" << upInterfaces_.size()
+                 << " v4_default=" << defaultRouteIfacesV4_.size()
+                 << " v6_default=" << defaultRouteIfacesV6_.size()
+                 << " managed=" << managedIfaces_.size());
     }
 
     std::vector<std::string> namesOfManaged() const {
@@ -324,7 +360,12 @@ private:
         names.reserve(managedIfaces_.size());
         for (int idx : managedIfaces_) {
             auto it = ifindexToName_.find(idx);
-            if (it != ifindexToName_.end()) names.push_back(it->second);
+            if (it != ifindexToName_.end()) {
+                names.push_back(it->second);
+            } else {
+                LOG_WARNING(LogModule::INTERFACE,
+                            "managed ifindex=" << idx << " has no name mapping, skipping");
+            }
         }
         std::sort(names.begin(), names.end());
         return names;
@@ -344,7 +385,15 @@ std::shared_ptr<NetInterfaceManager> NetInterfaceManager::getInstance() {
 
 std::vector<std::string> NetInterfaceManager::getInternetInterfaces() {
     SnapshotCollector collector;
-    return collector.collect();
+    try {
+        return collector.collect();
+    } catch (const std::exception& e) {
+        LOG_ERROR(LogModule::INTERFACE, "getInternetInterfaces unexpected failure: " << e.what());
+        return {};
+    } catch (...) {
+        LOG_ERROR(LogModule::INTERFACE, "getInternetInterfaces unknown failure");
+        return {};
+    }
 }
 
 #else
