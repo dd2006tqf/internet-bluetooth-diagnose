@@ -19,6 +19,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#include <set>
 
 using namespace std::chrono_literals;
 
@@ -30,6 +31,7 @@ namespace weaknet_dbus {
 static constexpr const char* BLUEZ_SERVICE   = "org.bluez";
 static constexpr const char* BLUEZ_ADAPTER_IFACE = "org.bluez.Adapter1";
 static constexpr const char* BLUEZ_DEVICE_IFACE  = "org.bluez.Device1";
+static constexpr const char* BLUEZ_MEDIA_TRANSPORT_IFACE = "org.bluez.MediaTransport1";
 static constexpr const char* DBUS_PROPS_IFACE = "org.freedesktop.DBus.Properties";
 static constexpr const char* DBUS_OBJMGR_IFACE = "org.freedesktop.DBus.ObjectManager";
 
@@ -87,6 +89,21 @@ static bool extractStringFromIter(DBusMessageIter* iter, std::string* out) {
 }
 
 // 从迭代器递归提取 variant 容器内的 uint16 值
+// 从迭代器递归提取 variant 容器内的 int32 值
+static bool extractInt32FromIter(DBusMessageIter* iter, int32_t* out) {
+    int type = dbus_message_iter_get_arg_type(iter);
+    if (type == DBUS_TYPE_INT32) {
+        dbus_message_iter_get_basic(iter, out);
+        return true;
+    }
+    if (type == DBUS_TYPE_VARIANT) {
+        DBusMessageIter sub;
+        dbus_message_iter_recurse(iter, &sub);
+        return extractInt32FromIter(&sub, out);
+    }
+    return false;
+}
+
 static bool extractUint16FromIter(DBusMessageIter* iter, uint16_t* out) {
     int type = dbus_message_iter_get_arg_type(iter);
     if (type == DBUS_TYPE_UINT16) {
@@ -779,6 +796,37 @@ void BtMonitor::refreshDeviceStates() {
             }
         }
     }
+
+    // ---- Phase 1b: 更新设备距离估算 ----
+    {
+        std::lock_guard<std::mutex> lock(deviceMutex_);
+        auto now = std::chrono::system_clock::now();
+        for (auto& pair : devices_) {
+            auto& info = pair.second;
+            if (info.rssiDbm != 0 && info.rssiDbm > -1000) {
+                double prevDist = info.estimatedDistance;
+                info.estimatedDistance = estimateDistance(info.rssiDbm);
+                if (prevDist >= 0.0 && std::abs(info.estimatedDistance - prevDist) > 1.0) {
+                    BtEvent ev;
+                    ev.type = BtEvent::Type::DeviceRssiChanged;
+                    ev.adapterMac = adapterState_.macAddress;
+                    ev.deviceMac = info.macAddress;
+                    ev.deviceName = info.name.empty() ? info.alias : info.name;
+                    std::ostringstream oss;
+                    oss << info.name << " distance ~" << static_cast<int>(info.estimatedDistance) << "m";
+                    ev.message = oss.str();
+                    ev.timestamp = now;
+                    {
+                        std::lock_guard<std::mutex> evLock(eventMutex_);
+                        pendingEvents_.push_back(ev);
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Phase 1b: 刷新 A2DP 音频传输状态 ----
+    refreshAudioTransports();
 }
 
 // ============================================================================
@@ -1121,6 +1169,349 @@ void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** outMonitor) {
         if (outMonitor) *outMonitor = nullptr;
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread stopped");
     }).detach();
+}
+
+
+// ============================================================================
+// A2DP 音频质量监控（Phase 1b）
+// ============================================================================
+
+bool BtMonitor::hasMediaTransportInterface() {
+    if (mediaTransportProbed_) {
+        return hasMediaTransport_;
+    }
+    if (!sysConn_) {
+        mediaTransportProbed_ = true;
+        hasMediaTransport_ = false;
+        return false;
+    }
+
+    DBusMessage* msg = dbus_message_new_method_call(
+        BLUEZ_SERVICE, "/",
+        DBUS_OBJMGR_IFACE, "GetManagedObjects");
+    DBusMessage* reply = sendWithReply(sysConn_, msg, 3000);
+    dbus_message_unref(msg);
+
+    if (!reply) {
+        mediaTransportProbed_ = true;
+        hasMediaTransport_ = false;
+        LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: MediaTransport1 not available (no reply)");
+        return false;
+    }
+
+    bool found = false;
+    DBusMessageIter root;
+    if (dbus_message_iter_init(reply, &root)) {
+        if (dbus_message_iter_get_arg_type(&root) == DBUS_TYPE_ARRAY) {
+            DBusMessageIter objArray;
+            dbus_message_iter_recurse(&root, &objArray);
+            while (dbus_message_iter_get_arg_type(&objArray) != DBUS_TYPE_INVALID && !found) {
+                DBusMessageIter objEntry;
+                dbus_message_iter_recurse(&objArray, &objEntry);
+                dbus_message_iter_next(&objEntry);
+
+                if (dbus_message_iter_get_arg_type(&objEntry) == DBUS_TYPE_ARRAY) {
+                    DBusMessageIter ifaceArray;
+                    dbus_message_iter_recurse(&objEntry, &ifaceArray);
+                    while (dbus_message_iter_get_arg_type(&ifaceArray) != DBUS_TYPE_INVALID) {
+                        DBusMessageIter ifaceEntry;
+                        dbus_message_iter_recurse(&ifaceArray, &ifaceEntry);
+                        const char* ifaceName = nullptr;
+                        dbus_message_iter_get_basic(&ifaceEntry, &ifaceName);
+                        if (ifaceName && std::string(ifaceName) == BLUEZ_MEDIA_TRANSPORT_IFACE) {
+                            found = true;
+                            break;
+                        }
+                        dbus_message_iter_next(&ifaceArray);
+                    }
+                }
+                dbus_message_iter_next(&objArray);
+            }
+        }
+    }
+    dbus_message_unref(reply);
+
+    mediaTransportProbed_ = true;
+    hasMediaTransport_ = found;
+    LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: MediaTransport1 "
+             << (found ? "available" : "not available"));
+    return found;
+}
+
+std::vector<std::string> BtMonitor::listMediaTransportPaths() {
+    std::vector<std::string> paths;
+    if (!sysConn_) return paths;
+
+    DBusMessage* msg = dbus_message_new_method_call(
+        BLUEZ_SERVICE, "/",
+        DBUS_OBJMGR_IFACE, "GetManagedObjects");
+    DBusMessage* reply = sendWithReply(sysConn_, msg, 3000);
+    dbus_message_unref(msg);
+    if (!reply) return paths;
+
+    DBusMessageIter root;
+    if (!dbus_message_iter_init(reply, &root)) {
+        dbus_message_unref(reply);
+        return paths;
+    }
+
+    if (dbus_message_iter_get_arg_type(&root) == DBUS_TYPE_ARRAY) {
+        DBusMessageIter objArray;
+        dbus_message_iter_recurse(&root, &objArray);
+        while (dbus_message_iter_get_arg_type(&objArray) != DBUS_TYPE_INVALID) {
+            DBusMessageIter objEntry;
+            dbus_message_iter_recurse(&objArray, &objEntry);
+            const char* objPath = nullptr;
+            dbus_message_iter_get_basic(&objEntry, &objPath);
+            std::string pathStr = objPath ? objPath : "";
+            dbus_message_iter_next(&objEntry);
+
+            if (pathStr.find(adapterPath_ + "/") != 0) {
+                dbus_message_iter_next(&objArray);
+                continue;
+            }
+
+            if (dbus_message_iter_get_arg_type(&objEntry) == DBUS_TYPE_ARRAY) {
+                DBusMessageIter ifaceArray;
+                dbus_message_iter_recurse(&objEntry, &ifaceArray);
+                while (dbus_message_iter_get_arg_type(&ifaceArray) != DBUS_TYPE_INVALID) {
+                    DBusMessageIter ifaceEntry;
+                    dbus_message_iter_recurse(&ifaceArray, &ifaceEntry);
+                    const char* ifaceName = nullptr;
+                    dbus_message_iter_get_basic(&ifaceEntry, &ifaceName);
+                    if (ifaceName && std::string(ifaceName) == BLUEZ_MEDIA_TRANSPORT_IFACE) {
+                        paths.push_back(pathStr);
+                        break;
+                    }
+                    dbus_message_iter_next(&ifaceArray);
+                }
+            }
+            dbus_message_iter_next(&objArray);
+        }
+    }
+    dbus_message_unref(reply);
+    return paths;
+}
+
+BtAudioTransport BtMonitor::parseMediaTransportProperties(const std::string& path) {
+    BtAudioTransport transport;
+    transport.transportPath = path;
+    if (!sysConn_) return transport;
+
+    DBusMessage* msg = dbus_message_new_method_call(
+        BLUEZ_SERVICE, path.c_str(),
+        DBUS_PROPS_IFACE, "GetAll");
+    const char* transportIface = BLUEZ_MEDIA_TRANSPORT_IFACE;
+    dbus_message_append_args(msg, DBUS_TYPE_STRING, &transportIface, DBUS_TYPE_INVALID);
+
+    DBusMessage* reply = sendWithReply(sysConn_, msg, 3000);
+    dbus_message_unref(msg);
+    if (!reply) return transport;
+
+    DBusMessageIter root;
+    if (!dbus_message_iter_init(reply, &root)) {
+        dbus_message_unref(reply);
+        return transport;
+    }
+
+    if (dbus_message_iter_get_arg_type(&root) == DBUS_TYPE_ARRAY) {
+        DBusMessageIter propsArray;
+        dbus_message_iter_recurse(&root, &propsArray);
+        while (dbus_message_iter_get_arg_type(&propsArray) != DBUS_TYPE_INVALID) {
+            DBusMessageIter propEntry;
+            dbus_message_iter_recurse(&propsArray, &propEntry);
+            const char* propName = nullptr;
+            dbus_message_iter_get_basic(&propEntry, &propName);
+            std::string key = propName ? propName : "";
+            dbus_message_iter_next(&propEntry);
+
+            if (key == "State") {
+                extractStringFromIter(&propEntry, &transport.state);
+            } else if (key == "Delay") {
+                extractUint16FromIter(&propEntry, &transport.delay);
+            } else if (key == "Volume") {
+                extractUint16FromIter(&propEntry, &transport.volume);
+            } else if (key == "Codec") {
+                int32_t codecVal = 0;
+                extractInt32FromIter(&propEntry, &codecVal);
+                transport.codec = static_cast<uint8_t>(codecVal);
+            } else if (key == "Device") {
+                std::string devPath;
+                extractStringFromIter(&propEntry, &devPath);
+                auto pos = devPath.rfind("dev_");
+                if (pos != std::string::npos) {
+                    transport.deviceMac = devPath.substr(pos + 4);
+                    for (auto& c : transport.deviceMac) {
+                        if (c == '_') c = ':';
+                    }
+                }
+            }
+            dbus_message_iter_next(&propsArray);
+        }
+    }
+    dbus_message_unref(reply);
+    return transport;
+}
+
+void BtMonitor::refreshAudioTransports() {
+    if (!hasMediaTransportInterface()) {
+        return;
+    }
+
+    auto paths = listMediaTransportPaths();
+    std::lock_guard<std::mutex> lock(audioMutex_);
+
+    std::set<std::string> currentMacs;
+    auto now = std::chrono::system_clock::now();
+
+    for (const auto& path : paths) {
+        BtAudioTransport transport = parseMediaTransportProperties(path);
+        if (transport.deviceMac.empty()) continue;
+
+        currentMacs.insert(transport.deviceMac);
+
+        auto it = audioTransports_.find(transport.deviceMac);
+        if (it == audioTransports_.end()) {
+            if (transport.state == "active") {
+                transport.lastActive = now;
+                transport.activeDurationMs = 0;
+            }
+            audioTransports_[transport.deviceMac] = transport;
+            LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: A2DP transport found: "
+                     << transport.deviceMac << " state=" << transport.state
+                     << " delay=" << transport.delay << " codec=" << static_cast<int>(transport.codec));
+        } else {
+            auto& existing = it->second;
+            if (existing.state != "active" && transport.state == "active") {
+                transport.lastActive = now;
+                transport.activeDurationMs = 0;
+            } else if (transport.state == "active") {
+                transport.lastActive = existing.lastActive;
+                if (existing.lastActive.time_since_epoch().count() > 0) {
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - existing.lastActive).count();
+                    transport.activeDurationMs = existing.activeDurationMs + elapsed;
+                    transport.lastActive = now;
+                }
+            }
+            audioTransports_[transport.deviceMac] = transport;
+        }
+    }
+
+    for (auto it = audioTransports_.begin(); it != audioTransports_.end(); ) {
+        if (currentMacs.find(it->first) == currentMacs.end()) {
+            LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: A2DP transport removed: " << it->first);
+            it = audioTransports_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+bool BtMonitor::getAudioQuality(const std::string& mac, BtAudioQuality* out) const {
+    if (!out) return false;
+
+    std::lock_guard<std::mutex> lock(audioMutex_);
+    for (const auto& pair : audioTransports_) {
+        if (macEquals(pair.first, mac)) {
+            const auto& transport = pair.second;
+            out->deviceMac = transport.deviceMac;
+            out->isActive = (transport.state == "active");
+            out->currentDelay = transport.delay;
+            out->qualityScore = calculateAudioScore(transport);
+            out->level = scoreToLevel(out->qualityScore);
+
+            out->issues.clear();
+            if (transport.delay > 2000) {
+                out->issues.push_back("High audio latency (>200ms)");
+            } else if (transport.delay > 1000) {
+                out->issues.push_back("Moderate audio latency (>100ms)");
+            }
+            if (transport.codec == 0x00) {
+                out->issues.push_back("Using basic SBC codec");
+            }
+            if (transport.state == "idle" || transport.state == "pending") {
+                out->issues.push_back("Transport not active");
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+std::vector<BtAudioTransport> BtMonitor::getAudioTransports() const {
+    std::lock_guard<std::mutex> lock(audioMutex_);
+    std::vector<BtAudioTransport> result;
+    result.reserve(audioTransports_.size());
+    for (const auto& pair : audioTransports_) {
+        result.push_back(pair.second);
+    }
+    return result;
+}
+
+double BtMonitor::calculateAudioScore(const BtAudioTransport& transport) const {
+    double score = 100.0;
+    if (transport.delay > 2000) {
+        score -= 40.0;
+    } else if (transport.delay > 1000) {
+        score -= 20.0;
+    } else if (transport.delay > 500) {
+        score -= 10.0;
+    }
+    if (transport.codec == 0x00) {
+        score -= 5.0;
+    }
+    if (transport.state != "active") {
+        score -= 15.0;
+    }
+    return std::max(0.0, score);
+}
+
+std::string BtMonitor::scoreToLevel(double score) {
+    if (score >= 90.0) return "excellent";
+    if (score >= 70.0) return "good";
+    if (score >= 50.0) return "fair";
+    if (score >= 30.0) return "poor";
+    return "unknown";
+}
+
+// ============================================================================
+// 设备距离估算（Phase 1b）
+// ============================================================================
+
+double BtMonitor::estimateDistance(int16_t rssiDbm) const {
+    if (rssiDbm == 0 || rssiDbm <= -1000) {
+        return -1.0;
+    }
+    double ratio = std::pow(10.0,
+        static_cast<double>(defaultTxPower_ - rssiDbm) / (10.0 * PATH_LOSS_EXPONENT));
+    return ratio * REFERENCE_DISTANCE_M;
+}
+
+bool BtMonitor::calibrateDistance(const std::string& mac, double knownMeters) {
+    if (knownMeters <= 0.0) return false;
+    std::lock_guard<std::mutex> lock(deviceMutex_);
+    for (auto& pair : devices_) {
+        if (macEquals(pair.first, mac)) {
+            auto& info = pair.second;
+            if (info.rssiDbm == 0 || info.rssiDbm <= -1000) {
+                return false;
+            }
+            int16_t calibrated = static_cast<int16_t>(
+                info.rssiDbm + 10.0 * PATH_LOSS_EXPONENT * std::log10(knownMeters));
+            info.calibratedTxPower = calibrated;
+            defaultTxPower_ = calibrated;
+            LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: distance calibrated for "
+                     << mac << " at " << knownMeters << "m, txPower=" << calibrated << "dBm");
+            return true;
+        }
+    }
+    return false;
+}
+
+void BtMonitor::setDefaultTxPower(int16_t txPower) {
+    defaultTxPower_ = txPower;
+    LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: default TxPower set to " << txPower << "dBm");
 }
 
 }  // namespace weaknet_dbus

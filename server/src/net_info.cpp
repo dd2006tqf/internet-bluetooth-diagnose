@@ -214,6 +214,22 @@ bool NetInfo::isValid() const {
     // 抖动：-1（未测量）或非负值
     if (jitter_ms_ < -1.0) return false;
 
+    // 蓝牙距离：-1.0（未测量）或非负值
+    if (bt_distance_ < -1.0) return false;
+
+    // 蓝牙音频质量：可为空字符串，非空时须为合法枚举值
+    if (!bt_audio_quality_.empty()) {
+        static const std::string validLevels[] = {"excellent", "good", "fair", "poor", "unknown"};
+        bool found = false;
+        for (const auto& l : validLevels) {
+            if (bt_audio_quality_ == l) { found = true; break; }
+        }
+        if (!found) return false;
+    }
+
+    // 频段冲突置信度：须在 [0, 100] 区间内
+    if (band_conflict_confidence_ < 0.0 || band_conflict_confidence_ > 100.0) return false;
+
     return true;
 }
 
@@ -231,7 +247,11 @@ bool NetInfo::needsUpdate(const NetInfo& other) const {
         || traffic_total_pps_ != other.traffic_total_pps_
         || traffic_active_flows_ != other.traffic_active_flows_
         || jitter_ms_ != other.jitter_ms_
-        || quality_ != other.quality_;
+        || quality_ != other.quality_
+        || bt_distance_ != other.bt_distance_
+        || bt_audio_quality_ != other.bt_audio_quality_
+        || band_conflict_ != other.band_conflict_
+        || band_conflict_confidence_ != other.band_conflict_confidence_;
 }
 
 // ===========================================================================
@@ -256,7 +276,11 @@ std::string NetInfo::toJson() const {
     json << "\"traffic_pps\":" << traffic_total_pps_ << ",";
     json << "\"active_flows\":" << traffic_active_flows_ << ",";
     json << "\"jitter_ms\":" << std::fixed << std::setprecision(1) << jitter_ms_ << ",";
-    json << "\"jitter_level\":\"" << escapeJsonString(jitter_level_) << "\"";
+    json << "\"jitter_level\":\"" << escapeJsonString(jitter_level_) << "\",";
+    json << "\"bt_distance\":" << std::fixed << std::setprecision(1) << bt_distance_ << ",";
+    json << "\"bt_audio_quality\":\"" << escapeJsonString(bt_audio_quality_) << "\",";
+    json << "\"band_conflict\":" << (band_conflict_ ? "true" : "false") << ",";
+    json << "\"band_conflict_confidence\":" << std::fixed << std::setprecision(1) << band_conflict_confidence_;
     json << "}";
     return json.str();
 }
@@ -344,6 +368,14 @@ bool NetInfo::fromJson(const std::string& json) {
             tmp.jitter_ms_ = safeStod(value, -1.0);
         } else if (key == "jitter_level") {
             tmp.jitter_level_ = value;
+        } else if (key == "bt_distance") {
+            tmp.bt_distance_ = safeStod(value, -1.0);
+        } else if (key == "bt_audio_quality") {
+            tmp.bt_audio_quality_ = value;
+        } else if (key == "band_conflict") {
+            tmp.band_conflict_ = (value == "true");
+        } else if (key == "band_conflict_confidence") {
+            tmp.band_conflict_confidence_ = safeStod(value, 0.0);
         }
         // 未知字段：忽略，保证向前兼容
     }
@@ -376,6 +408,11 @@ std::vector<uint8_t> NetInfo::toBinary() const {
     appendBytes(traffic_total_bps_, buf);
     appendBytes(traffic_total_pps_, buf);
     appendBytes(traffic_active_flows_, buf);
+    // 蓝牙相关扩展字段
+    appendBytes(bt_distance_, buf);
+    serializeString(bt_audio_quality_, buf);
+    serializeInt32(band_conflict_ ? 1 : 0, buf);
+    appendBytes(band_conflict_confidence_, buf);
     return buf;
 }
 
@@ -431,6 +468,14 @@ bool NetInfo::fromBinary(const std::vector<uint8_t>& buffer) {
     if (!readBytes(buffer, offset, tmp.traffic_total_bps_)) return false;
     if (!readBytes(buffer, offset, tmp.traffic_total_pps_)) return false;
     if (!readBytes(buffer, offset, tmp.traffic_active_flows_)) return false;
+
+    // 蓝牙相关扩展字段
+    if (!readBytes(buffer, offset, tmp.bt_distance_)) return false;
+    if (!deserializeString(buffer, offset, tmp.bt_audio_quality_)) return false;
+    int32_t band_conflict_val = 0;
+    if (!deserializeInt32(buffer, offset, band_conflict_val)) return false;
+    tmp.band_conflict_ = (band_conflict_val != 0);
+    if (!readBytes(buffer, offset, tmp.band_conflict_confidence_)) return false;
 
     *this = std::move(tmp);
     return true;

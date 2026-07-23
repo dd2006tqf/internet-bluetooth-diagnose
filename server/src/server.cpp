@@ -30,6 +30,7 @@
 #include "logger.hpp"
 #include "network_quality_assessor.hpp"
 #include "bt_monitor.hpp"
+#include "band_conflict_detector.hpp"
 #include <iomanip>
 
 using namespace std::chrono_literals;
@@ -346,6 +347,76 @@ static void start_network_quality_thread(ServerContext* ctx) {
                 
             } catch (const std::exception& e) {
                 LOG_ERROR(LogModule::WEAK_MGR, "网络质量监控错误: " << e.what());
+            }
+
+            // ================================================================
+            // 2.4GHz 频段冲突检测（Phase 1a）
+            // 关联 Wi-Fi RSSI 与蓝牙 RSSI，识别共享频段干扰
+            // ================================================================
+            try {
+                // 使用 thread_local 确保检测器状态在循环间保持
+                static thread_local BandConflictDetector conflictDetector;
+
+                // 获取当前上网接口的 Wi-Fi RSSI
+                int wifiRssi = -1000;
+                {
+                    auto interfaces = ctx->weak_mgr->getCurrentInterfaces();
+                    for (const auto& iface : interfaces) {
+                        if (iface.usingNow() && iface.hasRssi()) {
+                            wifiRssi = iface.rssiDbm();
+                            break;
+                        }
+                    }
+                    // 若无 usingNow 接口，退而取第一个有 RSSI 的 Wi-Fi 接口
+                    if (wifiRssi <= -1000) {
+                        for (const auto& iface : interfaces) {
+                            if (iface.hasRssi()) {
+                                wifiRssi = iface.rssiDbm();
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // 获取蓝牙 RSSI（取所有已连接设备的平均 RSSI）
+                int btRssi = -1000;
+                if (ctx->bt_monitor && ctx->bt_monitor->isInitialized()) {
+                    auto rssiSnapshot = ctx->bt_monitor->getRssiSnapshot();
+                    int sum = 0, count = 0;
+                    for (const auto& [mac, rssi] : rssiSnapshot) {
+                        if (rssi != 0 && rssi > -1000) {
+                            sum += rssi;
+                            ++count;
+                        }
+                    }
+                    if (count > 0) {
+                        btRssi = sum / count;
+                    }
+                }
+
+                // 推入样本并检测
+                if (wifiRssi > -1000 && btRssi > -1000) {
+                    conflictDetector.feedSample(wifiRssi, btRssi);
+                }
+
+                auto conflictResult = conflictDetector.detect();
+                if (conflictResult.detected && conflictResult.confidence > 50.0) {
+                    LOG_INFO(LogModule::WEAK_MGR,
+                             "2.4GHz band conflict detected: confidence="
+                             << conflictResult.confidence
+                             << "%, correlation=" << conflictResult.correlation
+                             << ", wifiDrop=" << conflictResult.wifiRssiDrop
+                             << "dBm, btDrop=" << conflictResult.btRssiDrop << "dBm");
+
+                    getEventManager().emitNetworkQualityChanged(
+                        "2.4GHz band conflict detected",
+                        conflictResult.suggestion,
+                        "band_conflict_detector"
+                    );
+                }
+            } catch (const std::exception& e) {
+                LOG_ERROR(LogModule::WEAK_MGR,
+                          "频段冲突检测错误: " << e.what());
             }
             
             std::this_thread::sleep_for(15000ms);  // 15秒检查一次

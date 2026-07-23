@@ -50,6 +50,8 @@ struct BtDeviceInfo {
     std::vector<std::string> uuids;  // 服务 UUID 列表
     std::string manufacturerData;    // 厂商数据 (hex)
     std::string icon;                // 设备图标名称
+    double estimatedDistance = -1.0; // 估算距离（米），-1.0 表示未知/未估算
+    int16_t calibratedTxPower = -59; // 校准后的 1 米参考 RSSI (dBm)，默认 -59
     std::chrono::system_clock::time_point lastSeen;
     std::chrono::system_clock::time_point lastUpdated;
 
@@ -75,6 +77,33 @@ struct BtDeviceInfo {
         if (r >= -80) return "poor";         // 7-12米
         return "very_poor";                   // >12米/接近断连
     }
+};
+
+// ============================================================================
+// 蓝牙音频传输状态（A2DP MediaTransport1）
+// ============================================================================
+struct BtAudioTransport {
+    std::string transportPath;      // MediaTransport1 对象路径
+    std::string deviceMac;          // 关联设备 MAC 地址
+    std::string state;              // Transport 状态: active/inactive/idle/pending
+    uint16_t delay = 0;             // 音频延迟，单位 1/10ms（BlueZ 上报值）
+    uint16_t volume = 0;            // 音量 0-127
+    uint8_t codec = 0;              // 编解码器 ID (0x00=SBC, 0x01=MPEG12, 0x02=MPEG24, 0x04=ATRAC...)
+    std::chrono::system_clock::time_point lastActive;      // 最后一次变为 active 的时间
+    uint64_t activeDurationMs = 0;  // 累计活跃时长（毫秒）
+};
+
+// ============================================================================
+// 蓝牙音频质量评估结果
+// ============================================================================
+struct BtAudioQuality {
+    std::string deviceMac;
+    bool isActive = false;
+    double qualityScore = 0.0;      // 0-100 分
+    std::string level;              // excellent/good/fair/poor/unknown
+    uint16_t currentDelay = 0;      // 当前延迟（1/10ms）
+    double activeRatio = 0.0;       // 活跃占比
+    std::vector<std::string> issues;// 诊断问题列表
 };
 
 // ============================================================================
@@ -185,6 +214,40 @@ public:
     size_t deviceCount() const;
     size_t connectedCount() const;
 
+    // ----- A2DP 音频质量监控（Phase 1b）-----
+
+    // 刷新 MediaTransport1 音频传输状态
+    void refreshAudioTransports();
+
+    // 查询指定设备的音频质量
+    // @param mac 设备 MAC 地址
+    // @param out 输出参数，接收质量评估结果
+    // @return true 若找到该设备的 Transport 信息
+    bool getAudioQuality(const std::string& mac, BtAudioQuality* out) const;
+
+    // 检查 BlueZ 是否支持 MediaTransport1 接口（探测降级用）
+    bool hasMediaTransportInterface();
+
+    // 获取所有音频传输状态
+    std::vector<BtAudioTransport> getAudioTransports() const;
+
+    // ----- 设备距离估算（Phase 1b）-----
+
+    // 基于 RSSI 路径损耗模型估算设备距离
+    // @param rssiDbm 当前 RSSI 值 (dBm)
+    // @return 估算距离（米），无效输入返回 -1.0
+    double estimateDistance(int16_t rssiDbm) const;
+
+    // 校准设备距离（将当前 RSSI 作为参考距离的 RSSI 值）
+    // @param mac 设备 MAC 地址
+    // @param knownMeters 已知距离（米），通常为 1.0
+    // @return true 若设备存在且校准成功
+    bool calibrateDistance(const std::string& mac, double knownMeters);
+
+    // 设置默认发射功率（1 米参考 RSSI）
+    // @param txPower 1 米处的 RSSI 值 (dBm)，默认 -59
+    void setDefaultTxPower(int16_t txPower);
+
     // ----- 周期刷新 (由工作线程调用) -----
 
     // 执行一轮设备状态刷新
@@ -227,6 +290,20 @@ private:
     // 发送 D-Bus 消息并获取回复
     DBusMessage* sendWithReply(DBusConnection* conn, DBusMessage* msg, int timeoutMs = 3000);
 
+    // ---- A2DP 音频监控辅助方法 ----
+
+    // 列出所有 MediaTransport1 对象路径
+    std::vector<std::string> listMediaTransportPaths();
+
+    // 解析单个 MediaTransport1 的属性
+    BtAudioTransport parseMediaTransportProperties(const std::string& path);
+
+    // 计算音频质量评分（纯函数，基于 Transport 状态）
+    double calculateAudioScore(const BtAudioTransport& transport) const;
+
+    // 生成质量等级字符串
+    static std::string scoreToLevel(double score);
+
 private:
     // 系统总线连接 (BlueZ 在系统总线上)
     DBusConnection* sysConn_ = nullptr;
@@ -257,6 +334,18 @@ private:
 
     // 频率控制
     static constexpr int REFRESH_INTERVAL_SEC = 3;    // 设备刷新间隔
+
+    // ---- A2DP 音频监控状态 ----
+    mutable std::mutex audioMutex_;
+    std::map<std::string, BtAudioTransport> audioTransports_;  // MAC → Transport 状态
+    mutable bool mediaTransportProbed_ = false;                 // 是否已探测 MediaTransport1
+    mutable bool hasMediaTransport_ = false;                    // 探测结果缓存
+    static constexpr const char* MEDIA_IFACE = "org.bluez.MediaTransport1";
+
+    // ---- 距离估算参数 ----
+    int16_t defaultTxPower_ = -59;                              // 默认 1 米参考 RSSI (dBm)
+    static constexpr double PATH_LOSS_EXPONENT = 2.5;           // 室内路径损耗指数
+    static constexpr double REFERENCE_DISTANCE_M = 1.0;         // 参考距离（米）
 };
 
 // ============================================================================

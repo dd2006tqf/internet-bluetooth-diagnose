@@ -87,6 +87,22 @@ public:
     void setJitterLevel(const std::string& level) { jitter_level_ = level; }
     const std::string& jitterLevel() const { return jitter_level_; }
 
+    // 蓝牙设备距离（米），-1.0 表示未知/未测量
+    void setBtDistance(double d) { bt_distance_ = d; }
+    double btDistance() const { return bt_distance_; }
+
+    // 蓝牙音频质量等级（excellent/good/fair/poor/unknown）
+    void setBtAudioQuality(const std::string& q) { bt_audio_quality_ = q; }
+    const std::string& btAudioQuality() const { return bt_audio_quality_; }
+
+    // 2.4GHz 频段冲突检测标志
+    void setBandConflict(bool v) { band_conflict_ = v; }
+    bool bandConflict() const { return band_conflict_; }
+
+    // 2.4GHz 频段冲突置信度 (0-100%)
+    void setBandConflictConfidence(double c) { band_conflict_confidence_ = c; }
+    double bandConflictConfidence() const { return band_conflict_confidence_; }
+
     // 用于比较是否同一网卡（以 ifname 为键）
     bool sameKey(const NetInfo& other) const { return ifname_ == other.ifname_; }
 
@@ -94,6 +110,9 @@ public:
     bool equals(const NetInfo& other) const {
         return ifname_ == other.ifname_ && is_default_ == other.is_default_ && type_ == other.type_ && rtt_ms_ == other.rtt_ms_ && state_ == other.state_;
     }
+
+    // 检查是否具备蓝牙距离数据
+    bool hasBtDistance() const { return bt_distance_ >= 0.0; }
 
     // ==================== 数据验证接口 ====================
 
@@ -148,6 +167,12 @@ private:
     // 网络抖动(RTT标准差,毫秒)
     double jitter_ms_ = -1.0;
     std::string jitter_level_; // 抖动等级 (good/degraded/poor/unknown)
+
+    // 蓝牙相关扩展字段
+    double bt_distance_ = -1.0;            // 蓝牙设备距离（米），-1 表示未知
+    std::string bt_audio_quality_;          // 蓝牙音频质量等级 excellent/good/fair/poor
+    bool band_conflict_ = false;            // 是否检测到频段冲突
+    double band_conflict_confidence_ = 0.0; // 频段冲突置信度 0-100%
 };
 
 }  // namespace weaknet_dbus
