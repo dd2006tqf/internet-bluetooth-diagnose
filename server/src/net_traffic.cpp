@@ -97,60 +97,49 @@ bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName) {
 }
 
 std::vector<FlowRate> NetTrafficAnalyzer::sampleTopFlows(int intervalSec, int topN) {
-    std::vector<FlowRate> out;
-    if (!attached_) return out;
-#if !HAVE_LIBBPF
-    return out;
-#else
-    // t0 快照
-    struct conn_key { __u32 saddr, daddr; __u16 sport, dport; __u8 protocol; } key{}, next_key{};
-    struct flow_data { __u64 bytes; __u64 packets; __u32 pid; } val{};
-    auto keyStr = [](const conn_key& k){
-        std::ostringstream oss; oss<<k.saddr<<":"<<k.sport<<"-"<<k.daddr<<":"<<k.dport<<"/"<<(int)k.protocol; return oss.str();
-    };
-    std::unordered_map<std::string, flow_data> snap;
-    int ret = bpf_map_get_next_key(mapCurrFd_, nullptr, &next_key);
-    while (ret == 0) {
-        if (bpf_map_lookup_elem(mapCurrFd_, &next_key, &val) == 0) {
-            snap.emplace(keyStr(next_key), val);
-        }
-        key = next_key;
-        ret = bpf_map_get_next_key(mapCurrFd_, &key, &next_key);
-    }
+	    std::vector<FlowRate> out;
+	    if (!attached_) return out;
+	#if !HAVE_LIBBPF
+	    return out;
+	#else
+	    struct conn_key { __u32 saddr, daddr; __u16 sport, dport; __u8 protocol; } key{}, next_key{};
+	    struct flow_data { __u64 bytes; __u64 packets; __u32 pid; } val{};
 
-    std::this_thread::sleep_for(std::chrono::seconds(intervalSec));
+	    // 清空 map，确保采样窗口内只包含新产生的流量
+	    int ret = bpf_map_get_next_key(mapCurrFd_, nullptr, &next_key);
+	    while (ret == 0) {
+	        bpf_map_delete_elem(mapCurrFd_, &next_key);
+	        key = next_key;
+	        ret = bpf_map_get_next_key(mapCurrFd_, &key, &next_key);
+	    }
 
-    // t1 读取并计算 delta
-    ret = bpf_map_get_next_key(mapCurrFd_, nullptr, &next_key);
-    while (ret == 0) {
-        if (bpf_map_lookup_elem(mapCurrFd_, &next_key, &val) == 0) {
-            auto it = snap.find(keyStr(next_key));
-            __u64 prev_bytes = 0, prev_pkts = 0; __u32 prev_pid = 0;
-            if (it != snap.end()) { prev_bytes = it->second.bytes; prev_pkts = it->second.packets; prev_pid = it->second.pid; }
-            __u64 dbytes = val.bytes - prev_bytes;
-            __u64 dpkts  = val.packets - prev_pkts;
-            if (dbytes || dpkts) {
-                FlowRate fr;
-                fr.src = ip_str(next_key.saddr);
-                fr.dst = ip_str(next_key.daddr);
-                fr.sport = ntohs(next_key.sport);
-                fr.dport = ntohs(next_key.dport);
-                fr.proto = (next_key.protocol == 6) ? "TCP" : (next_key.protocol == 17 ? "UDP" : std::to_string(next_key.protocol));
-                fr.bps = dbytes / (uint64_t)intervalSec;
-                fr.pps = dpkts  / (uint64_t)intervalSec;
-                fr.pid = val.pid ? val.pid : prev_pid;
-                out.push_back(fr);
-            }
-        }
-        key = next_key;
-        ret = bpf_map_get_next_key(mapCurrFd_, &key, &next_key);
-    }
+	    // 等待采样窗口
+	    std::this_thread::sleep_for(std::chrono::seconds(intervalSec));
 
-    std::sort(out.begin(), out.end(), [](const FlowRate& a, const FlowRate& b){ return a.bps > b.bps; });
-    if ((int)out.size() > topN) out.resize(topN);
-    return out;
-#endif
-}
+	    // 读取窗口内的所有流量（无需做差值，因为 map 已清空）
+	    ret = bpf_map_get_next_key(mapCurrFd_, nullptr, &next_key);
+	    while (ret == 0) {
+	        if (bpf_map_lookup_elem(mapCurrFd_, &next_key, &val) == 0) {
+	            FlowRate fr;
+	            fr.src = ip_str(next_key.saddr);
+	            fr.dst = ip_str(next_key.daddr);
+	            fr.sport = ntohs(next_key.sport);
+	            fr.dport = ntohs(next_key.dport);
+	            fr.proto = (next_key.protocol == 6) ? "TCP" : (next_key.protocol == 17 ? "UDP" : std::to_string(next_key.protocol));
+	            fr.bps = val.bytes / (uint64_t)intervalSec;
+	            fr.pps = val.packets / (uint64_t)intervalSec;
+	            fr.pid = val.pid;
+	            out.push_back(fr);
+	        }
+	        key = next_key;
+	        ret = bpf_map_get_next_key(mapCurrFd_, &key, &next_key);
+	    }
+
+	    std::sort(out.begin(), out.end(), [](const FlowRate& a, const FlowRate& b){ return a.bps > b.bps; });
+	    if ((int)out.size() > topN) out.resize(topN);
+	    return out;
+	#endif
+	}
 
 // 新增功能实现
 

@@ -218,6 +218,60 @@ else
     check_result "test_net_info" 2 "binary not found"
 fi
 
+# ============== eBPF 功能测试 ==============
+log_test ""
+log_test "============================================================"
+log_test "  eBPF 功能测试"
+log_test "============================================================"
+
+# 编译 eBPF 测试程序
+log_test "[ebpf] 编译 eBPF 测试程序..."
+if g++ -std=c++17 -O2 -Wall -Iinclude -o test/test_ebpf \
+    test/test_ebpf.cpp src/net_traffic.cpp src/traffic_analyzer.cpp \
+    src/traffic_anomaly_detector.cpp src/serializer.cpp src/net_info.cpp \
+    src/logger.cpp $(pkg-config --cflags --libs libbpf) -lglog -lbpf \
+    > /tmp/weaknet_build_ebpf.log 2>&1; then
+    check_result "eBPF测试编译" 0
+else
+    check_result "eBPF测试编译" 1 "$(tail -5 /tmp/weaknet_build_ebpf.log)"
+fi
+
+# 运行 eBPF 测试（需要 root 权限）
+if [ -x "test/test_ebpf" ]; then
+    log_test "[ebpf] 运行 eBPF 功能测试..."
+    EBPF_LOG="/tmp/weaknet_ebpf_result.log"
+    
+    # 使用 sudo 运行（eBPF 需要特权）
+    if sudo -n true 2>/dev/null; then
+        # 后台生成流量，确保 eBPF 能采集到数据
+        (for i in $(seq 1 3); do curl -s -o /dev/null https://www.baidu.com 2>/dev/null; sleep 1; done) &
+        TRAF_PID=$!
+        sleep 1
+        
+        set +e
+        sudo ./test/test_ebpf > "$EBPF_LOG" 2>&1
+        EBPF_EXIT=$?
+        set -e
+        
+        wait $TRAF_PID 2>/dev/null || true
+        
+        grep -E '(✅|❌|📊|📡|🎉|流量|采集|统计|异常|历史)' "$EBPF_LOG" | tee -a "$REPORT_FILE"
+        
+        # 检查测试结果
+        EBPF_PASS=$(grep -c "✅" "$EBPF_LOG" 2>/dev/null || echo 0)
+        EBPF_FAIL=$(grep -c "❌" "$EBPF_LOG" 2>/dev/null || echo 0)
+        if [ "$EBPF_FAIL" = "0" ] && [ "$EBPF_EXIT" = "0" ]; then
+            check_result "eBPF测试 (通过=$EBPF_PASS)" 0
+        else
+            check_result "eBPF测试 (通过=$EBPF_PASS, 失败=$EBPF_FAIL)" 1
+        fi
+    else
+        check_result "eBPF测试" 2 "sudo 无密码权限不可用，跳过"
+    fi
+else
+    check_result "eBPF测试" 2 "binary not found"
+fi
+
 # ============== 功能测试 (客户端) ==============
 log_test ""
 log_test "============================================================"
