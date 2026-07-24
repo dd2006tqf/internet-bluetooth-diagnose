@@ -132,14 +132,15 @@ if [ "$SKIP_BUILD" = false ]; then
         exit 1
     fi
 
-    # 编译单元测试
-    log_test "[build] 编译单元测试..."
-    if g++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Iinclude -o test/test_net_info \
-        test/test_net_info.cpp src/net_info.cpp src/serializer.cpp \
-        > /tmp/weaknet_build_unit.log 2>&1; then
-        check_result "单元测试编译" 0
+    # 编译单元测试（使用 Makefile test-build 目标，仅编译不运行）
+    log_test "[build] 编译单元测试套件..."
+    if make test-clean > /dev/null 2>&1; then true; fi
+    if make test-build > /tmp/weaknet_build_unit.log 2>&1; then
+        check_result "单元测试编译 (make test-build)" 0
     else
-        check_result "单元测试编译" 1 "$(tail -5 /tmp/weaknet_build_unit.log)"
+        check_result "单元测试编译 (make test-build)" 1 "$(tail -5 /tmp/weaknet_build_unit.log)"
+        log_test "[FATAL] 单元测试编译失败，终止测试"
+        exit 1
     fi
 fi
 
@@ -204,19 +205,26 @@ log_test "============================================================"
 log_test "  单元测试"
 log_test "============================================================"
 
-if [ -x "test/test_net_info" ]; then
-    log_test "[unit] 运行 test_net_info..."
-    UNIT_OUTPUT=$(./test/test_net_info 2>&1)
-    UNIT_EXIT=$?
-    echo "$UNIT_OUTPUT" | tee -a "$REPORT_FILE"
-    if [ "$UNIT_EXIT" = "0" ]; then
-        check_result "test_net_info" 0
+# 单元测试列表（与 Makefile ALL_TESTS 保持一致）
+UNIT_TEST_BINS="test_net_info test_quality_assessor test_anomaly_detector \
+                test_audio_fusion test_band_conflict test_serializer \
+                test_event_manager test_bt_monitor"
+
+for unit_test in $UNIT_TEST_BINS; do
+    if [ -x "test/bin/$unit_test" ]; then
+        log_test "[unit] 运行 $unit_test..."
+        UNIT_OUTPUT=$(./test/bin/$unit_test 2>&1)
+        UNIT_EXIT=$?
+        echo "$UNIT_OUTPUT" | tail -5 | tee -a "$REPORT_FILE"
+        if [ "$UNIT_EXIT" = "0" ]; then
+            check_result "$unit_test" 0
+        else
+            check_result "$unit_test" 1 "exit=$UNIT_EXIT"
+        fi
     else
-        check_result "test_net_info" 1 "exit=$UNIT_EXIT"
+        check_result "$unit_test" 2 "binary not found"
     fi
-else
-    check_result "test_net_info" 2 "binary not found"
-fi
+done
 
 # ============== eBPF 功能测试 ==============
 log_test ""
