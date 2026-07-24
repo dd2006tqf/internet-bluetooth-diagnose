@@ -1073,6 +1073,24 @@ void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** outMonitor) {
                      "thread will run in passive mode (periodic retry)");
         } else {
             LOG_INFO(LogModule::BLUETOOTH, "BT monitor: initialized successfully");
+
+            // ================================================================
+            // Phase 2: 初始化 eBPF 融合层
+            // 在蓝牙适配器就绪后，尝试加载 eBPF 程序挂载到内核 L2CAP 钩子
+            // 若挂载失败则自动降级为纯 D-Bus 模式，不影响蓝牙监控基础功能
+            // ================================================================
+            try {
+                bool ebpfOk = monitor->initPhase2("build/a2dp_media.bpf.o");
+                if (ebpfOk) {
+                    LOG_INFO(LogModule::BLUETOOTH, "BT monitor: Phase 2 eBPF fusion enabled ("
+                             << (monitor->isPhase2Available() ? "active" : "fallback") << ")");
+                } else {
+                    LOG_INFO(LogModule::BLUETOOTH, "BT monitor: Phase 2 eBPF unavailable"
+                             " — falling back to D-Bus-only audio quality monitoring");
+                }
+            } catch (const std::exception& e) {
+                LOG_ERROR(LogModule::BLUETOOTH, "BT monitor: Phase 2 init failed: " << e.what());
+            }
         }
 
         int loopCount = 0;
@@ -1168,6 +1186,7 @@ void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** outMonitor) {
         }
 
         monitor->cleanup();
+        monitor->stopPhase2();  // Phase 2: 释放 eBPF 内核资源
         if (outMonitor) *outMonitor = nullptr;
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread stopped");
     }).detach();

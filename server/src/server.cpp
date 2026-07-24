@@ -31,6 +31,7 @@
 #include "network_quality_assessor.hpp"
 #include "bt_monitor.hpp"
 #include "band_conflict_detector.hpp"
+#include "bt_audio_fusion.hpp"
 #include <iomanip>
 
 using namespace std::chrono_literals;
@@ -417,6 +418,48 @@ static void start_network_quality_thread(ServerContext* ctx) {
             } catch (const std::exception& e) {
                 LOG_ERROR(LogModule::WEAK_MGR,
                           "频段冲突检测错误: " << e.what());
+            }
+
+            // ================================================================
+            // Phase 2: 蓝牙音频质量融合评估
+            // 融合 D-Bus MediaTransport1 状态 + eBPF L2CAP 流量统计
+            // 可检测 "active 但卡顿" 状态，eBPF 不可用时自动降级
+            // ================================================================
+            try {
+                if (ctx->bt_monitor && ctx->bt_monitor->isInitialized()) {
+                    auto connected = ctx->bt_monitor->getConnectedDevices();
+                    for (const auto& dev : connected) {
+                        BtAudioFusionResult fusionResult;
+                        if (ctx->bt_monitor->getAudioFusionResult(dev.macAddress, &fusionResult)) {
+                            // 仅在有异常时输出日志（减少正常情况下的日志量）
+                            if (fusionResult.suspectedStall) {
+                                LOG_WARNING(LogModule::BLUETOOTH,
+                                    "BT_AUDIO_STALL: " << dev.macAddress
+                                    << " (" << (dev.name.empty() ? "unknown" : dev.name) << ")"
+                                    << " | score=" << fusionResult.qualityScore
+                                    << " | level=" << fusionResult.level
+                                    << " | maxGap=" << fusionResult.maxGapMs << "ms"
+                                    << " | " << fusionResult.diagnostic);
+
+                                getEventManager().emitBluetoothDeviceChanged(
+                                    "Audio stall suspected: " + dev.macAddress
+                                    + " score=" + std::to_string(static_cast<int>(fusionResult.qualityScore))
+                                    + " " + fusionResult.diagnostic,
+                                    dev.name.empty() ? dev.macAddress : dev.name);
+                            } else if (fusionResult.qualityScore < 60.0) {
+                                // 低质量但不一定是卡顿
+                                LOG_INFO(LogModule::BLUETOOTH,
+                                    "BT_AUDIO_LOW: " << dev.macAddress
+                                    << " | score=" << fusionResult.qualityScore
+                                    << " | level=" << fusionResult.level
+                                    << " | " << fusionResult.diagnostic);
+                            }
+                        }
+                    }
+                }
+            } catch (const std::exception& e) {
+                LOG_ERROR(LogModule::WEAK_MGR,
+                          "Phase 2 audio fusion error: " << e.what());
             }
             
             std::this_thread::sleep_for(15000ms);  // 15秒检查一次
