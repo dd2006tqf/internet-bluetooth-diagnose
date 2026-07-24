@@ -19,6 +19,14 @@ struct DBusConnection;
 struct DBusMessage;
 struct DBusError;
 
+// 前置声明 Phase 2 eBPF 融合层类型
+namespace weaknet_dbus {
+class BtAudioAnalyzer;
+struct BtAudioFusionResult;
+class BtAudioFusion;
+struct BtTrafficStats;
+}
+
 namespace weaknet_dbus {
 
 // ============================================================================
@@ -248,6 +256,25 @@ public:
     // @param txPower 1 米处的 RSSI 值 (dBm)，默认 -59
     void setDefaultTxPower(int16_t txPower);
 
+    // ----- Phase 2: eBPF 融合层 -----
+
+    // 初始化 eBPF 融合层
+    // @param bpfObjectPath BPF 目标文件路径，如 "build/a2dp_media.bpf.o"
+    // @return true 若 eBPF 分析器成功挂载，false 若降级为纯 D-Bus 模式
+    bool initPhase2(const std::string& bpfObjectPath);
+
+    // 停止 eBPF 融合层（释放内核资源）
+    void stopPhase2();
+
+    // 获取融合评估结果（Phase 2）
+    // @param mac 设备 MAC 地址
+    // @param out 输出参数，接收融合结果
+    // @return true 若找到该设备的音频数据
+    bool getAudioFusionResult(const std::string& mac, BtAudioFusionResult* out) const;
+
+    // eBPF 融合层是否可用
+    bool isPhase2Available() const;
+
     // ----- 周期刷新 (由工作线程调用) -----
 
     // 执行一轮设备状态刷新
@@ -346,6 +373,12 @@ private:
     int16_t defaultTxPower_ = -59;                              // 默认 1 米参考 RSSI (dBm)
     static constexpr double PATH_LOSS_EXPONENT = 2.5;           // 室内路径损耗指数
     static constexpr double REFERENCE_DISTANCE_M = 1.0;         // 参考距离（米）
+
+    // ---- Phase 2: eBPF 融合层 ----
+    std::unique_ptr<BtAudioAnalyzer> btAudioAnalyzer_;          // eBPF 分析器
+    std::unique_ptr<BtAudioFusion> btAudioFusion_;              // 融合评估器
+    mutable std::map<std::string, BtTrafficStats> btPrevStats_; // 前次 eBPF 统计快照 (MAC→prev)
+    static constexpr const char* BPF_OBJECT_PATH = "build/a2dp_media.bpf.o";
 };
 
 // ============================================================================

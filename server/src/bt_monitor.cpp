@@ -6,6 +6,8 @@
 #include "server.hpp"
 #include "dbus_service.hpp"
 #include "event_manager.hpp"
+#include "bt_audio_analyzer.hpp"
+#include "bt_audio_fusion.hpp"
 #include "logger.hpp"
 #include "common.hpp"
 
@@ -1512,6 +1514,105 @@ bool BtMonitor::calibrateDistance(const std::string& mac, double knownMeters) {
 void BtMonitor::setDefaultTxPower(int16_t txPower) {
     defaultTxPower_ = txPower;
     LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: default TxPower set to " << txPower << "dBm");
+}
+
+// ============================================================================
+// Phase 2: eBPF 融合层
+// ============================================================================
+
+bool BtMonitor::initPhase2(const std::string& bpfObjectPath) {
+    // 创建融合评估器（始终可用，用于纯 D-Bus 降级模式）
+    if (!btAudioFusion_) {
+        btAudioFusion_ = std::make_unique<BtAudioFusion>();
+    }
+
+    // 创建 eBPF 分析器并尝试挂载
+    btAudioAnalyzer_ = std::make_unique<BtAudioAnalyzer>();
+    bool ebpfAttached = btAudioAnalyzer_->init(bpfObjectPath);
+
+    if (ebpfAttached) {
+        LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: Phase 2 eBPF initialized successfully — hook="
+                 << btAudioAnalyzer_->attachedHookName());
+    } else {
+        LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: Phase 2 eBPF unavailable — "
+                 << btAudioAnalyzer_->lastError() << " — using D-Bus only mode");
+    }
+
+    return ebpfAttached;
+}
+
+void BtMonitor::stopPhase2() {
+    if (btAudioAnalyzer_) {
+        btAudioAnalyzer_->stop();
+        btAudioAnalyzer_.reset();
+    }
+    if (btAudioFusion_) {
+        btAudioFusion_.reset();
+    }
+    btPrevStats_.clear();
+    LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: Phase 2 stopped");
+}
+
+bool BtMonitor::getAudioFusionResult(const std::string& mac, BtAudioFusionResult* out) const {
+    if (!out) return false;
+
+    // 获取 D-Bus 音频传输状态
+    BtAudioQuality dbQuality;
+    if (!getAudioQuality(mac, &dbQuality)) {
+        return false;
+    }
+
+    // 获取 eBPF 流量统计
+    BtTrafficStats stats;
+    bool ebpfAvailable = isPhase2Available();
+    bool hasStats = false;
+
+    if (ebpfAvailable) {
+        // 尝试从 eBPF 读取当前统计
+        hasStats = btAudioAnalyzer_->getStats(mac, 0 /*发送方向*/, &stats);
+    }
+
+    // 构造融合评估所需的 Transport 对象
+    BtAudioTransport transport;
+    {
+        std::lock_guard<std::mutex> lock(audioMutex_);
+        auto it = audioTransports_.find(mac);
+        if (it != audioTransports_.end()) {
+            transport = it->second;
+        } else {
+            // 从 BtAudioQuality 构造最小 Transport
+            transport.deviceMac = mac;
+            transport.state = dbQuality.isActive ? "active" : "inactive";
+            transport.delay = dbQuality.currentDelay;
+        }
+    }
+
+    // 获取前次统计快照用于增量计算
+    const BtTrafficStats* prevPtr = nullptr;
+    {
+        auto it = btPrevStats_.find(mac);
+        if (it != btPrevStats_.end()) {
+            prevPtr = &it->second;
+        }
+    }
+
+    // 执行融合评估
+    *out = btAudioFusion_->evaluate(
+        transport,
+        hasStats ? &stats : nullptr,
+        prevPtr,
+        ebpfAvailable && hasStats);
+
+    // 更新前次快照
+    if (hasStats) {
+        btPrevStats_[mac] = stats;
+    }
+
+    return true;
+}
+
+bool BtMonitor::isPhase2Available() const {
+    return btAudioAnalyzer_ && btAudioAnalyzer_->isAvailable();
 }
 
 }  // namespace weaknet_dbus
