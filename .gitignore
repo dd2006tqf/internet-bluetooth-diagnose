@@ -40,5 +40,13 @@ CMakeCache.txt
 vmlinux.h
 server/vmlinux.h
 
+# AI 助手个人配置
+.claude/
+
+# 测试二进制文件
+server/test/net_info
+server/test/test_ebpf
+server/test/test_net_info
+
 # 生成文件
 Makefile.autogen

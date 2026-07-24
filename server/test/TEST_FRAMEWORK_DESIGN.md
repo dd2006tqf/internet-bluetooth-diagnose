@@ -1,0 +1,1736 @@
+# WeakNet 网络诊断系统 — 测试体系设计文档
+
+> 版本：v1.0
+> 日期：2026-07-25
+> 适用项目：AI-powered-Network-Diagnostics
+
+---
+
+## 目录
+
+1. [需求背景](#1-需求背景)
+2. [设计目标](#2-设计目标)
+3. [项目模块可测性分析](#3-项目模块可测性分析)
+4. [测试分层架构](#4-测试分层架构)
+5. [测试体系总体设计](#5-测试体系总体设计)
+6. [测试目录结构](#6-测试目录结构)
+7. [测试框架选型](#7-测试框架选型)
+8. [各层测试详细设计](#8-各层测试详细设计)
+9. [实施计划与优先级](#9-实施计划与优先级)
+10. [预期产出与验收标准](#10-预期产出与验收标准)
+11. [各测试模块具体实施步骤与方法](#11-各测试模块具体实施步骤与方法)
+
+---
+
+## 1. 需求背景
+
+### 1.1 项目规模
+
+| 部分 | 文件数 | 代码行数 |
+|------|--------|---------|
+| 服务端 `server/src/` | 26 个 `.cpp` | 7413 行 |
+| 服务端 `server/include/` | 26 个头文件 | 2094 行 |
+| 客户端 `client/` | 6 个源文件 | 2166 行 |
+| **合计** | **58 个** | **11673 行** |
+
+### 1.2 现有测试现状
+
+当前项目已有的测试资产：
+
+| 测试文件 | 类型 | 覆盖范围 | 状态 |
+|---------|------|---------|------|
+| `server/test/test_net_info.cpp` | 单元测试 | `NetInfo` 序列化/反序列化/数据验证 | ✅ 完整 |
+| `server/test/test_ebpf.cpp` | eBPF 专项测试 | BPF 加载/kprobe 挂载/流量采集/异常检测 | ✅ 完整（9 项） |
+| `server/test/integration_test.sh` | 集成测试 | 服务端启动/D-Bus 注册/方法调用/信号/性能 | ✅ 完整（21 项） |
+| `server/test/run_all_tests.sh` | 自动化入口 | 编译→启动→单元→eBPF→功能→集成→报告 | ✅ 完整 |
+| `client/test_client.cpp` | 客户端功能测试 | 客户端 API 全接口验证 | ✅ 完整 |
+| `client/test_network_quality.cpp` | 客户端事件监听 | 网络质量事件回调 | ⚠️ 未集成到自动化脚本 |
+
+### 1.3 核心问题
+
+经全面审查，当前测试体系存在 **三大缺口**：
+
+**缺口一：单元测试覆盖严重不足**
+- 26 个服务端模块中，**仅 2 个**（`net_info`、`serializer`）有单元测试
+- 覆盖率仅 **8%**（2/26）
+- 核心算法模块全部裸奔：
+  - `network_quality_assessor.cpp`（249 行，加权评分算法）— 无测试
+  - `traffic_anomaly_detector.cpp`（333 行，异常检测算法）— 无测试
+  - `bt_audio_fusion.cpp`（254 行，融合评估算法）— 无测试
+  - `band_conflict_detector.cpp`（251 行，频段冲突检测）— 无测试
+  - `event_manager.cpp`（215 行，事件分发）— 无测试
+
+**缺口二：蓝牙监控模块无专项测试**
+- `bt_monitor.cpp` 是项目最大的模块（**1637 行**，占总代码 22%）
+- 功能丰富：设备发现、RSSI 追踪、距离估算、A2DP 音频质量、eBPF 融合
+- **完全没有专项测试**，只有客户端 API 间接调用
+
+**缺口三：系统解析层无 Mock 测试**
+- `net_iface.cpp`、`net_ping.cpp`、`net_wifiriss.cpp`、`net_tcp.cpp` 等模块依赖 `/proc/net/*` 系统文件
+- 这些模块的解析逻辑（字符串解析、字段提取）是纯逻辑，**完全可 Mock 测试**
+- 但目前全部依赖真实环境，无法隔离测试
+
+### 1.4 需求动机
+
+建立完整的测试代码体系，目标：
+- **单元测试覆盖率 ≥ 60%**（核心算法模块达 80%）
+- **每个公开类/函数至少有一条测试用例**
+- **测试可独立运行**，不强依赖硬件/D-Bus/eBPF（通过分层与 Mock）
+- **自动化一键执行**，生成标准化报告
+
+---
+
+## 2. 设计目标
+
+| 目标 | 衡量标准 |
+|------|---------|
+| **完备性** | 覆盖全部 26 个服务端模块 + 客户端 API |
+| **独立性** | 单元测试不依赖 D-Bus / eBPF / 蓝牙硬件 / 真实网络 |
+| **快速性** | 单元测试套件 < 10 秒完成 |
+| **分层性** | 严格遵循测试金字塔（单元 > 集成 > 端到端） |
+| **可维护** | 测试代码与生产代码分离，遵循项目编码规范 |
+| **可报告** | 输出文本 + JUnit XML + 覆盖率报告 |
+
+---
+
+## 3. 项目模块可测性分析
+
+按"对外部依赖的强度"将 26 个服务端模块分为五层，决定测试策略：
+
+### 第 0 层：纯逻辑模块（无外部依赖，可完全单元测试）
+
+| 模块 | 行数 | 核心职责 | 可测点 |
+|------|------|---------|--------|
+| `net_info.cpp` | 484 | 网络信息数据结构 + JSON/二进制序列化 | ✅ 已有测试 |
+| `serializer.cpp` | 117 | 序列化工具函数 | ✅ 间接已测 |
+| `logger.cpp` | 88 | 日志记录器 | 日志级别、文件写入 |
+| `network_quality_assessor.cpp` | 249 | 加权评分（RTT 30% + 丢包 30% + RSSI 20% + 流量 20%） | 评分算法、阈值分级、问题检测 |
+| `traffic_anomaly_detector.cpp` | 333 | 流量异常检测（突发/偷跑/时序） | Z-Score、百分位、离群点 |
+| `bt_audio_fusion.cpp` | 254 | D-Bus + eBPF 音频质量融合评估 | 评分融合、降级逻辑 |
+| `band_conflict_detector.cpp` | 251 | WiFi 频段冲突检测（2.4G/5G） | 冲突判定、信道计算 |
+| `event_manager.cpp` | 215 | 事件注册/分发/计数 | 回调注册、事件分发、计数器 |
+
+> **策略**：纯函数式单元测试，构造输入数据直接断言输出。这一层是测试体系的**重点**。
+
+### 第 1 层：依赖系统文件/命令（可 Mock 测试）
+
+| 模块 | 行数 | 外部依赖 | Mock 方案 |
+|------|------|---------|----------|
+| `net_iface.cpp` | 369 | `/proc/net/dev`、netlink socket | 注入文件路径 / 注入解析字符串 |
+| `net_ping.cpp` | 183 | `ping` 命令输出 | Mock 命令输出字符串 |
+| `net_wifiriss.cpp` | 214 | `/proc/net/wireless`、`iwconfig` | 注入文件内容 |
+| `net_tcp.cpp` | 245 | `/proc/net/snmp` | 注入文件内容 |
+| `using_iface.cpp` | 271 | `/proc/net/route`、默认路由检测 | 注入路由表 |
+| `weak_netmgr.cpp` | 322 | 聚合上述解析结果 | Mock 子模块 |
+
+> **策略**：通过"可注入的文件路径参数"或"解析函数提取为纯函数"实现 Mock，不依赖真实系统状态。
+
+### 第 2 层：监控线程（依赖线程模型，集成测试为主）
+
+| 模块 | 行数 | 职责 | 测试策略 |
+|------|------|------|---------|
+| `rtt_monitor.cpp` | 73 | RTT 监控线程入口 | 集成测试（启动后观察日志） |
+| `rssi_monitor.cpp` | 61 | RSSI 监控线程入口 | 集成测试 |
+| `tcp_loss_monitor.cpp` | 94 | TCP 丢包监控线程入口 | 集成测试 |
+| `jitter_monitor.cpp` | 140 | 抖动监控线程入口 | 集成测试 |
+
+> **策略**：监控线程本身是胶水代码（调用第 1 层解析 + 第 0 层算法），通过集成测试覆盖。
+
+### 第 3 层：D-Bus 服务（集成测试）
+
+| 模块 | 行数 | 依赖 | 状态 |
+|------|------|------|------|
+| `dbus_service.cpp` | 380 | D-Bus 会话总线 | ✅ 已有集成测试 |
+| `server.cpp` | 536 | D-Bus + 全部监控线程 | ✅ 已有集成测试 |
+| `looper.cpp` | 35 | D-Bus 事件循环 | 集成测试覆盖 |
+
+> **策略**：沿用现有 `integration_test.sh`，补充更多边界用例。
+
+### 第 4 层：eBPF / 蓝牙硬件（专项测试 + 降级测试）
+
+| 模块 | 行数 | 依赖 | 状态 |
+|------|------|------|------|
+| `net_traffic.cpp` | 287 | eBPF（libbpf）| ✅ 已有专项测试 |
+| `traffic_analyzer.cpp` | 165 | eBPF 单例 | ✅ 已有专项测试 |
+| `bt_monitor.cpp` | 1637 | BlueZ D-Bus + 蓝牙硬件 + eBPF | ❌ 无专项测试 |
+| `bt_audio_analyzer.cpp` | 402 | eBPF 蓝牙音频 | ❌ 无测试 |
+| `main.cpp` | 8 | 进程入口 | 集成测试覆盖 |
+
+> **策略**：bt_monitor 需要**专项测试**（Mock D-Bus 响应 + 降级场景），这是最大缺口。
+
+---
+
+## 4. 测试分层架构
+
+严格遵循测试金字塔：
+
+```
+                    ┌─────────────────┐
+                    │   端到端测试     │  ← run_all_tests.sh 全流程
+                    │   (E2E, ~5%)    │
+                   ╱└─────────────────┘╲
+                  ╱                     ╲
+                 ╱   ┌─────────────────┐ ╲
+                ╱    │   集成测试       │  ╲  ← integration_test.sh
+               ╱     │  (Integration)  │   ╲    + bt_monitor 集成
+              ╱      │     ~20%        │    ╲
+             ╱       └─────────────────┘     ╲
+            ╱                                 ╲
+           ╱       ┌─────────────────────────┐ ╲
+          ╱        │      单元测试            │  ╲  ← 本体系核心补充
+         ╱         │     (Unit, ~75%)        │   ╲    纯逻辑 + Mock
+        ╱          └─────────────────────────┘    ╲
+       ───────────────────────────────────────────────
+                        快速、独立、数量多
+```
+
+| 层级 | 占比 | 执行时间 | 依赖 | 触发方式 |
+|------|------|---------|------|---------|
+| 单元测试 | ~75% | < 10s | 无 | `make test` |
+| 集成测试 | ~20% | ~60s | D-Bus 会话总线 | `run_all_tests.sh` |
+| 端到端测试 | ~5% | ~120s | D-Bus + eBPF + 网络 | `run_all_tests.sh`（含 eBPF） |
+
+---
+
+## 5. 测试体系总体设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    run_all_tests.sh (入口)                   │
+│   make test-unit → 启动服务端 → 集成测试 → eBPF → 客户端     │
+└─────────────────────────────────────────────────────────────┘
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        ▼                     ▼                     ▼
+┌───────────────┐   ┌───────────────┐   ┌───────────────────┐
+│  单元测试层    │   │  集成测试层     │   │  专项测试层        │
+│  (make test)  │   │ (integration)  │   │  (eBPF / 蓝牙)    │
+├───────────────┤   ├───────────────┤   ├───────────────────┤
+│ test_net_info │   │ integration_   │   │ test_ebpf         │
+│ test_quality  │   │   test.sh      │   │ test_bt_monitor   │
+│ test_anomaly  │   │ (D-Bus 注册/   │   │ (降级 + Mock D-Bus)│
+│ test_fusion   │   │  方法/信号)    │   │                   │
+│ test_event    │   │               │   │                   │
+│ test_parser   │   │               │   │                   │
+│ test_band     │   │               │   │                   │
+│ ...           │   │               │   │                   │
+└───────────────┘   └───────────────┘   └───────────────────┘
+        │                     │                     │
+        ▼                     ▼                     ▼
+┌─────────────────────────────────────────────────────────────┐
+│              test/reports/ (报告输出)                        │
+│   test_report_*.txt  +  junit/*.xml  +  coverage/           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 6. 测试目录结构
+
+```
+server/test/
+├── TEST_FRAMEWORK_DESIGN.md          # 本设计文档
+├── run_all_tests.sh                  # 自动化入口（已有，将扩展）
+├── integration_test.sh               # 集成测试（已有）
+│
+├── unit/                             # 【新增】单元测试目录
+│   ├── test_net_info.cpp             # 已有，迁移至此
+│   ├── test_serializer.cpp           # 【新增】序列化工具
+│   ├── test_quality_assessor.cpp     # 【新增】质量评估算法
+│   ├── test_anomaly_detector.cpp     # 【新增】异常检测算法
+│   ├── test_audio_fusion.cpp         # 【新增】音频融合评估
+│   ├── test_band_conflict.cpp        # 【新增】频段冲突检测
+│   ├── test_event_manager.cpp        # 【新增】事件管理器
+│   ├── test_logger.cpp               # 【新增】日志器
+│   ├── test_net_iface_parser.cpp     # 【新增】接口解析(Mock)
+│   ├── test_net_tcp_parser.cpp       # 【新增】TCP统计解析(Mock)
+│   ├── test_net_ping_parser.cpp      # 【新增】Ping输出解析(Mock)
+│   ├── test_net_wifiriss_parser.cpp  # 【新增】WiFi RSSI解析(Mock)
+│   └── test_using_iface.cpp          # 【新增】默认路由检测(Mock)
+│
+├── integration/                      # 【新增】集成测试目录
+│   ├── test_dbus_service.cpp         # 【新增】D-Bus 方法专项(C++)
+│   ├── test_signal_flow.cpp          # 【新增】信号流转测试
+│   └── test_thread_lifecycle.cpp     # 【新增】线程生命周期
+│
+├── special/                          # 【新增】专项测试目录
+│   ├── test_ebpf.cpp                 # 已有，迁移至此
+│   ├── test_bt_monitor.cpp           # 【新增】蓝牙监控专项
+│   └── test_bt_audio_analyzer.cpp    # 【新增】蓝牙eBPF音频
+│
+├── mocks/                            # 【新增】Mock 辅助
+│   ├── fake_proc_files.hpp           # 【新增】/proc 文件 Mock
+│   └── fake_dbus.hpp                 # 【新增】D-Bus 响应 Mock
+│
+└── reports/                          # 测试报告（已有）
+    ├── test_report_*.txt             # 文本报告
+    ├── junit/                        # 【新增】JUnit XML（CI用）
+    └── coverage/                     # 【新增】覆盖率（gcov/lcov）
+```
+
+---
+
+## 7. 测试框架选型
+
+### 7.1 C++ 测试框架：沿用项目现有手写宏风格
+
+**选型理由**（基于项目实际调研修订）：
+- 项目现有 `test_net_info.cpp`、`test_ebpf.cpp`、`test_client.cpp` **均采用手写宏 + 计数器**风格，未使用任何外部测试框架
+- 保持风格一致，**不引入新依赖**（CentOS 环境未必有 gtest-devel）
+- 学习成本低，与现有 `CHECK` 宏、`TestStats` 结构体无缝衔接
+- 已验证可行：现有测试已稳定运行
+
+**统一测试骨架**（提取自 `test_net_info.cpp`，全项目复用）：
+
+```cpp
+static int g_pass = 0;
+static int g_fail = 0;
+
+#define CHECK(cond) do { \
+    if (cond) { ++g_pass; } \
+    else { ++g_fail; std::cerr << "FAIL: " << #cond \
+        << " (line " << __LINE__ << ")" << std::endl; } \
+} while (0)
+
+#define CHECK_EQ(a, b) CHECK((a) == (b))
+#define CHECK_NEAR(a, b, eps) CHECK(std::abs((a) - (b)) < (eps))
+
+// main 末尾统一输出
+// std::cout << "PASS=" << g_pass << " FAIL=" << g_fail << std::endl;
+// return g_fail > 0 ? 1 : 0;
+```
+
+> 见 [test_net_info.cpp:13-19](unit/test_net_info.cpp) 的现有实现，新测试文件完全沿用此风格。
+
+### 7.2 脚本测试：Bash + dbus-send（沿用现有）
+
+集成测试沿用 `integration_test.sh` 的 Bash 方案，避免引入额外依赖。
+
+### 7.3 覆盖率：gcov + lcov
+
+- 编译开关：`CXXFLAGS += --coverage -fprofile-arcs -ftest-coverage`
+- 生成：`lcov --capture --directory . --output-file coverage.info`
+- 可视化：`genhtml coverage.info -o coverage/`
+
+### 7.4 Mock 策略：纯函数化 + 注入（无需 gMock）
+
+由于不引入 gMock，采用两种轻量 Mock 方案：
+
+**方案 A：解析函数纯函数化**（适用于系统文件解析模块）
+
+将"读取文件"与"解析内容"解耦，解析逻辑提取为接受 `std::string`/`std::istream` 的纯函数，测试时直接注入字符串：
+
+```cpp
+// 重构前：读取与解析耦合，不可测
+TcpStats readTcpStats() {
+    auto content = readFile("/proc/net/snmp");  // 不可控
+    return parseInternal(content);
+}
+
+// 重构后：纯函数可测
+TcpStats parseTcpStats(const std::string& content);  // 测试时注入字符串
+```
+
+**方案 B：预置文件注入**（适用于文件路径可配置的模块）
+
+通过环境变量或参数指定文件路径，测试时写入临时文件：
+
+```cpp
+// 测试中
+std::string tmpFile = "/tmp/test_proc_net_dev.txt";
+writeFile(tmpFile, "eth0: 1234 5678 ...");
+setenv("WEAKNET_PROC_NET_DEV_PATH", tmpFile.c_str(), 1);
+```
+
+> 蓝牙 D-Bus 测试采用方案 A 思路：提取 `parseDeviceProperties` 等纯解析逻辑直接测试（这些函数已接受 `DBusMessageIter*`，可构造测试消息）。
+
+---
+
+## 8. 各层测试详细设计
+
+### 8.1 单元测试（重点补充）
+
+#### 8.1.1 `test_quality_assessor.cpp` — 质量评估算法
+
+被测：[network_quality_assessor.cpp](../src/network_quality_assessor.cpp)
+
+| 用例 | 输入 | 预期 |
+|------|------|------|
+| 优秀场景 | RTT=30, 丢包=0%, RSSI=-45, 流量稳定 | score≥85, EXCELLENT |
+| 良好场景 | RTT=80, 丢包=0.3%, RSSI=-55 | GOOD |
+| 一般场景 | RTT=150, 丢包=1%, RSSI=-65 | FAIR |
+| 差场景 | RTT=300, 丢包=5%, RSSI=-80 | POOR |
+| 未知场景 | 全部字段缺失 | UNKNOWN |
+| 加权验证 | 各单项单独变化 | 权重 30/30/20/20 |
+| 问题检测 | RTT>200 | issues 含"高延迟" |
+| 阈值更新 | updateThresholds 后重新评估 | 按新阈值分级 |
+| 计数器 | 连续两次不同等级 | qualityChangeCounter 递增 |
+
+#### 8.1.2 `test_anomaly_detector.cpp` — 异常检测算法
+
+被测：[traffic_anomaly_detector.cpp](../src/traffic_anomaly_detector.cpp)
+
+| 用例 | 输入 | 预期 |
+|------|------|------|
+| 正常流量 | 稳定 BPS 序列 | 无异常 |
+| 突发流量 | BPS 突增 5 倍 | detectDataExfiltration 命中 |
+| 可疑连接 | 大量小包高频连接 | detectSuspiciousConnections 命中 |
+| 时序异常 | 凌晨异常活跃 | detectTemporalAnomalies 命中 |
+| Z-Score 计算 | 已知序列 | 数学正确性 |
+| 百分位计算 | [1,2,3,4,5] P50=3, P95≈5 | 数学正确性 |
+| 离群点判定 | [1,1,1,1,100] | 100 为离群点 |
+| 历史清理 | clearHistory 后 | patterns 为空 |
+
+#### 8.1.3 `test_audio_fusion.cpp` — 音频融合评估
+
+被测：[bt_audio_fusion.cpp](../src/bt_audio_fusion.cpp)
+
+| 用例 | 输入 | 预期 |
+|------|------|------|
+| 纯 D-Bus 模式 | eBPF 不可用 | 降级评分基于 delay/codec |
+| 完整融合模式 | eBPF 有流量数据 | 综合评分 |
+| 增量计算 | 两次快照差值 | BPS/PPS 正确 |
+| 高延迟惩罚 | delay>2000 | 评分显著下降 |
+| SBC 编码惩罚 | codec=0x00 | 扣分 |
+
+#### 8.1.4 `test_event_manager.cpp` — 事件管理器
+
+被测：[event_manager.cpp](../src/event_manager.cpp)
+
+| 用例 | 操作 | 预期 |
+|------|------|------|
+| 注册与回调 | registerCallback + emit | 回调被调用 |
+| 注销回调 | unregisterCallback + emit | 回调不被调用 |
+| 多回调同类型 | 注册 2 个 + emit | 都被调用 |
+| 7 种事件类型 | 逐个 emit | 各自回调命中 |
+| 计数器 | emit N 次 | 计数器=N |
+| 并发安全 | 多线程同时 emit | 无竞争（mutex 保护） |
+
+#### 8.1.5 `test_band_conflict.cpp` — 频段冲突检测
+
+被测：[band_conflict_detector.cpp](../src/band_conflict_detector.cpp)
+
+| 用例 | 输入 | 预期 |
+|------|------|------|
+| 2.4G 重叠信道 | ch1 vs ch6 | 无冲突 |
+| 2.4G 相邻信道 | ch1 vs ch2 | 冲突 |
+| 5G 独立信道 | ch36 vs ch149 | 无冲突 |
+| 混合频段 | 2.4G + 5G | 各自判定 |
+
+#### 8.1.6 系统文件解析 Mock 测试
+
+针对 `net_iface.cpp`、`net_tcp.cpp`、`net_ping.cpp`、`net_wifiriss.cpp`：
+
+**Mock 策略**：将"读取文件"与"解析字符串"解耦，解析函数提取为纯函数，接受 `std::istream` 或 `std::string` 参数。
+
+```cpp
+// 重构后可测示例
+class NetTcpParser {
+public:
+    // 纯函数：解析 /proc/net/snmp 内容
+    static TcpStats parseFromStream(std::istream& input);
+};
+```
+
+| 用例 | 输入 | 预期 |
+|------|------|------|
+| 正常 SNMP | 标准格式字符串 | 字段正确提取 |
+| 空文件 | 空字符串 | 返回默认值，不崩溃 |
+| 畸形格式 | 缺列/多列 | 优雅处理 |
+| 大数溢出 | 999999999999 | 不溢出 |
+
+### 8.2 集成测试（补充扩展）
+
+沿用 `integration_test.sh`，补充以下 C++ 集成测试：
+
+#### 8.2.1 `test_dbus_service.cpp` — D-Bus 方法专项
+
+| 用例 | 验证点 |
+|------|--------|
+| HealthCheck 返回结构 | 包含 status/timestamp |
+| GetInterfaces 多网卡 | 数组正确 |
+| Ping 超时处理 | 3 秒内返回 |
+| 并发方法调用 | 10 线程同时调用无崩溃 |
+| 信号订阅计数 | subscribe 后计数器正确 |
+
+#### 8.2.2 `test_thread_lifecycle.cpp` — 线程生命周期
+
+| 用例 | 验证点 |
+|------|--------|
+| 7 个监控线程启动 | 日志确认 |
+| 优雅退出 | SIGTERM 后 2 秒内退出 |
+| 线程异常不崩溃 | 单线程失败不影响其他 |
+
+### 8.3 专项测试
+
+#### 8.3.1 `test_bt_monitor.cpp` — 蓝牙监控专项（重点）
+
+被测：[bt_monitor.cpp](../src/bt_monitor.cpp)（1637 行，最大模块）
+
+| 测试类别 | 用例 | 策略 |
+|---------|------|------|
+| **降级场景** | 无蓝牙适配器 | 初始化返回 false，被动模式重试 |
+| **降级场景** | BlueZ 未运行 | 优雅降级，不崩溃 |
+| **降级场景** | eBPF 不可用 | Phase 2 降级为纯 D-Bus |
+| **距离估算** | RSSI=-50 @ 1m | 距离≈1m |
+| **距离估算** | RSSI=-80 | 距离>10m |
+| **距离估算** | 校准 calibrateDistance | txPower 更新 |
+| **RSSI 等级** | -45/-55/-65/-75/-85 | excellent/good/fair/poor/very_poor |
+| **RSSI 历史** | 30 次采样 | averageRssi 正确 |
+| **音频评分** | delay=3000 + SBC | 评分<60 |
+| **音频评分** | delay=100 + AAC | 评分>90 |
+| **事件生成** | 设备发现/丢失/连接 | 9 种事件类型 |
+| **MAC 比较** | 大小写混合 | macEquals 正确 |
+| **设备类型** | UUID 分析 | Classic/BLE/Dual |
+| **Mock D-Bus** | 模拟 GetManagedObjects | 解析正确 |
+
+**关键技术**：用 gMock 模拟 D-Bus 连接，注入预设响应，实现无硬件测试。
+
+#### 8.3.2 `test_ebpf.cpp`（已有，保留）
+
+9 项测试，覆盖 BPF 加载、kprobe 挂载、流量采集、异常检测。
+
+---
+
+## 9. 实施计划与优先级
+
+按"价值 × 紧迫度"分三个阶段：
+
+### 阶段一（P0，核心算法层）— 预计 2 天
+
+> 目标：补齐纯逻辑模块的单元测试，零外部依赖，立即可执行
+
+| 任务 | 被测模块 | 预计用例数 |
+|------|---------|-----------|
+| 质量评估测试 | `network_quality_assessor.cpp` | ~12 |
+| 异常检测测试 | `traffic_anomaly_detector.cpp` | ~15 |
+| 音频融合测试 | `bt_audio_fusion.cpp` | ~10 |
+| 事件管理器测试 | `event_manager.cpp` | ~10 |
+| 频段冲突测试 | `band_conflict_detector.cpp` | ~8 |
+| 序列化专项测试 | `serializer.cpp` | ~6 |
+| 日志器测试 | `logger.cpp` | ~5 |
+
+**阶段一产出**：单元测试用例 ~66 个，覆盖 7 个核心模块。
+
+### 阶段二（P1，解析层 Mock + 蓝牙专项）— 预计 3 天
+
+| 任务 | 被测模块 | 预计用例数 |
+|------|---------|-----------|
+| 接口解析 Mock | `net_iface.cpp` | ~10 |
+| TCP 统计解析 Mock | `net_tcp.cpp` | ~8 |
+| Ping 输出解析 Mock | `net_ping.cpp` | ~8 |
+| WiFi RSSI 解析 Mock | `net_wifiriss.cpp` | ~8 |
+| 默认路由检测 Mock | `using_iface.cpp` | ~6 |
+| 蓝牙监控专项 | `bt_monitor.cpp` | ~20 |
+
+**阶段二产出**：用例 ~60 个，覆盖解析层 + 蓝牙大模块。
+
+### 阶段三（P2，集成扩展 + 覆盖率 + CI）— 预计 2 天
+
+| 任务 | 内容 |
+|------|------|
+| D-Bus 方法专项 | `test_dbus_service.cpp` |
+| 信号流转测试 | `test_signal_flow.cpp` |
+| 线程生命周期 | `test_thread_lifecycle.cpp` |
+| 集成 `test_network_quality.cpp` | 接入自动化脚本 |
+| Makefile `test` 目标 | `make test-unit` / `make test-all` |
+| 覆盖率接入 | gcov + lcov |
+| JUnit XML 输出 | 供 CI 使用 |
+| `run_all_tests.sh` 扩展 | 接入单元测试层 |
+
+**阶段三产出**：完整测试体系，覆盖率报告，CI 就绪。
+
+### 总体里程碑
+
+| 里程碑 | 用例总数 | 覆盖模块 | 覆盖率目标 |
+|--------|---------|---------|-----------|
+| 阶段一完成 | ~66 | 7 个核心模块 | 30% |
+| 阶段二完成 | ~126 | +6 解析 + 蓝牙 | 55% |
+| 阶段三完成 | ~150+ | 全部 26 模块 | ≥60% |
+
+---
+
+## 10. 预期产出与验收标准
+
+### 10.1 产出清单
+
+1. **测试源码**：~25 个测试文件（单元 + 集成 + 专项）
+2. **Mock 辅助**：`fake_proc_files.hpp`、`fake_dbus.hpp`
+3. **Makefile 扩展**：`test-unit`、`test-integration`、`test-all`、`coverage` 目标
+4. **自动化脚本**：扩展 `run_all_tests.sh` 接入单元测试层
+5. **测试报告**：文本 + JUnit XML + 覆盖率 HTML
+6. **设计文档**：本文档（持续更新）
+
+### 10.2 验收标准
+
+| 标准 | 指标 |
+|------|------|
+| 单元测试通过率 | 100% |
+| 集成测试通过率 | 100%（降级场景正确处理） |
+| 模块覆盖 | 26/26 服务端模块均有测试 |
+| 核心算法覆盖 | 7 个算法模块覆盖率 ≥ 80% |
+| 单元测试执行时间 | < 10 秒 |
+| 自动化脚本 | `make test-all` 一键执行 |
+| 报告生成 | 文本 + JUnit XML + 覆盖率 |
+| 编码规范 | 遵循项目现有风格（C++17、-Wall -Wextra） |
+
+### 10.3 不在本次范围
+
+- 跨设备分布式测试（单机项目）
+- 性能压测（已有基准用例，不深入）
+- 客户端 UI 自动化（无 UI）
+- eBPF 程序本身的内核验证（已有 `test_ebpf.cpp`）
+
+---
+
+## 11. 各测试模块具体实施步骤与方法
+
+> 本章针对每个测试文件，给出 **被测接口 → 实施步骤 → 关键用例代码 → 编译命令 → 验证方法** 的完整闭环。
+> 所有代码示例基于第 8 章调研的真实接口，可直接落地。
+
+---
+
+### 11.1 单元测试实施方法
+
+#### 11.1.1 `test_quality_assessor.cpp` — 质量评估算法
+
+**被测模块**：[network_quality_assessor.cpp](../src/network_quality_assessor.cpp)（249 行）
+**被测接口**：
+
+```cpp
+NetworkQualityResult assessQuality(const std::vector<NetInfo>& interfaces);
+NetworkQualityResult assessInterfaceQuality(const NetInfo& interface);
+static std::string getQualityLevelName(NetworkQualityLevel level);
+bool hasQualityChanged(const NetworkQualityResult& current);
+void updateThresholds(const QualityThresholds& newThresholds);
+```
+
+**关键算法逻辑**（来自源码 L57/L60-68）：
+- 总分 = RTT×0.3 + 丢包×0.3 + RSSI×0.2 + 流量×0.2
+- 分级：≥90 EXCELLENT，≥75 GOOD，≥50 FAIR，否则 POOR
+
+**实施步骤**：
+
+1. 创建 `test/unit/test_quality_assessor.cpp`
+2. 引入统一测试骨架（`g_pass`/`g_fail`/`CHECK` 宏）
+3. 构造 `NetInfo` 辅助函数，快速搭建测试场景
+4. 按"优秀/良好/一般/差/未知"五档编写用例
+5. 验证权重、阈值更新、计数器、问题检测
+
+**关键用例代码示例**：
+
+```cpp
+#include "network_quality_assessor.hpp"
+#include "net_info.hpp"
+#include <iostream>
+#include <cmath>
+
+static int g_pass = 0, g_fail = 0;
+#define CHECK(cond) do { if(cond){++g_pass;} else {++g_fail; \
+    std::cerr<<"FAIL: "<<#cond<<" (line "<<__LINE__<<")"<<std::endl;} } while(0)
+#define CHECK_NEAR(a,b,eps) CHECK(std::abs((a)-(b))<(eps))
+
+using namespace weaknet_dbus;
+
+// 辅助：构造指定指标的 NetInfo
+static NetInfo makeIface(const std::string& name, int rtt, double loss,
+                         int rssi, uint64_t bps, uint64_t pps, uint32_t flows) {
+    NetInfo info(name);
+    info.setRttMs(rtt);
+    info.setTcpLossRate(loss);
+    info.setRssiDbm(rssi);
+    info.setTrafficStats(bps, pps, flows);
+    info.setUsingNow(true);
+    return info;
+}
+
+static void testExcellent() {
+    std::cout << "[test] 优秀场景" << std::endl;
+    NetworkQualityAssessor a;
+    // RTT=30(满分100) 丢包=0(100) RSSI=-45(100) 流量大包(90)
+    auto iface = makeIface("wlan0", 30, 0.0, -45, 1000000, 800, 10);
+    auto r = a.assessInterfaceQuality(iface);
+    CHECK(r.level == NetworkQualityLevel::EXCELLENT);
+    CHECK(r.score >= 90.0);
+    CHECK(r.levelName == "EXCELLENT");
+}
+
+static void testGood() {
+    std::cout << "[test] 良好场景" << std::endl;
+    NetworkQualityAssessor a;
+    auto iface = makeIface("wlan0", 80, 0.3, -55, 500000, 800, 8);
+    auto r = a.assessInterfaceQuality(iface);
+    CHECK(r.level == NetworkQualityLevel::GOOD);
+    CHECK(r.score >= 75.0 && r.score < 90.0);
+}
+
+static void testPoor() {
+    std::cout << "[test] 差场景" << std::endl;
+    NetworkQualityAssessor a;
+    auto iface = makeIface("wlan0", 300, 5.0, -85, 10000, 100, 1);
+    auto r = a.assessInterfaceQuality(iface);
+    CHECK(r.level == NetworkQualityLevel::POOR);
+    CHECK(r.score < 50.0);
+    // 差场景应检测出问题
+    CHECK(!r.issues.empty());
+}
+
+static void testEmptyInterfaces() {
+    std::cout << "[test] 空接口列表" << std::endl;
+    NetworkQualityAssessor a;
+    auto r = a.assessQuality({});
+    CHECK(r.level == NetworkQualityLevel::UNKNOWN);
+    CHECK(r.levelName == "UNKNOWN");
+}
+
+static void testWeighting() {
+    std::cout << "[test] 权重验证" << std::endl;
+    // 仅 RTT 差，其他满分 → 总分应明显受 RTT 影响（权重30%）
+    NetworkQualityAssessor a;
+    auto iface = makeIface("wlan0", 500, 0.0, -45, 1000000, 800, 10);
+    auto r = a.assessInterfaceQuality(iface);
+    // RTT=500 → rttScore≈40，其余≈90+ → 总分≈0.3*40+0.3*100+0.2*100+0.2*90=80
+    CHECK(r.score < 90.0);  // 不会是 EXCELLENT
+}
+
+static void testThresholdUpdate() {
+    std::cout << "[test] 阈值更新" << std::endl;
+    NetworkQualityAssessor a;
+    NetworkQualityAssessor::QualityThresholds t;
+    t.rtt_excellent = 10;  // 收紧优秀阈值
+    a.updateThresholds(t);
+    auto iface = makeIface("wlan0", 30, 0.0, -45, 1000000, 800, 10);
+    auto r = a.assessInterfaceQuality(iface);
+    // RTT=30 > 新阈值10，不再是 RTT 满分
+    CHECK(r.score < 95.0);
+}
+
+static void testQualityChanged() {
+    std::cout << "[test] 质量变化计数器" << std::endl;
+    NetworkQualityAssessor a;
+    auto good = makeIface("wlan0", 30, 0.0, -45, 1000000, 800, 10);
+    a.assessInterfaceQuality(good);
+    int32_t c1 = a.getQualityChangeCounter();
+    auto poor = makeIface("wlan0", 500, 10.0, -85, 1000, 10, 1);
+    a.assessInterfaceQuality(poor);
+    int32_t c2 = a.getQualityChangeCounter();
+    CHECK(c2 > c1);  // 等级变化后计数器递增
+}
+
+int main() {
+    testExcellent(); testGood(); testPoor();
+    testEmptyInterfaces(); testWeighting();
+    testThresholdUpdate(); testQualityChanged();
+    std::cout << "\nPASS=" << g_pass << " FAIL=" << g_fail << std::endl;
+    return g_fail > 0 ? 1 : 0;
+}
+```
+
+**编译命令**：
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -o test/unit/test_quality_assessor \
+    test/unit/test_quality_assessor.cpp src/network_quality_assessor.cpp \
+    src/net_info.cpp src/serializer.cpp src/logger.cpp -lglog
+```
+
+**验证方法**：
+```bash
+./test/unit/test_quality_assessor
+# 期望输出: PASS=15 FAIL=0
+```
+
+---
+
+#### 11.1.2 `test_anomaly_detector.cpp` — 异常检测算法
+
+**被测模块**：[traffic_anomaly_detector.cpp](../src/traffic_anomaly_detector.cpp)（333 行）
+**被测接口**：
+
+```cpp
+std::vector<AdvancedAnomaly> analyzeTrafficPatterns(const std::vector<FlowRate>& flows);
+std::vector<AdvancedAnomaly> detectDataExfiltration(const std::vector<FlowRate>& flows);
+std::vector<AdvancedAnomaly> detectSuspiciousConnections(const std::vector<FlowRate>& flows);
+std::vector<AdvancedAnomaly> detectTemporalAnomalies(const std::vector<FlowRate>& flows);
+void setDetectionParams(double burst, double volume, double time);
+void clearHistory();
+```
+
+**关键阈值**（来自源码）：
+- 数据泄露：bps > 5MB/s 且占比 >50%（`isDataExfiltrationPattern` L157-171）
+- 可疑连接：单进程 >50 连接（L275）
+- 离群点：Z-Score > 3.0（L89）
+
+**实施步骤**：
+
+1. 构造 `FlowRate` 辅助函数（含 src/dst/sport/dport/proto/bps/pps/pid）
+2. 编写正常流量用例（无异常）
+3. 构造持续高流量序列（>5MB/s × 6 次）触发数据泄露
+4. 构造同 PID 51 个流触发可疑连接
+5. 验证 `clearHistory` 清空状态
+
+**关键用例代码示例**：
+
+```cpp
+#include "traffic_anomaly_detector.h"
+#include "net_traffic.h"
+#include <iostream>
+
+static int g_pass = 0, g_fail = 0;
+#define CHECK(cond) do { if(cond){++g_pass;} else {++g_fail; \
+    std::cerr<<"FAIL: "<<#cond<<" (line "<<__LINE__<<")"<<std::endl;} } while(0)
+
+// 辅助：构造 FlowRate
+static FlowRate makeFlow(const std::string& src, uint16_t sport,
+                         const std::string& dst, uint16_t dport,
+                         const std::string& proto, uint64_t bps,
+                         uint64_t pps, uint32_t pid = 0) {
+    FlowRate f;
+    f.src = src; f.sport = sport; f.dst = dst; f.dport = dport;
+    f.proto = proto; f.bps = bps; f.pps = pps; f.pid = pid;
+    return f;
+}
+
+static void testNormalTraffic() {
+    std::cout << "[test] 正常流量无异常" << std::endl;
+    TrafficAnomalyDetector d;
+    std::vector<FlowRate> flows = {
+        makeFlow("10.0.0.1", 1234, "8.8.8.8", 53, "UDP", 1000, 10, 100)
+    };
+    auto anomalies = d.analyzeTrafficPatterns(flows);
+    CHECK(anomalies.empty());  // 样本不足 + 低流量，无异常
+}
+
+static void testDataExfiltration() {
+    std::cout << "[test] 数据泄露检测" << std::endl;
+    TrafficAnomalyDetector d;
+    // 构造 6 次持续高流量（>5MB/s），触发 isDataExfiltrationPattern
+    const uint64_t HIGH_BPS = 6 * 1024 * 1024;  // 6MB/s
+    for (int i = 0; i < 6; i++) {
+        d.analyzeTrafficPatterns({makeFlow("10.0.0.1", 1000+i, "1.2.3.4", 443, "TCP", HIGH_BPS, 800, 200)});
+    }
+    auto anomalies = d.analyzeTrafficPatterns(
+        {makeFlow("10.0.0.1", 1006, "1.2.3.4", 443, "TCP", HIGH_BPS, 800, 200)});
+    bool found = false;
+    for (const auto& a : anomalies) {
+        if (a.anomalyType == "data_exfiltration") found = true;
+    }
+    CHECK(found);
+}
+
+static void testSuspiciousConnections() {
+    std::cout << "[test] 可疑连接检测" << std::endl;
+    TrafficAnomalyDetector d;
+    std::vector<FlowRate> flows;
+    // 同一 PID 51 个连接 → 超过阈值 50
+    for (int i = 0; i < 51; i++) {
+        flows.push_back(makeFlow("10.0.0.1", 2000+i, "9.9.9.9", 80, "TCP", 500, 5, 999));
+    }
+    auto anomalies = d.detectSuspiciousConnections(flows);
+    CHECK(!anomalies.empty());
+    CHECK(anomalies[0].anomalyType == "suspicious_connection");
+}
+
+static void testClearHistory() {
+    std::cout << "[test] 清理历史" << std::endl;
+    TrafficAnomalyDetector d;
+    d.analyzeTrafficPatterns({makeFlow("10.0.0.1", 1234, "8.8.8.8", 53, "UDP", 1000, 10)});
+    CHECK(!d.getTrafficPatterns().empty());
+    d.clearHistory();
+    CHECK(d.getTrafficPatterns().empty());
+}
+
+int main() {
+    testNormalTraffic(); testDataExfiltration();
+    testSuspiciousConnections(); testClearHistory();
+    std::cout << "\nPASS=" << g_pass << " FAIL=" << g_fail << std::endl;
+    return g_fail > 0 ? 1 : 0;
+}
+```
+
+**编译命令**：
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -o test/unit/test_anomaly_detector \
+    test/unit/test_anomaly_detector.cpp src/traffic_anomaly_detector.cpp \
+    src/logger.cpp -lglog
+```
+
+**验证方法**：
+```bash
+./test/unit/test_anomaly_detector
+# 期望: PASS=8 FAIL=0
+```
+
+---
+
+#### 11.1.3 `test_audio_fusion.cpp` — 音频融合评估
+
+**被测模块**：[bt_audio_fusion.cpp](../src/bt_audio_fusion.cpp)（254 行）
+**被测接口**：
+
+```cpp
+BtAudioFusionResult evaluate(const BtAudioTransport& transport,
+                             const BtTrafficStats* stats,
+                             const BtTrafficStats* prevStats,
+                             bool ebpfAvailable) const;
+BtAudioFusionResult evaluateDbOnly(const BtAudioTransport& transport) const;
+static std::string scoreToLevel(double score);
+```
+
+**关键逻辑**（来自源码）：
+- 非活跃 → 评分 0（L58-67）
+- 有效活跃 = bytesDelta > minBytesPerSec(5120)（L98）
+- 卡顿 = gapDelta > stallCountThreshold(3)（L102）
+- 融合评分 = baseScore × activeRatio + correction（L153）
+
+**实施步骤**：
+
+1. 构造 `BtAudioTransport`（state/delay/codec/deviceMac）
+2. 构造 `BtTrafficStats`（bytes/packets/gapCount/maxGapNs）
+3. 测试非活跃场景（state≠active → 0 分）
+4. 测试纯 D-Bus 模式（ebpfAvailable=false）
+5. 测试完整融合（有流量 → 加分；卡顿 → 扣分）
+6. 测试增量计算（prevStats 存在时取差值）
+
+**关键用例代码示例**：
+
+```cpp
+#include "bt_audio_fusion.hpp"
+#include "bt_monitor.hpp"
+#include <iostream>
+
+static int g_pass = 0, g_fail = 0;
+#define CHECK(cond) do { if(cond){++g_pass;} else {++g_fail; \
+    std::cerr<<"FAIL: "<<#cond<<" (line "<<__LINE__<<")"<<std::endl;} } while(0)
+
+using namespace weaknet_dbus;
+
+static BtAudioTransport makeTransport(const std::string& state, uint16_t delay,
+                                       uint8_t codec, const std::string& mac = "AA:BB:CC") {
+    BtAudioTransport t;
+    t.state = state; t.delay = delay; t.codec = codec; t.deviceMac = mac;
+    return t;
+}
+
+static BtTrafficStats makeStats(uint64_t bytes, uint64_t packets,
+                                 uint64_t gapCount, uint64_t maxGapNs) {
+    BtTrafficStats s;
+    s.bytes = bytes; s.packets = packets; s.gapCount = gapCount; s.maxGapNs = maxGapNs;
+    return s;
+}
+
+static void testInactiveTransport() {
+    std::cout << "[test] 非活跃传输" << std::endl;
+    BtAudioFusion f;
+    auto t = makeTransport("idle", 100, 0x00);
+    auto r = f.evaluate(t, nullptr, nullptr, false);
+    CHECK(r.qualityScore == 0.0);
+    CHECK(r.level == "inactive");
+    CHECK(!r.effectiveActive);
+}
+
+static void testDbOnlyMode() {
+    std::cout << "[test] 纯D-Bus模式" << std::endl;
+    BtAudioFusion f;
+    auto t = makeTransport("active", 100, 0x01);  // 低延迟+非SBC
+    auto r = f.evaluateDbOnly(t);
+    CHECK(r.ebpfAvailable == false);
+    CHECK(r.qualityScore > 80.0);  // 100 - 0(delay) - 0(非SBC)
+    CHECK(r.level == "excellent" || r.level == "good");
+}
+
+static void testFusionWithTraffic() {
+    std::cout << "[test] 融合模式-有流量" << std::endl;
+    BtAudioFusion f;
+    auto t = makeTransport("active", 200, 0x01);
+    auto prev = makeStats(0, 0, 0, 0);
+    auto cur = makeStats(50000, 100, 0, 1000000);  // 50KB增量，无卡顿
+    auto r = f.evaluate(t, &cur, &prev, true);
+    CHECK(r.effectiveActive == true);   // 50000 > 5120
+    CHECK(r.suspectedStall == false);    // gapCount=0
+    CHECK(r.ebpfCorrection > 0.0);       // 有效活跃加分
+}
+
+static void testFusionWithStall() {
+    std::cout << "[test] 融合模式-卡顿" << std::endl;
+    BtAudioFusion f;
+    auto t = makeTransport("active", 200, 0x00);
+    auto prev = makeStats(0, 0, 0, 0);
+    auto cur = makeStats(50000, 100, 10, 600000000);  // gapCount=10, maxGap=600ms
+    auto r = f.evaluate(t, &cur, &prev, true);
+    CHECK(r.suspectedStall == true);     // 10 > 3
+    CHECK(r.ebpfCorrection < 0.0);       // 卡顿扣分
+    CHECK(r.maxGapMs == 600);
+}
+
+static void testIncrementCalc() {
+    std::cout << "[test] 增量计算" << std::endl;
+    BtAudioFusion f;
+    auto t = makeTransport("active", 100, 0x01);
+    auto prev = makeStats(10000, 50, 1, 0);
+    auto cur = makeStats(60000, 150, 5, 0);  // 增量: 50000字节, 4卡顿
+    auto r = f.evaluate(t, &cur, &prev, true);
+    // bytesDelta=50000 > 5120 → 有效活跃
+    CHECK(r.effectiveActive == true);
+}
+
+int main() {
+    testInactiveTransport(); testDbOnlyMode();
+    testFusionWithTraffic(); testFusionWithStall(); testIncrementCalc();
+    std::cout << "\nPASS=" << g_pass << " FAIL=" << g_fail << std::endl;
+    return g_fail > 0 ? 1 : 0;
+}
+```
+
+**编译命令**：
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -o test/unit/test_audio_fusion \
+    test/unit/test_audio_fusion.cpp src/bt_audio_fusion.cpp \
+    src/logger.cpp -lglog
+```
+
+---
+
+#### 11.1.4 `test_event_manager.cpp` — 事件管理器
+
+**被测模块**：[event_manager.cpp](../src/event_manager.cpp)（215 行）
+**被测接口**：
+
+```cpp
+void registerCallback(EventType type, EventCallback callback);
+void unregisterCallback(EventType type);
+void emitEvent(const NetworkEvent& event);
+void emitInterfaceChanged(const std::string& message, const std::string& source);
+// ... 7 种 emitXxx 便捷方法
+```
+
+**关键点**：`emitEvent` 内部会调用 `server_ctx_->service->emitSpecificSignal`（L104-118），测试时 `server_ctx_` 为 nullptr 即可跳过 D-Bus 发射，仅测回调分发。
+
+**实施步骤**：
+
+1. 使用全局 `getEventManager()` 或构造局部实例
+2. 注册回调，用计数器验证被调用
+3. emit 后检查计数器
+4. unregister 后再 emit，验证不再调用
+5. 测试 7 种事件类型分别命中各自回调
+
+**关键用例代码示例**：
+
+```cpp
+#include "event_manager.hpp"
+#include <iostream>
+
+static int g_pass = 0, g_fail = 0;
+#define CHECK(cond) do { if(cond){++g_pass;} else {++g_fail; \
+    std::cerr<<"FAIL: "<<#cond<<" (line "<<__LINE__<<")"<<std::endl;} } while(0)
+
+using namespace weaknet_dbus;
+
+static void testRegisterAndEmit() {
+    std::cout << "[test] 注册与回调触发" << std::endl;
+    auto& mgr = getEventManager();
+    int callCount = 0;
+    mgr.registerCallback(EventType::InterfaceChanged,
+        [&callCount](const NetworkEvent& ev) { callCount++; });
+    mgr.emitInterfaceChanged("test message", "test_source");
+    CHECK(callCount == 1);
+    mgr.unregisterCallback(EventType::InterfaceChanged);
+}
+
+static void testUnregister() {
+    std::cout << "[test] 注销后不触发" << std::endl;
+    auto& mgr = getEventManager();
+    int callCount = 0;
+    mgr.registerCallback(EventType::RttChanged,
+        [&callCount](const NetworkEvent&) { callCount++; });
+    mgr.unregisterCallback(EventType::RttChanged);
+    mgr.emitRttChanged("msg", "src");
+    CHECK(callCount == 0);
+}
+
+static void testMultipleCallbacks() {
+    std::cout << "[test] 同类型多回调" << std::endl;
+    auto& mgr = getEventManager();
+    int c1 = 0, c2 = 0;
+    mgr.registerCallback(EventType::RssiChanged, [&c1](const NetworkEvent&) { c1++; });
+    mgr.registerCallback(EventType::RssiChanged, [&c2](const NetworkEvent&) { c2++; });
+    mgr.emitRssiChanged("msg", "src");
+    CHECK(c1 == 1);
+    CHECK(c2 == 1);
+    mgr.unregisterCallback(EventType::RssiChanged);
+}
+
+static void testAllEventTypes() {
+    std::cout << "[test] 7种事件类型分发" << std::endl;
+    auto& mgr = getEventManager();
+    int counts[7] = {0};
+    mgr.registerCallback(EventType::InterfaceChanged, [&](const NetworkEvent&){counts[0]++;});
+    mgr.registerCallback(EventType::ConnectionModeChanged, [&](const NetworkEvent&){counts[1]++;});
+    mgr.registerCallback(EventType::NetworkQualityChanged, [&](const NetworkEvent&){counts[2]++;});
+    mgr.registerCallback(EventType::TcpLossRateChanged, [&](const NetworkEvent&){counts[3]++;});
+    mgr.registerCallback(EventType::RttChanged, [&](const NetworkEvent&){counts[4]++;});
+    mgr.registerCallback(EventType::RssiChanged, [&](const NetworkEvent&){counts[5]++;});
+    mgr.registerCallback(EventType::BluetoothDeviceChanged, [&](const NetworkEvent&){counts[6]++;});
+    mgr.emitInterfaceChanged("m","s");
+    mgr.emitConnectionModeChanged("m","s");
+    mgr.emitNetworkQualityChanged("m","d","s");
+    mgr.emitTcpLossRateChanged("m","s");
+    mgr.emitRttChanged("m","s");
+    mgr.emitRssiChanged("m","s");
+    mgr.emitBluetoothDeviceChanged("m","s");
+    for (int i = 0; i < 7; i++) CHECK(counts[i] == 1);
+    // 清理
+    for (int t = 0; t < 7; t++) mgr.unregisterCallback(static_cast<EventType>(t));
+}
+
+int main() {
+    testRegisterAndEmit(); testUnregister();
+    testMultipleCallbacks(); testAllEventTypes();
+    std::cout << "\nPASS=" << g_pass << " FAIL=" << g_fail << std::endl;
+    return g_fail > 0 ? 1 : 0;
+}
+```
+
+**编译命令**：
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -o test/unit/test_event_manager \
+    test/unit/test_event_manager.cpp src/event_manager.cpp \
+    src/logger.cpp -lglog `pkg-config --cflags --libs dbus-1`
+```
+
+---
+
+#### 11.1.5 `test_band_conflict.cpp` — 频段冲突检测
+
+**被测模块**：[band_conflict_detector.cpp](../src/band_conflict_detector.cpp)（251 行）
+**被测接口**：
+
+```cpp
+void feedSample(int wifiRssi, int btRssi);
+BandConflictResult detect() const;
+static std::string generateSuggestion(const BandConflictResult& r);
+void reset();
+size_t sampleCount() const;
+```
+
+**关键算法**（来自头文件注释）：
+- 维护各 30 样本，前 20 作基线
+- 同时低于基线 10dBm → 疑似冲突
+- Pearson > 0.7 → 确认冲突
+- 样本 <5 不输出结论
+
+**实施步骤**：
+
+1. 先 feed 20 个稳定样本作基线（如 wifi=-50, bt=-60）
+2. 再 feed 显著下降的样本（wifi=-70, bt=-75）触发冲突
+3. 验证 `detect()` 返回 `detected=true`、`correlation > 0.7`
+4. 测试样本不足场景（<5 个 → detected=false）
+5. 测试无效值过滤（0 或 -1000 被跳过）
+
+**关键用例代码示例**：
+
+```cpp
+#include "band_conflict_detector.hpp"
+#include <iostream>
+#include <cmath>
+
+static int g_pass = 0, g_fail = 0;
+#define CHECK(cond) do { if(cond){++g_pass;} else {++g_fail; \
+    std::cerr<<"FAIL: "<<#cond<<" (line "<<__LINE__<<")"<<std::endl;} } while(0)
+
+using namespace weaknet_dbus;
+
+static void testInsufficientSamples() {
+    std::cout << "[test] 样本不足不输出结论" << std::endl;
+    BandConflictDetector d;
+    for (int i = 0; i < 3; i++) d.feedSample(-50, -60);  // 仅3个 < MIN_SAMPLES(5)
+    auto r = d.detect();
+    CHECK(r.detected == false);
+}
+
+static void testNoConflict() {
+    std::cout << "[test] 无冲突场景" << std::endl;
+    BandConflictDetector d;
+    // 稳定样本，无下降
+    for (int i = 0; i < 25; i++) d.feedSample(-50, -60);
+    auto r = d.detect();
+    CHECK(r.detected == false);
+}
+
+static void testConflictDetected() {
+    std::cout << "[test] 频段冲突检测" << std::endl;
+    BandConflictDetector d;
+    // 前20个基线样本
+    for (int i = 0; i < 20; i++) d.feedSample(-50, -60);
+    // 后续同步下降15dBm（>10dBm阈值），且高度相关
+    for (int i = 0; i < 10; i++) d.feedSample(-65, -75);
+    auto r = d.detect();
+    CHECK(r.detected == true);
+    CHECK(r.correlation > 0.7);
+    CHECK(r.wifiRssiDrop >= 10);
+    CHECK(r.btRssiDrop >= 10);
+    CHECK(!r.suggestion.empty());
+}
+
+static void testInvalidValuesSkipped() {
+    std::cout << "[test] 无效值过滤" << std::endl;
+    BandConflictDetector d;
+    d.feedSample(0, -60);       // wifi=0 无效，跳过
+    d.feedSample(-50, -1000);   // bt=-1000 无效，跳过
+    d.feedSample(-50, -60);     // 有效
+    CHECK(d.sampleCount() == 1);
+}
+
+static void testReset() {
+    std::cout << "[test] 重置" << std::endl;
+    BandConflictDetector d;
+    for (int i = 0; i < 10; i++) d.feedSample(-50, -60);
+    CHECK(d.sampleCount() == 10);
+    d.reset();
+    CHECK(d.sampleCount() == 0);
+}
+
+int main() {
+    testInsufficientSamples(); testNoConflict();
+    testConflictDetected(); testInvalidValuesSkipped(); testReset();
+    std::cout << "\nPASS=" << g_pass << " FAIL=" << g_fail << std::endl;
+    return g_fail > 0 ? 1 : 0;
+}
+```
+
+**编译命令**：
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -o test/unit/test_band_conflict \
+    test/unit/test_band_conflict.cpp src/band_conflict_detector.cpp \
+    src/logger.cpp -lglog
+```
+
+---
+
+#### 11.1.6 `test_serializer.cpp` — 序列化工具
+
+**被测模块**：[serializer.cpp](../src/serializer.cpp)（117 行）
+**被测接口**（来自 [serializer.hpp](../include/serializer.hpp)）：
+
+```cpp
+void serializeString(const std::string& value, std::vector<uint8_t>& out);
+bool deserializeString(const std::vector<uint8_t>& buffer, size_t& offset, std::string& out);
+void serializeInt32(int32_t value, std::vector<uint8_t>& out);
+bool deserializeInt32(const std::vector<uint8_t>& buffer, size_t& offset, int32_t& out);
+bool serializeGetReplyToFile(const std::string& reply, const std::string& filepath, ...);
+bool deserializeGetReplyFromFile(const std::string& filepath, std::string* out_reply, ...);
+bool serializeChangedPayloadToFile(const ChangedPayload& payload, ...);
+bool deserializeChangedPayloadFromFile(...);
+```
+
+**实施步骤**：
+
+1. 测试 string 往返（含空串、中文、特殊字符）
+2. 测试 int32 往返（含负数、边界值 INT32_MAX/MIN）
+3. 测试文件序列化往返（临时文件）
+4. 测试畸形输入（offset 越界、缓冲区不足）
+
+**关键用例代码示例**：
+
+```cpp
+#include "serializer.hpp"
+#include <iostream>
+#include <climits>
+#include <cstdio>
+
+static int g_pass = 0, g_fail = 0;
+#define CHECK(cond) do { if(cond){++g_pass;} else {++g_fail; \
+    std::cerr<<"FAIL: "<<#cond<<" (line "<<__LINE__<<")"<<std::endl;} } while(0)
+
+using namespace weaknet_dbus;
+
+static void testStringRoundTrip() {
+    std::cout << "[test] 字符串往返" << std::endl;
+    std::vector<uint8_t> buf;
+    serializeString("hello网络", buf);
+    size_t offset = 0;
+    std::string out;
+    CHECK(deserializeString(buf, offset, out));
+    CHECK(out == "hello网络");
+}
+
+static void testStringEmpty() {
+    std::cout << "[test] 空字符串" << std::endl;
+    std::vector<uint8_t> buf;
+    serializeString("", buf);
+    size_t offset = 0;
+    std::string out;
+    CHECK(deserializeString(buf, offset, out));
+    CHECK(out.empty());
+}
+
+static void testInt32RoundTrip() {
+    std::cout << "[test] int32往返" << std::endl;
+    for (int32_t v : {0, -1, 1, INT32_MAX, INT32_MIN, 123456}) {
+        std::vector<uint8_t> buf;
+        serializeInt32(v, buf);
+        size_t offset = 0;
+        int32_t out;
+        CHECK(deserializeInt32(buf, offset, out));
+        CHECK(out == v);
+    }
+}
+
+static void testFileRoundTrip() {
+    std::cout << "[test] 文件序列化往返" << std::endl;
+    std::string tmpFile = "/tmp/weaknet_test_ser.bin";
+    std::string err;
+    CHECK(serializeGetReplyToFile("test reply 数据", tmpFile, &err));
+    std::string reply;
+    CHECK(deserializeGetReplyFromFile(tmpFile, &reply, &err));
+    CHECK(reply == "test reply 数据");
+    std::remove(tmpFile.c_str());
+}
+
+static void testMalformedBuffer() {
+    std::cout << "[test] 畸形缓冲区" << std::endl;
+    std::vector<uint8_t> empty;
+    size_t offset = 0;
+    std::string out;
+    CHECK(!deserializeString(empty, offset, out));  // 空缓冲区应失败
+}
+
+int main() {
+    testStringRoundTrip(); testStringEmpty(); testInt32RoundTrip();
+    testFileRoundTrip(); testMalformedBuffer();
+    std::cout << "\nPASS=" << g_pass << " FAIL=" << g_fail << std::endl;
+    return g_fail > 0 ? 1 : 0;
+}
+```
+
+**编译命令**：
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -o test/unit/test_serializer \
+    test/unit/test_serializer.cpp src/serializer.cpp src/logger.cpp -lglog
+```
+
+---
+
+#### 11.1.7 系统文件解析层 Mock 测试（5 个文件）
+
+**被测模块**：`net_iface.cpp` / `net_tcp.cpp` / `net_ping.cpp` / `net_wifiriss.cpp` / `using_iface.cpp`
+
+**通用实施方法（方案 A：纯函数化重构）**：
+
+这 5 个模块当前将"读取文件"与"解析内容"耦合。实施步骤：
+
+1. **重构被测模块**：提取纯解析函数（不改对外接口）
+   ```cpp
+   // net_tcp.cpp 新增（重构）
+   TcpStats parseTcpStatsFromContent(const std::string& content);  // 纯函数
+   // 原 readTcpStats() 改为：return parseTcpStatsFromContent(readFile("/proc/net/snmp"));
+   ```
+2. **测试文件注入字符串**：将 `/proc/net/snmp` 的真实样本作为字符串常量传入
+3. **验证字段提取正确性**
+
+**`test_net_tcp_parser.cpp` 示例**：
+
+```cpp
+#include "net_tcp.h"
+#include <iostream>
+
+static int g_pass = 0, g_fail = 0;
+#define CHECK(cond) do { if(cond){++g_pass;} else {++g_fail; \
+    std::cerr<<"FAIL: "<<#cond<<" (line "<<__LINE__<<")"<<std::endl;} } while(0)
+
+// /proc/net/snmp 真实样本（精简）
+static const char* SNMP_SAMPLE =
+    "Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens "
+    "AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts\n"
+    "Tcp: 1 200 120000 -1 100 50 5 2 10 12345 13000 100 0 20\n";
+
+static void testParseNormal() {
+    std::cout << "[test] 正常SNMP解析" << std::endl;
+    auto stats = parseTcpStatsFromContent(SNMP_SAMPLE);
+    CHECK(stats.retransSegs == 100);
+    CHECK(stats.outSegs == 13000);
+    // 丢包率 = 100/13000 ≈ 0.77%
+    CHECK(stats.lossRate < 1.0);
+}
+
+static void testParseEmpty() {
+    std::cout << "[test] 空内容不崩溃" << std::endl;
+    auto stats = parseTcpStatsFromContent("");
+    CHECK(stats.retransSegs == 0);  // 默认值
+}
+
+static void testParseMalformed() {
+    std::cout << "[test] 畸形内容" << std::endl;
+    auto stats = parseTcpStatsFromContent("garbage data without format");
+    CHECK(stats.retransSegs == 0);  // 解析失败用默认值
+}
+
+int main() {
+    testParseNormal(); testParseEmpty(); testParseMalformed();
+    std::cout << "\nPASS=" << g_pass << " FAIL=" << g_fail << std::endl;
+    return g_fail > 0 ? 1 : 0;
+}
+```
+
+> `net_iface`、`net_ping`、`net_wifiriss`、`using_iface` 套用相同模式，仅样本字符串不同。
+
+**编译命令**（以 net_tcp 为例）：
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -o test/unit/test_net_tcp_parser \
+    test/unit/test_net_tcp_parser.cpp src/net_tcp.cpp src/logger.cpp -lglog
+```
+
+---
+
+### 11.2 专项测试实施方法
+
+#### 11.2.1 `test_bt_monitor.cpp` — 蓝牙监控专项（重点）
+
+**被测模块**：[bt_monitor.cpp](../src/bt_monitor.cpp)（1637 行，最大模块）
+**测试策略**：bt_monitor 依赖 BlueZ D-Bus + 蓝牙硬件 + eBPF，无法完全脱离硬件。采用**分层测试**：
+
+| 层次 | 可测内容 | 是否需硬件 |
+|------|---------|-----------|
+| 纯逻辑层 | 距离估算、RSSI 等级、MAC 比较、设备类型推断、音频评分 | ❌ 不需要 |
+| 降级场景 | 无适配器、BlueZ 未运行、eBPF 不可用 | ❌ 不需要 |
+| D-Bus 解析 | parseDeviceProperties（构造测试消息）| ❌ 不需要 |
+| 完整功能 | 设备发现、信号收发 | ✅ 需硬件 |
+
+**可独立测试的纯逻辑方法**（来自源码）：
+
+```cpp
+double estimateDistance(int16_t rssiDbm) const;           // L1503 路径损耗模型
+bool calibrateDistance(const std::string& mac, double m); // L1512
+static std::string scoreToLevel(double score);            // L1491
+double calculateAudioScore(const BtAudioTransport& t) const; // L1473
+// BtDeviceInfo 内联方法：averageRssi() / rssiLevel()
+// 静态函数：macEquals()
+```
+
+**实施步骤**：
+
+1. 测试 `estimateDistance`：RSSI=-50→≈1m，RSSI=-80→>10m
+2. 测试 `BtDeviceInfo::rssiLevel`：5 档分级
+3. 测试 `BtDeviceInfo::averageRssi`：历史平均
+4. 测试 `scoreToLevel`：评分→等级映射
+5. 测试 `calculateAudioScore`：delay/codec 扣分
+6. 测试降级场景：`initialize()` 在无 BlueZ 时返回 false
+7. 测试 `macEquals`：大小写混合
+
+**关键用例代码示例**：
+
+```cpp
+#include "bt_monitor.hpp"
+#include <iostream>
+#include <cmath>
+
+static int g_pass = 0, g_fail = 0;
+#define CHECK(cond) do { if(cond){++g_pass;} else {++g_fail; \
+    std::cerr<<"FAIL: "<<#cond<<" (line "<<__LINE__<<")"<<std::endl;} } while(0)
+#define CHECK_NEAR(a,b,eps) CHECK(std::abs((a)-(b))<(eps))
+
+using namespace weaknet_dbus;
+
+static void testRssiLevel() {
+    std::cout << "[test] RSSI等级分级" << std::endl;
+    BtDeviceInfo info;
+    int16_t levels[][2] = {{-45,0},{-55,0},{-65,0},{-75,0},{-85,0}}; // 后填期望
+    // excellent ≥-50, good ≥-60, fair ≥-70, poor ≥-80, very_poor
+    info.rssiHistory = {-45}; CHECK(info.rssiLevel() == "excellent");
+    info.rssiHistory = {-55}; CHECK(info.rssiLevel() == "good");
+    info.rssiHistory = {-65}; CHECK(info.rssiLevel() == "fair");
+    info.rssiHistory = {-75}; CHECK(info.rssiLevel() == "poor");
+    info.rssiHistory = {-85}; CHECK(info.rssiLevel() == "very_poor");
+}
+
+static void testAverageRssi() {
+    std::cout << "[test] RSSI历史平均" << std::endl;
+    BtDeviceInfo info;
+    info.rssiHistory = {-60, -62, -58, -60, -64};
+    CHECK(info.averageRssi() == -60);  // (-60-62-58-60-64)/5 = -60
+    info.rssiHistory.clear();
+    CHECK(info.averageRssi() == 0);    // 空历史返回0
+}
+
+static void testDistanceEstimation() {
+    std::cout << "[test] 距离估算" << std::endl;
+    BtMonitor monitor;  // 不调用 initialize，仅用 estimateDistance
+    // 默认 txPower=-59, n=2.5, ref=1.0
+    // distance = 10^((txPower - rssi)/(10*n)) * ref
+    // rssi=-59 → distance=1.0m
+    double d0 = monitor.estimateDistance(-59);
+    CHECK_NEAR(d0, 1.0, 0.1);
+    // rssi=-80 → distance > 10m
+    double d1 = monitor.estimateDistance(-80);
+    CHECK(d1 > 5.0);
+    // 无效值
+    CHECK(monitor.estimateDistance(0) < 0);       // rssi=0 无效
+    CHECK(monitor.estimateDistance(-1000) < 0);   // 极小值无效
+}
+
+static void testScoreToLevel() {
+    std::cout << "[test] 评分→等级" << std::endl;
+    CHECK(BtMonitor::scoreToLevel(95) == "excellent");
+    CHECK(BtMonitor::scoreToLevel(80) == "good");
+    CHECK(BtMonitor::scoreToLevel(60) == "fair");
+    CHECK(BtMonitor::scoreToLevel(40) == "poor");
+    CHECK(BtMonitor::scoreToLevel(10) == "unknown");
+}
+
+static void testDegradedInit() {
+    std::cout << "[test] 无蓝牙降级初始化" << std::endl;
+    BtMonitor monitor;
+    // 无蓝牙硬件环境，initialize 应返回 false 且不崩溃
+    bool ok = monitor.initialize();
+    CHECK(ok == false);
+    CHECK(monitor.isInitialized() == false);
+    CHECK(monitor.hasAdapter() == false);
+}
+
+int main() {
+    testRssiLevel(); testAverageRssi(); testDistanceEstimation();
+    testScoreToLevel(); testDegradedInit();
+    std::cout << "\nPASS=" << g_pass << " FAIL=" << g_fail << std::endl;
+    return g_fail > 0 ? 1 : 0;
+}
+```
+
+**编译命令**：
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -o test/special/test_bt_monitor \
+    test/special/test_bt_monitor.cpp src/bt_monitor.cpp \
+    src/bt_audio_analyzer.cpp src/bt_audio_fusion.cpp \
+    src/logger.cpp -lglog `pkg-config --cflags --libs dbus-1`
+```
+
+**验证方法**：
+```bash
+./test/special/test_bt_monitor
+# 无蓝牙硬件环境: 降级测试通过，纯逻辑测试通过
+```
+
+---
+
+### 11.3 集成测试实施方法
+
+#### 11.3.1 `test_dbus_service.cpp` — D-Bus 方法专项（C++）
+
+**测试目标**：通过 libdbus 客户端 API 直接调用服务端方法，比 `dbus-send` 脚本更精确。
+
+**实施步骤**：
+
+1. 测试前置：启动 `weaknet-dbus-server`，等待服务名注册
+2. 用 `dbus_bus_get(DBUS_BUS_SESSION)` 连接
+3. 构造方法调用消息，发送并验证回复
+4. 测试并发：10 线程同时 HealthCheck
+5. 测试后置：停止服务端
+
+**关键用例代码示例**：
+
+```cpp
+#include <dbus/dbus.h>
+#include <iostream>
+#include <thread>
+#include <vector>
+
+static int g_pass = 0, g_fail = 0;
+#define CHECK(cond) do { if(cond){++g_pass;} else {++g_fail; \
+    std::cerr<<"FAIL: "<<#cond<<" (line "<<__LINE__<<")"<<std::endl;} } while(0)
+
+static DBusMessage* callMethod(const char* method) {
+    DBusError err; dbus_error_init(&err);
+    DBusConnection* conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
+    if (!conn) return nullptr;
+    DBusMessage* msg = dbus_message_new_method_call(
+        "com.example.WeakNet", "/com/example/WeakNet",
+        "com.example.WeakNet", method);
+    DBusMessage* reply = dbus_connection_send_with_reply_and_block(
+        conn, msg, 3000, &err);
+    dbus_message_unref(msg);
+    return reply;
+}
+
+static void testHealthCheck() {
+    std::cout << "[test] HealthCheck方法" << std::endl;
+    DBusMessage* reply = callMethod("HealthCheck");
+    CHECK(reply != nullptr);
+    if (reply) {
+        DBusMessageIter iter;
+        if (dbus_message_iter_init(reply, &iter)) {
+            CHECK(dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING);
+        }
+        dbus_message_unref(reply);
+    }
+}
+
+static void testConcurrentCalls() {
+    std::cout << "[test] 并发方法调用" << std::endl;
+    std::vector<std::thread> threads;
+    int success = 0;
+    for (int i = 0; i < 10; i++) {
+        threads.emplace_back([&success]() {
+            auto r = callMethod("HealthCheck");
+            if (r) { success++; dbus_message_unref(r); }
+        });
+    }
+    for (auto& t : threads) t.join();
+    CHECK(success == 10);  // 10次并发全部成功
+}
+
+int main() {
+    testHealthCheck();
+    testConcurrentCalls();
+    std::cout << "\nPASS=" << g_pass << " FAIL=" << g_fail << std::endl;
+    return g_fail > 0 ? 1 : 0;
+}
+```
+
+**运行前置**（由 `run_all_tests.sh` 自动完成）：
+```bash
+./bin/weaknet-dbus-server &  # 先启动服务端
+sleep 3
+./test/integration/test_dbus_service
+killall weaknet-dbus-server
+```
+
+---
+
+### 11.4 Makefile 集成实施方法
+
+在 `server/Makefile` 追加测试目标：
+
+```makefile
+# ============== 测试目标 ==============
+TEST_DIR = test
+TEST_BIN_DIR = $(TEST_DIR)/bin
+
+# 单元测试列表
+UNIT_TESTS = test_net_info test_quality_assessor test_anomaly_detector \
+             test_audio_fusion test_event_manager test_band_conflict \
+             test_serializer
+
+.PHONY: test test-unit test-integration test-ebpf test-all coverage
+
+# 编译并运行所有单元测试
+test-unit: $(addprefix $(TEST_BIN_DIR)/, $(UNIT_TESTS))
+	@for bin in $^; do \
+		echo "========== 运行 $$bin =========="; \
+		./$$bin || exit 1; \
+	done
+	@echo "✅ 所有单元测试通过"
+
+# 单个单元测试编译规则（模式规则）
+$(TEST_BIN_DIR)/test_%: $(TEST_DIR)/unit/test_%.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -o $@ $< \
+	    src/$$(echo $* | sed 's/_/_/').cpp src/logger.cpp -lglog \
+	    `pkg-config --cflags --libs dbus-1`
+
+# 集成测试（依赖服务端运行）
+test-integration:
+	bash $(TEST_DIR)/integration_test.sh
+
+# eBPF 专项测试（需 root）
+test-ebpf: $(TEST_DIR)/special/test_ebpf
+	sudo $(TEST_DIR)/special/test_ebpf
+
+# 全部测试
+test-all: test-unit
+	bash $(TEST_DIR)/run_all_tests.sh
+
+# 覆盖率
+coverage: CXXFLAGS += --coverage -fprofile-arcs -ftest-coverage
+coverage:
+	$(MAKE) clean && $(MAKE) CXXFLAGS="$(CXXFLAGS)" test-unit
+	lcov --capture --directory . --output-file coverage.info
+	genhtml coverage.info -o $(TEST_DIR)/reports/coverage
+```
+
+---
+
+### 11.5 `run_all_tests.sh` 扩展实施方法
+
+在现有脚本"单元测试"段后插入新增单元测试执行逻辑：
+
+```bash
+# ============== 新增单元测试 ==============
+log_test "[unit] 运行新增单元测试套件..."
+for unit_test in test_quality_assessor test_anomaly_detector \
+                 test_audio_fusion test_event_manager \
+                 test_band_conflict test_serializer; do
+    if [ -x "test/bin/$unit_test" ]; then
+        UNIT_OUT=$(./test/bin/$unit_test 2>&1)
+        UNIT_RC=$?
+        echo "$UNIT_OUT" | tail -5 | tee -a "$REPORT_FILE"
+        if [ "$UNIT_RC" = "0" ]; then
+            check_result "$unit_test" 0
+        else
+            check_result "$unit_test" 1 "exit=$UNIT_RC"
+        fi
+    else
+        check_result "$unit_test" 2 "binary not found"
+    fi
+done
+
+# 蓝牙监控专项测试（无需硬件，纯逻辑层）
+if [ -x "test/special/test_bt_monitor" ]; then
+    BT_OUT=$(./test/special/test_bt_monitor 2>&1)
+    BT_RC=$?
+    echo "$BT_OUT" | tail -5 | tee -a "$REPORT_FILE"
+    if [ "$BT_RC" = "0" ]; then
+        check_result "bt_monitor 纯逻辑测试" 0
+    else
+        check_result "bt_monitor 纯逻辑测试" 1 "exit=$BT_RC"
+    fi
+fi
+```
+
+---
+
+### 11.6 实施顺序总览
+
+| 步骤 | 任务 | 产出 | 依赖 |
+|------|------|------|------|
+| 1 | 创建 `test/unit/`、`test/special/`、`test/bin/` 目录 | 目录结构 | 无 |
+| 2 | 编写 7 个核心算法单元测试（11.1.1-11.1.6） | ~50 用例 | 无 |
+| 3 | 重构 5 个解析模块（纯函数化）+ 编写 Mock 测试（11.1.7） | ~40 用例 | 步骤2 |
+| 4 | 编写蓝牙监控专项测试（11.2.1） | ~20 用例 | 步骤2 |
+| 5 | 扩展 Makefile 测试目标（11.4） | make 集成 | 步骤2-4 |
+| 6 | 扩展 `run_all_tests.sh`（11.5） | 自动化集成 | 步骤5 |
+| 7 | 执行全部测试，修复失败用例 | 测试报告 | 步骤6 |
+| 8 | 生成覆盖率报告（11.4 coverage） | 覆盖率HTML | 步骤7 |
+
+**关键原则**：每个测试文件独立可编译、独立可运行，不依赖其他测试文件。先确保单文件通过，再集成到自动化脚本。
+
+---
+
+## 附录 A：测试命令一览
+
+```bash
+# 仅运行单元测试（快速，无外部依赖）
+make test-unit
+
+# 运行集成测试（需 D-Bus 会话总线）
+make test-integration
+
+# 运行 eBPF 专项测试（需 root）
+sudo make test-ebpf
+
+# 运行全部测试
+make test-all
+
+# 生成覆盖率报告
+make coverage
+
+# 通过自动化脚本一键执行
+./test/run_all_tests.sh
+```
+
+## 附录 B：编码规范要求
+
+新增测试代码须遵循：
+- C++17 标准，编译参数 `-Wall -Wextra -Wpedantic`
+- GoogleTest 风格：`TEST(SuiteName, CaseName)`、`EXPECT_*` / `ASSERT_*`
+- 中文注释，与项目现有风格一致
+- 每个测试函数职责单一，命名表意（`质量优秀场景_应返回EXCELLENT`）
+- 测试文件头部注释说明被测模块、编译命令
+- 不引入新的第三方依赖（gtest 除外）

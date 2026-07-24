@@ -1,0 +1,1002 @@
+# AI 驱动的网络质量诊断平台 — 学习路线与扩展文档
+
+> 版本：v1.0  
+> 适用对象：项目维护者、二次开发者、端侧部署工程师、AI 集成工程师  
+> 文档目的：系统梳理本项目代码结构、学习顺序、端侧部署路线、端侧 AI 集成路线，并从未来扩展、优化方向、应用场景、学习资源等多个维度进行深度扩展。
+
+---
+
+## 目录
+
+- [一、引言](#一引言)
+  - [1.1 项目概述](#11-项目概述)
+  - [1.2 文档目标](#12-文档目标)
+- [二、项目架构与代码结构](#二项目架构与代码结构)
+  - [2.1 顶层目录结构](#21-顶层目录结构)
+  - [2.2 server 模块详细结构](#22-server-模块详细结构)
+  - [2.3 AI 模块详细结构](#23-ai-模块详细结构)
+  - [2.4 模块依赖关系图](#24-模块依赖关系图)
+- [三、推荐学习顺序](#三推荐学习顺序)
+  - [3.1 第一阶段：理解整体架构（1-2 天）](#31-第一阶段理解整体架构1-2-天)
+  - [3.2 第二阶段：数据结构与基础设施（2-3 天）](#32-第二阶段数据结构与基础设施2-3-天)
+  - [3.3 第三阶段：监控采集模块（3-5 天）](#33-第三阶段监控采集模块3-5-天)
+  - [3.4 第四阶段：eBPF 深入（2-3 天）](#34-第四阶段ebpf-深入2-3-天)
+  - [3.5 第五阶段：DBus 通信与事件机制（2-3 天）](#35-第五阶段dbus-通信与事件机制2-3-天)
+  - [3.6 第六阶段：质量评估与蓝牙（2 天）](#36-第六阶段质量评估与蓝牙2-天)
+  - [3.7 第七阶段：AI 智能诊断模块（2-3 天）](#37-第七阶段ai-智能诊断模块2-3-天)
+- [四、端侧部署学习路线](#四端侧部署学习路线)
+  - [4.1 知识体系总览](#41-知识体系总览)
+  - [4.2 P0 必学知识（部署地基）](#42-p0-必学知识部署地基)
+  - [4.3 P1 重要知识（项目相关）](#43-p1-重要知识项目相关)
+  - [4.4 部署全流程（按时间线）](#44-部署全流程按时间线)
+  - [4.5 交叉编译详解](#45-交叉编译详解)
+- [五、端侧 AI 集成学习路线](#五端侧-ai-集成学习路线)
+  - [5.1 P2 端侧 AI 知识](#51-p2-端侧-ai-知识)
+  - [5.2 端侧 AI 部署全流程](#52-端侧-ai-部署全流程)
+  - [5.3 端侧 AI 功能矩阵](#53-端侧-ai-功能矩阵)
+- [六、未来可扩展功能](#六未来可扩展功能)
+  - [6.1 监控能力扩展](#61-监控能力扩展)
+  - [6.2 架构演进](#62-架构演进)
+  - [6.3 AI 能力扩展](#63-ai-能力扩展)
+- [七、潜在优化方向](#七潜在优化方向)
+  - [7.1 性能优化](#71-性能优化)
+  - [7.2 代码质量优化](#72-代码质量优化)
+  - [7.3 工程化优化](#73-工程化优化)
+- [八、应用场景拓展](#八应用场景拓展)
+  - [8.1 智能家居网关](#81-智能家居网关)
+  - [8.2 工业物联网网关](#82-工业物联网网关)
+  - [8.3 车载网络监控](#83-车载网络监控)
+  - [8.4 运营商级部署](#84-运营商级部署)
+  - [8.5 边缘计算节点](#85-边缘计算节点)
+- [九、学习资源补充](#九学习资源补充)
+  - [9.1 书籍推荐](#91-书籍推荐)
+  - [9.2 在线课程](#92-在线课程)
+  - [9.3 实操环境与工具](#93-实操环境与工具)
+  - [9.4 社区与开源项目](#94-社区与开源项目)
+- [十、结论与展望](#十结论与展望)
+
+---
+
+## 一、引言
+
+### 1.1 项目概述
+
+本项目是一个基于 eBPF + D-Bus 的多协议网络质量监测与 RAG 智能诊断平台，运行于 Linux 环境。项目包含两大子系统：
+
+1. **C++ 监控服务端**（`server/`）：基于 eBPF 内核级流量采集、D-Bus IPC 通信、多线程并发监控，实现多维度网络指标采集（RTT、丢包率、RSSI、流量、蓝牙状态）和质量评估。
+2. **Python AI 诊断模块**（`AI-assisted analysis/`）：基于 LangChain + FAISS 的检索增强生成（RAG）管道，结合 LLM 实现自然语言故障诊断和时间点回溯分析。
+
+技术栈：C++17、eBPF/libbpf、D-Bus、netlink、glog、Makefile、Python、LangChain、FAISS。
+
+### 1.2 文档目标
+
+本文档旨在：
+- 为新接手项目的开发者提供**清晰的代码阅读顺序**；
+- 为端侧部署工程师提供**完整的部署学习路线**；
+- 为 AI 集成工程师提供**端侧 AI 落地方案**；
+- 从**未来扩展、优化方向、应用场景**等维度为项目长期演进提供规划参考。
+
+---
+
+## 二、项目架构与代码结构
+
+### 2.1 顶层目录结构
+
+```
+AI-powered-Network-Diagnostics/
+├── server/                          # C++ 监控服务端（核心）
+│   ├── include/                     # 头文件
+│   ├── src/                         # 源文件
+│   ├── build/                       # 编译产物（vmlinux.h, flow_rate.bpf.o）
+│   ├── bin/                         # 可执行程序
+│   ├── Makefile                     # 构建脚本
+│   └── vmlinux.h                    # 内核 BTF 定义（CO-RE 依赖）
+├── AI-assisted analysis/            # Python RAG 智能诊断模块
+│   ├── *.py                         # 各类 RAG 分析器
+│   ├── network_knowledge_vectorstore_local/  # 本地 FAISS 向量库
+│   └── requirements.txt
+├── logs/                            # 运行日志
+├── Makefile                         # 顶层构建脚本
+├── install.sh                       # 安装脚本
+└── README*.md                       # 项目文档
+```
+
+### 2.2 server 模块详细结构
+
+server 模块按职责分为以下几层：
+
+#### 基础设施层
+
+| 文件 | 职责 |
+|------|------|
+| [main.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/main.cpp) | 程序入口，调用 `start_server()` |
+| [server.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/server.cpp) | 服务核心：初始化、启动 8 个监控线程、DBus 主循环 |
+| [server.hpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/include/server.hpp) | 服务上下文定义（ServerContext） |
+| [common.hpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/include/common.hpp) | D-Bus 常量定义（服务名、方法名、信号名） |
+| [looper.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/looper.cpp) | D-Bus 事件主循环 |
+| [logger.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/logger.cpp) | 基于 glog 的日志封装 |
+| [serializer.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/serializer.cpp) | 数据序列化 |
+
+#### 数据结构层
+
+| 文件 | 职责 |
+|------|------|
+| [net_info.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/net_info.cpp) | NetInfo 类：统一封装网络接口信息（接口名、RTT、RSSI、丢包率、流量等） |
+| [weak_netmgr.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/weak_netmgr.cpp) | WeakNetMgr：网络管理器，聚合所有指标 |
+| [net_iface.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/net_iface.cpp) | 接口监控（netlink ROUTE） |
+| [using_iface.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/using_iface.cpp) | 当前上网网卡识别（默认路由） |
+
+#### 监控采集层
+
+| 文件 | 监控项 | 采集技术 |
+|------|--------|---------|
+| [net_ping.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/net_ping.cpp) | RTT 延迟 | ICMP raw socket（SOCK_RAW） |
+| [rtt_monitor.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/rtt_monitor.cpp) | RTT 监控线程 | 封装 NetPing |
+| [net_tcp.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/net_tcp.cpp) | TCP 丢包率 | netlink SOCK_DIAG（tcp_info） |
+| [tcp_loss_monitor.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/tcp_loss_monitor.cpp) | TCP 丢包监控线程 | 封装 NetTcp |
+| [net_wifiriss.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/net_wifiriss.cpp) | Wi-Fi RSSI | wpa_supplicant ctrl_interface（UNIX DGRAM） |
+| [rssi_monitor.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/rssi_monitor.cpp) | RSSI 监控线程 | 封装 WiFiRssiClient |
+| [bt_monitor.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/bt_monitor.cpp) | 蓝牙设备监控 | BlueZ D-Bus 系统总线 |
+| [net_traffic.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/net_traffic.cpp) | 流量分析 | eBPF 用户态 + 异常检测 |
+| [traffic_analyzer.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/traffic_analyzer.cpp) | eBPF 流量分析器 | libbpf 加载 eBPF 程序 |
+| [traffic_anomaly_detector.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/traffic_anomaly_detector.cpp) | 流量异常检测 | 突发/可疑/高流量检测 |
+| [flow_rate.bpf.c](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/flow_rate.bpf.c) | eBPF 内核态程序 | kprobe + LRU_HASH |
+
+#### 评估与通信层
+
+| 文件 | 职责 |
+|------|------|
+| [network_quality_assessor.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/network_quality_assessor.cpp) | 网络质量评估（加权评分 + 等级判定） |
+| [dbus_service.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/dbus_service.cpp) | D-Bus 服务封装（方法导出 + 信号发送） |
+| [event_manager.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/event_manager.cpp) | 事件管理器（统一路由分发） |
+
+#### 线程结构（8 个监控线程）
+
+[server.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/server.cpp#L378-L397) 启动以下线程：
+
+| 线程 | 函数 | 采集周期 |
+|------|------|---------|
+| 接口监控 | `start_iface_monitor_thread` | 事件驱动 |
+| 当前网卡 | `start_using_iface_thread` | 事件驱动 |
+| RTT 监控 | `start_rtt_monitor_thread` | 10s |
+| RSSI 监控 | `start_rssi_monitor_thread` | 10s |
+| TCP 丢包 | `start_tcp_loss_monitor_thread` | 10s |
+| 流量分析 | `start_traffic_analysis_thread` | 10s |
+| 质量评估 | `start_network_quality_thread` | 15s |
+| 蓝牙监测 | `start_bt_monitor_thread` | 事件驱动 |
+
+### 2.3 AI 模块详细结构
+
+```
+AI-assisted analysis/
+├── network_knowledge_base.py          # 知识库构建
+├── network_rag_system.py              # RAG 系统主入口
+├── interactive_rag.py                 # 交互式诊断
+├── network_rag_time_analysis.py       # 基于时间戳的回溯分析
+├── vector_rag_analyzer.py             # 向量 RAG 分析器（FAISS）
+├── local_vector_rag_analyzer.py       # 本地向量 RAG（离线）
+├── simple_rag_analyzer.py             # 简化版 RAG（TF-IDF 降级）
+├── true_rag_analyzer.py               # 完整 RAG 分析器
+├── optimized_network_rag.py           # 优化版 RAG
+├── log_capture.py                     # 日志采集
+├── network_knowledge_vectorstore_local/
+│   ├── index.faiss                    # FAISS 向量索引
+│   └── index.pkl                      # 元数据
+└── requirements.txt
+```
+
+### 2.4 模块依赖关系图
+
+```
+                    ┌──────────┐
+                    │ main.cpp │
+                    └────┬─────┘
+                         │
+                  ┌──────▼──────┐
+                  │ server.cpp  │ 启动 8 个线程 + D-Bus 主循环
+                  └──────┬──────┘
+                         │
+        ┌────────────────┼────────────────┐
+        │                │                │
+   ┌────▼────┐    ┌──────▼──────┐   ┌─────▼─────┐
+   │ WeakNet │    │ DbusService │   │  Looper   │
+   │   Mgr   │    │             │   │ (主循环)   │
+   └────┬────┘    └──────┬──────┘   └───────────┘
+        │                │
+        │           ┌────▼────┐
+        │           │ Event   │ 异步信号发送
+        │           │ Manager │
+        │           └─────────┘
+        │
+   ┌────┴──────────────────────────────────┐
+   │                                       │
+   │  NetInfo（统一数据结构）                 │
+   │                                       │
+   └────┬──────┬──────┬──────┬──────┬──────┘
+        │      │      │      │      │
+   ┌────▼─┐┌───▼──┐┌──▼───┐┌─▼────┐┌▼──────┐
+   │NetIface││NetPing││NetTcp││WiFi  ││Traffic│
+   │(netlink)│(ICMP)│(netlink)││Rssi  ││Analyzer│
+   └──────┘└──────┘└──────┘└──────┘└───┬───┘
+                                        │
+                                  ┌─────▼─────┐
+                                  │ eBPF BPF  │
+                                  │flow_rate  │
+                                  │ .bpf.c    │
+                                  └───────────┘
+                                        │
+                              ┌─────────▼─────────┐
+                              │ NetworkQuality    │
+                              │ Assessor（评估）    │
+                              └───────────────────┘
+```
+
+---
+
+## 三、推荐学习顺序
+
+学习本项目建议遵循"**由整体到局部，由基础到核心**"的原则。
+
+### 3.1 第一阶段：理解整体架构（1-2 天）
+
+**目标**：建立全局认知，理解项目做什么、怎么组织。
+
+1. 阅读 `README.md`、`README_PROJECT.md` 了解项目背景
+2. 阅读 [Makefile](file:///home/tanqf/AI-powered-Network-Diagnostics/Makefile) 和 [server/Makefile](file:///home/tanqf/AI-powered-Network-Diagnostics/server/Makefile)，了解编译方式和依赖
+3. 阅读 [main.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/main.cpp)（仅 8 行，入口）
+4. 通读 [server.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/server.cpp) 的 `start_server()` 函数，理解初始化流程和 8 个线程的启动
+5. 阅读 [common.hpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/include/common.hpp)，了解 D-Bus 服务名、方法、信号定义
+
+**关键理解点**：
+- 项目的 C/S 架构：C++ 服务端 + D-Bus 客户端
+- 8 个监控线程的职责划分
+- 主线程通过 Looper 进入 D-Bus 事件循环
+
+### 3.2 第二阶段：数据结构与基础设施（2-3 天）
+
+**目标**：理解项目的数据流转基础。
+
+1. **NetInfo 类**（[net_info.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/net_info.cpp) / [net_info.hpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/include/net_info.hpp)）
+   - 这是项目的**核心数据结构**，统一封装所有网络指标
+   - 重点理解：字段定义、等价比较（operator==）、键值比较（key comparison）
+   - 理解为什么需要这两种比较（用于变化检测）
+
+2. **WeakNetMgr**（[weak_netmgr.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/weak_netmgr.cpp)）
+   - 网络管理器，聚合所有监控数据
+   - 理解线程安全机制（std::mutex + std::lock_guard）
+
+3. **Logger**（[logger.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/logger.cpp)）
+   - 基于 glog 的封装，理解日志模块化设计
+
+4. **Serializer**（[serializer.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/serializer.cpp)）
+   - 数据序列化，用于 D-Bus 通信
+
+### 3.3 第三阶段：监控采集模块（3-5 天）
+
+**目标**：理解各维度网络指标的采集原理。按难度递增学习：
+
+1. **接口监控**（[net_iface.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/net_iface.cpp)）
+   - 入门：netlink ROUTE 协议基础
+   - 理解 RTMGRP_LINK/RTMGRP_IPV4_ROUTE 多播组
+
+2. **当前网卡识别**（[using_iface.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/using_iface.cpp)）
+   - 理解默认路由解析
+
+3. **RTT 监控**（[net_ping.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/net_ping.cpp) → [rtt_monitor.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/rtt_monitor.cpp)）
+   - 重点：ICMP raw socket、报文构造、select 超时
+   - 理解 SO_BINDTODEVICE 绑定网卡
+
+4. **TCP 丢包**（[net_tcp.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/net_tcp.cpp) → [tcp_loss_monitor.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/tcp_loss_monitor.cpp)）
+   - 重点：netlink SOCK_DIAG、inet_diag_msg、tcp_info 结构体
+   - 理解 tcpi_total_retrans 差分计算
+
+5. **Wi-Fi RSSI**（[net_wifiriss.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/net_wifiriss.cpp) → [rssi_monitor.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/rssi_monitor.cpp)）
+   - 重点：UNIX DGRAM socket、wpa_supplicant ctrl_interface
+   - 理解 SIGNAL_POLL 命令和响应解析
+
+### 3.4 第四阶段：eBPF 深入（2-3 天）
+
+**目标**：理解 eBPF 内核态采集，这是项目的技术核心。
+
+1. **内核态程序**（[flow_rate.bpf.c](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/flow_rate.bpf.c)）
+   - kprobe 挂载 ip_queue_xmit / udp_sendmsg
+   - BPF_MAP_TYPE_LRU_HASH 连接级流量统计
+   - `__sync_fetch_and_add` 无锁并发更新
+   - BPF_CORE_READ CO-RE 兼容
+   - 按 ifindex 过滤
+
+2. **用户态加载**（[traffic_analyzer.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/traffic_analyzer.cpp)）
+   - libbpf API：bpf_object__open、bpf_object__load、bpf_program__attach
+   - 降级模式：eBPF 初始化失败时跳过
+   - BPF Map 读取
+
+3. **流量分析**（[net_traffic.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/net_traffic.cpp)）
+   - Top 流量连接采样
+   - 流量异常检测（[traffic_anomaly_detector.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/traffic_anomaly_detector.cpp)）
+
+4. **vmlinux.h 与 BTF**
+   - 理解 [vmlinux.h](file:///home/tanqf/AI-powered-Network-Diagnostics/server/build/vmlinux.h) 的生成方式
+   - 理解 CO-RE 机制
+
+### 3.5 第五阶段：DBus 通信与事件机制（2-3 天）
+
+**目标**：理解跨进程通信和异步事件推送。
+
+1. **DbusService**（[dbus_service.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/dbus_service.cpp) / [dbus_service.hpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/include/dbus_service.hpp)）
+   - D-Bus 连接、服务名注册、方法导出、信号发送
+   - 理解方法表（method table）注册机制
+
+2. **EventManager**（[event_manager.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/event_manager.cpp)）
+   - 事件统一路由分发
+   - 异步信号发送（独立线程，避免阻塞监控线程）
+
+3. **Looper**（[looper.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/looper.cpp)）
+   - D-Bus 主事件循环
+
+### 3.6 第六阶段：质量评估与蓝牙（2 天）
+
+**目标**：理解综合评估算法和多协议扩展。
+
+1. **质量评估**（[network_quality_assessor.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/network_quality_assessor.cpp)）
+   - 加权评分算法：RTT(0.3) + 丢包(0.3) + RSSI(0.2) + 流量(0.2)
+   - 等级判定：EXCELLENT / GOOD / FAIR / POOR
+   - 问题检测（detectNetworkIssues）
+
+2. **蓝牙监控**（[bt_monitor.cpp](file:///home/tanqf/AI-powered-Network-Diagnostics/server/src/bt_monitor.cpp)）
+   - BlueZ D-Bus 系统总线 API
+   - Device1 接口属性解析（RSSI、Connected、Paired 等）
+   - BR/EDR 与 BLE 双模识别
+
+### 3.7 第七阶段：AI 智能诊断模块（2-3 天）
+
+**目标**：理解 RAG 管道和故障诊断。
+
+1. **知识库构建**（`network_knowledge_base.py`）
+2. **RAG 主系统**（`network_rag_system.py`）
+3. **向量检索**（`vector_rag_analyzer.py`，FAISS）
+4. **时间点回溯**（`network_rag_time_analysis.py`，日志正则解析）
+5. **降级方案**（`simple_rag_analyzer.py`，TF-IDF 本地嵌入）
+
+---
+
+## 四、端侧部署学习路线
+
+### 4.1 知识体系总览
+
+```
+P0 必学（部署地基）
+├── Linux 系统基础
+├── 交叉编译与工具链
+└── Makefile 构建系统
+
+P1 重要（项目相关）
+├── eBPF 技术栈（CO-RE / libbpf / BTF）
+├── D-Bus 与 IPC
+├── 嵌入式 Linux（Buildroot / Yocto）
+└── 进程权限与 capabilities
+
+P2 端侧 AI
+├── 机器学习基础
+├── 模型轻量化（量化 / 剪枝 / ONNX）
+└── 端侧推理框架（ONNX Runtime / NCNN）
+
+P3 进阶
+├── 嵌入式系统优化
+└── OTA 升级
+```
+
+### 4.2 P0 必学知识（部署地基）
+
+#### Linux 系统基础
+
+- **文件系统层次标准**：`/usr`、`/opt`、`/etc`、`/var` 的用途
+- **进程管理**：systemd、service、journalctl
+- **包管理**：apt、dpkg、pkg-config
+- **网络配置**：ip、路由表、网络接口
+- **权限系统**：文件权限、sudo、capabilities（cap_bpf、cap_net_raw）
+- **Shell 脚本**：部署脚本编写
+
+**推荐资源**：《鸟哥的 Linux 私房菜》
+
+#### 交叉编译与工具链
+
+- **交叉编译原理**：host / target / build 的区别
+- **工具链组成**：aarch64-linux-gnu-gcc、sysroot、pkg-config
+- **Makefile 与 CMake**：构建脚本读写
+- **依赖管理**：交叉编译第三方库
+- **静态链接 vs 动态链接**：端侧常选静态链接减少依赖
+
+#### Makefile 构建系统
+
+- 理解 [server/Makefile](file:///home/tanqf/AI-powered-Network-Diagnostics/server/Makefile) 的编译规则
+- 学习如何改造 Makefile 支持交叉编译（`CROSS_COMPILE` 变量）
+
+### 4.3 P1 重要知识（项目相关）
+
+#### eBPF 技术栈
+
+- **eBPF 基础**：程序类型、map 类型、hook 机制
+- **CO-RE**：vmlinux.h、BPF_CORE_READ
+- **libbpf**：bpf_object__open、bpf_program__attach、bpf_map_update_elem
+- **内核依赖**：CONFIG_BPF、CONFIG_BPF_SYSCALL、CONFIG_DEBUG_INFO_BTF、CONFIG_KPROBES
+- **BTF**：/sys/kernel/btf/vmlinux
+- **调试工具**：bpftool
+
+**推荐资源**：《BPF Performance Tools》（Brendan Gregg）
+
+#### D-Bus 与 IPC
+
+- **D-Bus 架构**：系统总线 vs 会话总线、daemon、服务名、对象路径
+- **D-Bus 协议**：方法调用、信号、属性
+- **libdbus C API**：dbus_bus_get、dbus_bus_request_name
+- **D-Bus 配置**：/etc/dbus-1/system.d/*.conf 权限配置
+- **调试工具**：dbus-send、dbus-monitor
+
+#### 嵌入式 Linux
+
+- **构建系统**：Buildroot、Yocto
+- **根文件系统**：busybox、glibc vs musl
+- **内核裁剪**：menuconfig、defconfig
+- **设备树**：硬件描述
+- **启动流程**：U-Boot → Kernel → init → systemd
+
+#### 进程权限与系统安全
+
+- **Linux capabilities**：CAP_BPF、CAP_NET_RAW、CAP_NET_ADMIN
+- **setcap / getcap**
+- 以非 root 运行特权程序的方案
+
+### 4.4 部署全流程（按时间线）
+
+```
+第 1-2 天：硬件准备 + 系统烧录 + 内核检查
+第 3-4 天：C++ 服务编译 + 部署 + systemd 配置
+第 5-7 天：数据采集 + 模型训练 + ONNX 导出 + 量化
+第 8-10 天：ONNX Runtime 集成 + C++ AI 模块开发 + 编译
+第 11-12 天：端云协同配置 + 上报模块 + 本地知识库
+第 13-14 天：端到端验证 + 性能优化 + 降级测试
+第 15 天+：生产化部署（Buildroot 镜像 + OTA + 监控）
+```
+
+**关键里程碑**：
+
+| 里程碑 | 标志 | 预计时间 |
+|--------|------|---------|
+| M1 | C++ 服务在开发板跑通 | 第 4 天 |
+| M2 | AI 模型训练完成，导出 ONNX | 第 7 天 |
+| M3 | 端侧 AI 推理集成 | 第 10 天 |
+| M4 | 端云协同跑通 | 第 12 天 |
+| M5 | 生产化部署 | 第 15 天+ |
+
+### 4.5 交叉编译详解
+
+#### 4.5.1 环境准备
+
+```bash
+# 安装交叉编译工具链
+sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+# 安装 eBPF 编译工具
+sudo apt install clang llvm bpftool libbpf-dev
+```
+
+#### 4.5.2 准备 ARM64 sysroot
+
+从开发板拷贝依赖库：
+
+```bash
+mkdir -p ~/sysroot-aarch64
+rsync -avz pi@<开发板IP>:/lib ~/sysroot-aarch64/
+rsync -avz pi@<开发板IP>:/usr/lib ~/sysroot-aarch64/usr/
+rsync -avz pi@<开发板IP>:/usr/include ~/sysroot-aarch64/usr/
+```
+
+#### 4.5.3 配置 pkg-config
+
+创建 `aarch64-linux-gnu-pkg-config` 脚本，指向 sysroot。
+
+#### 4.5.4 生成 vmlinux.h
+
+```bash
+scp pi@<开发板IP>:/sys/kernel/btf/vmlinux ./vmlinux
+bpftool btf dump file ./vmlinux format c > server/build/vmlinux.h
+```
+
+#### 4.5.5 编译 eBPF（架构无关）
+
+```bash
+clang -g -O2 -target bpf -Iserver/build \
+      -c server/src/flow_rate.bpf.c \
+      -o server/build/flow_rate.bpf.o
+```
+
+#### 4.5.6 交叉编译 C++ 服务
+
+```bash
+aarch64-linux-gnu-g++ -std=c++17 -O2 \
+    --sysroot=~/sysroot-aarch64 \
+    -Iserver/include \
+    $(aarch64-linux-gnu-pkg-config --cflags dbus-1) \
+    -o weaknet-dbus-server \
+    server/src/*.cpp \
+    $(aarch64-linux-gnu-pkg-config --libs dbus-1) \
+    -lglog -lbpf
+```
+
+#### 4.5.7 验证产物
+
+```bash
+file server/bin/weaknet-dbus-server
+# 应输出：ELF 64-bit LSB executable, ARM aarch64
+```
+
+#### 4.5.8 板载编译（最简方案）
+
+如果开发板运行 Debian/Ubuntu（如树莓派），直接在板上编译最简单：
+
+```bash
+sudo apt install build-essential libdbus-1-dev libgoogle-glog-dev \
+                 libbpf-dev libelf-dev clang llvm bpftool
+make -C server all
+```
+
+---
+
+## 五、端侧 AI 集成学习路线
+
+### 5.1 P2 端侧 AI 知识
+
+#### 机器学习基础
+
+- **监督学习**：分类、回归
+- **时序模型**：ARIMA、LSTM
+- **异常检测**：3-Sigma、EWMA、Isolation Forest
+- **特征工程**：从网络指标提取特征
+- **模型评估**：准确率、召回率、F1、ROC
+
+**推荐资源**：吴恩达机器学习课程（Coursera）
+
+#### 模型轻量化与压缩
+
+- **量化**：FP32 → INT8/INT4
+- **剪枝**：去除冗余神经元
+- **知识蒸馏**：大模型教小模型
+- **轻量架构**：MobileNet、SqueezeNet、MiniLM
+- **ONNX 格式**：模型转换中间格式
+
+```
+模型大小对比：
+  BERT-base:        440MB (FP32) → 110MB (INT8)
+  MobileNetV2:       14MB (FP32) → 3.5MB (INT8)
+  MiniLM:           120MB (FP32) →  30MB (INT8)
+  随机森林(100棵):    <1MB
+
+端侧部署目标：<10MB，推理延迟 <50ms
+```
+
+#### 端侧推理框架
+
+| 框架 | 适用场景 | 特点 |
+|------|---------|------|
+| ONNX Runtime | 通用 | 跨平台，C++ API，易部署 |
+| TFLite | 移动端 | Google 出品，ARM 优化好 |
+| NCNN | ARM 端侧 | 腾讯出品，无依赖，体积小 |
+| MNN | 移动端/IoT | 阿里出品，支持异构计算 |
+| TVM | 极致优化 | 自动调优 |
+
+**推荐**：先学 ONNX Runtime（与 C++ 项目最契合）。
+
+### 5.2 端侧 AI 部署全流程
+
+```
+1. 训练模型（Python, PyTorch/TF/sklearn）
+2. 模型转换（导出为 ONNX）
+3. 模型量化（FP32 → INT8）
+4. 端侧推理（C++ + ONNX Runtime）
+5. 集成到项目（输入网络指标，输出诊断结果）
+```
+
+**端侧 AI 数据流设计**：
+
+```
+C++ 监控线程（每10秒）
+    │
+    ├── 采集 RTT/丢包/RSSI/流量
+    │
+    ▼
+AI 推理模块
+    │
+    ├── 构造输入张量 [rtt, loss, rssi, traffic]
+    ├── 调用 ONNX Runtime 推理
+    ├── 输出：异常类型 + 置信度
+    │
+    ▼
+结果合并
+    │
+    ├── 原有质量评分（EXCELLENT/GOOD/FAIR/POOR）
+    ├── 新增 AI 诊断结果（异常类型 + 置信度）
+    │
+    ▼
+D-Bus 信号 / 日志 / HTTP 上报
+```
+
+### 5.3 端侧 AI 功能矩阵
+
+| 优先级 | 功能 | 开发成本 | 端侧价值 |
+|--------|------|---------|---------|
+| P0 | 时序异常检测（EWMA/3-Sigma） | 低 | 高 |
+| P0 | 端侧规则知识库 | 低 | 高 |
+| P1 | ONNX 轻量推理（故障分类） | 中 | 高 |
+| P1 | 自适应采样调度 | 中 | 中 |
+| P2 | 端侧向量检索（MiniLM） | 中 | 中 |
+| P3 | 联邦学习 | 高 | 高（规模化场景） |
+
+**核心理念**：端侧做"快"（毫秒级异常检测和分类），云端做"深"（基于 LLM 的根因分析和知识检索）。
+
+---
+
+## 六、未来可扩展功能
+
+### 6.1 监控能力扩展
+
+#### 6.1.1 DNS 监控
+
+- **目标**：监控 DNS 解析延迟和失败率
+- **技术方案**：eBPF 挂载 `udp_recvmsg` / `udp_sendmsg`，或解析 `/proc/net/udp`
+- **价值**：DNS 问题是常见网络故障根因
+
+#### 6.1.2 HTTPS 连接质量监控
+
+- **目标**：监控 TLS 握手延迟、连接建立时间
+- **技术方案**：eBPF 挂载 `tcp_connect` / `tcp_finish_connect`
+- **价值**：更精确的应用层网络体验评估
+
+#### 6.1.3 网络抖动（Jitter）监控
+
+- **目标**：测量 RTT 的方差，评估网络稳定性
+- **技术方案**：在现有 ICMP ping 基础上计算抖动
+- **价值**：对实时音视频应用（VoIP/WebRTC）意义重大
+
+#### 6.1.4 路径质量监控（Traceroute）
+
+- **目标**：识别网络路径中的拥塞节点
+- **技术方案**：TTL 递增的 ICMP 探测
+- **价值**：故障定位到具体网络跳
+
+### 6.2 架构演进
+
+#### 6.2.1 配置化驱动
+
+当前项目存在硬编码（网卡名 `eth0`、RTT 目标 `223.5.5.5`、eBPF 路径 `../build/flow_rate.bpf.o`），未来应引入配置文件或环境变量：
+
+```json
+{
+  "interface": "auto",
+  "rtt_target": "223.5.5.5",
+  "bpf_object": "/usr/lib/weaknet/flow_rate.bpf.o",
+  "monitor_interval": 10,
+  "modules": {
+    "bluetooth": true,
+    "wifi_rssi": true,
+    "traffic_ebpf": true
+  }
+}
+```
+
+#### 6.2.2 插件化架构
+
+将各监控模块设计为插件，支持动态加载/卸载：
+
+```
+weaknet-server (核心)
+├── libplugin_iface.so        # 接口监控插件
+├── libplugin_rtt.so          # RTT 插件
+├── libplugin_tcp_loss.so     # TCP 丢包插件
+├── libplugin_traffic.so      # 流量分析插件
+└── libplugin_bluetooth.so    # 蓝牙插件
+```
+
+#### 6.2.3 线程池改造
+
+当前 8 个独立线程在资源受限设备上开销较大，可改为线程池 + 任务队列模型：
+
+```cpp
+ThreadPool pool(4);  // 4 个工作线程
+pool.submit([]{ monitor_rtt(); });
+pool.submit([]{ monitor_rssi(); });
+// ...
+```
+
+#### 6.2.4 从 Makefile 迁移到 CMake
+
+CMake 原生支持交叉编译、依赖管理、包配置，更适合复杂项目和端侧部署：
+
+```cmake
+cmake_minimum_required(VERSION 3.16)
+project(weaknet CXX)
+set(CMAKE_CXX_STANDARD 17)
+
+# 交叉编译支持
+if(DEFINED CMAKE_TOOLCHAIN_FILE)
+    set(CROSS_COMPILE ON)
+endif()
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(DBUS REQUIRED dbus-1)
+find_library(GLOG glog)
+find_library(LIBBPF bpf)
+
+add_executable(weaknet-dbus-server ${SOURCES})
+target_link_libraries(weaknet-dbus-server ${DBUS_LIBRARIES} ${GLOG} ${LIBBPF})
+```
+
+### 6.3 AI 能力扩展
+
+#### 6.3.1 端侧时序异常检测
+
+在端侧部署轻量时序模型，实现比固定阈值更智能的异常检测：
+
+- EWMA（指数加权移动平均）：零依赖，C++ 可直接实现
+- 3-Sigma 统计检测：零依赖
+- 轻量 LSTM（ONNX 格式，<1MB）：需 ONNX Runtime
+
+#### 6.3.2 端侧故障分类推理
+
+训练一个轻量分类模型（随机森林/XGBoost），输入网络指标，输出故障类型：
+
+```
+输入：[RTT, 丢包率, RSSI, 流量bps]
+输出：[信号弱, 链路拥塞, 设备故障, 带宽不足, 正常]
+```
+
+模型体积 < 100KB，推理延迟 < 10ms，完全离线可用。
+
+#### 6.3.3 端云协同联邦学习
+
+多端侧设备各自采集数据，本地训练模型，云端聚合更新：
+
+```
+端侧设备A ──┐
+端侧设备B ──┼──▶ 云端联邦聚合 ──▶ 更新模型 ──▶ 下发各端侧
+端侧设备C ──┘
+```
+
+#### 6.3.4 自适应采样调度
+
+用 AI 根据网络状态动态调整采样频率：
+
+```
+网络平稳 ──▶ 降低采样频率（30s）──▶ 省电省资源
+网络波动 ──▶ 提高采样频率（2s） ──▶ 精准捕捉异常
+异常持续 ──▶ 触发云端深度诊断    ──▶ 协同分析
+```
+
+#### 6.3.5 本地知识库增强
+
+端侧部署极简规则知识库，处理 Top 20 常见故障：
+
+```
+RTT高 + RSSI低 → Wi-Fi信号弱，建议靠近AP
+丢包率突增 + 流量正常 → 链路质量问题
+流量突增 + 高丢包 → 可能遭受攻击
+```
+
+无网络时端侧仍可给出基础诊断建议。
+
+---
+
+## 七、潜在优化方向
+
+### 7.1 性能优化
+
+#### 7.1.1 eBPF Map 容量调优
+
+当前 LRU_HASH 容量为 65536，对于高并发场景可能不够，对于端侧又可能浪费。应改为可配置：
+
+```c
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, MAX_FLOWS);  // 可配置
+    __type(key, struct flow_key);
+    __type(value, struct flow_stats);
+} flow_map SEC(".maps");
+```
+
+#### 7.1.2 监控周期自适应
+
+当前固定 10 秒采样，可根据网络状态动态调整（见 6.3.4）。
+
+#### 7.1.3 日志性能优化
+
+- glog 可替换为更轻量的 spdlog（异步日志，性能更高）
+- 支持日志级别动态调整（运行时通过 D-Bus 方法调整）
+
+#### 7.1.4 内存优化
+
+- NetInfo 对象池化，避免频繁分配
+- eBPF Map 读取批量优化
+
+### 7.2 代码质量优化
+
+#### 7.2.1 线程安全审计
+
+- `detach` 线程发送信号存在资源生命周期风险，建议改为线程池或条件变量
+- 审计所有共享数据的访问，确保 mutex 保护完整
+
+#### 7.2.2 错误处理完善
+
+- eBPF 降级路径需补充完整日志
+- 网络异常（如 wpa_supplicant 不可用）的优雅处理
+
+#### 7.2.3 单元测试补充
+
+当前项目缺少单元测试，建议：
+
+- 为 NetInfo、质量评估等纯逻辑模块补充 GTest 单元测试
+- 为 eBPF 程序补充 BPF 自测试
+- 为异常检测算法补充边界用例
+
+#### 7.2.4 代码规范
+
+- 统一命名规范（当前 .h 和 .hpp 混用）
+- 补充 Doxygen 注释
+- 引入 clang-format / clang-tidy 静态检查
+
+### 7.3 工程化优化
+
+#### 7.3.1 CI/CD 流水线
+
+```
+代码提交 ──▶ 编译检查 ──▶ 静态分析 ──▶ 单元测试 ──▶ 交叉编译 ──▶ 镜像构建
+```
+
+#### 7.3.2 版本管理
+
+- 语义化版本（SemVer）
+- CHANGELOG 维护
+- 发布自动化
+
+#### 7.3.3 可观测性
+
+- 暴露 Prometheus 指标接口
+- 支持远程日志收集
+- 健康检查接口增强
+
+---
+
+## 八、应用场景拓展
+
+### 8.1 智能家居网关
+
+- **场景**：家庭路由器/网关内置网络质量监控
+- **价值**：自动诊断"为什么 Wi-Fi 卡顿"，给出优化建议
+- **适配要点**：轻量化裁剪，移除蓝牙模块（可选），降低采样频率
+- **端侧 AI**：本地规则知识库 + 异常检测，无需上云
+
+### 8.2 工业物联网网关
+
+- **场景**：工厂网络环境监控，保证产线网络稳定
+- **价值**：实时检测网络异常，避免产线停机
+- **适配要点**：支持工业协议（Modbus/OPC-UA over TCP），强化可靠性
+- **端侧 AI**：时序异常检测，预测性维护
+
+### 8.3 车载网络监控
+
+- **场景**：车联网 T-Box 网络质量监控
+- **价值**：监控 4G/5G/Wi-Fi 多链路质量，智能切换
+- **适配要点**：支持多链路（蜂窝 + Wi-Fi），低功耗，快速切换
+- **端侧 AI**：链路质量预测，智能选路
+
+### 8.4 运营商级部署
+
+- **场景**：运营商 CPE/ONT 设备批量部署
+- **价值**：大规模网络质量监控，故障预警
+- **适配要点**：支持远程管理（TR-069），批量配置下发，OTA 升级
+- **端侧 AI**：联邦学习，跨设备异常关联分析
+
+### 8.5 边缘计算节点
+
+- **场景**：边缘服务器网络质量监控
+- **价值**：保证边缘服务的网络 SLA
+- **适配要点**：完整功能部署，支持 Prometheus 集成
+- **端侧 AI**：完整 RAG 诊断，端云协同
+
+---
+
+## 九、学习资源补充
+
+### 9.1 书籍推荐
+
+| 领域 | 书籍 | 优先级 |
+|------|------|--------|
+| Linux 基础 | 《鸟哥的 Linux 私房菜》 | P0 |
+| 嵌入式 Linux | 《嵌入式 Linux 基础教程》 | P1 |
+| eBPF | 《BPF Performance Tools》（Brendan Gregg） | P1 |
+| eBPF 进阶 | 《Linux Observability with BPF》 | P1 |
+| 网络编程 | 《UNIX 网络编程》（Stevens） | P1 |
+| C++ | 《Effective Modern C++》 | P0 |
+| 多线程 | 《C++ Concurrency in Action》 | P1 |
+| 机器学习 | 《动手学深度学习》（李沐） | P2 |
+| 模型压缩 | 《深度学习模型压缩与加速》 | P2 |
+
+### 9.2 在线课程
+
+| 课程 | 平台 | 领域 |
+|------|------|------|
+| 吴恩达机器学习 | Coursera | ML 基础 |
+| 深度学习专项 | Coursera | 深度学习 |
+| Linux 内核开发 | 各平台 | 内核 |
+| eBPF 教程 | Kernel School / 官方文档 | eBPF |
+| 嵌入式 Linux | 各平台 | 嵌入式 |
+
+### 9.3 实操环境与工具
+
+| 资源 | 用途 |
+|------|------|
+| 树莓派 4B/5 | 端侧部署练手（推荐首选） |
+| RK3568/RK3588 开发板 | 工业级端侧部署 |
+| QEMU | 模拟 ARM 环境，无需实体板 |
+| Buildroot | 构建嵌入式系统镜像 |
+| Docker multiarch | 交叉编译依赖 |
+| BCC tools | eBPF 学习和调试 |
+| bpftool | eBPF 程序调试 |
+| dbus-send / d-feet | D-Bus 调试 |
+| Wireshark | 网络协议分析 |
+
+### 9.4 社区与开源项目
+
+| 项目 | 用途 |
+|------|------|
+| libbpf | eBPF 官方库，本项目使用 |
+| BCC | eBPF 工具集，学习参考 |
+| bpftrace | eBPF 高级追踪语言 |
+| BlueZ | 蓝牙协议栈，本项目使用 |
+| NetworkManager | 网络管理参考实现 |
+| ONNX Runtime | 端侧推理框架 |
+| NCNN | 腾讯端侧推理框架 |
+| Flower | 联邦学习框架 |
+| LangChain | RAG 框架，本项目使用 |
+
+---
+
+## 十、结论与展望
+
+### 10.1 项目现状总结
+
+本项目是一个技术栈丰富、架构清晰的网络质量监控平台，已实现：
+- **多维度采集**：eBPF 流量、ICMP RTT、netlink 丢包、wpa_supplicant RSSI、BlueZ 蓝牙
+- **多线程架构**：8 个独立监控线程，mutex 保护共享数据
+- **D-Bus 通信**：完整的 C/S 架构，异步事件推送
+- **质量评估**：加权评分算法，等级判定
+- **AI 诊断**：RAG 管道，时间点回溯，离线降级
+
+### 10.2 核心竞争力
+
+1. **eBPF 内核级采集**：高性能、低开销，CO-RE 跨内核兼容
+2. **多协议统一监控**：Wi-Fi / 以太网 / 蓝牙异构网络
+3. **端云协同 AI**：端侧快速检测 + 云端深度诊断
+4. **降级容错设计**：eBPF 失败自动降级，保证高可用
+
+### 10.3 未来展望
+
+短期（1-3 个月）：
+- 完成端侧部署改造（配置化、交叉编译、systemd 服务）
+- 集成端侧轻量异常检测（EWMA/3-Sigma）
+
+中期（3-6 个月）：
+- 端侧 ONNX 推理集成（故障分类模型）
+- 端云协同架构落地（HTTP 上报 + 云端 RAG）
+- CMake 构建系统迁移
+
+长期（6-12 个月）：
+- 联邦学习能力
+- 规模化部署（Buildroot 镜像 + OTA）
+- 多场景适配（智能家居/工业/车载）
+
+### 10.4 学习建议
+
+**先学 Linux 基础和交叉编译**（部署地基）→ **再学 eBPF 和 D-Bus**（项目核心）→ **最后学端侧 AI**（增值方向）。带着项目目标学，不要先学完所有理论再动手。先部署起来，再逐步加 AI 能力。
+
+---
+
+> 本文档随项目演进持续更新。如需了解具体模块的实现细节，请参阅源码及各模块头文件注释。
