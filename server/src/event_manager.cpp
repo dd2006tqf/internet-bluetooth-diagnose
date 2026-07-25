@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <chrono>
 #include <thread>
+#include <atomic>
 
 using namespace std::chrono_literals;
 
@@ -107,7 +108,7 @@ void NetworkEventManager::emitEvent(const NetworkEvent& event) {
             ? event.message 
             : "[" + event.source + "] " + event.message;
         
-        static int32_t eventCounter = 0;
+        static std::atomic<int32_t> eventCounter{0};
         
         // 对于网络质量事件，发送包含详细信息的信号
         if (event.type == EventType::NetworkQualityChanged && !event.details.empty()) {

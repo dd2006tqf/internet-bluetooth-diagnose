@@ -7,6 +7,19 @@
 
 #include "test_common.hpp"
 #include "event_manager.hpp"
+#include "server.hpp"
+#include "dbus_service.hpp"
+
+#include <atomic>
+#include <thread>
+#include <unordered_set>
+#include <vector>
+
+// 测试用 counter 记录器（定义于 mock_dbus_service.cpp），供并发原子性测试使用
+namespace weaknet_dbus::test_recorder {
+void resetCounters();
+std::vector<int32_t> snapshotCounters();
+}
 
 using namespace weaknet_dbus;
 
@@ -127,6 +140,53 @@ static void testMultipleEmits() {
     mgr.unregisterCallback(EventType::TcpLossRateChanged);
 }
 
+// 测试8: 并发下 eventCounter 必须无重复（验证原子性）
+//   emitEvent 内的 static eventCounter 被 ++ 的操作若非原子，多线程并发会丢更新，
+//   导致传给 DbusService::emitSpecificSignal 的 counter 值出现重复。
+//   本测试通过 mock 记录器收集所有 counter 值，断言其总数与唯一数均等于期望值。
+static void testEventCounterAtomicUnderConcurrency() {
+    TEST_CASE("并发下 eventCounter 无重复（原子性）");
+    auto& mgr = getEventManager();
+
+    // 构造 ServerContext + DbusService，使 emitEvent 走 counter 路径
+    // （server_ctx_ && server_ctx_->service 非空）
+    ServerContext ctx;
+    DbusService svc(&ctx);
+    ctx.service = &svc;
+    mgr.startEventMonitoring(&ctx);
+
+    const int N_THREADS = 10;
+    const int N_PER_THREAD = 10000;
+    const int EXPECTED_TOTAL = N_THREADS * N_PER_THREAD;
+
+    test_recorder::resetCounters();
+
+    auto worker = [&mgr](int /*id*/) {
+        for (int i = 0; i < N_PER_THREAD; ++i) {
+            mgr.emitRttChanged("concurrent", "test");
+        }
+    };
+
+    std::vector<std::thread> threads;
+    threads.reserve(N_THREADS);
+    for (int i = 0; i < N_THREADS; ++i) {
+        threads.emplace_back(worker, i);
+    }
+    for (auto& t : threads) t.join();
+
+    auto recorded = test_recorder::snapshotCounters();
+    std::unordered_set<int32_t> unique(recorded.begin(), recorded.end());
+
+    // 期望：所有 emit 都被记录（总数 == N_THREADS * N_PER_THREAD）
+    CHECK_EQ(static_cast<int>(recorded.size()), EXPECTED_TOTAL);
+    // 期望：counter 值无重复（唯一数 == 总数）。
+    // 非原子 int32_t++ 在并发下丢更新 → 重复值 → 唯一数 < 总数 → 断言失败（RED）
+    CHECK_EQ(static_cast<int>(unique.size()), EXPECTED_TOTAL);
+
+    // 注：startEventMonitoring 设置的 server_ctx_ 指向本函数局部 ctx，
+    // 本测试为 main 中最后一个，函数返回后不再有 emit，悬垂指针不会被解引用。
+}
+
 int main(int /*argc*/, char* argv[]) {
     initTestLogging(argv[0]);
     testRegisterAndEmit();
@@ -136,5 +196,6 @@ int main(int /*argc*/, char* argv[]) {
     testEventTypeIsolation();
     testEventDataPropagation();
     testMultipleEmits();
+    testEventCounterAtomicUnderConcurrency();
     return printTestResult();
 }
