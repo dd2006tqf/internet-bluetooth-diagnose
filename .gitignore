@@ -59,3 +59,7 @@ Makefile.autogen
 .ai-harness/migrations/
 .ai-harness/derived/
 server/test/reports/
+
+# AutoAI-Harness 运行时审计记录（本地生成，不提交）
+openspec/changes/*/harness/project-command-evidence/
+openspec/changes/*/harness/change-footprint.json
