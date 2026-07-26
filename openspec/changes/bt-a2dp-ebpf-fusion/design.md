@@ -89,57 +89,85 @@ A2DP 音频质量监控存在两条真实路线，频段冲突与距离估算无
 
 ## Implementation Economy v2 Budget
 
-```yaml
-implementation_economy_v2:
-  budget_unit: person-days
-  total_budget: 17
-  spent_to_date: 13.5   # Phase 1a/1b/2 已落地
-  remaining: 3.5        # M4 集成测试 + RAG
-  breakdown:
-    - id: T1
-      label: band_conflict_detector 模块
-      budget: 1.5
-      spent: 1.5
-    - id: T2
-      label: network_quality_thread 接入冲突检测
-      budget: 1.5
-      spent: 1.5
-    - id: T3
-      label: NetInfo 蓝牙字段 + 序列化
-      budget: 0.5
-      spent: 0.5
-    - id: T4
-      label: BtMonitor refreshAudioTransports + 评分
-      budget: 1.5
-      spent: 1.5
-    - id: T5
-      label: BtMonitor 距离估算 + 校准
-      budget: 1.0
-      spent: 1.0
-    - id: T6
-      label: a2dp_media.bpf.c + Makefile
-      budget: 1.5
-      spent: 1.5
-    - id: T7
-      label: bt_audio_analyzer 加载/探测/降级
-      budget: 1.5
-      spent: 1.5
-    - id: T8
-      label: bt_audio_fusion 状态机/加权/stall
-      budget: 1.5
-      spent: 1.5
-    - id: T9
-      label: BtMonitor 接入融合层 + BPF Map 开关
-      budget: 1.0
-      spent: 1.0
-    - id: T10
-      label: 集成测试 + RAG 诊断条目
-      budget: 1.5
-      spent: 0.5
-      remaining: 1.0
-  contingency: 0.5
-  note: 既有实现迁移自方案 v2.0，spent_to_date 为回填估算；M4 收尾为剩余主要工作。
+<!-- autoai:implementation-economy:v2 -->
+```json
+{
+  "schema_version": 2,
+  "profile": "medium",
+  "rationale": "蓝牙监控 A2DP+eBPF 融合变更，迁移自方案 v2.0。T1-T9 既有实现（频段冲突/A2DP/距离/eBPF/融合层），T10 收尾（集成测试+RAG）。预算 17 人日，已耗 13.5，剩余 3.5（M4）。",
+  "classification": {
+    "production": ["server/src/**", "server/include/**", "server/bin/**"],
+    "tests": ["server/test/**"],
+    "project_docs": [],
+    "project_tooling": ["server/Makefile", "AI-assisted analysis/**", "scripts/**", ".gitignore", "test_cross_compile.sh"],
+    "examples": [],
+    "generated": [],
+    "vendor": []
+  },
+  "thresholds": {
+    "production": {
+      "added_lines": { "expected": 1500, "review_at": 3000, "hard_limit": 6000 },
+      "touched_files": { "expected": 10, "review_at": 20, "hard_limit": 40 },
+      "new_files": { "expected": 5, "review_at": 10, "hard_limit": 20 }
+    },
+    "tests": {
+      "added_lines": { "expected": 300, "review_at": 800, "hard_limit": 2000 },
+      "touched_files": { "expected": 2, "review_at": 5, "hard_limit": 12 },
+      "new_files": { "expected": 1, "review_at": 3, "hard_limit": 8 }
+    },
+    "project_support": {
+      "added_lines": { "expected": 20, "review_at": 300, "hard_limit": 800 },
+      "new_files": { "expected": 1, "review_at": 5, "hard_limit": 15 }
+    },
+    "generated": {
+      "files": { "expected": 0, "review_at": 3, "hard_limit": 10 },
+      "bytes": { "expected": 0, "review_at": 50000, "hard_limit": 200000 }
+    }
+  },
+  "structural_allowances": {
+    "public_contracts": [
+      { "id": "pc-dbus-signal", "name": "NetworkQualityChanged D-Bus signal", "reason": "新增 band_conflict/bt_distance/bt_audio_quality 载荷字段，向后兼容" },
+      { "id": "pc-netinfo-json", "name": "NetInfo JSON serialization", "reason": "新增蓝牙字段，向后兼容" }
+    ],
+    "build_targets": [
+      { "id": "bt-server", "name": "weaknet-dbus-server", "reason": "主服务二进制" },
+      { "id": "bt-unit-tests", "name": "unit test binaries", "reason": "单元测试二进制" }
+    ],
+    "build_graph_entries": [
+      { "id": "bge-ebpf", "name": "a2dp_media.bpf.o compile rule", "reason": "eBPF 对象编译规则" }
+    ],
+    "distribution_surfaces": [
+      { "id": "ds-ebpf-obj", "name": "weaknet-dbus-server", "reason": "eBPF 对象随主包部署到 /usr/lib/weaknet/" }
+    ],
+    "direct_dependencies": [
+      { "id": "dd-libbpf", "name": "libbpf >=1.0", "reason": "eBPF 加载" },
+      { "id": "dd-dbus", "name": "dbus-1", "reason": "D-Bus 通信" },
+      { "id": "dd-glog", "name": "glog", "reason": "日志" }
+    ]
+  },
+  "reuse_decisions": [
+    { "id": "REUSE-1", "path": "server/src/bpf/flow_rate.bpf.c", "symbol": "libbpf+CO-RE+vmlinux.h pattern", "decision": "reuse", "reason": "a2dp_media.bpf.c 复用相同 eBPF 模式" },
+    { "id": "REUSE-2", "path": "server/src/net_traffic.cpp", "symbol": "NetTrafficAnalyzer bpf_object__open/load/attach", "decision": "reuse", "reason": "BtAudioAnalyzer 复用加载/降级模式" },
+    { "id": "REUSE-3", "path": "server/src/bt_monitor.cpp", "symbol": "BtMonitor.getRssiSnapshot", "decision": "reuse", "reason": "复用既有 RSSI 数据源" },
+    { "id": "REUSE-4", "path": "server/src/event_manager.cpp", "symbol": "EventManager", "decision": "reuse", "reason": "复用统一事件路由" }
+  ],
+  "obsolete_items": [
+    { "id": "OBS-1", "path": "蓝牙监控优化实现方案.md", "symbol": "implementation plan doc", "disposition": "deprecate", "reason": "迁移为 OpenSpec change 后避免双事实源", "exit_condition": "本 change archive 时移入 docs/archive/", "task_or_debt": "archive 前置" }
+  ],
+  "exceptions": [
+    {
+      "id": "EX-1",
+      "metric": "ebpf-attach-env",
+      "paths": ["server/src/bpf/a2dp_media.bpf.c", "server/include/bt_audio_analyzer.hpp", "server/src/bt_audio_analyzer.cpp"],
+      "reason": "eBPF 内核态挂点探测依赖内核版本/root/蓝牙挂点，测试环境不可控，无法稳定复现 attach 成功与各分支失败",
+      "requirement_refs": ["eBPF Bluetooth Traffic Collection|挂点探测降级", "eBPF Bluetooth Traffic Collection|启动成功日志"],
+      "task_ids": ["6", "7"],
+      "verification": "build + static review + 启动日志断言（eBPF mode: enabled/fallback reason）"
+    }
+  ]
+}
 ```
+<!-- /autoai:implementation-economy:v2 -->
 
 ## Changed Paths Classification
 
@@ -217,19 +245,37 @@ implementation_economy_v2:
         "server/src/event_manager.cpp",
         "server/Makefile"
       ],
-      "consumer_paths": ["server/bin/weaknet-dbus-server"],
+      "consumer_paths": ["server/test/run_all_tests.sh"],
       "compatibility": null,
       "requirement_refs": [
         { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "Band Conflict Detection", "scenarios": ["完全正相关输入"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "Band Conflict Detection", "scenarios": ["样本不足降级"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "Band Conflict Detection", "scenarios": ["频段冲突确认"] },
         { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "Band Conflict Detection", "scenarios": ["周期调用"] },
-        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "NetInfo Bluetooth Extension", "scenarios": ["新增字段"] },
         { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "A2DP Audio Quality Monitoring", "scenarios": ["音频质量评分"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "A2DP Audio Quality Monitoring", "scenarios": ["严重延迟扣分"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "A2DP Audio Quality Monitoring", "scenarios": ["MediaTransport1 接口缺失降级"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "A2DP Audio Quality Monitoring", "scenarios": ["三层采集机制"] },
         { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "Device Distance Estimation", "scenarios": ["1 米处估算"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "Device Distance Estimation", "scenarios": ["RSSI 为零降级"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "Device Distance Estimation", "scenarios": ["校准接口"] },
         { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "eBPF Bluetooth Traffic Collection", "scenarios": ["设备级聚合"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "eBPF Bluetooth Traffic Collection", "scenarios": ["BPF Map 控制开关"] },
         { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "eBPF Bluetooth Traffic Collection", "scenarios": ["挂点探测降级"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "eBPF Bluetooth Traffic Collection", "scenarios": ["启动成功日志"] },
         { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "D-Bus eBPF Fusion", "scenarios": ["正常音频传输"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "D-Bus eBPF Fusion", "scenarios": ["疑似停滞"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "D-Bus eBPF Fusion", "scenarios": ["三种活跃时长"] },
         { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "D-Bus eBPF Fusion", "scenarios": ["时间加权 Delay"] },
-        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "RAG Diagnostics", "scenarios": ["频段冲突查询"] }
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "D-Bus eBPF Fusion", "scenarios": ["状态矛盾标记"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "NetInfo Bluetooth Extension", "scenarios": ["新增字段"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "NetInfo Bluetooth Extension", "scenarios": ["向后兼容"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "NetInfo Bluetooth Extension", "scenarios": ["序列化往返"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "Event Routing", "scenarios": ["频段冲突事件"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "Event Routing", "scenarios": ["音频/距离事件"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "Event Routing", "scenarios": ["eventCounter 原子性"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "RAG Diagnostics", "scenarios": ["频段冲突查询"] },
+        { "spec_path": "specs/bluetooth-monitoring/spec.md", "operation": "ADDED", "requirement": "RAG Diagnostics", "scenarios": ["音频延迟查询"] }
       ],
       "task_ids": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
       "verify_kinds": ["build", "test"],
@@ -246,8 +292,8 @@ implementation_economy_v2:
         { "task_id": "10", "verify_kinds": ["test"], "evidence_roles": ["current"] }
       ],
       "evidence_contracts": [
-        { "probe_id": "probe-build-current", "kind": "build", "role": "current", "argv": ["make", "-C", "server"], "expected_exit_codes": [0], "output_contains": "weaknet-dbus-server" },
-        { "probe_id": "probe-test-current", "kind": "test", "role": "current", "argv": ["bash", "server/test/run_all_tests.sh"], "expected_exit_codes": [0], "output_contains": "PASS" }
+        { "probe_id": "probe-build-current", "kind": "build", "role": "current", "argv": ["scripts/project_command.sh", "build-server", "--change", "bt-a2dp-ebpf-fusion", "--json"], "expected_exit_codes": [0], "output_contains": "weaknet-dbus-server" },
+        { "probe_id": "probe-test-current", "kind": "test", "role": "current", "argv": ["scripts/project_command.sh", "test-all", "--change", "bt-a2dp-ebpf-fusion", "--json"], "expected_exit_codes": [0], "output_contains": "PASS" }
       ],
       "symbol_identities": null,
       "runnable_artifact": true

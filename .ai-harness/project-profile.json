@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "modules": [
+    {
+      "id": "weaknet-server",
+      "root": ".",
+      "adapter": "make",
+      "cpp_standards": ["c++17"],
+      "compilers": ["g++"],
+      "target_platforms": ["linux"],
+      "path_roles": {
+        "production": ["server/src", "server/include", "client"],
+        "test": ["server/test"],
+        "example": [],
+        "generated": ["server/build", "server/test/bin", "server/test/reports"],
+        "vendor": [],
+        "build_metadata": ["server/Makefile", "Makefile"]
+      },
+      "capabilities": {
+        "build": ["build-server"],
+        "test": ["test-all"]
+      },
+      "capability_status": {
+        "build": {"status": "available", "reason": "make -C server builds weaknet-dbus-server with g++ -std=c++17"},
+        "test": {"status": "available", "reason": "make test-unit runs unit tests; run_all_tests.sh adds integration"},
+        "install": {"status": "needs-approval", "reason": "install target needs sudo and writes system paths"},
+        "target-run": {"status": "unavailable", "reason": "eBPF/Bluetooth need Radxa Cubie A7A board, not present in VM"},
+        "static-analysis": {"status": "needs-approval", "reason": "no static-analysis toolchain configured yet"},
+        "configure": {"status": "not-applicable", "reason": "make-based project, no separate configure step"},
+        "package": {"status": "not-applicable", "reason": "no packaging step"},
+        "consumer": {"status": "not-applicable", "reason": "not a library consumer scenario"}
+      },
+      "build_graph_entries": [],
+      "distribution_surfaces": []
+    }
+  ],
+  "commands": [
+    {
+      "id": "build-server",
+      "module_ids": ["weaknet-server"],
+      "capability": "build",
+      "argv": ["make", "-C", "server"],
+      "cwd": ".",
+      "timeout_seconds": 300,
+      "inherit_env": ["PATH", "HOME"],
+      "output_roles": [],
+      "side_effects": ["workspace-write"],
+      "required_tools": ["g++"]
+    },
+    {
+      "id": "test-all",
+      "module_ids": ["weaknet-server"],
+      "capability": "test",
+      "argv": ["bash", "server/test/run_all_tests.sh", "--skip-build"],
+      "cwd": ".",
+      "timeout_seconds": 600,
+      "inherit_env": ["PATH", "HOME", "DBUS_SESSION_BUS_ADDRESS"],
+      "output_roles": [],
+      "side_effects": ["workspace-write", "network"],
+      "required_tools": ["g++"]
+    },
+    {
+      "id": "toolchain-probe",
+      "module_ids": ["weaknet-server"],
+      "capability": "static-analysis",
+      "argv": ["g++", "--version"],
+      "cwd": ".",
+      "timeout_seconds": 30,
+      "inherit_env": ["PATH", "HOME"],
+      "output_roles": [],
+      "side_effects": [],
+      "required_tools": ["g++"]
+    }
+  ],
+  "toolchain_identity": [
+    {
+      "id": "weaknet-toolchain",
+      "module_ids": ["weaknet-server"],
+      "command_id": "toolchain-probe"
+    }
+  ]
+}

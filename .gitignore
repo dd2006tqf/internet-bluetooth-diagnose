@@ -50,3 +50,12 @@ server/test/test_net_info
 
 # 生成文件
 Makefile.autogen
+.env
+.env.*
+.claude/settings.local.json
+.vscode/*.log
+.ai-harness/locks/
+.ai-harness/logs/
+.ai-harness/migrations/
+.ai-harness/derived/
+server/test/reports/

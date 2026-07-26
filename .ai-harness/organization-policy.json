@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "policy_id": "weaknet-local-dev",
+  "contexts": {
+    "local": {
+      "allow_command_ids": ["*"],
+      "deny_command_ids": [],
+      "allow_capabilities": ["*"],
+      "max_timeout_seconds": 600,
+      "inherit_env": ["PATH", "HOME", "DBUS_SESSION_BUS_ADDRESS"],
+      "allow_side_effects": ["workspace-write", "network"],
+      "output_limit_bytes": 1048576
+    },
+    "ci": {
+      "allow_command_ids": ["*"],
+      "deny_command_ids": [],
+      "allow_capabilities": ["*"],
+      "max_timeout_seconds": 600,
+      "inherit_env": ["PATH", "HOME", "DBUS_SESSION_BUS_ADDRESS"],
+      "allow_side_effects": ["workspace-write", "network"],
+      "output_limit_bytes": 1048576
+    },
+    "release": {
+      "allow_command_ids": ["*"],
+      "deny_command_ids": [],
+      "allow_capabilities": ["*"],
+      "max_timeout_seconds": 600,
+      "inherit_env": ["PATH", "HOME", "DBUS_SESSION_BUS_ADDRESS"],
+      "allow_side_effects": ["workspace-write", "network"],
+      "output_limit_bytes": 1048576
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "change_name": "bt-a2dp-ebpf-fusion",
+  "implementation_base_commit": "379f019b1d1de3b4803016c41c5fa3dd0ac2ad82",
+  "source_fingerprint": "sha256:bca7d1f23c57cdbb21835cfa763abaf5d8840ddf40134a130ac26c716ba8beea",
+  "budget_block_sha256": "sha256:a57207f0d5c8ed6550fc1f4a9d63eef85456f5f29507f332384f2ca31437f168",
+  "status": "drift_warning",
+  "production": {
+    "added_lines": 34,
+    "deleted_lines": 5,
+    "net_lines": 29,
+    "touched_files": 5,
+    "new_files": 0
+  },
+  "tests": {
+    "added_lines": 251,
+    "touched_files": 4,
+    "new_files": 1
+  },
+  "project_support": {
+    "added_lines": 148,
+    "touched_files": 3,
+    "new_files": 1,
+    "paths_by_class": {
+      "project_docs": [],
+      "project_tooling": [
+        "AI-assisted analysis/network_knowledge_base.py",
+        "AI-assisted analysis/test_bluetooth_rag.py",
+        "server/Makefile"
+      ],
+      "examples": []
+    }
+  },
+  "generated": {
+    "files": 0,
+    "bytes": 0
+  },
+  "vendor": {
+    "changed_paths": []
+  },
+  "binary": {
+    "files": 0,
+    "bytes": 0,
+    "paths": []
+  },
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-161d1055aaea",
+      "path": "server/Makefile",
+      "kind": "build-graph-candidate",
+      "allowance_kind": "build_graph_entries"
+    },
+    {
+      "candidate_id": "candidate-458dffc7d7b8",
+      "path": "server/include/common.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts"
+    },
+    {
+      "candidate_id": "candidate-967660f8cfeb",
+      "path": "server/include/bt_monitor.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts"
+    }
+  ],
+  "unclassified_paths": [],
+  "classification_overlaps": []
+}
