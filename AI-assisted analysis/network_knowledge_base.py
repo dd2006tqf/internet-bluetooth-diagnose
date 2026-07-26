@@ -122,6 +122,40 @@ NETWORK_KNOWLEDGE_BASE = {
         ]
     },
     
+    "bluetooth_analysis": {
+        "description": "蓝牙监控诊断分析（频段冲突 / A2DP 音频卡顿 / 设备距离估算）",
+        "band_conflict": {
+            "description": "2.4GHz 频段冲突：Wi-Fi 与蓝牙同频段导致蓝牙卡顿",
+            "symptoms": ["蓝牙卡顿", "WiFi 与蓝牙同时弱信号", "频段冲突"],
+            "suggestions": [
+                "Wi-Fi 切 5GHz 频段",
+                "调整 Wi-Fi 信道避开蓝牙广播信道",
+                "设备靠近蓝牙适配器",
+                "降低 Wi-Fi 发射功率"
+            ]
+        },
+        "audio_stall": {
+            "description": "A2DP 音频卡顿/延迟：编解码器/距离/停滞导致蓝牙音频延迟高",
+            "symptoms": ["蓝牙音频延迟高", "音频卡顿", "疑似停滞"],
+            "suggestions": [
+                "更换编解码器（SBC→AAC/LDAC）",
+                "缩短设备距离以提升 RSSI",
+                "检查音频卡顿源（eBPF 流量停滞 vs D-Bus 状态不同步）",
+                "校准 txPower 提升距离估算精度"
+            ]
+        },
+        "distance_estimation": {
+            "description": "设备距离估算：基于 RSSI 对数路径损耗模型",
+            "symptoms": ["信号弱", "距离过远", "RSSI 过低"],
+            "suggestions": [
+                "设备靠近适配器",
+                "校准 txPower（默认 -59dBm）",
+                "减少物理障碍物",
+                "检查 RSSI 是否为 0（降级标记）"
+            ]
+        }
+    },
+
     "common_issues": {
         "network_congestion": {
             "symptoms": ["高RTT", "高丢包率", "流量异常"],
@@ -153,15 +187,53 @@ def get_network_knowledge():
 def analyze_metric(metric_type, value, context=""):
     """分析特定网络指标"""
     knowledge = NETWORK_KNOWLEDGE_BASE.get(metric_type, {})
-    
+
     if not knowledge:
         return f"未知指标类型: {metric_type}"
-    
+
     analysis = {
         "metric": metric_type,
         "value": value,
         "context": context,
         "analysis": knowledge
     }
-    
+
     return analysis
+
+
+def query_bluetooth_diagnosis(query: str) -> str:
+    """基于自然语言关键词查询蓝牙诊断建议。
+
+    覆盖 OpenSpec `bt-a2dp-ebpf-fusion` 的 RAG Diagnostics 需求：
+      - "蓝牙卡顿"        → 频段冲突建议（5GHz / 信道 / 靠近）
+      - "蓝牙音频延迟高"   → 编解码器 / 距离 / 卡顿建议
+
+    匹配策略：遍历 bluetooth_analysis 子条目，命中 symptom 关键词即返回其建议；
+    若无精确命中，返回全部子条目建议作为兜底（避免空响应）。
+    """
+    bt = NETWORK_KNOWLEDGE_BASE.get("bluetooth_analysis", {})
+    if not bt:
+        return ""
+
+    matched_entries = []
+    for key in ("band_conflict", "audio_stall", "distance_estimation"):
+        entry = bt.get(key, {})
+        symptoms = entry.get("symptoms", [])
+        # symptom 字符串包含匹配（中文不分词）
+        if any(sym in query for sym in symptoms):
+            matched_entries.append(entry)
+
+    if not matched_entries:
+        # 兜底：无精确命中时返回全部子条目建议
+        matched_entries = [
+            bt.get(key, {}) for key in ("band_conflict", "audio_stall", "distance_estimation")
+        ]
+
+    parts = []
+    for entry in matched_entries:
+        desc = entry.get("description", "")
+        suggestions = entry.get("suggestions", [])
+        if suggestions:
+            parts.append(f"{desc}：{', '.join(suggestions)}")
+
+    return "; ".join(parts)

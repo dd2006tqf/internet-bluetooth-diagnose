@@ -7,6 +7,8 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 namespace weaknet_dbus {
 
@@ -15,7 +17,18 @@ static void appendBytes(const void* data, size_t len, std::vector<uint8_t>& out)
     out.insert(out.end(), p, p + len);
 }
 
+// 确保序列化文件的父目录存在（$XDG_RUNTIME_DIR/weaknet/），权限 0700 私有目录。
+// 防止符号链接攻击：序列化路径必须在私有目录下（见 project_memory 约束）。
+static void ensureParentDir(const std::string& filepath) {
+    size_t pos = filepath.find_last_of('/');
+    if (pos == std::string::npos || pos == 0) return;
+    std::string dir = filepath.substr(0, pos);
+    // 递归创建（$XDG_RUNTIME_DIR 通常存在，仅需创建 weaknet/ 子目录）
+    ::mkdir(dir.c_str(), 0700);
+}
+
 bool writeBufferToFile(const std::vector<uint8_t>& buffer, const std::string& filepath, std::string* error_message) {
+    ensureParentDir(filepath);
     std::ofstream ofs(filepath, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
         if (error_message) *error_message = "无法打开文件写入: " + filepath;

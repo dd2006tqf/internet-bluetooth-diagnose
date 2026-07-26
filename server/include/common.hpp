@@ -26,9 +26,17 @@ static constexpr const char kSignalConnectionModeChanged[] = "ConnectionModeChan
 static constexpr const char kSignalNetworkQualityChanged[] = "NetworkQualityChanged"; // 网络质量变化信号
 static constexpr const char kSignalBluetoothDeviceChanged[] = "BluetoothDeviceChanged"; // 蓝牙设备变化信号
 
-// 序列化输出文件路径（演示用）
-static const std::string kSignalSerializedFile = "./signal_changed.bin";     // 信号负载序列化文件
-static const std::string kGetReplySerializedFile = "./get_reply.bin";        // Get 返回值序列化文件
+// 序列化输出文件路径（使用 $XDG_RUNTIME_DIR 私有目录，防符号链接攻击）
+// 详见 project_memory: serializeGetReplyToFile/serializeChangedPayloadToFile 必须使用
+// $XDG_RUNTIME_DIR 私有目录或 O_NOFOLLOW 标志
+static const std::string kSignalSerializedFile = []() {
+    const char* xdg = std::getenv("XDG_RUNTIME_DIR");
+    return std::string(xdg ? xdg : "/tmp") + "/weaknet/signal_changed.bin";
+}();
+static const std::string kGetReplySerializedFile = []() {
+    const char* xdg = std::getenv("XDG_RUNTIME_DIR");
+    return std::string(xdg ? xdg : "/tmp") + "/weaknet/get_reply.bin";
+}();
 
 }  // namespace weaknet_dbus
 

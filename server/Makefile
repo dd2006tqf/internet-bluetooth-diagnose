@@ -58,7 +58,7 @@ TEST_LDFLAGS_BPF = $(TEST_LDFLAGS) -lbpf
 # 单元测试列表（含现有 test_net_info 与新增 6 个算法测试）
 UNIT_TESTS = test_net_info test_quality_assessor test_anomaly_detector \
              test_audio_fusion test_band_conflict test_serializer \
-             test_event_manager
+             test_event_manager test_bt_full_link
 # 专项测试（蓝牙监控纯逻辑层，无需硬件）
 SPECIAL_TESTS = test_bt_monitor
 ALL_TESTS = $(UNIT_TESTS) $(SPECIAL_TESTS)
@@ -167,6 +167,17 @@ $(TEST_BIN_DIR)/test_event_manager: $(TEST_DIR)/unit/test_event_manager.cpp \
 	@mkdir -p $(TEST_BIN_DIR)
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_event_manager.cpp \
 	    src/event_manager.cpp $(TEST_DIR)/unit/mock_dbus_service.cpp src/logger.cpp $(TEST_LDFLAGS)
+
+# test_bt_full_link（蓝牙全链路集成测试：频段冲突→EventManager→D-Bus 信号载荷）
+# 链接 BandConflictDetector + NetworkEventManager + DbusService 桩，验证端到端路由
+$(TEST_BIN_DIR)/test_bt_full_link: $(TEST_DIR)/unit/test_bt_full_link.cpp \
+    src/band_conflict_detector.cpp src/event_manager.cpp \
+    $(TEST_DIR)/unit/mock_dbus_service.cpp src/logger.cpp \
+    $(TEST_DIR)/unit/test_common.hpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_bt_full_link.cpp \
+	    src/band_conflict_detector.cpp src/event_manager.cpp \
+	    $(TEST_DIR)/unit/mock_dbus_service.cpp src/logger.cpp $(TEST_LDFLAGS)
 
 # test_bt_monitor（蓝牙监控纯逻辑层 + 降级场景，专项测试）
 # 依赖 event_manager.cpp（bt_monitor.cpp 引用 getEventManager）与 mock 桩

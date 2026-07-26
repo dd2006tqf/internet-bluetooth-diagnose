@@ -206,6 +206,103 @@ static void testBtDeviceType() {
     CHECK_EQ(info.deviceType, BtDeviceType::Dual);
 }
 
+// ============================================================================
+// A2DP 音频质量评分测试（REQ-A2DP-QUALITY，T4）
+// ============================================================================
+
+// 测试友元：访问 BtMonitor 私有纯函数 calculateAudioScore
+class BtMonitorAudioScoreTest {
+public:
+    static double score(const BtMonitor& m, const BtAudioTransport& t) {
+        return m.calculateAudioScore(t);
+    }
+};
+
+// 构造一个 active + SBC 编解码器的 Transport，仅 delay 可变
+static BtAudioTransport makeActiveTransport(uint16_t delay) {
+    BtAudioTransport t;
+    t.transportPath = "/org/bluez/hci0/dev_00_11_22_33_44_55/fd1";
+    t.deviceMac = "00:11:22:33:44:55";
+    t.state = "active";
+    t.delay = delay;
+    t.volume = 80;
+    t.codec = 0x00;  // SBC
+    return t;
+}
+
+// 测试16: delay=0 应无延迟扣分（仅 SBC 扣 5）
+static void testAudioScoreDelay0() {
+    TEST_CASE("音频评分-delay=0 仅 SBC 扣分");
+    BtMonitor monitor;
+    auto t = makeActiveTransport(0);
+    double s = BtMonitorAudioScoreTest::score(monitor, t);
+    CHECK_NEAR(s, 95.0, 0.01);  // 100 - 5(SBC)
+}
+
+// 测试17: delay=100 仍在 500 阈值内
+static void testAudioScoreDelay100() {
+    TEST_CASE("音频评分-delay=100 不触发延迟扣分");
+    BtMonitor monitor;
+    auto t = makeActiveTransport(100);
+    double s = BtMonitorAudioScoreTest::score(monitor, t);
+    CHECK_NEAR(s, 95.0, 0.01);
+}
+
+// 测试18: delay=501 触发轻度延迟扣分（-10）
+static void testAudioScoreDelay500Boundary() {
+    TEST_CASE("音频评分-delay>500 触发 -10 扣分");
+    BtMonitor monitor;
+    auto t = makeActiveTransport(501);
+    double s = BtMonitorAudioScoreTest::score(monitor, t);
+    CHECK_NEAR(s, 85.0, 0.01);  // 100 - 10 - 5
+}
+
+// 测试19: delay=2001 触发严重延迟扣分（-40）
+static void testAudioScoreDelay2000Boundary() {
+    TEST_CASE("音频评分-delay>2000 触发 -40 严重扣分");
+    BtMonitor monitor;
+    auto t = makeActiveTransport(2001);
+    double s = BtMonitorAudioScoreTest::score(monitor, t);
+    CHECK_NEAR(s, 55.0, 0.01);  // 100 - 40 - 5
+}
+
+// 测试20: delay=5000 严重延迟，且非 active 状态额外扣 15
+static void testAudioScoreDelay5000Inactive() {
+    TEST_CASE("音频评分-delay=5000+inactive 综合扣分");
+    BtMonitor monitor;
+    auto t = makeActiveTransport(5000);
+    t.state = "idle";
+    double s = BtMonitorAudioScoreTest::score(monitor, t);
+    CHECK_NEAR(s, 40.0, 0.01);  // 100 - 40 - 5 - 15
+}
+
+// ============================================================================
+// Phase 2 融合层接入测试（REQ-FUSION + REQ-EVENT-ROUTING，T9）
+// ============================================================================
+
+// 测试21: initPhase2 在无 eBPF 环境下降级创建融合层（返回 false 但不崩溃）
+static void testInitPhase2Degraded() {
+    TEST_CASE("initPhase2-无eBPF环境降级返回false不崩溃");
+    BtMonitor monitor;
+    // 无 eBPF 环境/不存在对象文件，initPhase2 应返回 false（eBPF 未挂载）
+    bool ok = monitor.initPhase2("nonexistent_bpf.o");
+    CHECK(!ok);
+    // cleanup 应安全清理融合层与分析器
+    monitor.cleanup();
+    CHECK(!monitor.isInitialized());
+}
+
+// 测试22: initPhase2 多次调用幂等不崩溃
+static void testInitPhase2Idempotent() {
+    TEST_CASE("initPhase2-重复调用幂等安全");
+    BtMonitor monitor;
+    bool ok1 = monitor.initPhase2("nonexistent_bpf.o");
+    bool ok2 = monitor.initPhase2("nonexistent_bpf.o");
+    CHECK(!ok1);
+    CHECK(!ok2);
+    monitor.cleanup();
+}
+
 int main(int /*argc*/, char* argv[]) {
     initTestLogging(argv[0]);
     testRssiLevel();
@@ -224,5 +321,12 @@ int main(int /*argc*/, char* argv[]) {
     testCleanupBeforeInit();
     testBtEventTypes();
     testBtDeviceType();
+    testAudioScoreDelay0();
+    testAudioScoreDelay100();
+    testAudioScoreDelay500Boundary();
+    testAudioScoreDelay2000Boundary();
+    testAudioScoreDelay5000Inactive();
+    testInitPhase2Degraded();
+    testInitPhase2Idempotent();
     return printTestResult();
 }

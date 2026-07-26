@@ -277,8 +277,6 @@ std::string NetInfo::toJson() const {
     json << "\"active_flows\":" << traffic_active_flows_ << ",";
     json << "\"jitter_ms\":" << std::fixed << std::setprecision(1) << jitter_ms_ << ",";
     json << "\"jitter_level\":\"" << escapeJsonString(jitter_level_) << "\",";
-    json << "\"bt_distance\":" << std::fixed << std::setprecision(1) << bt_distance_ << ",";
-    json << "\"bt_audio_quality\":\"" << escapeJsonString(bt_audio_quality_) << "\",";
     json << "\"band_conflict\":" << (band_conflict_ ? "true" : "false") << ",";
     json << "\"band_conflict_confidence\":" << std::fixed << std::setprecision(1) << band_conflict_confidence_;
     json << "}";

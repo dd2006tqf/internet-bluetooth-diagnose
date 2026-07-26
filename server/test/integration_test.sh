@@ -253,12 +253,13 @@ else
     echo "  [INFO] 注意: 信号发送取决于服务端内部状态变化，可能需要在有活跃网卡的环境中触发"
 fi
 
-# 验证信号序列化文件
-if [ -f "./signal_changed.bin" ] && [ -s "./signal_changed.bin" ]; then
+# 验证信号序列化文件（路径随 common.hpp 改为 $XDG_RUNTIME_DIR/weaknet/，防符号链接攻击）
+SIGNAL_SERIALIZED="${XDG_RUNTIME_DIR:-/tmp}/weaknet/signal_changed.bin"
+if [ -f "${SIGNAL_SERIALIZED}" ] && [ -s "${SIGNAL_SERIALIZED}" ]; then
     check "信号序列化文件已生成 (signal_changed.bin)" 0
 else
     check "信号序列化文件已生成 (signal_changed.bin)" 2
-    echo "  [INFO] 序列化文件未生成(可能无状态变化触发信号)"
+    echo "  [INFO] 序列化文件未生成(可能无状态变化触发信号): ${SIGNAL_SERIALIZED}"
 fi
 
 # ========== 测试5: 错误处理 ==========

@@ -19,6 +19,9 @@ struct DBusConnection;
 struct DBusMessage;
 struct DBusError;
 
+// 前置声明测试友元（全局命名空间，供单元测试访问 calculateAudioScore 纯函数）
+class BtMonitorAudioScoreTest;
+
 // 前置声明 Phase 2 eBPF 融合层类型
 namespace weaknet_dbus {
 class BtAudioAnalyzer;
@@ -330,6 +333,9 @@ private:
 
     // 生成质量等级字符串
     static std::string scoreToLevel(double score);
+
+    // 测试友元：单元测试需要访问 calculateAudioScore 纯函数以验证评分边界
+    friend class ::BtMonitorAudioScoreTest;
 
 private:
     // 系统总线连接 (BlueZ 在系统总线上)

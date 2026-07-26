@@ -225,6 +225,10 @@ std::string BandConflictDetector::generateSuggestion(const BandConflictResult& r
 
     std::ostringstream oss;
 
+    // 前缀 band_conflict 标识，供 NetworkQualityChanged 信号载荷识别事件类型
+    // （spec Event Routing "频段冲突事件"：信号载荷含 "band_conflict" 标识）
+    oss << "[band_conflict] ";
+
     if (r.wifiRssiDrop > 20 || r.btRssiDrop > 20) {
         oss << "检测到严重 2.4GHz 频段冲突（Wi-Fi降幅 " << r.wifiRssiDrop
             << "dBm，蓝牙降幅 " << r.btRssiDrop << "dBm）。建议："
