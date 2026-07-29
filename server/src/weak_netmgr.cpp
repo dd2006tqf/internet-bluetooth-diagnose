@@ -9,8 +9,16 @@
 #include "traffic_analyzer.hpp"
 #include "logger.hpp"
 #include <algorithm>
+#include <sys/stat.h>
 
 namespace weaknet_dbus {
+
+// 通过 sysfs 判断是否为无线接口（内核标准方式，比接口名前缀可靠）
+static bool isWirelessInterface(const std::string& ifname) {
+    std::string path = "/sys/class/net/" + ifname + "/wireless";
+    struct stat st;
+    return (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
+}
 
 std::vector<NetInfo> WeakNetMgr::collectCurrentInterfaces() {
     LOG_INFO(LogModule::WEAK_MGR, "collectCurrentInterfaces begin");
@@ -20,9 +28,15 @@ std::vector<NetInfo> WeakNetMgr::collectCurrentInterfaces() {
     result.reserve(names.size());
     for (const auto& n : names) {
         NetInfo info(n);
-        // 这里简单估计：默认路由网卡设置为 true 的可在将来拓展；当前未知类型、UP 状态
+        // 根据 sysfs wireless 标志识别 Wi-Fi，接口名前缀作为有线接口后备
+        if (isWirelessInterface(n)) {
+            info.setType(NetType::WiFi);
+        } else if (n.rfind("eth", 0) == 0 || n.rfind("enp", 0) == 0) {
+            info.setType(NetType::Ethernet);
+        } else {
+            info.setType(NetType::Unknown);
+        }
         info.setDefaultRoute(false);
-        info.setType(NetType::Unknown);
         info.setState(NetState::Up);
         info.setRttMs(-1);
         result.push_back(info);

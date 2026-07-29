@@ -8,7 +8,7 @@
 //   2. kprobe/__sock_sendmsg      — 通用的 socket 发送钩子
 //   3. 全部失败 → 用户空间降级为纯 D-Bus 模式
 
-#define __TARGET_ARCH_x86
+#define __TARGET_ARCH_arm64
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
