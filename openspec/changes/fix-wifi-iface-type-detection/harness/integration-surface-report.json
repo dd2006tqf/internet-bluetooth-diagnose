@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "change_name": "fix-wifi-iface-type-detection",
+  "implementation_base_commit": "e23ba51fdfd90d92963190f96853821097339d3e",
+  "discovery_mode": "reviewed_inventory",
+  "source_fingerprint": "sha256:64358572d672646917aa98b1098c898ae348774f2eb43eb61818361bd4e5f54f",
+  "planning_block_sha256": "sha256:abe96e2c4652ba8553ff6cd152fcfe065a422e16a96ea9ce04469d239184cafc",
+  "change_footprint_json_sha256": "sha256:7aba2cab9070ec522cebc61bab77459b465b8fd859a9e9d88958ade507ddce5f",
+  "scope_classifier_identity": {
+    "schema_version": 1,
+    "path": "scripts/change_scope.js",
+    "sha256": "sha256:1bcd20cb4ee7dd019827f7c1a5ac4ea188488a42f6e3ed0b1f172d36c643c9b5",
+    "output_sha256": "sha256:c37f3829c93c8696a4d2ed555f6e64404519577cf945b7550960d8c7594d8620"
+  },
+  "discovery_adapter_identity": {
+    "id": "reviewed-inventory-v1",
+    "schema_version": 1,
+    "sha256": "sha256:4b8d0959351f3aac635acf417cc559cfca4e52e455501bbb828aa8f97549e384"
+  },
+  "compile_commands_sha256": null,
+  "ast_tool_identity": null,
+  "planned_surface_ids": [
+    "surface-iface-type-detection"
+  ],
+  "changed_production_paths": [
+    "server/include/iface_type.hpp",
+    "server/src/iface_type.cpp",
+    "server/src/weak_netmgr.cpp"
+  ],
+  "path_candidates": [
+    {
+      "candidate_id": "path-candidate-31faad21f7b0d9cb",
+      "source": "path",
+      "path": "server/src/weak_netmgr.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-5175e6c60f890fdb",
+      "source": "path",
+      "path": "server/include/iface_type.hpp",
+      "old_path": null,
+      "change_status": "added"
+    },
+    {
+      "candidate_id": "path-candidate-bb1deebcc0762ca8",
+      "source": "path",
+      "path": "server/src/iface_type.cpp",
+      "old_path": null,
+      "change_status": "added"
+    }
+  ],
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-161d1055aaea",
+      "source": "structural",
+      "path": "server/Makefile",
+      "kind": "build-graph-candidate",
+      "allowance_kind": "build_graph_entries",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "candidate-b8a5891f2840",
+      "source": "structural",
+      "path": "server/include/iface_type.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts",
+      "old_path": null,
+      "change_status": "added"
+    }
+  ],
+  "ast_candidates": [],
+  "surface_candidate_bindings": [
+    {
+      "surface_id": "surface-iface-type-detection",
+      "candidate_bindings": [
+        {
+          "candidate_id": "candidate-b8a5891f2840",
+          "role": "producer",
+          "tree_side": "current"
+        },
+        {
+          "candidate_id": "path-candidate-31faad21f7b0d9cb",
+          "role": "consumer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-5175e6c60f890fdb",
+          "role": "producer",
+          "tree_side": "current"
+        },
+        {
+          "candidate_id": "path-candidate-bb1deebcc0762ca8",
+          "role": "producer",
+          "tree_side": "current"
+        }
+      ],
+      "producer_paths": [
+        "server/include/iface_type.hpp",
+        "server/src/iface_type.cpp"
+      ],
+      "consumer_paths": [
+        "server/src/weak_netmgr.cpp"
+      ],
+      "old_consumer_paths": [],
+      "replacement_consumer_paths": []
+    }
+  ],
+  "unmatched_candidates": [
+    {
+      "candidate_id": "candidate-161d1055aaea",
+      "source": "structural",
+      "reason": "The changed path is not mapped to an approved product surface."
+    }
+  ],
+  "status": "review_required",
+  "discovery_identity_sha256": "sha256:b86236870834f0dd072119e1ab1c50d3a4e6f6d202ce59afcd1a119934d9eabf"
+}

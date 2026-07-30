@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "evaluation_id": "eval-20260730T102310Z-e40375",
+  "change_name": "fix-wifi-iface-type-detection",
+  "commands": [
+    {
+      "id": "eval-cmd-1785407106732-892946",
+      "kind": "test",
+      "argv": [
+        "scripts/project_command.sh",
+        "test-all",
+        "--change",
+        "fix-wifi-iface-type-detection",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"test-all\" \"--change\" \"fix-wifi-iface-type-detection\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-07-30T10:23:34.594Z",
+      "finished_at": "2026-07-30T10:25:05.909Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "exit code in [0]",
+      "observed": "exit code 0; output sha256:6cf8ba84f0e60f5d71bcf4948ec1a32282165e0f9ab6c433234a179728647afa",
+      "result": "Pass",
+      "output_sha256": "sha256:6cf8ba84f0e60f5d71bcf4948ec1a32282165e0f9ab6c433234a179728647afa",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    },
+    {
+      "id": "eval-cmd-1785407140525-894197",
+      "kind": "build",
+      "argv": [
+        "scripts/project_command.sh",
+        "build-server",
+        "--change",
+        "fix-wifi-iface-type-detection",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"build-server\" \"--change\" \"fix-wifi-iface-type-detection\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-07-30T10:25:27.680Z",
+      "finished_at": "2026-07-30T10:25:39.619Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "exit code in [0]",
+      "observed": "exit code 0; output sha256:47800f91c5f35369fd0d721520ef4060dba04149441345ff9cc9ecdd885d6d3e",
+      "result": "Pass",
+      "output_sha256": "sha256:47800f91c5f35369fd0d721520ef4060dba04149441345ff9cc9ecdd885d6d3e",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ]
+}

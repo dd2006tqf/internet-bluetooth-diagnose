@@ -1,0 +1,280 @@
+{
+  "schema_version": 3,
+  "change_name": "fix-wifi-iface-type-detection",
+  "migration": null,
+  "tasks": [
+    {
+      "task_id": "1",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "Wi-Fi 接口类型识别应支持 cfg80211 驱动",
+          "scenarios": [
+            "接口存在 wireless 目录时应识别为 WiFi"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "Wi-Fi 接口类型识别应支持 cfg80211 驱动",
+          "scenarios": [
+            "接口存在 phy80211 符号链接时应识别为 WiFi"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "Wi-Fi 接口类型识别应支持 cfg80211 驱动",
+          "scenarios": [
+            "接口名以 wlan/wlp/wlx 开头且无 sysfs 标志时应识别为 WiFi"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "Wi-Fi 接口类型识别应支持 cfg80211 驱动",
+          "scenarios": [
+            "有线接口不应被误识别为 WiFi"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "RSSI 监控应覆盖所有被识别为 WiFi 的接口",
+          "scenarios": [
+            "cfg80211 Wi-Fi 接口应被 RSSI 监控覆盖"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-iface-type-detection"
+      ],
+      "changed_paths": [
+        "server/Makefile",
+        "server/include/iface_type.hpp",
+        "server/src/iface_type.cpp",
+        "server/src/weak_netmgr.cpp",
+        "server/test/unit/test_iface_type.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "测试用例177行超过expected120(review_at200);Makefile11行超过expected5(review_at15),均在review_at范围内"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785393841814-787296",
+          "phase": "RED",
+          "cycle_id": "red-1",
+          "exception_id": null,
+          "kind": "test",
+          "argv": [
+            "./server/test/bin/test_iface_type"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-07-30T06:43:50.078Z",
+          "finished_at": "2026-07-30T06:44:00.340Z",
+          "expected_exit_codes": [
+            1
+          ],
+          "exit_code": 1,
+          "result": "ExpectedFailure",
+          "source_fingerprint_before": "sha256:c3b486c0c54de8a02c2007f22c1b344debdf472c8b2971c279d33450e0b1ff5c",
+          "source_fingerprint_after": "sha256:c3b486c0c54de8a02c2007f22c1b344debdf472c8b2971c279d33450e0b1ff5c",
+          "planning_fingerprint_before": "sha256:dbf114537daf704e72ed0b28925333f99b7160e53bb2b713ee5a38a600c25a65",
+          "planning_fingerprint_after": "sha256:dbf114537daf704e72ed0b28925333f99b7160e53bb2b713ee5a38a600c25a65",
+          "tdd_policy_sha256": "sha256:5bee77a9a67095e8655a63ae7db74124968806f20e23d66390b524cb04283813",
+          "test_files": [
+            {
+              "path": "server/test/unit/test_iface_type.cpp",
+              "mode": "100644",
+              "sha256": "sha256:4fac79401709de77c50b7ad4329f8ecc6d7f53e57ed3b2f8412e531acc4f650e"
+            }
+          ],
+          "expected_failure": {
+            "class": "assertion",
+            "reason": "phy80211 和接口名前缀后备尚未实现，5 个测试失败",
+            "output_match_sha256": "sha256:1afd4e299405bc802f0876a9090313df733bbcfe1f1ef60f68756761a2437725",
+            "matched": true
+          },
+          "observed_summary": "5 FAIL: phy80211 symlink/dir, wlan/wlp/wlx prefix",
+          "output_sha256": "sha256:4d559c7e6f0499a8f4c1690ede137dfc9a391175690b04c20afdf4a85003e11e",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        },
+        {
+          "id": "gen-cmd-1785394040435-790725",
+          "phase": "GREEN",
+          "cycle_id": "red-1",
+          "exception_id": null,
+          "kind": "test",
+          "argv": [
+            "./server/test/bin/test_iface_type"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-07-30T06:47:09.185Z",
+          "finished_at": "2026-07-30T06:47:19.212Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:64358572d672646917aa98b1098c898ae348774f2eb43eb61818361bd4e5f54f",
+          "source_fingerprint_after": "sha256:64358572d672646917aa98b1098c898ae348774f2eb43eb61818361bd4e5f54f",
+          "planning_fingerprint_before": "sha256:dbf114537daf704e72ed0b28925333f99b7160e53bb2b713ee5a38a600c25a65",
+          "planning_fingerprint_after": "sha256:dbf114537daf704e72ed0b28925333f99b7160e53bb2b713ee5a38a600c25a65",
+          "tdd_policy_sha256": "sha256:5bee77a9a67095e8655a63ae7db74124968806f20e23d66390b524cb04283813",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "GREEN command Pass",
+          "output_sha256": "sha256:439b90f0b60b40a378fd1943edd6632e03c2b621bf79d2da8d5cc04e10bacdf6",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        },
+        {
+          "id": "gen-cmd-1785394203175-793262",
+          "phase": "REGRESSION",
+          "cycle_id": "red-1",
+          "exception_id": null,
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "fix-wifi-iface-type-detection",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-07-30T06:48:33.423Z",
+          "finished_at": "2026-07-30T06:50:01.479Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:64358572d672646917aa98b1098c898ae348774f2eb43eb61818361bd4e5f54f",
+          "source_fingerprint_after": "sha256:64358572d672646917aa98b1098c898ae348774f2eb43eb61818361bd4e5f54f",
+          "planning_fingerprint_before": "sha256:dbf114537daf704e72ed0b28925333f99b7160e53bb2b713ee5a38a600c25a65",
+          "planning_fingerprint_after": "sha256:dbf114537daf704e72ed0b28925333f99b7160e53bb2b713ee5a38a600c25a65",
+          "tdd_policy_sha256": "sha256:5bee77a9a67095e8655a63ae7db74124968806f20e23d66390b524cb04283813",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:155099a40773643d88a7aa01b84548e0ea1db622da2bb448b5aed26624e78dcf",
+          "surface_ids": [
+            "surface-iface-type-detection"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-iface-type-detection",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": [
+            {
+              "surface_id": "surface-iface-type-detection",
+              "role": "current",
+              "probe_id": "probe-iface-type-test-current"
+            }
+          ]
+        },
+        {
+          "id": "gen-cmd-1785394301762-794761",
+          "phase": "REGRESSION",
+          "cycle_id": "red-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "fix-wifi-iface-type-detection",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-07-30T06:50:34.914Z",
+          "finished_at": "2026-07-30T06:51:39.971Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:64358572d672646917aa98b1098c898ae348774f2eb43eb61818361bd4e5f54f",
+          "source_fingerprint_after": "sha256:64358572d672646917aa98b1098c898ae348774f2eb43eb61818361bd4e5f54f",
+          "planning_fingerprint_before": "sha256:dbf114537daf704e72ed0b28925333f99b7160e53bb2b713ee5a38a600c25a65",
+          "planning_fingerprint_after": "sha256:dbf114537daf704e72ed0b28925333f99b7160e53bb2b713ee5a38a600c25a65",
+          "tdd_policy_sha256": "sha256:5bee77a9a67095e8655a63ae7db74124968806f20e23d66390b524cb04283813",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:3149a609fdc12cf7de3e9f855a7c80d7ec6757561403497daec3068fc7aeada6",
+          "surface_ids": [
+            "surface-iface-type-detection"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-iface-type-detection",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": [
+            {
+              "surface_id": "surface-iface-type-detection",
+              "role": "current",
+              "probe_id": "probe-iface-type-build-current"
+            }
+          ]
+        },
+        {
+          "id": "gen-cmd-1785395808131-808154",
+          "phase": "REGRESSION",
+          "cycle_id": "red-1",
+          "exception_id": null,
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "fix-wifi-iface-type-detection",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-07-30T07:15:20.128Z",
+          "finished_at": "2026-07-30T07:16:46.443Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:64358572d672646917aa98b1098c898ae348774f2eb43eb61818361bd4e5f54f",
+          "source_fingerprint_after": "sha256:64358572d672646917aa98b1098c898ae348774f2eb43eb61818361bd4e5f54f",
+          "planning_fingerprint_before": "sha256:dbf114537daf704e72ed0b28925333f99b7160e53bb2b713ee5a38a600c25a65",
+          "planning_fingerprint_after": "sha256:dbf114537daf704e72ed0b28925333f99b7160e53bb2b713ee5a38a600c25a65",
+          "tdd_policy_sha256": "sha256:5bee77a9a67095e8655a63ae7db74124968806f20e23d66390b524cb04283813",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION test-all Pass: cfg80211 Wi-Fi接口识别修复后全量回归通过",
+          "output_sha256": "sha256:c72c798ec2ce0eedb8894c91a5d99a09dd524e63fa29507e326b27e18ff3953a",
+          "surface_ids": [
+            "surface-iface-type-detection"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-iface-type-detection",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": [
+            {
+              "surface_id": "surface-iface-type-detection",
+              "role": "current",
+              "probe_id": "probe-iface-type-test-current"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

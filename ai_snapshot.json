@@ -1,10 +1,10 @@
 {
   "schema_version": 2,
   "workflow": "openspec",
-  "active_change": "bt-a2dp-ebpf-fusion",
-  "phase": "implementing",
-  "current_step": "planning-reapproved",
-  "next_step": "Resume the first unchecked task, or begin Evaluation when all tasks are complete",
+  "active_change": "fix-wifi-iface-type-detection",
+  "phase": "evaluation_in_progress",
+  "current_step": "evaluation-started",
+  "next_step": "Run independent commands and write evaluation.json",
   "must_read": [
     "PROJECT_ATTRIBUTION.md",
     "CLAUDE.md",
@@ -12,5 +12,5 @@
     "docs/ai/openspec.md",
     "docs/ai/workflow.md"
   ],
-  "updated_at": "2026-07-26T11:22:31.470Z"
+  "updated_at": "2026-07-30T10:23:10.967Z"
 }
