@@ -3,8 +3,8 @@ CXXFLAGS=-std=c++17 -O2 -Wall -Wextra -Wpedantic
 INCLUDES=`pkg-config --cflags dbus-1`
 LDFLAGS=`pkg-config --libs dbus-1` -lglog -lbpf -pthread
 
-SRC=src/server.cpp src/dbus_service.cpp src/looper.cpp src/net_iface.cpp src/serializer.cpp src/net_info.cpp src/weak_netmgr.cpp src/using_iface.cpp src/net_ping.cpp src/rtt_monitor.cpp src/rssi_monitor.cpp src/net_wifiriss.cpp src/net_tcp.cpp src/tcp_loss_monitor.cpp src/event_manager.cpp src/logger.cpp src/traffic_analyzer.cpp src/net_traffic.cpp src/traffic_anomaly_detector.cpp src/network_quality_assessor.cpp src/bt_monitor.cpp src/jitter_monitor.cpp src/band_conflict_detector.cpp src/bt_audio_analyzer.cpp src/bt_audio_fusion.cpp src/main.cpp
-INC=include/common.hpp include/net_iface.h include/serializer.hpp include/server.hpp include/net_tcp.h include/tcp_loss_monitor.hpp include/weak_netmgr.hpp include/net_info.hpp include/rtt_monitor.hpp include/rssi_monitor.hpp include/dbus_service.hpp include/looper.hpp include/event_manager.hpp include/logger.hpp include/traffic_analyzer.hpp include/network_quality_assessor.hpp include/bt_monitor.hpp include/jitter_monitor.hpp include/bt_audio_analyzer.hpp include/bt_audio_fusion.hpp
+SRC=src/server.cpp src/dbus_service.cpp src/looper.cpp src/net_iface.cpp src/serializer.cpp src/net_info.cpp src/weak_netmgr.cpp src/iface_type.cpp src/using_iface.cpp src/net_ping.cpp src/rtt_monitor.cpp src/rssi_monitor.cpp src/net_wifiriss.cpp src/net_tcp.cpp src/tcp_loss_monitor.cpp src/event_manager.cpp src/logger.cpp src/traffic_analyzer.cpp src/net_traffic.cpp src/traffic_anomaly_detector.cpp src/network_quality_assessor.cpp src/bt_monitor.cpp src/jitter_monitor.cpp src/band_conflict_detector.cpp src/bt_audio_analyzer.cpp src/bt_audio_fusion.cpp src/main.cpp
+INC=include/common.hpp include/net_iface.h include/serializer.hpp include/server.hpp include/net_tcp.h include/tcp_loss_monitor.hpp include/weak_netmgr.hpp include/net_info.hpp include/rtt_monitor.hpp include/rssi_monitor.hpp include/dbus_service.hpp include/looper.hpp include/event_manager.hpp include/logger.hpp include/traffic_analyzer.hpp include/network_quality_assessor.hpp include/bt_monitor.hpp include/jitter_monitor.hpp include/bt_audio_analyzer.hpp include/bt_audio_fusion.hpp include/iface_type.hpp
 
 BIN_DIR=bin
 BUILD_DIR=build
@@ -58,7 +58,7 @@ TEST_LDFLAGS_BPF = $(TEST_LDFLAGS) -lbpf
 # 单元测试列表（含现有 test_net_info 与新增 6 个算法测试）
 UNIT_TESTS = test_net_info test_quality_assessor test_anomaly_detector \
              test_audio_fusion test_band_conflict test_serializer \
-             test_event_manager test_bt_full_link
+             test_event_manager test_bt_full_link test_iface_type
 # 专项测试（蓝牙监控纯逻辑层，无需硬件）
 SPECIAL_TESTS = test_bt_monitor
 ALL_TESTS = $(UNIT_TESTS) $(SPECIAL_TESTS)
@@ -189,5 +189,13 @@ $(TEST_BIN_DIR)/test_bt_monitor: $(TEST_DIR)/special/test_bt_monitor.cpp \
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/special/test_bt_monitor.cpp \
 	    src/bt_monitor.cpp src/bt_audio_analyzer.cpp src/bt_audio_fusion.cpp \
 	    src/event_manager.cpp $(TEST_DIR)/unit/mock_dbus_service.cpp src/logger.cpp $(TEST_LDFLAGS_BPF)
+
+# test_iface_type（Wi-Fi 接口类型识别：wireless 目录 / phy80211 符号链接 / 接口名前缀后备）
+$(TEST_BIN_DIR)/test_iface_type: $(TEST_DIR)/unit/test_iface_type.cpp \
+    src/iface_type.cpp include/iface_type.hpp \
+    $(TEST_DIR)/unit/test_common.hpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_iface_type.cpp \
+	    src/iface_type.cpp $(TEST_LDFLAGS)
 
 

@@ -7,18 +7,12 @@
 #include "net_ping.h"
 #include "net_wifiriss.h"
 #include "traffic_analyzer.hpp"
+#include "iface_type.hpp"
 #include "logger.hpp"
 #include <algorithm>
 #include <sys/stat.h>
 
 namespace weaknet_dbus {
-
-// 通过 sysfs 判断是否为无线接口（内核标准方式，比接口名前缀可靠）
-static bool isWirelessInterface(const std::string& ifname) {
-    std::string path = "/sys/class/net/" + ifname + "/wireless";
-    struct stat st;
-    return (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
-}
 
 std::vector<NetInfo> WeakNetMgr::collectCurrentInterfaces() {
     LOG_INFO(LogModule::WEAK_MGR, "collectCurrentInterfaces begin");
