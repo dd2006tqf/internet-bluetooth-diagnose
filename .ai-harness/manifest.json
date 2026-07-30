@@ -379,7 +379,7 @@
       "path": "scripts/change_new.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:d773b84f41bdcc73c3979ce8e6d63d9ca4abaf8d3e6e4a4247110c22d596a94e"
+      "content_sha256": "sha256:ef21789a65f69e065996a6aec5976dbff06b3426497a4f3988e77ae03d90beb0"
     },
     {
       "path": "scripts/change_adopt.sh",

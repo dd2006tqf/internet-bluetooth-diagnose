@@ -82,6 +82,10 @@ cat > "$design_tmp" <<'DESIGN'
 ```json
 {
   "schema_version": 1,
+  "discovery": {
+    "compile_commands_path": null,
+    "mode": "reviewed_inventory"
+  },
   "surfaces": []
 }
 ```
