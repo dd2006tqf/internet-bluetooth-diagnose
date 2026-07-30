@@ -4,12 +4,15 @@
  * 支持两种模式：
  *   - pre-evaluation：evaluation-baseline.json 不存在时，只更新 ai_snapshot.json + change-footprint.json
  *   - full：所有 evaluation 文件都存在时，级联更新所有哈希
+ * 
+ * 哈希计算统一使用 manifest_policy.js 的函数，确保一致性
  */
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
+const manifestPolicy = require('./manifest_policy.js');
 const integrationSurfaceLib = require('./integration_surface_lib.js');
 
 const changeName = process.argv[2];
@@ -21,29 +24,16 @@ if (!changeName) {
 const changeDir = `openspec/changes/${changeName}`;
 const harnessDir = `${changeDir}/harness`;
 
-// ── 工具函数 ──────────────────────────────────────────────
+// ── 工具函数（统一使用 manifest_policy.js 的实现）─────────────
 
-function sha256(content) {
-    return 'sha256:' + crypto.createHash('sha256').update(content).digest('hex');
-}
+// 使用 manifest_policy.js 的 digest 函数（等同于 sha256）
+const sha256 = manifestPolicy.digest;
+
+// 使用 manifest_policy.js 的 canonical 函数
+const canonical = manifestPolicy.canonical;
 
 function sha256File(filePath) {
     return sha256(fs.readFileSync(filePath));
-}
-
-// 规范化（与 manifest_policy.js 的 canonical 一致）
-function canonical(v) {
-    if (Array.isArray(v)) {
-        return '[' + v.map(canonical).join(',') + ']';
-    } else if (v && typeof v === 'object') {
-        return '{' + Object.keys(v).sort(cmp).map(k => JSON.stringify(k) + ':' + canonical(v[k])).join(',') + '}';
-    } else {
-        return JSON.stringify(v);
-    }
-}
-
-function cmp(a, b) {
-    return Buffer.from(a).compare(Buffer.from(b));
 }
 
 // 从 design.md 提取 JSON 块
@@ -54,63 +44,6 @@ function extractJsonBlock(content, blockType) {
         throw new Error(`未找到 ${blockType} 块`);
     }
     return JSON.parse(match[2]);
-}
-
-// 计算 planning_fingerprint（与 manifest_policy.js 逻辑一致）
-function calculatePlanningFingerprint(changeDir) {
-    const required = ['.openspec.yaml', 'proposal.md', 'design.md', 'tasks.md'];
-    const files = [];
-
-    for (const rel of required) {
-        const file = path.join(changeDir, rel);
-        if (!fs.existsSync(file)) continue;
-
-        const st = fs.lstatSync(file);
-        if (!st.isFile() || st.isSymbolicLink()) continue;
-
-        let content = fs.readFileSync(file);
-        const mode = (st.mode & 0o777).toString(8);
-
-        if (rel === 'tasks.md') {
-            const text = content.toString('utf8').replace(/^- \[[xX ]\] (\d+(?:\.\d+)*)/gm, '- [ ] $1');
-            content = Buffer.from(text);
-        }
-
-        if (rel === 'design.md') {
-            const text = content.toString('utf8');
-            const start = text.indexOf('<!-- autoai:tdd-policy:v1 -->');
-            const end = text.indexOf('<!-- /autoai:tdd-policy:v1 -->');
-            if (start >= 0 && end >= 0 && start < end) {
-                content = Buffer.from(text.slice(start + '<!-- autoai:tdd-policy:v1 -->'.length, end));
-            }
-        }
-
-        files.push({ path: rel, mode: mode, sha256: sha256(content) });
-    }
-
-    // 收集 specs/ 目录下的所有 .md 文件
-    const specsDir = path.join(changeDir, 'specs');
-    if (fs.existsSync(specsDir) && fs.lstatSync(specsDir).isDirectory()) {
-        const walk = (dir, rel) => {
-            for (const name of fs.readdirSync(dir).sort()) {
-                const p = path.join(dir, name);
-                const r = rel + '/' + name;
-                const st = fs.lstatSync(p);
-                if (st.isSymbolicLink()) continue;
-                if (st.isDirectory()) {
-                    walk(p, r);
-                } else if (st.isFile() && name.endsWith('.md')) {
-                    const content = fs.readFileSync(p);
-                    const mode = (st.mode & 0o777).toString(8);
-                    files.push({ path: r, mode: mode, sha256: sha256(content) });
-                }
-            }
-        };
-        walk(specsDir, 'specs');
-    }
-
-    files.sort((a, b) => cmp(a.path, b.path));
-    return sha256(Buffer.from(canonical(files)));
 }
 
 // ── 检查必要文件 ──────────────────────────────────────────
@@ -180,14 +113,14 @@ console.log('计算 design.md 块哈希...');
 const tddPolicy = extractJsonBlock(designContent, 'tdd-policy');
 const implEconomy = extractJsonBlock(designContent, 'implementation-economy');
 
-// 使用 integration_surface_lib.js 的 parsePlanFromChangeRoot 计算 integration_completeness_sha256
-// 这与 manifest_policy.js 的计算方式一致
-const planResult = integrationSurfaceLib.parsePlanFromChangeRoot(process.cwd(), changeName, changeDir);
+// 使用 manifest_policy.js 的 planningState 计算所有规划哈希
+// 这确保了与 manifest_policy.js 的计算方式完全一致
+const planningState = manifestPolicy.planningState(process.cwd(), changeName);
 
 const tddPolicyHash = sha256(Buffer.from(canonical(tddPolicy)));
 const implEconomyHash = sha256(Buffer.from(canonical(implEconomy)));
-const integrationCompletenessHash = planResult.block_sha256;
-const planningFingerprint = calculatePlanningFingerprint(changeDir);
+const integrationCompletenessHash = planningState.integration_completeness_sha256;
+const planningFingerprint = planningState.planning_fingerprint;
 
 console.log(`  tdd_policy_sha256: ${tddPolicyHash}`);
 console.log(`  budget_block_sha256: ${implEconomyHash}`);
