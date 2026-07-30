@@ -427,7 +427,7 @@
       "path": "scripts/task_verify.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:8f9000b80878e3468abb45a75c7b744a45892e88b1be54a3394ec36de85d29ca"
+      "content_sha256": "sha256:bca4b6ab81b6b1d3011a7764750436850d502c21c72cf49f4d3f6297faf8fbe2"
     },
     {
       "path": "scripts/evaluator_check.sh",
