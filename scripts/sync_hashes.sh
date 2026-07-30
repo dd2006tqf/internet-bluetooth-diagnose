@@ -8,9 +8,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-# 检测活跃的 change
-if [ -f ".ai-harness/active_change" ]; then
+# 优先使用命令行参数
+if [ $# -gt 0 ]; then
+    CHANGE_NAME="$1"
+    echo "使用指定的 change: $CHANGE_NAME"
+elif [ -f ".ai-harness/active_change" ]; then
     CHANGE_NAME=$(cat .ai-harness/active_change)
+    echo "从 active_change 文件读取: $CHANGE_NAME"
 else
     # 自动检测：查找 openspec/changes 中非 archive 的目录
     ACTIVE_CHANGES=$(find openspec/changes -maxdepth 1 -mindepth 1 -type d ! -name "archive" -exec basename {} \;)
@@ -25,6 +29,8 @@ else
     else
         echo "错误: 检测到多个活跃 change，请手动指定："
         echo "$ACTIVE_CHANGES" | sed 's/^/  - /'
+        echo ""
+        echo "用法: $0 <change-name>"
         exit 1
     fi
 fi

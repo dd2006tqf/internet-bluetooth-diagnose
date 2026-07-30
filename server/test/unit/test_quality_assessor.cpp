@@ -70,17 +70,20 @@ static void testEmptyInterfaces() {
     CHECK(!r.issues.empty());  // 应提示无接口
 }
 
-// 测试5: 无活跃接口时使用第一个接口
+// 测试5: 无活跃接口时应返回 UNKNOWN
 static void testNoActiveInterface() {
-    TEST_CASE("无活跃接口时使用第一个接口评估");
+    TEST_CASE("无活跃接口时应返回 UNKNOWN");
     NetworkQualityAssessor a;
     std::vector<NetInfo> ifaces = {
         makeIface("eth0", 30, 0.0, -45, 1000000, 800, 10, false),
         makeIface("wlan0", 300, 5.0, -85, 10000, 100, 1, false)
     };
     auto r = a.assessQuality(ifaces);
-    // 无活跃接口时应回退到第一个（eth0，指标较好）
-    CHECK(r.level != NetworkQualityLevel::UNKNOWN);
+    // 无活跃接口时应返回 UNKNOWN，而不是评估不活跃接口
+    CHECK(r.level == NetworkQualityLevel::UNKNOWN);
+    CHECK_EQ(r.levelName, "UNKNOWN");
+    CHECK_EQ(r.score, 0.0);
+    CHECK(!r.issues.empty());  // 应提示无活跃接口
 }
 
 // 测试6: 权重验证 - 仅RTT差时总分受影响

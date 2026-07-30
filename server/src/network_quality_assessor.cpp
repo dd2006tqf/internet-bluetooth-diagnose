@@ -36,9 +36,15 @@ NetworkQualityResult NetworkQualityAssessor::assessQuality(const std::vector<Net
         }
     }
 
-    // 如果没有找到活跃接口，使用第一个接口
+    // 如果没有找到活跃接口，返回 UNKNOWN 状态
     if (!activeInterface) {
-        activeInterface = &interfaces[0];
+        NetworkQualityResult result;
+        result.level = NetworkQualityLevel::UNKNOWN;
+        result.levelName = "UNKNOWN";
+        result.score = 0.0;
+        result.details = "{\"error\":\"No active interface available\"}";
+        result.issues.push_back("No active network interface detected");
+        return result;
     }
 
     return assessInterfaceQuality(*activeInterface);
