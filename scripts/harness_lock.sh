@@ -136,6 +136,26 @@ harness_lock_acquire() {
         case "$owner_purpose:$purpose" in task-verify:footprint-check|task-verify:integration-plan-check|task-verify-complete:integration-plan-check|upgrade-v3:integration-plan-check|evaluation-begin:footprint-check|evaluation-begin:integration-check|evaluation-finish:footprint-check|evaluation-finish:integration-check|evaluation-complete-check:footprint-check|evaluation-complete-check:integration-check|evaluation-plan-check:footprint-plan-check|evaluation-plan-check:integration-plan-check|snapshot-update:evaluation-plan-check|snapshot-update:footprint-plan-check|snapshot-update:integration-plan-check|change-status:evaluation-complete-check|change-status:footprint-check|change-status:integration-plan-check|change-status:integration-check|resume:change-status|resume:evaluation-complete-check|resume:footprint-check|resume:integration-check|archive:footprint-check|archive:evaluation-complete-check|archive:integration-check|integration-check:footprint-check|integration-check:integration-plan-check|integration-refresh:footprint-check|integration-refresh:integration-plan-check) ;; *) echo "[ERR] lock owner purpose does not authorize this helper" >&2; return 4 ;; esac
         case "$declared_parent:$purpose" in task-verify:footprint-check|task-verify:integration-plan-check|task-verify-complete:integration-plan-check|upgrade-v3:integration-plan-check|evaluation-begin:footprint-check|evaluation-begin:integration-check|evaluation-finish:footprint-check|evaluation-finish:integration-check|evaluation-complete-check:footprint-check|evaluation-complete-check:integration-check|evaluation-plan-check:footprint-plan-check|evaluation-plan-check:integration-plan-check|snapshot-update:evaluation-plan-check|snapshot-update:integration-plan-check|change-status:evaluation-complete-check|change-status:footprint-check|change-status:integration-plan-check|change-status:integration-check|resume:change-status|resume:integration-check|archive:footprint-check|archive:evaluation-complete-check|archive:integration-check|integration-check:footprint-check|integration-check:integration-plan-check|integration-refresh:footprint-check|integration-refresh:integration-plan-check) HARNESS_EFFECTIVE_PURPOSE=$purpose; HARNESS_EFFECTIVE_CHANGE=$change; return 0 ;; *) echo "[ERR] inherited parent purpose does not authorize this helper" >&2; return 4 ;; esac
     fi
+    # 尝试自动清理陈旧锁（超时 5 分钟或持有者已死）
+    if [[ -d "$HARNESS_LOCK_DIR" ]]; then
+        local stale_pid stale_start now_start elapsed
+        stale_pid=$(cat "$HARNESS_LOCK_DIR/pid" 2>/dev/null || true)
+        stale_start=$(cat "$HARNESS_LOCK_DIR/started_at" 2>/dev/null || true)
+        if [[ -n "$stale_pid" && "$stale_pid" =~ ^[0-9]+$ && "$stale_pid" -gt 1 ]]; then
+            # 检查进程是否存活
+            if ! kill -0 "$stale_pid" 2>/dev/null; then
+                rm -rf -- "$HARNESS_LOCK_DIR" 2>/dev/null || true
+            elif [[ -n "$stale_start" ]]; then
+                # 检查是否超时（5分钟 = 300秒）
+                now_start=$(date -u +%s)
+                stale_start=$(date -u -d "$stale_start" +%s 2>/dev/null || echo 0)
+                elapsed=$((now_start - stale_start))
+                if [[ $elapsed -gt 300 ]]; then
+                    rm -rf -- "$HARNESS_LOCK_DIR" 2>/dev/null || true
+                fi
+            fi
+        fi
+    fi
     owner_pid=${BASHPID:-$$}
     HARNESS_OWNED_TOKEN="${purpose}-${owner_pid}-$(date -u +%s)-${RANDOM}"
     mkdir "$HARNESS_LOCK_DIR" 2>/dev/null || { echo "[ERR] managed Harness lock is held; no command was run" >&2; return 4; }
@@ -148,6 +168,9 @@ harness_lock_acquire() {
     trap 'harness_lock_release; exit 130' INT
     trap 'harness_lock_release; exit 143' TERM
     trap 'harness_lock_release; exit 129' HUP
+    trap 'harness_lock_release; exit 131' QUIT
+    trap 'harness_lock_release; exit 134' ABRT
+    trap 'harness_lock_release; exit 141' PIPE
     if [[ -n "$change" ]] && declare -F harness_require_isolation_authority >/dev/null; then harness_require_isolation_authority "$change" "$purpose" || return; fi
 }
 harness_lock_bind_change() {
@@ -383,5 +406,27 @@ if [[ "${1:-}" == isolation-release && "${BASH_SOURCE[0]}" == "$0" ]]; then shif
 if [[ "${1:-}" == isolation-recover && "${BASH_SOURCE[0]}" == "$0" ]]; then shift; [[ $# -eq 5 && "$2" == --reason && "$4" == --confirm ]] || exit 2; harness_validate_change_id "$1"; harness_isolation_node recover "$1" "$3" "$5"; exit; fi
 if [[ "${1:-}" == isolation-disable && "${BASH_SOURCE[0]}" == "$0" ]]; then shift; [[ $# -eq 4 && "$1" == --reason && "$3" == --confirm ]] || exit 2; harness_isolation_node disable "$2" "$4"; exit; fi
 if [[ "${1:-}" == cleanup-stale && "${BASH_SOURCE[0]}" == "$0" ]]; then
-    [[ -d "$HARNESS_LOCK_DIR" ]] || exit 0; pid=$(cat "$HARNESS_LOCK_DIR/pid" 2>/dev/null || true); [[ "$pid" =~ ^[0-9]+$ ]] || { echo "[ERR] malformed lock; inspect manually" >&2; exit 4; }; kill -0 "$pid" 2>/dev/null && { echo "[ERR] lock owner $pid is alive" >&2; exit 4; }; rm -rf -- "$HARNESS_LOCK_DIR"; echo "Removed verified stale lock."
+    [[ -d "$HARNESS_LOCK_DIR" ]] || exit 0
+    pid=$(cat "$HARNESS_LOCK_DIR/pid" 2>/dev/null || true)
+    [[ "$pid" =~ ^[0-9]+$ ]] || { echo "[ERR] malformed lock; inspect manually" >&2; exit 4; }
+    # 检查进程是否存活
+    if kill -0 "$pid" 2>/dev/null; then
+        # 检查是否超时（5分钟 = 300秒）
+        started_at=$(cat "$HARNESS_LOCK_DIR/started_at" 2>/dev/null || true)
+        if [[ -n "$started_at" ]]; then
+            lock_time=$(date -d "$started_at" +%s 2>/dev/null || echo 0)
+            current_time=$(date +%s)
+            elapsed=$((current_time - lock_time))
+            if [[ $elapsed -gt 300 ]]; then
+                echo "[WARN] Lock owner $pid is alive but lock is older than 5 minutes (${elapsed}s), removing anyway" >&2
+                rm -rf -- "$HARNESS_LOCK_DIR"
+                echo "Removed timeout stale lock."
+                exit 0
+            fi
+        fi
+        echo "[ERR] lock owner $pid is alive" >&2
+        exit 4
+    fi
+    rm -rf -- "$HARNESS_LOCK_DIR"
+    echo "Removed verified stale lock."
 fi
