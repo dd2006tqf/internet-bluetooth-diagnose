@@ -1,0 +1,98 @@
+{
+  "schema_version": 3,
+  "change_name": "fix-ping-error-logging",
+  "migration": null,
+  "tasks": [
+    {
+      "task_id": "1",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "ping 错误日志",
+          "scenarios": [
+            "添加 LOG(ERROR) 记录错误信息"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/src/net_ping.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785428681462-1050019",
+          "phase": "REGRESSION",
+          "cycle_id": "obs-regression",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "fix-ping-error-logging",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-07-30T16:24:29.162Z",
+          "finished_at": "2026-07-30T16:24:40.052Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:558a5760bb26ff2802c091f1ab20afcaa5aa09622e7ac2562e4b7819c874d723",
+          "source_fingerprint_after": "sha256:558a5760bb26ff2802c091f1ab20afcaa5aa09622e7ac2562e4b7819c874d723",
+          "planning_fingerprint_before": "sha256:1766ebfdd638c7ba30db0bfc2908db2f7917a831a25a3df3ba0180e1c6e66b49",
+          "planning_fingerprint_after": "sha256:1766ebfdd638c7ba30db0bfc2908db2f7917a831a25a3df3ba0180e1c6e66b49",
+          "tdd_policy_sha256": "sha256:234f6b752d03720a1693516566f1d304610aa7ca9263c5366da471624ab36a28",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:b86f68321ded64a3233affe45348b3a22d4879df6a456586bceae0a541770857",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        },
+        {
+          "id": "gen-cmd-1785428784545-1052144",
+          "phase": "REGRESSION",
+          "cycle_id": "obs-regression",
+          "exception_id": null,
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "fix-ping-error-logging",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-07-30T16:24:57.547Z",
+          "finished_at": "2026-07-30T16:26:23.029Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:558a5760bb26ff2802c091f1ab20afcaa5aa09622e7ac2562e4b7819c874d723",
+          "source_fingerprint_after": "sha256:558a5760bb26ff2802c091f1ab20afcaa5aa09622e7ac2562e4b7819c874d723",
+          "planning_fingerprint_before": "sha256:1766ebfdd638c7ba30db0bfc2908db2f7917a831a25a3df3ba0180e1c6e66b49",
+          "planning_fingerprint_after": "sha256:1766ebfdd638c7ba30db0bfc2908db2f7917a831a25a3df3ba0180e1c6e66b49",
+          "tdd_policy_sha256": "sha256:234f6b752d03720a1693516566f1d304610aa7ca9263c5366da471624ab36a28",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:5dfd46979375d254a50215591c3b2c2cd0c143d1dbe52c4f0339c043764e11c7",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    }
+  ]
+}

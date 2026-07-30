@@ -1,0 +1,59 @@
+{
+  "schema_version": 2,
+  "evaluation_id": "eval-20260730T163038Z-e88068",
+  "change_name": "fix-ping-error-logging",
+  "commands": [
+    {
+      "id": "eval-cmd-1785429109589-1059964",
+      "kind": "build",
+      "argv": [
+        "scripts/project_command.sh",
+        "build-server",
+        "--change",
+        "fix-ping-error-logging",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"build-server\" \"--change\" \"fix-ping-error-logging\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-07-30T16:31:37.337Z",
+      "finished_at": "2026-07-30T16:31:48.721Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "build-server succeeds with exit 0",
+      "observed": "weaknet-dbus-server build completed",
+      "result": "Pass",
+      "output_sha256": "sha256:96e4850ab21adb7d1b5cec8f7ffa43d80838f3d9c8d71fb4de4be33cf6f81dd0",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    },
+    {
+      "id": "eval-cmd-1785429214671-1062155",
+      "kind": "test",
+      "argv": [
+        "scripts/project_command.sh",
+        "test-all",
+        "--change",
+        "fix-ping-error-logging",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"test-all\" \"--change\" \"fix-ping-error-logging\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-07-30T16:32:07.842Z",
+      "finished_at": "2026-07-30T16:33:33.833Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "test-all passes with exit 0",
+      "observed": "33 passed 0 failed 1 skipped",
+      "result": "Pass",
+      "output_sha256": "sha256:2686b113e3d84af56062ca362e1d2829f070a3419b40c4b81e728de8d34b09e6",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ]
+}

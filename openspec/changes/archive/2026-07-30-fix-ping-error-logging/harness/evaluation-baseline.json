@@ -1,0 +1,61 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260730T163038Z-e88068",
+  "change_name": "fix-ping-error-logging",
+  "status": "complete",
+  "started_at": "2026-07-30T16:30:39.182Z",
+  "source_fingerprint": "sha256:558a5760bb26ff2802c091f1ab20afcaa5aa09622e7ac2562e4b7819c874d723",
+  "artifact_fingerprint": "sha256:3fd862f86e410cc2209b1b2fc091ee5c615f836946671b7771e3c9cae2d59ba4",
+  "base_specs_fingerprint": "sha256:00dceee347c84e5c48a11fa98ec3772ece5d2fd40336a2a4e2a1e7829e8084ea",
+  "verification_json_sha256": "sha256:1c9526e04e57eb04b931990d11255d26b46c73ff8a3e9274169b02f048fe2055",
+  "budget_block_sha256": "sha256:74a6924aa49b1b3e9eab63ba4ab1c49afdf6d18e525276cd29fed090cc06bfe3",
+  "change_footprint_json_sha256": "sha256:2fb66d8c8323dd121afe1e6c64e6c444e4336581ae3cbf3ab57f61804b621a66",
+  "integration_planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+  "integration_surface_report_sha256": "sha256:48eaca681bd5f9dfaae4b71b757459bcca13e6e45caf724ff368834ddf60409d",
+  "integration_discovery_identity_sha256": "sha256:fe00439aca4ecdc6246bf564adc1f6f39db9d20b622177f94ffe915ae92078ea",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "48074c6f8800585f8cf5bc1dbea08d851401f1ad",
+    "head_commit": "48074c6f8800585f8cf5bc1dbea08d851401f1ad",
+    "source_fingerprint": "sha256:558a5760bb26ff2802c091f1ab20afcaa5aa09622e7ac2562e4b7819c874d723",
+    "artifact_fingerprint": "sha256:3fd862f86e410cc2209b1b2fc091ee5c615f836946671b7771e3c9cae2d59ba4",
+    "base_specs_fingerprint": "sha256:00dceee347c84e5c48a11fa98ec3772ece5d2fd40336a2a4e2a1e7829e8084ea",
+    "layers": {
+      "effective": {
+        "paths": [
+          "server/src/net_ping.cpp"
+        ],
+        "state_fingerprint": "sha256:31f71e4b4708d3dfa9037bc0ba4dfb2a2944740b82e32fe72e8ceb3f27e2806c"
+      },
+      "committed": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [
+          "server/src/net_ping.cpp"
+        ],
+        "state_fingerprint": "sha256:31f71e4b4708d3dfa9037bc0ba4dfb2a2944740b82e32fe72e8ceb3f27e2806c"
+      },
+      "untracked": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [
+      "server/src/net_ping.cpp"
+    ],
+    "git_state_fingerprint": "sha256:4c69e2868e6d251060a2f92c54b1b5b4e2359a2410c2fb8880b6729ad0205354",
+    "raw_diff_persisted": false
+  },
+  "completed_at": "2026-07-30T16:41:42.930Z",
+  "evaluation_json_sha256": "sha256:17338d1d3dc69e0c9a48f426333981282de4837adf793a8295ee33cb5f761d16"
+}

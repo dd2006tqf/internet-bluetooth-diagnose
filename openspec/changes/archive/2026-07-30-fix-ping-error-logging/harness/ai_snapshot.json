@@ -1,0 +1,15 @@
+{
+  "schema_version": 4,
+  "active_change": "fix-ping-error-logging",
+  "phase": "planning",
+  "planned_base_specs_fingerprint": "sha256:00dceee347c84e5c48a11fa98ec3772ece5d2fd40336a2a4e2a1e7829e8084ea",
+  "planned_change_fingerprint": "sha256:1766ebfdd638c7ba30db0bfc2908db2f7917a831a25a3df3ba0180e1c6e66b49",
+  "planned_tdd_policy_sha256": "sha256:234f6b752d03720a1693516566f1d304610aa7ca9263c5366da471624ab36a28",
+  "planned_integration_completeness_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+  "planning_approved_at": "2026-07-30T16:00:00Z",
+  "implementation_base_commit": "48074c6f8800585f8cf5bc1dbea08d851401f1ad",
+  "adopted_preexisting_paths": [],
+  "implementation_baselined_at": null,
+  "current_step": "planning_approved",
+  "next_step": "run sync_hashes to generate footprint"
+}

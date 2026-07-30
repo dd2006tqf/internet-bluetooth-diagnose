@@ -15,6 +15,9 @@
 #include <cstring>
 #include <chrono>
 #include <string>
+#include "logger.hpp"
+
+using namespace weaknet_dbus;
 
 namespace {
 static constexpr int kPacketSize = 4096;
@@ -83,6 +86,7 @@ int NetPing::packIcmp(struct icmp* icmp, uint16_t id, uint16_t seq) {
 int NetPing::ping(const std::string& host, const std::string& ifaceName, int timeoutMs) {
     int sockfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (sockfd < 0) {
+        LOG_ERROR(LogModule::PING, "socket() failed: " << strerror(errno));
         return -1;
     }
 
@@ -90,6 +94,7 @@ int NetPing::ping(const std::string& host, const std::string& ifaceName, int tim
     struct ifreq ifr{};
     std::snprintf(ifr.ifr_name, IFNAMSIZ, "%s", ifaceName.c_str());
     if (setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)) < 0) {
+        LOG_ERROR(LogModule::PING, "SO_BINDTODEVICE failed for iface " << ifaceName << ": " << strerror(errno));
         close(sockfd);
         return -2;
     }
@@ -97,6 +102,7 @@ int NetPing::ping(const std::string& host, const std::string& ifaceName, int tim
     // Resolve destination
     struct sockaddr_in dest{};
     if (!resolveHostIPv4(host, dest)) {
+        LOG_ERROR(LogModule::PING, "resolveHostIPv4 failed for host " << host);
         close(sockfd);
         return -3;
     }
@@ -116,6 +122,7 @@ int NetPing::ping(const std::string& host, const std::string& ifaceName, int tim
     ssize_t sent = sendto(sockfd, &icmpPacket, sizeof(icmpPacket), 0,
                           reinterpret_cast<struct sockaddr*>(&dest), sizeof(dest));
     if (sent < 0) {
+        LOG_ERROR(LogModule::PING, "sendto() failed for host " << host << ": " << strerror(errno));
         close(sockfd);
         return -4;
     }
@@ -132,6 +139,11 @@ int NetPing::ping(const std::string& host, const std::string& ifaceName, int tim
 
     int rv = select(sockfd + 1, &rfds, nullptr, nullptr, &tv);
     if (rv <= 0) {
+        if (rv == 0) {
+            LOG_ERROR(LogModule::PING, "select() timeout after " << timeoutMs << "ms for host " << host);
+        } else {
+            LOG_ERROR(LogModule::PING, "select() error: " << strerror(errno));
+        }
         close(sockfd);
         return (rv == 0) ? -5 : -6; // timeout / select error
     }
@@ -141,6 +153,7 @@ int NetPing::ping(const std::string& host, const std::string& ifaceName, int tim
     socklen_t slen = sizeof(src);
     ssize_t n = recvfrom(sockfd, buf, sizeof(buf), 0, reinterpret_cast<struct sockaddr*>(&src), &slen);
     if (n <= 0) {
+        LOG_ERROR(LogModule::PING, "recvfrom() failed for host " << host << ": " << strerror(errno));
         close(sockfd);
         return -7;
     }
@@ -149,11 +162,13 @@ int NetPing::ping(const std::string& host, const std::string& ifaceName, int tim
     struct ip* iphdr = reinterpret_cast<struct ip*>(buf);
     int iphdrlen = iphdr->ip_hl * 4;
     if (n < iphdrlen + static_cast<ssize_t>(sizeof(struct icmp))) {
+        LOG_ERROR(LogModule::PING, "reply too short: n=" << n << " iphdrlen=" << iphdrlen);
         close(sockfd);
         return -8;
     }
     struct icmp* ricmp = reinterpret_cast<struct icmp*>(buf + iphdrlen);
     if (ricmp->icmp_type != ICMP_ECHOREPLY || ricmp->icmp_id != id) {
+        LOG_ERROR(LogModule::PING, "icmp validation failed: type=" << static_cast<int>(ricmp->icmp_type) << " id=" << ricmp->icmp_id);
         close(sockfd);
         return -9;
     }

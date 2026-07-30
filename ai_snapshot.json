@@ -1,0 +1,14 @@
+{
+  "schema_version": 2,
+  "workflow": "openspec",
+  "active_change": null,
+  "phase": "idle",
+  "current_step": "change-archived",
+  "next_step": "Create or select the next change",
+  "updated_at": "2026-07-30T16:54:01.821Z",
+  "last_archived_change": {
+    "change_name": "fix-ping-error-logging",
+    "archived_as": "2026-07-30-fix-ping-error-logging",
+    "archived_at": "2026-07-30T16:54:01.821Z"
+  }
+}

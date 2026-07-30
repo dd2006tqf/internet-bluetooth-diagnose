@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "change_name": "fix-ping-error-logging",
+  "implementation_base_commit": "48074c6f8800585f8cf5bc1dbea08d851401f1ad",
+  "source_fingerprint": "sha256:558a5760bb26ff2802c091f1ab20afcaa5aa09622e7ac2562e4b7819c874d723",
+  "budget_block_sha256": "sha256:74a6924aa49b1b3e9eab63ba4ab1c49afdf6d18e525276cd29fed090cc06bfe3",
+  "status": "within_expected",
+  "production": {
+    "added_lines": 15,
+    "deleted_lines": 0,
+    "net_lines": 15,
+    "touched_files": 1,
+    "new_files": 0
+  },
+  "tests": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0
+  },
+  "project_support": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0,
+    "paths_by_class": {
+      "project_docs": [],
+      "project_tooling": [],
+      "examples": []
+    }
+  },
+  "generated": {
+    "files": 0,
+    "bytes": 0
+  },
+  "vendor": {
+    "changed_paths": []
+  },
+  "binary": {
+    "files": 0,
+    "bytes": 0,
+    "paths": []
+  },
+  "structural_candidates": [],
+  "unclassified_paths": [],
+  "classification_overlaps": []
+}

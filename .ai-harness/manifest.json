@@ -229,13 +229,13 @@
       "path": "scripts/harness_lock.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:1b09f61655d1da632a8653b6cc157591a53e6da1b51a79da241caa112651aa55"
+      "content_sha256": "sha256:310ed6653939938e0e8b340719dc1d6e1d95883994b192f8b8fc34116266bbd6"
     },
     {
       "path": "scripts/manifest_policy.js",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:557706cf970969f2e0edb48a478d5e72c2ea0049320759387ebd9af8253a0c3c"
+      "content_sha256": "sha256:73cf2b3e82948091b8d3e9353a7397f1dc85b69a4c67201c769b0454bbf0fc98"
     },
     {
       "path": "scripts/project_detect.sh",
@@ -427,7 +427,7 @@
       "path": "scripts/task_verify.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:bca4b6ab81b6b1d3011a7764750436850d502c21c72cf49f4d3f6297faf8fbe2"
+      "content_sha256": "sha256:dbba1d9b4d00d75429b11568b3f3d06b7995f9d1ba77bb1d006a1625b9a1b645"
     },
     {
       "path": "scripts/evaluator_check.sh",
