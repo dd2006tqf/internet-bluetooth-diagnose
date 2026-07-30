@@ -13,7 +13,6 @@ const path = require('path');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
 const manifestPolicy = require('./manifest_policy.js');
-const integrationSurfaceLib = require('./integration_surface_lib.js');
 
 const changeName = process.argv[2];
 if (!changeName) {
@@ -88,9 +87,30 @@ console.log('读取文件...');
 const designContent = fs.readFileSync(`${changeDir}/design.md`, 'utf8');
 const snapshot = JSON.parse(fs.readFileSync(`${harnessDir}/ai_snapshot.json`, 'utf8'));
 
-const footprint = exists.footprint
-    ? JSON.parse(fs.readFileSync(optionalPaths.footprint, 'utf8'))
-    : null;
+// ── 自动填充缺失的 planning 字段 ──────────────────────────
+
+// 自动填充 planning_approved_at（若为 null，设为当前 UTC 时间）
+if (!snapshot.planning_approved_at) {
+    snapshot.planning_approved_at = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+    console.log(`自动填充 planning_approved_at: ${snapshot.planning_approved_at}`);
+}
+
+// 自动填充 planned_base_specs_fingerprint（若为 null，通过 source_fingerprint.sh 计算）
+if (!snapshot.planned_base_specs_fingerprint) {
+    try {
+        const baseSpecsFp = execSync(
+            `scripts/source_fingerprint.sh --kind base-specs --change ${changeName}`,
+            { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+        ).trim();
+        if (/^sha256:[0-9a-f]{64}$/.test(baseSpecsFp)) {
+            snapshot.planned_base_specs_fingerprint = baseSpecsFp;
+            console.log(`自动填充 planned_base_specs_fingerprint: ${baseSpecsFp}`);
+        }
+    } catch (e) {
+        console.error('警告: 无法计算 planned_base_specs_fingerprint:', e.message);
+    }
+}
+
 const baseline = exists.baseline
     ? JSON.parse(fs.readFileSync(optionalPaths.baseline, 'utf8'))
     : null;
@@ -136,19 +156,13 @@ snapshot.planned_integration_completeness_sha256 = integrationCompletenessHash;
 
 // ── 3. 重新生成 change-footprint.json ─────────────────────
 
-console.log('\n重新生成 change-footprint.json...');
-const classification = implEconomy.classification;
-const baseCommit = snapshot.implementation_base_commit;
-
-let newFootprint;
+console.log('\n重新生成 change-footprint.json（通过 change_footprint.sh）...');
 try {
-    const footprintOutput = execSync(
-        `node scripts/change_scope.js ${baseCommit} '${JSON.stringify(classification)}'`,
-        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
-    );
-    newFootprint = JSON.parse(footprintOutput);
+    execSync(`bash scripts/change_footprint.sh ${changeName} --json`, {
+        encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
+    });
 } catch (error) {
-    console.error('错误: 生成 footprint 失败');
+    console.error('错误: change_footprint.sh 生成 footprint 失败');
     console.error(error.message);
     if (error.stderr) {
         console.error('stderr:', error.stderr.toString());
@@ -156,22 +170,8 @@ try {
     process.exit(1);
 }
 
-// 构造或更新 footprint 对象
-let footprintObj = footprint || { schema_version: 1, change_name: changeName };
-footprintObj.implementation_base_commit = baseCommit;
-footprintObj.source_fingerprint = newFootprint.source_fingerprint;
-footprintObj.budget_block_sha256 = implEconomyHash;
-footprintObj.status = newFootprint.status;
-footprintObj.production = newFootprint.production;
-footprintObj.tests = newFootprint.tests;
-footprintObj.project_support = newFootprint.project_support;
-footprintObj.generated = newFootprint.generated;
-footprintObj.vendor = newFootprint.vendor;
-footprintObj.binary = newFootprint.binary;
-footprintObj.structural_candidates = newFootprint.structural_candidates;
-footprintObj.unclassified_paths = newFootprint.unclassified_paths;
-footprintObj.classification_overlaps = newFootprint.classification_overlaps;
-
+// 读取由 change_footprint.sh 生成的 footprint
+const footprintObj = JSON.parse(fs.readFileSync(optionalPaths.footprint, 'utf8'));
 const footprintHash = sha256(JSON.stringify(footprintObj, null, 2));
 console.log(`  change_footprint_json_sha256: ${footprintHash}`);
 
@@ -208,7 +208,7 @@ console.log(`  discovery_identity_sha256: ${discoveryIdentityHash}`);
 
 // 4b. evaluation-baseline.json
 console.log('\n更新 evaluation-baseline.json...');
-baseline.source_fingerprint = newFootprint.source_fingerprint;
+baseline.source_fingerprint = footprintObj.source_fingerprint;
 baseline.budget_block_sha256 = implEconomyHash;
 baseline.change_footprint_json_sha256 = footprintHash;
 baseline.integration_planning_block_sha256 = integrationCompletenessHash;
@@ -218,7 +218,7 @@ baseline.verification_json_sha256 = sha256File(optionalPaths.verification);
 
 // 4c. evaluation.json
 console.log('\n更新 evaluation.json...');
-evaluation.source_fingerprint = newFootprint.source_fingerprint;
+evaluation.source_fingerprint = footprintObj.source_fingerprint;
 evaluation.budget_block_sha256 = implEconomyHash;
 evaluation.change_footprint_json_sha256 = footprintHash;
 evaluation.integration_completeness.planning_block_sha256 = integrationCompletenessHash;

@@ -26,7 +26,7 @@ const templatePaths=[
   'scripts/clang_ast_surface_adapter.js','scripts/change_new.sh','scripts/change_adopt.sh',
   'scripts/change_select.sh','scripts/change_status.sh','scripts/change_archive.sh',
   'scripts/archive_recover.sh','scripts/source_fingerprint.sh','scripts/change_footprint.sh',
-  'scripts/task_verify.sh','scripts/evaluator_check.sh','scripts/verification_workspace.sh',
+  'scripts/task_verify.sh','scripts/evaluator_check.sh','scripts/evaluation_template.sh','scripts/verification_workspace.sh',
   'scripts/snapshot_update.sh','scripts/resume_from_snapshot.sh','scripts/context_reset_check.sh',
   'scripts/quick_brief_check.sh','scripts/rca_new.sh','scripts/ai_debt_scan.sh',
   '.ai-harness/workflow-contract.json'

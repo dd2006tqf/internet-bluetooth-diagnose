@@ -10,6 +10,84 @@ node - "$new_json" "$change" <<'NODE' || { echo '[ERR] OpenSpec new-change JSON 
 const fs=require('fs'),path=require('path');const [file,id]=process.argv.slice(2),root=process.cwd(),v=JSON.parse(fs.readFileSync(file)),c=v?.change,target=path.resolve(root,'openspec','changes',id);if(!c||typeof c!=='object'||c.id!==id||c.schema!=='spec-driven'||typeof c.path!=='string'||typeof c.metadataPath!=='string'||!path.isAbsolute(c.path)||!path.isAbsolute(c.metadataPath)||path.resolve(c.path)!==target||path.resolve(c.metadataPath)!==path.join(target,'.openspec.yaml'))process.exit(1);const st=fs.lstatSync(target),mt=fs.lstatSync(path.join(target,'.openspec.yaml')),entries=fs.readdirSync(target);if(!st.isDirectory()||st.isSymbolicLink()||!mt.isFile()||mt.isSymbolicLink()||entries.length!==1||entries[0]!=='.openspec.yaml')process.exit(1);
 NODE
 mkdir "openspec/changes/$change/harness"
+# 生成 design.md 模板，含 v2 implementation-economy 块（避免 v1/v2 格式不兼容）
+design_tmp="openspec/changes/$change/design.md.tmp.$$"
+cat > "$design_tmp" <<'DESIGN'
+# Design
+
+## Overview
+
+<!-- 在此填写变更设计概述 -->
+
+<!-- autoai:tdd-policy:v1 -->
+```json
+{
+  "schema_version": 1,
+  "default": "required",
+  "exceptions": []
+}
+```
+<!-- /autoai:tdd-policy:v1 -->
+
+<!-- autoai:implementation-economy:v2 -->
+```json
+{
+  "schema_version": 2,
+  "profile": "micro",
+  "rationale": "<在此填写变更理由>",
+  "classification": {
+    "production": [],
+    "tests": [],
+    "project_docs": [],
+    "project_tooling": [],
+    "examples": [],
+    "generated": [],
+    "vendor": []
+  },
+  "thresholds": {
+    "production": {
+      "added_lines": {"expected": 0, "review_at": 30, "hard_limit": 50},
+      "touched_files": {"expected": 0, "review_at": 2, "hard_limit": 3},
+      "new_files": {"expected": 0, "review_at": 0, "hard_limit": 1}
+    },
+    "tests": {
+      "added_lines": {"expected": 0, "review_at": 0, "hard_limit": 0},
+      "touched_files": {"expected": 0, "review_at": 0, "hard_limit": 0},
+      "new_files": {"expected": 0, "review_at": 0, "hard_limit": 0}
+    },
+    "project_support": {
+      "added_lines": {"expected": 0, "review_at": 5, "hard_limit": 10},
+      "new_files": {"expected": 0, "review_at": 0, "hard_limit": 1}
+    },
+    "generated": {
+      "files": {"expected": 0, "review_at": 0, "hard_limit": 0},
+      "bytes": {"expected": 0, "review_at": 0, "hard_limit": 0}
+    }
+  },
+  "structural_allowances": {
+    "public_contracts": [],
+    "build_targets": [],
+    "build_graph_entries": [],
+    "distribution_surfaces": [],
+    "direct_dependencies": []
+  },
+  "reuse_decisions": [],
+  "obsolete_items": [],
+  "exceptions": []
+}
+```
+<!-- /autoai:implementation-economy:v2 -->
+
+<!-- autoai:integration-completeness:v1 -->
+```json
+{
+  "schema_version": 1,
+  "surfaces": []
+}
+```
+<!-- /autoai:integration-completeness:v1 -->
+DESIGN
+mv "$design_tmp" "openspec/changes/$change/design.md"
 tmp="openspec/changes/$change/harness/ai_snapshot.json.tmp.$$"; cat > "$tmp" <<JSON
 {
   "schema_version": 4,

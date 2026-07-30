@@ -235,7 +235,7 @@
       "path": "scripts/manifest_policy.js",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:73cf2b3e82948091b8d3e9353a7397f1dc85b69a4c67201c769b0454bbf0fc98"
+      "content_sha256": "sha256:89c8cd150cb51719a38a7c89e9b4a637882920f601499e2ca418f2a85e0cffb3"
     },
     {
       "path": "scripts/project_detect.sh",
@@ -379,7 +379,7 @@
       "path": "scripts/change_new.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:27b12a347eb16a03b3ae9290706d7dd912cd71f7fe9bad0f3d52390a6ff71a43"
+      "content_sha256": "sha256:d773b84f41bdcc73c3979ce8e6d63d9ca4abaf8d3e6e4a4247110c22d596a94e"
     },
     {
       "path": "scripts/change_adopt.sh",
@@ -427,13 +427,19 @@
       "path": "scripts/task_verify.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:dbba1d9b4d00d75429b11568b3f3d06b7995f9d1ba77bb1d006a1625b9a1b645"
+      "content_sha256": "sha256:53ed21ded7235ee65f8be5959675c837dbc9e78d2ab598cfb9407e979e3913f4"
     },
     {
       "path": "scripts/evaluator_check.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:767f82f03c0ad53ee4af55995d6974b176cae58675d64a0389fcf285720f418b"
+      "content_sha256": "sha256:2d20a8fc72a5047467019328691e1b1fb987b3fb8df04ebd154e395b69943024"
+    },
+    {
+      "path": "scripts/evaluation_template.sh",
+      "ownership": "template",
+      "template_version": 2,
+      "content_sha256": "sha256:9351342884244ec14384d8fd46c40734ef0518276ee4e3093f4b19df100e6f7d"
     },
     {
       "path": "scripts/verification_workspace.sh",
