@@ -529,7 +529,7 @@ function buildReviewedReport(root, change, instructionsFile) {
     const classify = scopeLib.compileClassification(economy.classification), classesFor = p => classify.classes.filter(k => classify.patterns[k].some(re => re.test(p)));
     const allowedConsumerClasses = {
         production_caller: ['production'], representative_external: ['tests', 'examples', 'project_tooling'], registration_dispatch: ['production', 'tests'],
-        real_entrypoint: ['production', 'tests', 'examples', 'project_tooling'], producer_consumer_pair: ['production', 'tests', 'examples'], downstream_build: ['tests', 'examples', 'project_tooling'], compatibility_probe: ['tests', 'examples', 'project_tooling']
+        real_entrypoint: ['production', 'tests', 'examples', 'project_tooling'], producer_consumer_pair: ['production', 'tests', 'examples'], downstream_build: ['production', 'tests', 'examples', 'project_tooling'], compatibility_probe: ['tests', 'examples', 'project_tooling']
     };
     for (const surface of plan.block.surfaces) {
         for (const p of surface.producer_paths) {
@@ -539,7 +539,7 @@ function buildReviewedReport(root, change, instructionsFile) {
         for (const p of [...surface.consumer_paths, ...(surface.compatibility?.old_consumer_paths || []), ...(surface.compatibility?.replacement_consumer_paths || [])]) {
             if (!currentRegularFile(root, p)) throw Object.assign(Error('current_consumer_path_missing:' + p), { gateStatus: 'invalid' });
             const consumerClasses = classesFor(p);
-            if (consumerClasses.length !== 1 || !allowedConsumerClasses[surface.consumer_kind].includes(consumerClasses[0])) throw Object.assign(Error('consumer_path_classification:' + p), { gateStatus: 'invalid' });
+            if (consumerClasses.length !== 1 || !allowedConsumerClasses[surface.consumer_kind].includes(consumerClasses[0])) throw Object.assign(Error('consumer_path_classification:' + p + ' (consumer_kind=' + surface.consumer_kind + ', detected=[' + (consumerClasses.join(',') || 'none') + '], allowed=[' + allowedConsumerClasses[surface.consumer_kind].join(',') + ']. Fix: classify the path in design.md Implementation Economy as one of the allowed classes, or adjust the surface consumer_kind)'), { gateStatus: 'invalid' });
         }
     }
     const pathCandidates = scope.logical_changes.filter(x => x.classifications.includes('production')).map(changeRecord => {

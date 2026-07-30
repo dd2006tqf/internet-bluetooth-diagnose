@@ -235,7 +235,7 @@
       "path": "scripts/manifest_policy.js",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:a5bb98b7be3401eb789a6c9113d0daadd1723e856130a6fc8a607958e7a88bef"
+      "content_sha256": "sha256:557706cf970969f2e0edb48a478d5e72c2ea0049320759387ebd9af8253a0c3c"
     },
     {
       "path": "scripts/project_detect.sh",
@@ -361,7 +361,7 @@
       "path": "scripts/integration_surface_lib.js",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:f69de18ed4caa3836bd484bcb12972190f5b0b758350f354db473e153d3e5557"
+      "content_sha256": "sha256:4b8d0959351f3aac635acf417cc559cfca4e52e455501bbb828aa8f97549e384"
     },
     {
       "path": "scripts/integration_surface_check.sh",
