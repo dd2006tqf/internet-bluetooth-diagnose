@@ -22,6 +22,9 @@ public:
     
     // 检查是否正在运行
     bool isRunning() const { return running_.load(); }
+
+    // 检查是否处于降级模式（eBPF 初始化失败）
+    bool isDegradedMode() const { return degraded_mode_.load(); }
     
     // 获取当前流量统计
     NetTrafficAnalyzer::RealTimeStats getCurrentStats() const;
@@ -40,6 +43,7 @@ private:
     
     std::unique_ptr<std::thread> thread_;
     std::atomic<bool> running_;
+    std::atomic<bool> degraded_mode_;
     std::string interface_;
     int interval_seconds_;
     

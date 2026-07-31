@@ -59,7 +59,7 @@ TEST_LDFLAGS_BPF = $(TEST_LDFLAGS) -lbpf
 UNIT_TESTS = test_net_info test_quality_assessor test_anomaly_detector \
              test_audio_fusion test_band_conflict test_serializer \
              test_event_manager test_bt_full_link test_iface_type \
-             test_logger
+             test_logger test_traffic_analyzer
 # 专项测试（蓝牙监控纯逻辑层，无需硬件）
 SPECIAL_TESTS = test_bt_monitor
 ALL_TESTS = $(UNIT_TESTS) $(SPECIAL_TESTS)
@@ -206,5 +206,14 @@ $(TEST_BIN_DIR)/test_logger: $(TEST_DIR)/unit/test_logger.cpp \
 	@mkdir -p $(TEST_BIN_DIR)
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_logger.cpp \
 	    src/logger.cpp $(TEST_LDFLAGS)
+
+# test_traffic_analyzer（流量分析器降级模式）
+$(TEST_BIN_DIR)/test_traffic_analyzer: $(TEST_DIR)/unit/test_traffic_analyzer.cpp \
+    src/traffic_analyzer.cpp src/net_traffic.cpp src/logger.cpp \
+    include/traffic_analyzer.hpp include/net_traffic.h include/logger.hpp \
+    $(TEST_DIR)/unit/test_common.hpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_traffic_analyzer.cpp \
+	    src/traffic_analyzer.cpp src/net_traffic.cpp src/logger.cpp $(TEST_LDFLAGS_BPF)
 
 

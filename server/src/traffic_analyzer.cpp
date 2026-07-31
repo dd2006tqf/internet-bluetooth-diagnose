@@ -8,8 +8,8 @@
 
 namespace weaknet_dbus {
 
-TrafficAnalyzer::TrafficAnalyzer() 
-    : running_(false), interval_seconds_(10) {
+TrafficAnalyzer::TrafficAnalyzer()
+    : running_(false), degraded_mode_(false), interval_seconds_(10) {
     analyzer_ = NetTrafficAnalyzer::getInstance();
 }
 
@@ -40,7 +40,10 @@ void TrafficAnalyzer::start(const std::string& interface, int interval_seconds) 
     if (!analyzer_->initForInterface(interface)) {
         LOG_ERROR(LogModule::WEAK_MGR, "Failed to initialize traffic analyzer for interface: " << interface);
         LOG_INFO(LogModule::WEAK_MGR, "Traffic analyzer will run in degraded mode (no eBPF monitoring)");
+        degraded_mode_.store(true);
         // 不返回，继续运行但跳过eBPF功能
+    } else {
+        degraded_mode_.store(false);
     }
     
     running_.store(true);
@@ -71,14 +74,20 @@ void TrafficAnalyzer::analyzeLoop() {
     
     while (running_.load()) {
         try {
+            // 降级模式下跳过 eBPF 调用
+            if (degraded_mode_.load()) {
+                std::this_thread::sleep_for(std::chrono::seconds(interval_seconds_));
+                continue;
+            }
+
             // 获取实时统计（如果eBPF可用）
             NetTrafficAnalyzer::RealTimeStats stats;
             bool hasStats = false;
-            
+
             try {
                 stats = analyzer_->getRealTimeStats();
                 hasStats = true;
-                
+
                 // 更新缓存
                 {
                     std::lock_guard<std::mutex> lock(stats_mutex_);
