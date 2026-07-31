@@ -37,6 +37,7 @@ void TrafficAnalyzer::start(const std::string& interface, int interval_seconds) 
     );
     
     // 初始化网络接口
+    // degraded_mode_: initForInterface 失败时置 true，analyzeLoop 检查此标志跳过 eBPF 调用
     if (!analyzer_->initForInterface(interface)) {
         LOG_ERROR(LogModule::WEAK_MGR, "Failed to initialize traffic analyzer for interface: " << interface);
         LOG_INFO(LogModule::WEAK_MGR, "Traffic analyzer will run in degraded mode (no eBPF monitoring)");
