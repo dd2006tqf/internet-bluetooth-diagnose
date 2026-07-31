@@ -391,7 +391,7 @@
       "path": "scripts/evaluator_check.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:14df588bb047e79aaf82f068459a7f89be021149d54f420b2f54c29277706d16"
+      "content_sha256": "sha256:7cc5f62208c5b03d485c9d755483c58a4201fdb140d34d41a655d9f3d54d4e69"
     },
     {
       "path": "scripts/event_audit.js",
@@ -547,7 +547,7 @@
       "path": "scripts/task_verify.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:7810672743ea3fcd09b4e4f214a33c8392184a366040a59f36e29193ae300140"
+      "content_sha256": "sha256:70e3037dfe83983a2f9a686fd280b4544da4e70441809b47e23287a9d9b0c4ec"
     },
     {
       "path": "scripts/verification_workspace.sh",
