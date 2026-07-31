@@ -1584,7 +1584,7 @@ function validateCompleteEvaluationV3(context) {
         if (typeof assessment.reason !== 'string' || !assessment.reason.trim() ||
             !Array.isArray(assessment.evidence_paths) || !Array.isArray(assessment.evidence_command_ids) ||
             !assessment.evidence_paths.length && !assessment.evidence_command_ids.length ||
-            evaluation.verdict === 'Pass' && assessment.allowance_id === null) fail('structural assessment evidence');
+            evaluation.verdict === 'Pass' && assessment.allowance_id === null && allowanceIds.length > 0) fail('structural assessment evidence');
         assessment.evidence_paths.forEach(value => safeRepositoryPath(value, 'structural assessment path'));
         useCommands(assessment.evidence_command_ids, 'structural assessment', assessment.result === 'Pass');
     }

@@ -252,22 +252,26 @@ if (currentBaseSpecsFp) baseline.base_specs_fingerprint = currentBaseSpecsFp;
 if (currentReviewInput) baseline.review_input = currentReviewInput;
 
 // 4d. evaluation.json
-console.log('\n更新 evaluation.json...');
-evaluation.source_fingerprint = footprintObj.source_fingerprint;
-evaluation.budget_block_sha256 = implEconomyHash;
-evaluation.change_footprint_json_sha256 = footprintHash;
-evaluation.integration_completeness.planning_block_sha256 = integrationCompletenessHash;
-evaluation.integration_completeness.report_sha256 = surfaceReportHash;
-evaluation.integration_completeness.discovery_identity_sha256 = discoveryIdentityHash;
-if (currentArtifactFp) {
-    evaluation.input_artifact_fingerprint = currentArtifactFp;
-    evaluation.artifact_fingerprint = currentArtifactFp;
+if (evaluation) {
+    console.log('\n更新 evaluation.json...');
+    evaluation.source_fingerprint = footprintObj.source_fingerprint;
+    evaluation.budget_block_sha256 = implEconomyHash;
+    evaluation.change_footprint_json_sha256 = footprintHash;
+    evaluation.integration_completeness.planning_block_sha256 = integrationCompletenessHash;
+    evaluation.integration_completeness.report_sha256 = surfaceReportHash;
+    evaluation.integration_completeness.discovery_identity_sha256 = discoveryIdentityHash;
+    if (currentArtifactFp) {
+        evaluation.input_artifact_fingerprint = currentArtifactFp;
+        evaluation.artifact_fingerprint = currentArtifactFp;
+    }
+    if (currentBaseSpecsFp) {
+        evaluation.input_base_specs_fingerprint = currentBaseSpecsFp;
+        evaluation.base_specs_fingerprint = currentBaseSpecsFp;
+    }
+    if (currentReviewInput) evaluation.review_input = currentReviewInput;
+} else {
+    console.log('\n跳过 evaluation.json（文件不存在）');
 }
-if (currentBaseSpecsFp) {
-    evaluation.input_base_specs_fingerprint = currentBaseSpecsFp;
-    evaluation.base_specs_fingerprint = currentBaseSpecsFp;
-}
-if (currentReviewInput) evaluation.review_input = currentReviewInput;
 
 // 4d. verification.json（同步 ledger 中的命令输出哈希）
 console.log('\n更新 verification.json...');
@@ -292,7 +296,7 @@ if (verification.tasks && ledger.commands) {
 console.log('\n写入文件...');
 // 注意: integration-surface-report.json 已由 buildReviewedReport 通过 reportBytes 写入，不再重复写入
 fs.writeFileSync(optionalPaths.baseline, JSON.stringify(baseline, null, 2) + '\n');
-fs.writeFileSync(optionalPaths.evaluation, JSON.stringify(evaluation, null, 2) + '\n');
+if (evaluation) fs.writeFileSync(optionalPaths.evaluation, JSON.stringify(evaluation, null, 2) + '\n');
 fs.writeFileSync(optionalPaths.verification, JSON.stringify(verification, null, 2) + '\n');
 
 console.log('\n✅ 所有哈希已同步（full 模式）');

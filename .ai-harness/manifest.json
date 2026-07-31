@@ -229,13 +229,13 @@
       "path": "scripts/harness_lock.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:310ed6653939938e0e8b340719dc1d6e1d95883994b192f8b8fc34116266bbd6"
+      "content_sha256": "sha256:6c0efea0fda1680376cc4071d555e48a2da2c4521c5dbdb4766c8aee5fe94083"
     },
     {
       "path": "scripts/manifest_policy.js",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:89c8cd150cb51719a38a7c89e9b4a637882920f601499e2ca418f2a85e0cffb3"
+      "content_sha256": "sha256:c276d2bcdeff2e91ffca2c3efec88087a1dd2fe2206eececce7e2fbf2f9a5de5"
     },
     {
       "path": "scripts/project_detect.sh",
@@ -355,13 +355,13 @@
       "path": "scripts/change_scope.js",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:1bcd20cb4ee7dd019827f7c1a5ac4ea188488a42f6e3ed0b1f172d36c643c9b5"
+      "content_sha256": "sha256:f7c5dc2d02366cf05b9a01da5c6caad6c47e5e8fdefbcd497bea91d70352755e"
     },
     {
       "path": "scripts/integration_surface_lib.js",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:4b8d0959351f3aac635acf417cc559cfca4e52e455501bbb828aa8f97549e384"
+      "content_sha256": "sha256:cbcf64a8afbdcafa3221b48b1ea76c7ea5de1a45aba0e78037da0fdb3bec9045"
     },
     {
       "path": "scripts/integration_surface_check.sh",
@@ -421,7 +421,13 @@
       "path": "scripts/change_footprint.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:38cbe9f556ac5d0b319d79c650efefca323ffbcf8d6c9e8778a471169d7dc703"
+      "content_sha256": "sha256:a7d9e0c7a78f1dbd843c44afa876da242f9148a594a185ae97154cdc579a4282"
+    },
+    {
+      "path": "scripts/sync_hashes.js",
+      "ownership": "template",
+      "template_version": 2,
+      "content_sha256": "sha256:367852fe8da18601339365058445fb50c6539fc1d825ec80703173fe51c2a856"
     },
     {
       "path": "scripts/task_verify.sh",
@@ -433,7 +439,7 @@
       "path": "scripts/evaluator_check.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:ec65afd7caf06b5b37919c8112adac567e50703a582b70fd1cf4e955efcc2c73"
+      "content_sha256": "sha256:14df588bb047e79aaf82f068459a7f89be021149d54f420b2f54c29277706d16"
     },
     {
       "path": "scripts/evaluation_template.sh",

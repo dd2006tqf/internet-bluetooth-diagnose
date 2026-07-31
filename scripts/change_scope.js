@@ -82,8 +82,8 @@ function collectScope(root, implementationBase, classification, structuralSchema
     if (typeof implementationBase !== 'string' || !/^[0-9a-f]{40,64}$/.test(implementationBase)) {
         throw Error('full implementation base required');
     }
-    const git = args => cp.execFileSync('git', args, { cwd: root });
-    const gitText = args => cp.execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+    const git = args => cp.execFileSync('git', args, { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] });
+    const gitText = args => cp.execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
     if (gitText(['rev-parse', '--verify', implementationBase + '^{commit}']) !== implementationBase) {
         throw Error('implementation base does not resolve exactly');
     }
