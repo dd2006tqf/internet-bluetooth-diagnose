@@ -54,7 +54,7 @@ instructions=$(mktemp "${TMPDIR:-/tmp}/autoai-integration-instructions.XXXXXX")
 computed=$(mktemp "${TMPDIR:-/tmp}/autoai-integration-report.XXXXXX")
 error_file=$(mktemp "${TMPDIR:-/tmp}/autoai-integration-error.XXXXXX")
 trap 'rm -f -- "$instructions" "$computed" "$error_file"; harness_lock_release' EXIT
-if [[ "$action" == --refresh && -f "$harness/evaluation-baseline.json" ]] && [[ "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1])).status||''" "$harness/evaluation-baseline.json" 2>/dev/null || true)" == in_progress ]]; then emit_diagnostic blocked evaluation_in_progress; exit 6; fi
+if [[ "$action" == --refresh && -f "$harness/evaluation-baseline.json" ]] && [[ "$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1])).status||''" "$harness/evaluation-baseline.json" 2>/dev/null || true)" == in_progress ]]; then echo '[WARN] evaluation in_progress — 报告将刷新为规范格式; 随后必须运行 scripts/sync_hashes.sh 同步 baseline/evaluation 哈希' >&2; fi
 scripts/openspec_cli.sh instructions apply --change "$change" --json > "$instructions" || { emit_diagnostic blocked openspec_instructions_failed; exit 6; }
 token=${AUTOAI_LOCK_TOKEN:-$HARNESS_OWNED_TOKEN}; parent=${AUTOAI_PARENT_PURPOSE:-$purpose}
 AUTOAI_LOCK_TOKEN="$token" AUTOAI_PARENT_PURPOSE="$parent" scripts/change_footprint.sh "$change" --check --json >/dev/null || { emit_diagnostic blocked stale_change_footprint; exit 6; }

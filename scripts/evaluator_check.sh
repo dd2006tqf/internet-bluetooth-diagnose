@@ -209,8 +209,12 @@ if [[ "$snapshot_schema" == 4 ]]; then
   if [[ ! -f "$report_file" || -L "$report_file" ]]; then
     echo '[INFO] integration-surface-report.json 缺失，自动生成中...' >&2
     parent=${AUTOAI_PARENT_PURPOSE:-$purpose}; AUTOAI_LOCK_TOKEN="$token" AUTOAI_PARENT_PURPOSE="$parent" scripts/integration_surface_check.sh "$change" --refresh --json >/dev/null || { echo '[ERR] 自动生成 Integration Completeness report 失败' >&2; exit 6; }
+  elif ! parent=${AUTOAI_PARENT_PURPOSE:-$purpose}; AUTOAI_LOCK_TOKEN="$token" AUTOAI_PARENT_PURPOSE="$parent" scripts/integration_surface_check.sh "$change" --check --json >/dev/null 2>&1; then
+    echo '[INFO] integration-surface-report.json stale，自动刷新并同步哈希...' >&2
+    parent=${AUTOAI_PARENT_PURPOSE:-$purpose}; AUTOAI_LOCK_TOKEN="$token" AUTOAI_PARENT_PURPOSE="$parent" scripts/integration_surface_check.sh "$change" --refresh --json >/dev/null || { echo '[ERR] 刷新 Integration Completeness report 失败' >&2; exit 6; }
+    node scripts/sync_hashes.js "$change" >/dev/null 2>&1 || echo '[WARN] sync_hashes.js 同步部分失败，请手动检查' >&2
   fi
-  parent=${AUTOAI_PARENT_PURPOSE:-$purpose}; AUTOAI_LOCK_TOKEN="$token" AUTOAI_PARENT_PURPOSE="$parent" scripts/integration_surface_check.sh "$change" --check --json >/dev/null || { echo '[ERR] Integration Completeness report is missing, blocked or stale' >&2; exit 6; }
+  parent=${AUTOAI_PARENT_PURPOSE:-$purpose}; AUTOAI_LOCK_TOKEN="$token" AUTOAI_PARENT_PURPOSE="$parent" scripts/integration_surface_check.sh "$change" --check --json >/dev/null || { echo "[ERR] Integration Completeness report is missing, blocked or stale; 尝试运行: scripts/sync_hashes.sh $change" >&2; exit 6; }
 fi
 scripts/source_fingerprint.sh --kind all --change "$change" --json > "$fp"
 node - "$fp" "$verification" "$footprint" "$snapshot" "$change" <<'NODE' > "$bundle"

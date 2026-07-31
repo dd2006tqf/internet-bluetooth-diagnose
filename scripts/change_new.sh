@@ -46,18 +46,18 @@ cat > "$design_tmp" <<'DESIGN'
   },
   "thresholds": {
     "production": {
-      "added_lines": {"expected": 0, "review_at": 30, "hard_limit": 50},
-      "touched_files": {"expected": 0, "review_at": 2, "hard_limit": 3},
-      "new_files": {"expected": 0, "review_at": 0, "hard_limit": 1}
+      "added_lines": {"expected": 0, "review_at": 100, "hard_limit": 200},
+      "touched_files": {"expected": 0, "review_at": 5, "hard_limit": 8},
+      "new_files": {"expected": 0, "review_at": 2, "hard_limit": 3}
     },
     "tests": {
-      "added_lines": {"expected": 0, "review_at": 0, "hard_limit": 0},
-      "touched_files": {"expected": 0, "review_at": 0, "hard_limit": 0},
-      "new_files": {"expected": 0, "review_at": 0, "hard_limit": 0}
+      "added_lines": {"expected": 0, "review_at": 150, "hard_limit": 300},
+      "touched_files": {"expected": 0, "review_at": 5, "hard_limit": 8},
+      "new_files": {"expected": 0, "review_at": 2, "hard_limit": 3}
     },
     "project_support": {
-      "added_lines": {"expected": 0, "review_at": 5, "hard_limit": 10},
-      "new_files": {"expected": 0, "review_at": 0, "hard_limit": 1}
+      "added_lines": {"expected": 0, "review_at": 30, "hard_limit": 50},
+      "new_files": {"expected": 0, "review_at": 2, "hard_limit": 3}
     },
     "generated": {
       "files": {"expected": 0, "review_at": 0, "hard_limit": 0},

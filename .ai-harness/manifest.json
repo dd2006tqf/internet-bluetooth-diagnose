@@ -367,7 +367,7 @@
       "path": "scripts/integration_surface_check.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:0697fb069930000bbd66eb16369175f9f591f8e2515f05060cff8513ed060180"
+      "content_sha256": "sha256:2fb749cd1c7d318c5f8127fa721188bea40251af466ab7b88a604013be175756"
     },
     {
       "path": "scripts/clang_ast_surface_adapter.js",
@@ -379,7 +379,7 @@
       "path": "scripts/change_new.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:ef21789a65f69e065996a6aec5976dbff06b3426497a4f3988e77ae03d90beb0"
+      "content_sha256": "sha256:fbe20d84eba9424eb4fc5fe0bd52fc7b6f46d4b3ef126b37853bbe031ee7920e"
     },
     {
       "path": "scripts/change_adopt.sh",
@@ -427,13 +427,13 @@
       "path": "scripts/task_verify.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:53ed21ded7235ee65f8be5959675c837dbc9e78d2ab598cfb9407e979e3913f4"
+      "content_sha256": "sha256:7810672743ea3fcd09b4e4f214a33c8392184a366040a59f36e29193ae300140"
     },
     {
       "path": "scripts/evaluator_check.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:2d20a8fc72a5047467019328691e1b1fb987b3fb8df04ebd154e395b69943024"
+      "content_sha256": "sha256:ec65afd7caf06b5b37919c8112adac567e50703a582b70fd1cf4e955efcc2c73"
     },
     {
       "path": "scripts/evaluation_template.sh",

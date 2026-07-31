@@ -13,6 +13,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { execSync } = require('child_process');
 const manifestPolicy = require('./manifest_policy.js');
+const integrationLib = require('./integration_surface_lib.js');
 
 const changeName = process.argv[2];
 if (!changeName) {
@@ -120,7 +121,7 @@ const evaluation = exists.evaluation
 const ledger = exists.ledger
     ? JSON.parse(fs.readFileSync(optionalPaths.ledger, 'utf8'))
     : null;
-const surfaceReport = exists.surfaceReport
+let surfaceReport = exists.surfaceReport
     ? JSON.parse(fs.readFileSync(optionalPaths.surfaceReport, 'utf8'))
     : null;
 const verification = exists.verification
@@ -172,12 +173,14 @@ try {
 
 // 读取由 change_footprint.sh 生成的 footprint
 const footprintObj = JSON.parse(fs.readFileSync(optionalPaths.footprint, 'utf8'));
-const footprintHash = sha256(JSON.stringify(footprintObj, null, 2));
-console.log(`  change_footprint_json_sha256: ${footprintHash}`);
 
 // 写回 ai_snapshot.json + change-footprint.json
 fs.writeFileSync(`${harnessDir}/ai_snapshot.json`, JSON.stringify(snapshot, null, 2) + '\n');
 fs.writeFileSync(optionalPaths.footprint, JSON.stringify(footprintObj, null, 2) + '\n');
+
+// 用文件字节 hash（含末尾换行），与 buildReviewedReport/evaluator_check.sh 的 d(file) 一致
+const footprintHash = sha256File(optionalPaths.footprint);
+console.log(`  change_footprint_json_sha256: ${footprintHash}`);
 
 // ── pre-evaluation 模式到此结束 ────────────────────────────
 
@@ -189,24 +192,53 @@ if (isPreEvaluation) {
 
 // ── 4. full 模式：级联更新 evaluation 相关文件 ────────────
 
-// 4a. integration-surface-report.json
-console.log('\n更新 integration-surface-report.json...');
-surfaceReport.change_footprint_json_sha256 = footprintHash;
-surfaceReport.planning_block_sha256 = integrationCompletenessHash;
+// 4a. integration-surface-report.json — 用 buildReviewedReport 生成规范报告
+console.log('\n重新生成 integration-surface-report.json（通过 buildReviewedReport）...');
+const instructionsFile = `${harnessDir}/.sync-instructions-${process.pid}-${Date.now()}.json`;
+let surfaceReportHash, discoveryIdentityHash;
+try {
+    const instructionsJson = JSON.parse(execSync(
+        `scripts/openspec_cli.sh instructions apply --change ${changeName} --json`,
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ));
+    fs.writeFileSync(instructionsFile, JSON.stringify(instructionsJson));
+    const canonicalReport = integrationLib.buildReviewedReport(process.cwd(), changeName, instructionsFile);
+    fs.writeFileSync(optionalPaths.surfaceReport, integrationLib.reportBytes(canonicalReport));
+    surfaceReport = canonicalReport;
+    surfaceReportHash = sha256File(optionalPaths.surfaceReport);
+    discoveryIdentityHash = integrationLib.discoveryIdentity(canonicalReport);
+    console.log(`  integration_surface_report_sha256: ${surfaceReportHash}`);
+    console.log(`  discovery_identity_sha256: ${discoveryIdentityHash}`);
+} catch (e) {
+    console.error('警告: buildReviewedReport 失败，保留现有报告:', e.message);
+    surfaceReportHash = sha256File(optionalPaths.surfaceReport);
+    discoveryIdentityHash = integrationLib.discoveryIdentity(surfaceReport);
+} finally {
+    try { fs.unlinkSync(instructionsFile); } catch { }
+}
 
-const discoveryIdentityHash = sha256(JSON.stringify({
-    discovery_mode: surfaceReport.discovery_mode,
-    source_fingerprint: surfaceReport.source_fingerprint,
-    changed_production_paths: surfaceReport.changed_production_paths,
-    structural_candidates: surfaceReport.structural_candidates
-}));
-surfaceReport.discovery_identity_sha256 = discoveryIdentityHash;
+// 4b. 计算当前 fingerprints 和 review_input（确保 baseline/evaluation 与当前状态一致）
+console.log('\n计算当前 fingerprints 和 review_input...');
+let currentReviewInput = null;
+let currentArtifactFp = null, currentBaseSpecsFp = null;
+try {
+    const allFps = JSON.parse(execSync(
+        `scripts/source_fingerprint.sh --kind all --change ${changeName} --json`,
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    ));
+    currentArtifactFp = allFps.artifact_fingerprint;
+    currentBaseSpecsFp = allFps.base_specs_fingerprint;
+    currentReviewInput = manifestPolicy.reviewInput(
+        process.cwd(), changeName, snapshot.implementation_base_commit, allFps
+    );
+    console.log(`  artifact_fingerprint: ${currentArtifactFp}`);
+    console.log(`  base_specs_fingerprint: ${currentBaseSpecsFp}`);
+    console.log(`  review_input: 已重新计算`);
+} catch (e) {
+    console.error('警告: 无法计算当前 fingerprints/review_input:', e.message);
+}
 
-const surfaceReportHash = sha256(JSON.stringify(surfaceReport, null, 2));
-console.log(`  integration_surface_report_sha256: ${surfaceReportHash}`);
-console.log(`  discovery_identity_sha256: ${discoveryIdentityHash}`);
-
-// 4b. evaluation-baseline.json
+// 4c. evaluation-baseline.json
 console.log('\n更新 evaluation-baseline.json...');
 baseline.source_fingerprint = footprintObj.source_fingerprint;
 baseline.budget_block_sha256 = implEconomyHash;
@@ -215,8 +247,11 @@ baseline.integration_planning_block_sha256 = integrationCompletenessHash;
 baseline.integration_surface_report_sha256 = surfaceReportHash;
 baseline.integration_discovery_identity_sha256 = discoveryIdentityHash;
 baseline.verification_json_sha256 = sha256File(optionalPaths.verification);
+if (currentArtifactFp) baseline.artifact_fingerprint = currentArtifactFp;
+if (currentBaseSpecsFp) baseline.base_specs_fingerprint = currentBaseSpecsFp;
+if (currentReviewInput) baseline.review_input = currentReviewInput;
 
-// 4c. evaluation.json
+// 4d. evaluation.json
 console.log('\n更新 evaluation.json...');
 evaluation.source_fingerprint = footprintObj.source_fingerprint;
 evaluation.budget_block_sha256 = implEconomyHash;
@@ -224,6 +259,15 @@ evaluation.change_footprint_json_sha256 = footprintHash;
 evaluation.integration_completeness.planning_block_sha256 = integrationCompletenessHash;
 evaluation.integration_completeness.report_sha256 = surfaceReportHash;
 evaluation.integration_completeness.discovery_identity_sha256 = discoveryIdentityHash;
+if (currentArtifactFp) {
+    evaluation.input_artifact_fingerprint = currentArtifactFp;
+    evaluation.artifact_fingerprint = currentArtifactFp;
+}
+if (currentBaseSpecsFp) {
+    evaluation.input_base_specs_fingerprint = currentBaseSpecsFp;
+    evaluation.base_specs_fingerprint = currentBaseSpecsFp;
+}
+if (currentReviewInput) evaluation.review_input = currentReviewInput;
 
 // 4d. verification.json（同步 ledger 中的命令输出哈希）
 console.log('\n更新 verification.json...');
@@ -246,7 +290,7 @@ if (verification.tasks && ledger.commands) {
 // ── 写回所有 evaluation 文件 ──────────────────────────────
 
 console.log('\n写入文件...');
-fs.writeFileSync(optionalPaths.surfaceReport, JSON.stringify(surfaceReport, null, 2) + '\n');
+// 注意: integration-surface-report.json 已由 buildReviewedReport 通过 reportBytes 写入，不再重复写入
 fs.writeFileSync(optionalPaths.baseline, JSON.stringify(baseline, null, 2) + '\n');
 fs.writeFileSync(optionalPaths.evaluation, JSON.stringify(evaluation, null, 2) + '\n');
 fs.writeFileSync(optionalPaths.verification, JSON.stringify(verification, null, 2) + '\n');
