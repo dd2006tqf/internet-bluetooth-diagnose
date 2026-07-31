@@ -229,7 +229,7 @@
       "path": "scripts/harness_lock.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:6c0efea0fda1680376cc4071d555e48a2da2c4521c5dbdb4766c8aee5fe94083"
+      "content_sha256": "sha256:e6643ad5ff0e7a4daf979e2f1fd3bbdd33bfb27e547b3bb442e93ad50b387f00"
     },
     {
       "path": "scripts/manifest_policy.js",
