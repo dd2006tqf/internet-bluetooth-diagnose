@@ -208,7 +208,8 @@ log_test "============================================================"
 # 单元测试列表（与 Makefile ALL_TESTS 保持一致）
 UNIT_TEST_BINS="test_net_info test_quality_assessor test_anomaly_detector \
                 test_audio_fusion test_band_conflict test_serializer \
-                test_event_manager test_bt_full_link test_bt_monitor"
+                test_event_manager test_bt_full_link test_bt_monitor \
+                test_logger"
 
 for unit_test in $UNIT_TEST_BINS; do
     if [ -x "test/bin/$unit_test" ]; then

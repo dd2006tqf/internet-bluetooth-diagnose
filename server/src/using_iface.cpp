@@ -1,4 +1,7 @@
 #include "using_iface.h"
+#include "logger.hpp"
+
+using namespace weaknet_dbus;
 
 #include <atomic>
 #include <thread>
@@ -195,13 +198,12 @@ struct UsingInterfaceManager::Impl {
         }
         if (printLog) {
             if (!ifname.empty()) {
-                std::cout << "[net] 当前上网网卡: " << ifname
+                LOG_INFO(LogModule::INTERFACE, "当前上网网卡: " << ifname
                           << " flags=" << ((methodFlags & UsingMethodFlag::IPv4Default) ? "IPv4" : "")
                           << (((methodFlags & UsingMethodFlag::IPv4Default) && (methodFlags & UsingMethodFlag::IPv6Default)) ? "+" : "")
-                          << ((methodFlags & UsingMethodFlag::IPv6Default) ? "IPv6" : "")
-                          << std::endl;
+                          << ((methodFlags & UsingMethodFlag::IPv6Default) ? "IPv6" : ""));
             } else {
-                std::cout << "[net] 当前上网网卡: (none)" << std::endl;
+                LOG_INFO(LogModule::INTERFACE, "当前上网网卡: (none)");
             }
         }
     }
@@ -236,7 +238,7 @@ struct UsingInterfaceManager::Impl {
                 publishState(owner, /*printLog=*/true);
             }
         } catch (const std::exception& ex) {
-            std::cerr << "[net] loop error: " << ex.what() << std::endl;
+            LOG_ERROR(LogModule::INTERFACE, "loop error: " << ex.what());
         }
         if (nlSocket >= 0) close(nlSocket);
         nlSocket = -1;

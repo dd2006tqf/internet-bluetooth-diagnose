@@ -1,4 +1,7 @@
 #include "net_wifiriss.h"
+#include "logger.hpp"
+
+using namespace weaknet_dbus;
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -48,12 +51,12 @@ std::once_flag WiFiRssiClient::s_onceFlag;
 std::shared_ptr<WiFiRssiClient> WiFiRssiClient::s_instance;
 
 std::shared_ptr<WiFiRssiClient> WiFiRssiClient::getInstance() {
-    std::call_once(s_onceFlag, [](){ 
-        std::cerr << "[wifi] Creating WiFiRssiClient instance" << std::endl;
-        s_instance = std::make_shared<WiFiRssiClient>(); 
-        std::cerr << "[wifi] WiFiRssiClient instance created" << std::endl;
+    std::call_once(s_onceFlag, [](){
+        LOG_INFO(LogModule::NETWORK, "Creating WiFiRssiClient instance");
+        s_instance = std::make_shared<WiFiRssiClient>();
+        LOG_INFO(LogModule::NETWORK, "WiFiRssiClient instance created");
     });
-    std::cerr << "[wifi] Returning WiFiRssiClient instance" << std::endl;
+    LOG_INFO(LogModule::NETWORK, "Returning WiFiRssiClient instance");
     return s_instance;
 }
 
@@ -69,21 +72,21 @@ WiFiRssiClient::~WiFiRssiClient() {
 }
 
 bool WiFiRssiClient::connect(const std::string& ifaceName, const std::string& ctrlDir) {
-    std::cerr << "[wifi] connect: starting, iface=" << ifaceName << ", ctrlDir=" << ctrlDir << std::endl;
+    LOG_INFO(LogModule::NETWORK, "connect: starting, iface=" << ifaceName << ", ctrlDir=" << ctrlDir);
     iface_ = ifaceName;
 
     sockfd_ = ::socket(AF_UNIX, SOCK_DGRAM, 0);
     if (sockfd_ < 0) {
-        std::cerr << "[wifi] socket() failed" << std::endl;
+        LOG_ERROR(LogModule::NETWORK, "socket() failed");
         return false;
     }
-    std::cerr << "[wifi] connect: socket created, fd=" << sockfd_ << std::endl;
-    
+    LOG_INFO(LogModule::NETWORK, "connect: socket created, fd=" << sockfd_);
+
     if (!bindLocal()) {
-        std::cerr << "[wifi] connect: bindLocal() failed" << std::endl;
+        LOG_ERROR(LogModule::NETWORK, "connect: bindLocal() failed");
         return false;
     }
-    std::cerr << "[wifi] connect: bindLocal() succeeded" << std::endl;
+    LOG_INFO(LogModule::NETWORK, "connect: bindLocal() succeeded");
 
     // 依次尝试：参数ctrlDir -> 环境变量WPA_CTRL_DIR -> /run/wpa_supplicant -> /var/run/wpa_supplicant
     std::vector<std::string> candidates;
@@ -93,15 +96,15 @@ bool WiFiRssiClient::connect(const std::string& ifaceName, const std::string& ct
     candidates.emplace_back("/run/wpa_supplicant");
     candidates.emplace_back("/var/run/wpa_supplicant");
 
-    std::cerr << "[wifi] connect: trying " << candidates.size() << " candidate directories" << std::endl;
+    LOG_INFO(LogModule::NETWORK, "connect: trying " << candidates.size() << " candidate directories");
     for (const auto& d : candidates) {
-        std::cerr << "[wifi] connect: trying directory " << d << std::endl;
+        LOG_INFO(LogModule::NETWORK, "connect: trying directory " << d);
         ctrlDir_ = d;
         if (connectRemote()) {
-            std::cerr << "[wifi] connect: connected to " << d << std::endl;
+            LOG_INFO(LogModule::NETWORK, "connect: connected to " << d);
             return true;
         }
-        std::cerr << "[wifi] connect: failed to connect to " << d << std::endl;
+        LOG_ERROR(LogModule::NETWORK, "connect: failed to connect to " << d);
     }
 
     // 若未运行，尝试自动拉起 wpa_supplicant（需要 root 权限）
@@ -117,7 +120,7 @@ bool WiFiRssiClient::connect(const std::string& ifaceName, const std::string& ct
         }
     }
 
-    std::cerr << "[wifi] unable to connect to wpa_supplicant control socket for iface '" << iface_ << "' (auto-start may require root)" << std::endl;
+    LOG_ERROR(LogModule::NETWORK, "unable to connect to wpa_supplicant control socket for iface '" << iface_ << "' (auto-start may require root)");
     close(sockfd_);
     sockfd_ = -1;
     if (!localSockPath_.empty()) {
@@ -137,7 +140,7 @@ bool WiFiRssiClient::bindLocal() {
 
     unlink(local.sun_path);
     if (::bind(sockfd_, reinterpret_cast<struct sockaddr*>(&local), sizeof(local)) < 0) {
-        std::cerr << "[wifi] bind() failed: " << local.sun_path << std::endl;
+        LOG_ERROR(LogModule::NETWORK, "bind() failed: " << local.sun_path);
         close(sockfd_);
         sockfd_ = -1;
         return false;
@@ -150,7 +153,7 @@ bool WiFiRssiClient::connectRemote() {
     dest.sun_family = AF_UNIX;
     std::string destPath = ctrlDir_ + "/" + iface_;
     if (destPath.size() >= sizeof(dest.sun_path)) {
-        std::cerr << "[wifi] dest path too long: " << destPath << std::endl;
+        LOG_ERROR(LogModule::NETWORK, "dest path too long: " << destPath);
         return false;
     }
     std::strcpy(dest.sun_path, destPath.c_str());
@@ -160,7 +163,7 @@ bool WiFiRssiClient::connectRemote() {
     tv.tv_sec = 1;  // 1秒超时
     tv.tv_usec = 0;
     if (::setsockopt(sockfd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-        std::cerr << "[wifi] setsockopt() failed" << std::endl;
+        LOG_ERROR(LogModule::NETWORK, "setsockopt() failed");
     }
 
     if (::connect(sockfd_, reinterpret_cast<struct sockaddr*>(&dest), sizeof(dest)) < 0) {
@@ -172,25 +175,25 @@ bool WiFiRssiClient::connectRemote() {
 std::string WiFiRssiClient::sendCommand(const std::string& cmd) {
     if (sockfd_ == -1) return {};
     if (::send(sockfd_, cmd.c_str(), cmd.size(), 0) < 0) {
-        std::cerr << "[wifi] send() failed" << std::endl;
+        LOG_ERROR(LogModule::NETWORK, "send() failed");
         return {};
     }
-    
+
     // 设置接收超时
     struct timeval tv;
     tv.tv_sec = 1;  // 1秒超时
     tv.tv_usec = 0;
     if (::setsockopt(sockfd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-        std::cerr << "[wifi] setsockopt() failed" << std::endl;
+        LOG_ERROR(LogModule::NETWORK, "setsockopt() failed");
     }
-    
+
     char buf[4096];
     ssize_t n = ::recv(sockfd_, buf, sizeof(buf) - 1, 0);
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            std::cerr << "[wifi] recv() timeout" << std::endl;
+            LOG_ERROR(LogModule::NETWORK, "recv() timeout");
         } else {
-            std::cerr << "[wifi] recv() failed: " << strerror(errno) << std::endl;
+            LOG_ERROR(LogModule::NETWORK, "recv() failed: " << strerror(errno));
         }
         return {};
     }

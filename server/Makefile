@@ -58,7 +58,8 @@ TEST_LDFLAGS_BPF = $(TEST_LDFLAGS) -lbpf
 # 单元测试列表（含现有 test_net_info 与新增 6 个算法测试）
 UNIT_TESTS = test_net_info test_quality_assessor test_anomaly_detector \
              test_audio_fusion test_band_conflict test_serializer \
-             test_event_manager test_bt_full_link test_iface_type
+             test_event_manager test_bt_full_link test_iface_type \
+             test_logger
 # 专项测试（蓝牙监控纯逻辑层，无需硬件）
 SPECIAL_TESTS = test_bt_monitor
 ALL_TESTS = $(UNIT_TESTS) $(SPECIAL_TESTS)
@@ -197,5 +198,13 @@ $(TEST_BIN_DIR)/test_iface_type: $(TEST_DIR)/unit/test_iface_type.cpp \
 	@mkdir -p $(TEST_BIN_DIR)
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_iface_type.cpp \
 	    src/iface_type.cpp $(TEST_LDFLAGS)
+
+# test_logger（日志系统：格式化宏、磁盘满保护、日志清理）
+$(TEST_BIN_DIR)/test_logger: $(TEST_DIR)/unit/test_logger.cpp \
+    src/logger.cpp include/logger.hpp \
+    $(TEST_DIR)/unit/test_common.hpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_logger.cpp \
+	    src/logger.cpp $(TEST_LDFLAGS)
 
 

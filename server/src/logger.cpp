@@ -4,6 +4,7 @@
 #include "logger.hpp"
 #include <iostream>
 #include <filesystem>
+#include <chrono>
 
 namespace weaknet_dbus {
 
@@ -30,6 +31,7 @@ bool Logger::init(const std::string& program_name,
         FLAGS_logtostderr = log_to_stderr;
         FLAGS_alsologtostderr = true;
         FLAGS_colorlogtostderr = true;
+        FLAGS_stop_logging_if_full_disk = true;  // 磁盘满时停止写日志，防止撑爆磁盘
         
         // 初始化glog
         try {
@@ -83,6 +85,37 @@ void Logger::setLogDir(const std::string& dir) {
             LOG(ERROR) << "[logger] Failed to change log directory: " << e.what();
         }
     }
+}
+
+int Logger::cleanOldLogs(const std::string& log_dir, int max_age_days) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    // 目录不存在时安全返回 0
+    if (!fs::exists(log_dir, ec) || !fs::is_directory(log_dir, ec)) {
+        return 0;
+    }
+
+    int deleted = 0;
+    const auto now = fs::file_time_type::clock::now();
+    const auto max_age = std::chrono::hours(24 * max_age_days);
+
+    try {
+        for (const auto& entry : fs::directory_iterator(log_dir)) {
+            if (!entry.is_regular_file(ec)) continue;
+            auto file_time = fs::last_write_time(entry.path(), ec);
+            if (ec) continue;
+            if (now - file_time > max_age) {
+                if (fs::remove(entry.path(), ec)) {
+                    ++deleted;
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        LOG(ERROR) << "[logger] cleanOldLogs failed: " << e.what();
+    }
+
+    return deleted;
 }
 
 } // namespace weaknet_dbus

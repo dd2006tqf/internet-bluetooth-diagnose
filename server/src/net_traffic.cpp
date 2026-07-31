@@ -1,4 +1,7 @@
 #include "net_traffic.h"
+#include "logger.hpp"
+
+using namespace weaknet_dbus;
 
 #include <arpa/inet.h>
 #include <chrono>
@@ -78,14 +81,14 @@ bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName) {
     bpf_link* l1 = bpf_program__attach(prog_tcp);
     long err_tcp = libbpf_get_error(l1);
     if (err_tcp) {
-        fprintf(stderr, "[ebpf] attach kprobe/ip_queue_xmit failed: %ld errno=%d\n", err_tcp, errno);
+        LOG_ERROR(LogModule::NETWORK, "attach kprobe/ip_queue_xmit failed: err=" << err_tcp << " errno=" << errno);
         if (!l1) {/* noop */} else { bpf_link__destroy(l1); }
         l1 = nullptr;
     }
     bpf_link* l2 = bpf_program__attach(prog_udp);
     long err_udp = libbpf_get_error(l2);
     if (err_udp) {
-        fprintf(stderr, "[ebpf] attach kprobe/udp_sendmsg failed: %ld errno=%d\n", err_udp, errno);
+        LOG_ERROR(LogModule::NETWORK, "attach kprobe/udp_sendmsg failed: err=" << err_udp << " errno=" << errno);
         if (!l2) {/* noop */} else { bpf_link__destroy(l2); }
         l2 = nullptr;
     }

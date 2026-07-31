@@ -17,7 +17,7 @@ namespace weaknet_dbus {
 // TCP丢包率监控线程函数
 void start_tcp_loss_monitor_thread(ServerContext* ctx) {
     ctx->tcp_loss_thread = std::thread([ctx](){
-        std::printf("[tcp_loss] monitor thread started.\n");
+        LOG_INFO(LogModule::TCP_LOSS, "monitor thread started");
         
         if (!ctx->weak_mgr) ctx->weak_mgr = new WeakNetMgr();
         
@@ -87,7 +87,7 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
             std::this_thread::sleep_for(10000ms);
         }
         
-        std::printf("[tcp_loss] monitor thread terminated.\n");
+        LOG_INFO(LogModule::TCP_LOSS, "monitor thread terminated");
     });
 }
 

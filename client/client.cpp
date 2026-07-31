@@ -628,7 +628,10 @@ extern "C" bool weaknet_init() {
     if (g_client) {
         return g_client->isConnected();
     }
-    
+
+    // 初始化日志系统（客户端使用独立的日志目录）
+    Logger::init("weaknet-client", "./logs/client");
+
     g_client = new WeakNetClient();
     return g_client->connect();
 }
@@ -640,6 +643,7 @@ extern "C" void weaknet_cleanup() {
         delete g_client;
         g_client = nullptr;
     }
+    Logger::shutdown();
 }
 
 // 获取当前网络接口信息

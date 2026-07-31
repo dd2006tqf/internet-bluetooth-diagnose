@@ -4,6 +4,7 @@
 #pragma once
 
 #include <glog/logging.h>
+#include <cstdio>
 #include <string>
 #include <memory>
 
@@ -54,6 +55,9 @@ public:
     // 检查是否已初始化
     static bool isInitialized() { return initialized_; }
 
+    // 清理超过 max_age_days 天的日志文件；目录不存在时安全返回。返回删除文件数。
+    static int cleanOldLogs(const std::string& log_dir, int max_age_days);
+
 private:
     static bool initialized_;
     static std::string current_log_dir_;
@@ -65,12 +69,20 @@ private:
 #define LOG_ERROR(module, msg) LOG(ERROR) << "[" << module << "] " << msg
 #define LOG_FATAL(module, msg) LOG(FATAL) << "[" << module << "] " << msg
 
-// 带格式的日志宏
-#define LOG_INFO_F(module, fmt, ...) \
-    LOG(INFO) << "[" << module << "] " << std::string().append(fmt).c_str() << __VA_ARGS__
+// 带格式的日志宏（printf 风格：通过 snprintf 格式化后送入 glog）
+#define LOG_INFO_F(module, fmt, ...)                                             \
+    do {                                                                         \
+        char _wklog_buf[2048];                                                   \
+        std::snprintf(_wklog_buf, sizeof(_wklog_buf), (fmt), ##__VA_ARGS__);     \
+        LOG(INFO) << "[" << (module) << "] " << _wklog_buf;                      \
+    } while (0)
 
-#define LOG_ERROR_F(module, fmt, ...) \
-    LOG(ERROR) << "[" << module << "] " << std::string().append(fmt).c_str() << __VA_ARGS__
+#define LOG_ERROR_F(module, fmt, ...)                                            \
+    do {                                                                         \
+        char _wklog_buf[2048];                                                   \
+        std::snprintf(_wklog_buf, sizeof(_wklog_buf), (fmt), ##__VA_ARGS__);     \
+        LOG(ERROR) << "[" << (module) << "] " << _wklog_buf;                     \
+    } while (0)
 
 // 条件日志宏
 #define LOG_IF_INFO(condition, module, msg) \

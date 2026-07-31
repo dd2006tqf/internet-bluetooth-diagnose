@@ -302,7 +302,7 @@ bool DbusService::handlePing(DBusConnection* conn, DBusMessage* msg) {
     dbus_connection_flush(conn);
     dbus_message_unref(reply);
     
-    std::printf("[dbus] Ping reply sent: %s\n", ok ? "success" : "failed");
+    LOG_INFO(LogModule::DBUS, "Ping reply sent: " << (ok ? "success" : "failed"));
     return ok;
 }
 
