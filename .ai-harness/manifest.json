@@ -379,7 +379,7 @@
       "path": "scripts/evaluation_fix.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:429ac3b2e0fbae0eb487c251ebbab101b2a082fd3c795f54ebe0ff5d7ef55118"
+      "content_sha256": "sha256:b2352b57f3fd8e23a58d4490940f3e0c79acb38355a33a34e72c14da1b28a4f0"
     },
     {
       "path": "scripts/evaluation_template.sh",
@@ -391,7 +391,7 @@
       "path": "scripts/evaluator_check.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:7cc5f62208c5b03d485c9d755483c58a4201fdb140d34d41a655d9f3d54d4e69"
+      "content_sha256": "sha256:1cb9d12f0892b426ad98bb043d87fe352836fe8a25401197f41dae1732bbb8c4"
     },
     {
       "path": "scripts/event_audit.js",
@@ -439,7 +439,13 @@
       "path": "scripts/manifest_policy.js",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:sha256:e4a74624489f28229625ad75801d2bc994ea8f3452a5c0dab7d748fccab6ad36"
+      "content_sha256": "sha256:62d5b76a79c1738560a9b5c9cfd5b79854543d2a23ad05a1a5df32d562454e7f"
+    },
+    {
+      "path": "scripts/manifest_sync.sh",
+      "ownership": "template",
+      "template_version": 2,
+      "content_sha256": "sha256:d3cfe76c7ee5e99744534a288b588c8b08ff2731a853743688d28f349a4e3915"
     },
     {
       "path": "scripts/openspec_cli.sh",
@@ -464,6 +470,12 @@
       "ownership": "template",
       "template_version": 2,
       "content_sha256": "sha256:c285e5ae293d939e72ba30a8c74305c2cc5592efafcee96e28675c7899a8f6aa"
+    },
+    {
+      "path": "scripts/pre_finish.sh",
+      "ownership": "template",
+      "template_version": 2,
+      "content_sha256": "sha256:7285c688f7fc7b3c07b6c17d62aa7b6725e46a2c72054d89ecfb52e646277ff7"
     },
     {
       "path": "scripts/project_command.js",

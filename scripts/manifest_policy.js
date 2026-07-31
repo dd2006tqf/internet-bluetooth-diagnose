@@ -29,6 +29,8 @@ const templatePaths = [
   'scripts/task_verify.sh', 'scripts/evaluator_check.sh', 'scripts/evaluation_template.sh', 'scripts/verification_workspace.sh',
   'scripts/snapshot_update.sh', 'scripts/resume_from_snapshot.sh', 'scripts/context_reset_check.sh',
   'scripts/quick_brief_check.sh', 'scripts/rca_new.sh', 'scripts/ai_debt_scan.sh', 'scripts/sync_hashes.js',
+  'scripts/pre_finish.sh',
+  'scripts/manifest_sync.sh',
   'scripts/evaluation_fix.sh',
   '.ai-harness/workflow-contract.json'
 ];

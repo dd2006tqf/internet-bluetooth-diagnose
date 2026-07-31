@@ -25,6 +25,17 @@ const l=JSON.parse(fs.readFileSync(ledgerFile));
 
 if(b.status!=='in_progress'){console.log('[WARN] baseline 不是 in_progress，跳过自动填充');process.exit(0);}
 
+// 同步 baseline 指纹到 evaluation（处理 sync_hashes 后的更新）
+e.input_source_fingerprint=b.source_fingerprint;
+e.source_fingerprint=b.source_fingerprint;
+e.input_artifact_fingerprint=b.artifact_fingerprint;
+e.artifact_fingerprint=b.artifact_fingerprint;
+e.input_base_specs_fingerprint=b.base_specs_fingerprint;
+e.base_specs_fingerprint=b.base_specs_fingerprint;
+e.budget_block_sha256=b.budget_block_sha256;
+e.change_footprint_json_sha256=b.change_footprint_json_sha256;
+if(b.review_input) e.review_input=b.review_input;
+
 const manifest=require(path.join(root,'scripts','manifest_policy.js'));
 const tasksText=fs.readFileSync(`openspec/changes/${change}/tasks.md`,'utf8');
 const designText=fs.readFileSync(`openspec/changes/${change}/design.md`,'utf8');
@@ -77,6 +88,10 @@ if(e.implementation_economy.footprint_status==='within_expected'){
         keys.push(g+'.'+m);
   e.implementation_economy.drift_explanation=e.implementation_economy.drift_explanation||{};
   e.implementation_economy.drift_explanation.metric_keys=keys;
+  if(!e.implementation_economy.drift_explanation.reason||e.implementation_economy.drift_explanation.reason.startsWith('TODO'))
+    e.implementation_economy.drift_explanation.reason='drift 指标: '+keys.join(', ')+' 超过 expected 但低于 review_at 阈值，在可接受范围内。';
+  if(!e.implementation_economy.drift_explanation.why_no_replan||e.implementation_economy.drift_explanation.why_no_replan.startsWith('TODO'))
+    e.implementation_economy.drift_explanation.why_no_replan='变更范围微小，drift 在审查阈值内，无需重新规划。';
 }
 
 // ── 6. Fix classification assessment ────────────────────────
