@@ -187,7 +187,7 @@
       "path": "docs/ai/workflow-rules.md",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:a3d35982f4d84d824c0ed5912132f3e5b5a4ab24fb733d9d59cc7dfa0c3fb5ad"
+      "content_sha256": "sha256:b39ba44ef8838c641ccea0aa4a350b4a20a1f1c6679c3586f2c56784928f056c"
     },
     {
       "path": "docs/ai/workflow.md",

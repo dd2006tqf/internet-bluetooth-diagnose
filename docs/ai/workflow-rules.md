@@ -45,6 +45,15 @@
 
 ## 关键规则
 
+### Design.md 不可修改
+一旦开始用 task_verify.sh 记录 evidence，**绝对不能修改 design.md**。
+
+修改 design.md → planning_fingerprint 和 tdd_policy_sha256 变化 → 所有已记录证据中的 planning_fingerprint_before/after 变成旧值 → "planning changed during command" → 所有任务无法完成。
+
+- **实施前**：确认 design.md 的所有修改（classification、exceptions、thresholds）已完成并冻结
+- **实施后**：只改代码文件和 tasks.md（勾选 checkbox），不碰 design.md
+- **必须改时**：先运行 sync_hashes.sh 重新同步，然后对所有任务重新跑 task_verify.sh 记录证据
+
 ### Spec 格式
 - requirement 描述必须包含 `MUST` 或 `SHALL`
 - scenario 必须有 WHEN/THEN 内容，不能留空：
@@ -72,6 +81,13 @@
 - 修改任何 `scripts/` 文件后，运行 `manifest_sync.sh` 同步所有哈希
 - 不要手动编辑 manifest.json 的 content_sha256
 
+### 创建 change 前清理无关文件
+创建 change 前，检查暂存区和工作区中是否有与本次 change 无关的脏文件。无关文件会被 evaluator 视为 "undeclared implementation paths" 导致 `--finish` 失败。
+
+- **创建 change 前**：`git status` 检查，将无关文件先提交或 stash
+- **不要用 `--adopt-path` 纳入无关文件**：adopted 路径会出现在 review_input 中但不在任何 task 的 `changed_paths` 里，evaluator 会拒绝
+- **如果无关文件已经纳入**：在归档前将其从 adopted 路径移除，或在 evaluation.json 中添加 residual_risks 说明
+
 ## 常见错误速查
 
 | 症状 | 原因 | 解决 |
@@ -86,6 +102,8 @@
 | `Error: unapproved manifest ownership` | 新增脚本未注册到 templatePaths | 加脚本时同步更新 manifest_policy.js |
 | OpenSpec archive 失败 | spec scenario 格式不对 | 确保 scenario 有 WHEN/THEN |
 | `[ERR] lock owner purpose does not authorize` | 锁授权列表缺失组合 | 检查 harness_lock.sh 的授权列表 |
+| `Error: planning changed during command` | 修改了 design.md 导致 planning_fingerprint 变化 | 不要改 design.md！重跑所有 evidence |
+| `Error: undeclared implementation paths` | 脏文件不在任何 task 的 changed_paths 中 | 创建 change 前清理无关文件，或用 residual_risks 说明 |
 
 ## 工具速查
 
