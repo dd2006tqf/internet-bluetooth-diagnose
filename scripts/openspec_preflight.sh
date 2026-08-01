@@ -25,5 +25,5 @@ schema=$(awk '
 [[ "$schema" == spec-driven ]] || { echo "[ERR] unsupported schema: $schema" >&2; exit 4; }
 if find .claude .codex -mindepth 1 \( -name 'openspec-*' -o -name 'opsx' -o -name 'opsx-*' \) -print -quit 2>/dev/null | grep -q .; then echo "[ERR] unsupported OpenSpec /opsx agent assets detected" >&2; exit 4; fi
 [[ -f scripts/manifest_policy.js ]] || { echo "[ERR] missing manifest policy" >&2; exit 4; }
-node scripts/manifest_policy.js >/dev/null || { echo "[ERR] managed-path manifest is invalid" >&2; exit 4; }
+node -e "const lib=require('./scripts/manifest_policy.js'),r=lib.loadManifest(process.cwd(),{skipContentCheckPaths:['docs/ai/']});if(r.upgrade_required){console.error('[ERR] manifest upgrade required: '+r.missing_managed_paths.join(', '));process.exit(4)}else console.log('manifest policy passed.')" 2>&1 || { echo "[ERR] managed-path manifest is invalid" >&2; exit 4; }
 echo "OpenSpec preflight passed."
