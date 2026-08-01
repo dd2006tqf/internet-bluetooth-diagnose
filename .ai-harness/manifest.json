@@ -337,7 +337,7 @@
       "path": "scripts/change_new.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:fbe20d84eba9424eb4fc5fe0bd52fc7b6f46d4b3ef126b37853bbe031ee7920e"
+      "content_sha256": "sha256:211a80fa31ced50d24402bf7c8918f76df5aee9c14063d1598cf16a28b75fdde"
     },
     {
       "path": "scripts/change_scope.js",
@@ -445,7 +445,7 @@
       "path": "scripts/manifest_policy.js",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:a9f547a6ab06f5e53e399662f50a24b8f6dd737d1bd6ae57d0e18324a74f4310"
+      "content_sha256": "sha256:0b0d240402d751732482154b75481fb868bdb8489c3dd36b77d00b306ead5900"
     },
     {
       "path": "scripts/manifest_sync.sh",
@@ -463,7 +463,7 @@
       "path": "scripts/openspec_preflight.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:49f62130863b19db629a017d7177b79d45257ef115fee1c71ae071497fd1c57e"
+      "content_sha256": "sha256:3935149805c3b9d9e5a6414ca04f21259fdb5ac54448102b1332ee5be52fed01"
     },
     {
       "path": "scripts/organization_policy.js",
@@ -565,7 +565,7 @@
       "path": "scripts/task_verify.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:70e3037dfe83983a2f9a686fd280b4544da4e70441809b47e23287a9d9b0c4ec"
+      "content_sha256": "sha256:e2b39d05648af80d6b4d775c81b67363fd1b86a1ef3c2041a4562abb8e40148c"
     },
     {
       "path": "scripts/verification_workspace.sh",
