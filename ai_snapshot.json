@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
   "workflow": "openspec",
-  "active_change": null,
-  "phase": "idle",
-  "current_step": "change-archived",
-  "next_step": "Create or select the next change",
-  "updated_at": "2026-08-01T03:18:47.501Z",
+  "active_change": "add-missing-logs",
+  "phase": "evaluation_in_progress",
+  "current_step": "evaluation-started",
+  "next_step": "Run independent commands and write evaluation.json",
+  "updated_at": "2026-08-01T15:58:15.621Z",
   "last_archived_change": {
     "change_name": "fix-degraded-mode-log",
     "archived_as": "2026-08-01-fix-degraded-mode-log",

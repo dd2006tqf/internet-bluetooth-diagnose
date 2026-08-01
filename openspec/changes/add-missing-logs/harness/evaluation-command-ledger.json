@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "evaluation_id": "eval-20260801T155814Z-436d0a",
+  "change_name": "add-missing-logs",
+  "commands": [
+    {
+      "id": "eval-cmd-1785600151568-2959983",
+      "kind": "build",
+      "argv": [
+        "make",
+        "all"
+      ],
+      "command": "\"make\" \"all\"",
+      "working_directory": ".",
+      "started_at": "2026-08-01T16:02:18.656Z",
+      "finished_at": "2026-08-01T16:02:31.222Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "编译成功",
+      "observed": "exit code 0; output sha256:748866e847c4a20aa3aac25f8454b6c48c1095b66dbda8555cd5df7cb5062ca4",
+      "result": "Pass",
+      "output_sha256": "sha256:748866e847c4a20aa3aac25f8454b6c48c1095b66dbda8555cd5df7cb5062ca4",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ]
+}

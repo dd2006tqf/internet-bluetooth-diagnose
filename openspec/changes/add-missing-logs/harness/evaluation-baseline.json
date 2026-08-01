@@ -1,0 +1,101 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260801T155814Z-436d0a",
+  "change_name": "add-missing-logs",
+  "status": "in_progress",
+  "started_at": "2026-08-01T15:58:15.260Z",
+  "source_fingerprint": "sha256:1263511e924e4c928e839b929e395a48a58d6cff1cc848490d5121b7a847a26b",
+  "artifact_fingerprint": "sha256:fcf2cc0cd165029ae99b8c3043f8c9d764744fc175d53b67d8b1390be72da338",
+  "base_specs_fingerprint": "sha256:67eab38ab8d7192b53887b5c83f122c5d65b2373a5d3a72d274a8622f60ddfd7",
+  "verification_json_sha256": "sha256:8abe731bb718740c240b11897dab42443ff954805c2bd4044fcd47139cc07d70",
+  "budget_block_sha256": "sha256:f385bcade542cdf26629339888772e73115077a1caff73f7b67b2bb7f6d6de1d",
+  "change_footprint_json_sha256": "sha256:f1f8644ce2ec4b8e59f5088d7dc005df03718946380b70ab5c97934f92f24bb3",
+  "integration_planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+  "integration_surface_report_sha256": "sha256:0efced9d5df75e4627c6f5385d396bd69d508b24d4486eba2f6619acd2d13e22",
+  "integration_discovery_identity_sha256": "sha256:fa3e5ed15762276155130682d4157955bd784a0c4a23ef49abacf2cd47dda9dc",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "60596550c2bb6eb8febe5cb58ea6f3176ed59b03",
+    "head_commit": "60596550c2bb6eb8febe5cb58ea6f3176ed59b03",
+    "source_fingerprint": "sha256:1263511e924e4c928e839b929e395a48a58d6cff1cc848490d5121b7a847a26b",
+    "artifact_fingerprint": "sha256:fcf2cc0cd165029ae99b8c3043f8c9d764744fc175d53b67d8b1390be72da338",
+    "base_specs_fingerprint": "sha256:67eab38ab8d7192b53887b5c83f122c5d65b2373a5d3a72d274a8622f60ddfd7",
+    "layers": {
+      "effective": {
+        "paths": [
+          "Makefile",
+          "client/client.cpp",
+          "docs/本地LLM部署方案.md",
+          "server/src/band_conflict_detector.cpp",
+          "server/src/bt_audio_fusion.cpp",
+          "server/src/dbus_service.cpp",
+          "server/src/looper.cpp",
+          "server/src/net_info.cpp",
+          "server/src/net_tcp.cpp",
+          "server/src/net_wifiriss.cpp",
+          "server/src/network_quality_assessor.cpp",
+          "server/src/serializer.cpp",
+          "server/src/traffic_anomaly_detector.cpp",
+          "server/src/using_iface.cpp",
+          "server/src/weak_netmgr.cpp"
+        ],
+        "state_fingerprint": "sha256:741a65f62339868e2b884e2a07b6ffe3ec563cc36d1acf3eb61d28452d79828c"
+      },
+      "committed": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [
+          "Makefile",
+          "client/client.cpp",
+          "docs/本地LLM部署方案.md",
+          "server/src/band_conflict_detector.cpp",
+          "server/src/bt_audio_fusion.cpp",
+          "server/src/dbus_service.cpp",
+          "server/src/looper.cpp",
+          "server/src/net_info.cpp",
+          "server/src/net_tcp.cpp",
+          "server/src/net_wifiriss.cpp",
+          "server/src/network_quality_assessor.cpp",
+          "server/src/serializer.cpp",
+          "server/src/traffic_anomaly_detector.cpp",
+          "server/src/using_iface.cpp",
+          "server/src/weak_netmgr.cpp"
+        ],
+        "state_fingerprint": "sha256:7c2b2c68ea96f63ac883a367315543206287e825215ca9ab32bd33d71599f9d6"
+      },
+      "untracked": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [
+      "Makefile",
+      "client/client.cpp",
+      "docs/本地LLM部署方案.md",
+      "server/src/band_conflict_detector.cpp",
+      "server/src/bt_audio_fusion.cpp",
+      "server/src/dbus_service.cpp",
+      "server/src/looper.cpp",
+      "server/src/net_info.cpp",
+      "server/src/net_tcp.cpp",
+      "server/src/net_wifiriss.cpp",
+      "server/src/network_quality_assessor.cpp",
+      "server/src/serializer.cpp",
+      "server/src/traffic_anomaly_detector.cpp",
+      "server/src/using_iface.cpp",
+      "server/src/weak_netmgr.cpp"
+    ],
+    "git_state_fingerprint": "sha256:3d10b06b1df9167e99ec7b8d390f5d0c7d0662e2943e8ca0a96e58370ced8d48",
+    "raw_diff_persisted": false
+  }
+}
