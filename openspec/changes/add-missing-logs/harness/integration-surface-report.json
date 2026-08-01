@@ -3,9 +3,9 @@
   "change_name": "add-missing-logs",
   "implementation_base_commit": "60596550c2bb6eb8febe5cb58ea6f3176ed59b03",
   "discovery_mode": "reviewed_inventory",
-  "source_fingerprint": "sha256:1263511e924e4c928e839b929e395a48a58d6cff1cc848490d5121b7a847a26b",
+  "source_fingerprint": "sha256:14c51f15ef912e2061c9d136306ca1a7381934d0db2f0f1e09accea101817b78",
   "planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
-  "change_footprint_json_sha256": "sha256:f1f8644ce2ec4b8e59f5088d7dc005df03718946380b70ab5c97934f92f24bb3",
+  "change_footprint_json_sha256": "sha256:31b41b4d4f1ed86cc2a9e0652ca11240b5bed6d5cb3712c5b458702cc2924678",
   "scope_classifier_identity": {
     "schema_version": 1,
     "path": "scripts/change_scope.js",
