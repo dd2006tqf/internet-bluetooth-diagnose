@@ -626,6 +626,7 @@ static WeakNetClient* g_client = nullptr;
 // 初始化客户端
 extern "C" bool weaknet_init() {
     if (g_client) {
+        LOG_INFO(LogModule::CLIENT, "weaknet_init: already initialized, connected=" << g_client->isConnected());
         return g_client->isConnected();
     }
 
@@ -633,11 +634,14 @@ extern "C" bool weaknet_init() {
     Logger::init("weaknet-client", "./logs/client");
 
     g_client = new WeakNetClient();
-    return g_client->connect();
+    bool result = g_client->connect();
+    LOG_INFO(LogModule::CLIENT, "weaknet_init: connect result=" << result);
+    return result;
 }
 
 // 清理客户端
 extern "C" void weaknet_cleanup() {
+    LOG_INFO(LogModule::CLIENT, "weaknet_cleanup: cleaning up");
     if (g_client) {
         g_client->disconnect();
         delete g_client;
@@ -649,15 +653,18 @@ extern "C" void weaknet_cleanup() {
 // 获取当前网络接口信息
 extern "C" bool weaknet_get_interfaces(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
     if (!g_client || !g_client->isConnected()) {
+        LOG_ERROR(LogModule::CLIENT, "weaknet_get_interfaces: client not connected");
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
     }
 
     std::string result, errorMsg;
     if (g_client->getInterfaces(result, errorMsg)) {
+        LOG_INFO(LogModule::CLIENT, "weaknet_get_interfaces: success, result size=" << result.size());
         snprintf(buffer, buffer_size, "%s", result.c_str());
         return true;
     } else {
+        LOG_ERROR(LogModule::CLIENT, "weaknet_get_interfaces: failed: " << errorMsg);
         snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
         return false;
     }
@@ -666,16 +673,18 @@ extern "C" bool weaknet_get_interfaces(char* buffer, size_t buffer_size, char* e
 // 获取网络状态变化（非阻塞）
 extern "C" bool weaknet_check_changes(char* message_buffer, size_t message_size, int32_t* counter, char* error_buffer, size_t error_size) {
     if (!g_client || !g_client->isConnected()) {
+        LOG_ERROR(LogModule::CLIENT, "weaknet_check_changes: client not connected");
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
     }
 
     std::string message;
     if (g_client->checkForChanges(message, *counter)) {
+        LOG_INFO(LogModule::CLIENT, "weaknet_check_changes: change detected");
         snprintf(message_buffer, message_size, "%s", message.c_str());
         return true;
     }
-    
+
     snprintf(error_buffer, error_size, "无新的状态变化");
     return false;
 }
@@ -683,15 +692,18 @@ extern "C" bool weaknet_check_changes(char* message_buffer, size_t message_size,
 // 请求网络健康检查
 extern "C" bool weaknet_health_check(char* result_buffer, size_t result_size, char* error_buffer, size_t error_size) {
     if (!g_client || !g_client->isConnected()) {
+        LOG_ERROR(LogModule::CLIENT, "weaknet_health_check: client not connected");
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
     }
 
     std::string result, errorMsg;
     if (g_client->requestHealthCheck(result, errorMsg)) {
+        LOG_INFO(LogModule::CLIENT, "weaknet_health_check: success");
         snprintf(result_buffer, result_size, "%s", result.c_str());
         return true;
     } else {
+        LOG_ERROR(LogModule::CLIENT, "weaknet_health_check: failed: " << errorMsg);
         snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
         return false;
     }
@@ -717,20 +729,24 @@ extern "C" bool weaknet_get_from_file(char* buffer, size_t buffer_size, char* er
 // Ping指定主机
 extern "C" bool weaknet_ping_host(const char* hostname, char* result_buffer, size_t result_size, char* error_buffer, size_t error_size) {
     if (!g_client || !g_client->isConnected()) {
+        LOG_ERROR(LogModule::CLIENT, "weaknet_ping_host: client not connected");
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
     }
 
     if (!hostname || strlen(hostname) == 0) {
+        LOG_ERROR(LogModule::CLIENT, "weaknet_ping_host: hostname is empty");
         snprintf(error_buffer, error_size, "主机名不能为空");
         return false;
     }
 
     std::string result, errorMsg;
     if (g_client->pingHost(std::string(hostname), result, errorMsg)) {
+        LOG_INFO(LogModule::CLIENT, "weaknet_ping_host: success for " << hostname);
         snprintf(result_buffer, result_size, "%s", result.c_str());
         return true;
     } else {
+        LOG_ERROR(LogModule::CLIENT, "weaknet_ping_host: failed for " << hostname << ": " << errorMsg);
         snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
         return false;
     }
@@ -740,11 +756,15 @@ extern "C" bool weaknet_ping_host(const char* hostname, char* result_buffer, siz
 
 // C接口函数实现
 
+using namespace weaknet_dbus;
+
 // 订阅特定事件类型
 extern "C" bool weaknet_subscribe_event(const char* event_type, weaknet_event_callback_t callback) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        LOG_ERROR(LogModule::CLIENT, "weaknet_subscribe_event: client not connected");
         return false;
     }
+    LOG_INFO(LogModule::CLIENT, "weaknet_subscribe_event: subscribing to " << event_type);
     return weaknet_dbus::g_client->subscribeToEvent(std::string(event_type));
 }
 
@@ -767,22 +787,24 @@ extern "C" bool weaknet_get_event_types(char* buffer, size_t buffer_size, char* 
 
 // 非阻塞检查事件
 extern "C" bool weaknet_check_events(char* event_type_buffer, size_t event_type_size,
-                                   char* message_buffer, size_t message_size, 
+                                   char* message_buffer, size_t message_size,
                                    int32_t* counter, char* source_buffer, size_t source_size,
                                    char* error_buffer, size_t error_size) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        LOG_ERROR(LogModule::CLIENT, "weaknet_check_events: client not connected");
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
     }
 
     std::string eventType, message, source;
     if (weaknet_dbus::g_client->checkForEvents(eventType, message, *counter, source)) {
+        LOG_INFO(LogModule::CLIENT, "weaknet_check_events: event detected: " << eventType);
         snprintf(event_type_buffer, event_type_size, "%s", eventType.c_str());
         snprintf(message_buffer, message_size, "%s", message.c_str());
         snprintf(source_buffer, source_size, "%s", source.c_str());
         return true;
     }
-    
+
     snprintf(error_buffer, error_size, "没有检测到事件");
     return false;
 }
@@ -807,8 +829,10 @@ extern "C" bool weaknet_get_build_info(char* buffer, size_t buffer_size) {
 // 订阅网络质量事件
 extern "C" bool weaknet_subscribe_network_quality(weaknet_network_quality_callback_t callback) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        LOG_ERROR(LogModule::CLIENT, "weaknet_subscribe_network_quality: client not connected");
         return false;
     }
+    LOG_INFO(LogModule::CLIENT, "weaknet_subscribe_network_quality: subscribing");
     
     // 创建C++回调包装器
     static weaknet_network_quality_callback_t s_callback = nullptr;

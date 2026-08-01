@@ -27,13 +27,23 @@ static bool ensureDir(const std::string& d) {
 }
 
 static bool launchWpaSupplicant(const std::string& iface, const std::string& ctrlDir) {
+    LOG_INFO(LogModule::RSSI, "launchWpaSupplicant: attempting to start wpa_supplicant for " << iface);
     const char* bin = "/sbin/wpa_supplicant";
     if (!pathExists(bin)) bin = "/usr/sbin/wpa_supplicant";
-    if (!pathExists(bin)) return false;
+    if (!pathExists(bin)) {
+        LOG_ERROR(LogModule::RSSI, "launchWpaSupplicant: wpa_supplicant binary not found");
+        return false;
+    }
     const char* conf = std::getenv("WPA_SUPPLICANT_CONF");
     if (!conf || !*conf) conf = "/etc/wpa_supplicant/wpa_supplicant.conf";
-    if (!pathExists(conf)) return false;
-    if (!ensureDir(ctrlDir)) return false;
+    if (!pathExists(conf)) {
+        LOG_ERROR(LogModule::RSSI, "launchWpaSupplicant: config file not found: " << conf);
+        return false;
+    }
+    if (!ensureDir(ctrlDir)) {
+        LOG_ERROR(LogModule::RSSI, "launchWpaSupplicant: failed to create ctrl dir: " << ctrlDir);
+        return false;
+    }
     // -B 后台运行，-C 指定 ctrl 目录
     std::string cmd = std::string(bin) + " -B -i " + iface + " -c " + conf + " -C " + ctrlDir + " 2>/dev/null";
     int rc = ::system(cmd.c_str());
@@ -167,6 +177,7 @@ bool WiFiRssiClient::connectRemote() {
     }
 
     if (::connect(sockfd_, reinterpret_cast<struct sockaddr*>(&dest), sizeof(dest)) < 0) {
+        LOG_ERROR(LogModule::RSSI, "connectRemote: connect() failed to " << destPath << ": " << strerror(errno));
         return false;
     }
     return true;

@@ -2,6 +2,7 @@
 // 实现简单的二进制序列化/反序列化
 
 #include "serializer.hpp"
+#include "logger.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -28,14 +29,17 @@ static void ensureParentDir(const std::string& filepath) {
 }
 
 bool writeBufferToFile(const std::vector<uint8_t>& buffer, const std::string& filepath, std::string* error_message) {
+    LOG_INFO(LogModule::WEAK_MGR, "writeBufferToFile: writing " << buffer.size() << " bytes to " << filepath);
     ensureParentDir(filepath);
     std::ofstream ofs(filepath, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
+        LOG_ERROR(LogModule::WEAK_MGR, "writeBufferToFile: failed to open " << filepath);
         if (error_message) *error_message = "无法打开文件写入: " + filepath;
         return false;
     }
     ofs.write(reinterpret_cast<const char*>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
     if (!ofs.good()) {
+        LOG_ERROR(LogModule::WEAK_MGR, "writeBufferToFile: write failed for " << filepath);
         if (error_message) *error_message = "写入失败: " + filepath;
         return false;
     }
@@ -43,8 +47,10 @@ bool writeBufferToFile(const std::vector<uint8_t>& buffer, const std::string& fi
 }
 
 bool readFileToBuffer(const std::string& filepath, std::vector<uint8_t>* buffer, std::string* error_message) {
+    LOG_INFO(LogModule::WEAK_MGR, "readFileToBuffer: reading from " << filepath);
     std::ifstream ifs(filepath, std::ios::binary);
     if (!ifs.is_open()) {
+        LOG_ERROR(LogModule::WEAK_MGR, "readFileToBuffer: failed to open " << filepath);
         if (error_message) *error_message = "无法打开文件读取: " + filepath;
         return false;
     }

@@ -63,12 +63,21 @@ bool DbusService::register_on_connection(DBusConnection* conn) {
 
 bool DbusService::emitChanged(const std::string& message, int32_t counter) {
     DBusMessage* sig = dbus_message_new_signal(kObjectPath, kInterface, kSignalChanged);
-    if (!sig) return false;
+    if (!sig) {
+        LOG_ERROR(LogModule::DBUS, "emitChanged: failed to create signal");
+        return false;
+    }
     DBusMessageIter args;
     dbus_message_iter_init_append(sig, &args);
     const char* s = message.c_str();
-    if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s)) { dbus_message_unref(sig); return false; }
-    if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &counter)) { dbus_message_unref(sig); return false; }
+    if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s)) {
+        LOG_ERROR(LogModule::DBUS, "emitChanged: failed to append message");
+        dbus_message_unref(sig); return false;
+    }
+    if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &counter)) {
+        LOG_ERROR(LogModule::DBUS, "emitChanged: failed to append counter");
+        dbus_message_unref(sig); return false;
+    }
     bool ok = dbus_connection_send(ctx_->connection, sig, nullptr);
     dbus_connection_flush(ctx_->connection);
     dbus_message_unref(sig);
@@ -81,9 +90,13 @@ bool DbusService::emitChanged(const std::string& message, int32_t counter) {
 // MessageHandler 实现已移动到静态自由函数
 
 bool DbusService::handleGet(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGet called");
     const char* reply_text = "Hello from WeakNet Server";
     DBusMessage* reply = dbus_message_new_method_return(msg);
-    if (!reply) return false;
+    if (!reply) {
+        LOG_ERROR(LogModule::DBUS, "handleGet: failed to create reply");
+        return false;
+    }
     DBusMessageIter args;
     dbus_message_iter_init_append(reply, &args);
     const char* s = reply_text;
@@ -98,7 +111,10 @@ bool DbusService::handleGet(DBusConnection* conn, DBusMessage* msg) {
 
 bool DbusService::replyStringArray(DBusConnection* conn, DBusMessage* msg, const std::vector<std::string>& arr) {
     DBusMessage* reply = dbus_message_new_method_return(msg);
-    if (!reply) return false;
+    if (!reply) {
+        LOG_ERROR(LogModule::DBUS, "replyStringArray: failed to create reply");
+        return false;
+    }
     DBusMessageIter iter;
     dbus_message_iter_init_append(reply, &iter);
     DBusMessageIter array_iter;
@@ -115,6 +131,7 @@ bool DbusService::replyStringArray(DBusConnection* conn, DBusMessage* msg, const
 }
 
 bool DbusService::handleListInterfaces(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleListInterfaces called");
     std::vector<std::string> snapshot;
     {
         std::lock_guard<std::mutex> lk(ctx_->iface_mutex);
@@ -124,6 +141,7 @@ bool DbusService::handleListInterfaces(DBusConnection* conn, DBusMessage* msg) {
 }
 
 bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleHealthCheck called");
     std::vector<NetInfo> snapshot;
     {
         std::lock_guard<std::mutex> lk(ctx_->iface_mutex);

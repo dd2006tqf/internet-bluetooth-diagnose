@@ -7,7 +7,7 @@ LDFLAGS=`pkg-config --libs dbus-1` -lglog
 INCLUDES=`pkg-config --cflags dbus-1`
 
 SRC_SERVER=server.cpp serializer.cpp
-SRC_CLIENT_LIB=client/client.cpp server/src/serializer.cpp
+SRC_CLIENT_LIB=client/client.cpp server/src/serializer.cpp server/src/logger.cpp
 SRC_CLIENT_TEST=client/test_client.cpp
 
 all: dirs server-client-lib

@@ -1,9 +1,12 @@
 #include "traffic_anomaly_detector.h"
+#include "logger.hpp"
 #include <iostream>
 #include <numeric>
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+
+using namespace weaknet_dbus;
 
 TrafficAnomalyDetector::TrafficAnomalyDetector() 
     : burstThreshold_(2.5), volumeThreshold_(3.0), timeThreshold_(2.0) {
@@ -90,6 +93,7 @@ bool TrafficAnomalyDetector::isOutlier(uint64_t value, const std::vector<uint64_
 }
 
 std::vector<AdvancedAnomaly> TrafficAnomalyDetector::analyzeTrafficPatterns(const std::vector<FlowRate>& flows) {
+    LOG_INFO(LogModule::WEAK_MGR, "analyzeTrafficPatterns: analyzing " << flows.size() << " flows");
     std::vector<AdvancedAnomaly> anomalies;
     
     std::lock_guard<std::mutex> lock(patternsMutex_);
@@ -103,6 +107,7 @@ std::vector<AdvancedAnomaly> TrafficAnomalyDetector::analyzeTrafficPatterns(cons
     for (auto& [flowKey, pattern] : trafficPatterns_) {
         // 检测数据泄露
         if (isDataExfiltrationPattern(pattern)) {
+            LOG_WARNING(LogModule::WEAK_MGR, "analyzeTrafficPatterns: data exfiltration detected for flow " << flowKey);
             AdvancedAnomaly anomaly;
             anomaly.flowKey = flowKey;
             anomaly.anomalyType = "data_exfiltration";
@@ -119,6 +124,7 @@ std::vector<AdvancedAnomaly> TrafficAnomalyDetector::analyzeTrafficPatterns(cons
         
         // 检测可疑连接
         if (isSuspiciousConnectionPattern(pattern)) {
+            LOG_WARNING(LogModule::WEAK_MGR, "analyzeTrafficPatterns: suspicious connection detected for flow " << flowKey);
             AdvancedAnomaly anomaly;
             anomaly.flowKey = flowKey;
             anomaly.anomalyType = "suspicious_connection";
@@ -133,6 +139,7 @@ std::vector<AdvancedAnomaly> TrafficAnomalyDetector::analyzeTrafficPatterns(cons
         
         // 检测时间异常
         if (isTemporalAnomaly(pattern)) {
+            LOG_WARNING(LogModule::WEAK_MGR, "analyzeTrafficPatterns: temporal anomaly detected for flow " << flowKey);
             AdvancedAnomaly anomaly;
             anomaly.flowKey = flowKey;
             anomaly.anomalyType = "temporal_anomaly";
@@ -240,8 +247,9 @@ std::vector<AdvancedAnomaly> TrafficAnomalyDetector::detectDataExfiltration(cons
     std::vector<AdvancedAnomaly> anomalies;
     
     for (const auto& flow : flows) {
-        // 检测大文件传输
+            // 检测大文件传输
         if (flow.bps > 10 * 1024 * 1024) { // 10MB/s
+            LOG_WARNING(LogModule::WEAK_MGR, "detectDataExfiltration: high流量 " << flow.bps << " bytes/sec from " << flow.src << " to " << flow.dst);
             AdvancedAnomaly anomaly;
             anomaly.flowKey = flow.src + ":" + std::to_string(flow.sport) + "-" + 
                              flow.dst + ":" + std::to_string(flow.dport) + "/" + flow.proto;
@@ -273,6 +281,7 @@ std::vector<AdvancedAnomaly> TrafficAnomalyDetector::detectSuspiciousConnections
     // 检测异常多连接的进程
     for (const auto& [pid, count] : pidConnectionCount) {
         if (count > 50) { // 超过50个连接
+            LOG_WARNING(LogModule::WEAK_MGR, "detectSuspiciousConnections: PID " << pid << " has " << count << " connections");
             AdvancedAnomaly anomaly;
             anomaly.flowKey = "PID:" + std::to_string(pid);
             anomaly.anomalyType = "suspicious_connection";
@@ -304,8 +313,9 @@ std::vector<AdvancedAnomaly> TrafficAnomalyDetector::detectTemporalAnomalies(con
         for (const auto& flow : flows) {
             totalBps += flow.bps;
         }
-        
+
         if (totalBps > 5 * 1024 * 1024) { // 5MB/s
+            LOG_WARNING(LogModule::WEAK_MGR, "detectTemporalAnomalies: 非工作时间高流量活动，总流量 " << totalBps << " bytes/sec，小时 " << (int)tm.tm_hour);
             AdvancedAnomaly anomaly;
             anomaly.flowKey = "temporal_anomaly";
             anomaly.anomalyType = "temporal_anomaly";

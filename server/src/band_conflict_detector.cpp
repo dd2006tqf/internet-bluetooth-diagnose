@@ -30,6 +30,7 @@ inline bool isValidRssi(int rssi) {
 void BandConflictDetector::feedSample(int wifiRssi, int btRssi) {
     // 边界条件：无效 RSSI 值直接跳过，不污染历史队列
     if (!isValidRssi(wifiRssi) || !isValidRssi(btRssi)) {
+        LOG_INFO(LogModule::WEAK_MGR, "feedSample: skipping invalid RSSI values (wifi=" << wifiRssi << ", bt=" << btRssi << ")");
         return;
     }
 

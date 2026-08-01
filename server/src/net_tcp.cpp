@@ -1,4 +1,5 @@
 #include "net_tcp.h"
+#include "logger.hpp"
 
 #include <sys/socket.h>
 #include <unistd.h>
@@ -16,6 +17,8 @@
 #include <linux/inet_diag.h>
 #include <linux/rtnetlink.h>
 #include <netinet/tcp.h>
+
+using namespace weaknet_dbus;
 
 std::once_flag TcpLossMonitor::s_onceFlag;
 std::shared_ptr<TcpLossMonitor> TcpLossMonitor::s_instance;
@@ -60,6 +63,7 @@ static bool diagDumpFamilyIface(int nlSock, int family, int filterIfindex,
     msgh.msg_iovlen = 1;
 
     if (sendmsg(nlSock, &msgh, 0) < 0) {
+        LOG_ERROR_F(LogModule::TCP_LOSS, "diagDumpFamilyIface: sendmsg failed: %s", strerror(errno));
         return false;
     }
 
@@ -75,6 +79,7 @@ static bool diagDumpFamilyIface(int nlSock, int family, int filterIfindex,
         ssize_t len = recvmsg(nlSock, &rmsg, 0);
         if (len < 0) {
             if (errno == EINTR) continue;
+            LOG_ERROR_F(LogModule::TCP_LOSS, "diagDumpFamilyIface: recvmsg failed: %s", strerror(errno));
             return false;
         }
         if (len == 0) break;
@@ -193,9 +198,13 @@ static bool diagSampleIfaceAll(const std::string& iface, uint64_t& segsOutApprox
 }
 
 bool TcpLossMonitor::sample(TcpStats& outStats) {
+    LOG_INFO(LogModule::TCP_LOSS, "sample: collecting system-wide TCP stats");
     // system-wide: 纯 netlink 近似统计
     int nl = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_SOCK_DIAG);
-    if (nl < 0) return false;
+    if (nl < 0) {
+        LOG_ERROR_F(LogModule::TCP_LOSS, "sample: socket creation failed: %s", strerror(errno));
+        return false;
+    }
     uint64_t so4 = 0, si4 = 0, r4 = 0, so6 = 0, si6 = 0, r6 = 0;
     bool ok4 = diagDumpFamilyIface(nl, AF_INET, -1, so4, si4, r4);
     bool ok6 = diagDumpFamilyIface(nl, AF_INET6, -1, so6, si6, r6);
@@ -224,7 +233,10 @@ TcpLossResult TcpLossMonitor::compute(const TcpStats& prev,
                                       double degradedThresholdPct,
                                       double poorThresholdPct) {
     TcpLossResult r;
-    if (!prev.valid || !curr.valid) { r.level = "insufficient"; return r; }
+    if (!prev.valid || !curr.valid) {
+        LOG_INFO(LogModule::TCP_LOSS, "compute: insufficient data (prev.valid=" << prev.valid << " curr.valid=" << curr.valid << ")");
+        r.level = "insufficient"; return r;
+    }
     if (curr.outSegs < prev.outSegs || curr.retransSegs < prev.retransSegs) {
         r.level = "insufficient"; // counters reset/overflow
         return r;

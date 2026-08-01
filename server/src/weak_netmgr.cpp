@@ -304,28 +304,48 @@ bool WeakNetMgr::updateRttAndStateSafe(const std::string& host, int timeoutMs) {
 }
 
 bool WeakNetMgr::updateWifiRssiSafe(const std::string& ctrlDir) {
+    LOG_INFO(LogModule::WEAK_MGR, "updateWifiRssiSafe: acquiring lock");
     std::lock_guard<std::mutex> lock(iface_mutex_);
-    return updateWifiRssi(current_interfaces_, ctrlDir);
+    LOG_INFO(LogModule::WEAK_MGR, "updateWifiRssiSafe: lock acquired, calling updateWifiRssi");
+    bool result = updateWifiRssi(current_interfaces_, ctrlDir);
+    LOG_INFO(LogModule::WEAK_MGR, "updateWifiRssiSafe: updateWifiRssi completed, releasing lock");
+    return result;
 }
 
 bool WeakNetMgr::updateTcpLossRateSafe(const std::string& iface_name, double loss_rate, const std::string& loss_level) {
+    LOG_INFO(LogModule::WEAK_MGR, "updateTcpLossRateSafe: acquiring lock");
     std::lock_guard<std::mutex> lock(iface_mutex_);
-    return updateTcpLossRate(current_interfaces_, iface_name, loss_rate, loss_level);
+    LOG_INFO(LogModule::WEAK_MGR, "updateTcpLossRateSafe: lock acquired, calling updateTcpLossRate");
+    bool result = updateTcpLossRate(current_interfaces_, iface_name, loss_rate, loss_level);
+    LOG_INFO(LogModule::WEAK_MGR, "updateTcpLossRateSafe: updateTcpLossRate completed, releasing lock");
+    return result;
 }
 
 bool WeakNetMgr::updateJitterSafe(const std::string& iface_name, double jitter_ms, const std::string& jitter_level) {
+    LOG_INFO(LogModule::WEAK_MGR, "updateJitterSafe: acquiring lock");
     std::lock_guard<std::mutex> lock(iface_mutex_);
-    return updateJitter(current_interfaces_, iface_name, jitter_ms, jitter_level);
+    LOG_INFO(LogModule::WEAK_MGR, "updateJitterSafe: lock acquired, calling updateJitter");
+    bool result = updateJitter(current_interfaces_, iface_name, jitter_ms, jitter_level);
+    LOG_INFO(LogModule::WEAK_MGR, "updateJitterSafe: updateJitter completed, releasing lock");
+    return result;
 }
 
 bool WeakNetMgr::updateTrafficAnalysisSafe() {
+    LOG_INFO(LogModule::WEAK_MGR, "updateTrafficAnalysisSafe: acquiring lock");
     std::lock_guard<std::mutex> lock(iface_mutex_);
-    return updateTrafficAnalysis(current_interfaces_);
+    LOG_INFO(LogModule::WEAK_MGR, "updateTrafficAnalysisSafe: lock acquired, calling updateTrafficAnalysis");
+    bool result = updateTrafficAnalysis(current_interfaces_);
+    LOG_INFO(LogModule::WEAK_MGR, "updateTrafficAnalysisSafe: updateTrafficAnalysis completed, releasing lock");
+    return result;
 }
 
 bool WeakNetMgr::updateCurrentUsingSafe() {
+    LOG_INFO(LogModule::WEAK_MGR, "updateCurrentUsingSafe: acquiring lock");
     std::lock_guard<std::mutex> lock(iface_mutex_);
-    return updateCurrentUsing(current_interfaces_, true);
+    LOG_INFO(LogModule::WEAK_MGR, "updateCurrentUsingSafe: lock acquired, calling updateCurrentUsing");
+    bool result = updateCurrentUsing(current_interfaces_, true);
+    LOG_INFO(LogModule::WEAK_MGR, "updateCurrentUsingSafe: updateCurrentUsing completed, releasing lock");
+    return result;
 }
 
 }  // namespace weaknet_dbus

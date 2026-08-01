@@ -49,13 +49,22 @@ struct UsingInterfaceManager::Impl {
 
     static void setNonBlocking(int fd) {
         int flags = fcntl(fd, F_GETFL, 0);
-        if (flags == -1) throw std::runtime_error("fcntl(F_GETFL) failed");
-        if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) throw std::runtime_error("fcntl(F_SETFL) failed");
+        if (flags == -1) {
+            LOG_ERROR(LogModule::INTERFACE, "setNonBlocking: fcntl(F_GETFL) failed: " << strerror(errno));
+            throw std::runtime_error("fcntl(F_GETFL) failed");
+        }
+        if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
+            LOG_ERROR(LogModule::INTERFACE, "setNonBlocking: fcntl(F_SETFL) failed: " << strerror(errno));
+            throw std::runtime_error("fcntl(F_SETFL) failed");
+        }
     }
 
     void openSocket() {
         nlSocket = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
-        if (nlSocket < 0) throw std::runtime_error("socket(AF_NETLINK) failed");
+        if (nlSocket < 0) {
+            LOG_ERROR_F(LogModule::INTERFACE, "openSocket: socket(AF_NETLINK) failed: %s", strerror(errno));
+            throw std::runtime_error("socket(AF_NETLINK) failed");
+        }
         sockaddr_nl addr{};
         addr.nl_family = AF_NETLINK;
         addr.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_ROUTE | RTMGRP_IPV6_ROUTE;
@@ -76,7 +85,10 @@ struct UsingInterfaceManager::Impl {
         sockaddr_nl nladdr{}; nladdr.nl_family = AF_NETLINK;
         struct iovec iov{ &req, sizeof(req) };
         struct msghdr msg{}; msg.msg_name = &nladdr; msg.msg_namelen = sizeof(nladdr); msg.msg_iov = &iov; msg.msg_iovlen = 1;
-        if (sendmsg(nlSocket, &msg, 0) < 0) throw std::runtime_error("sendmsg failed");
+        if (sendmsg(nlSocket, &msg, 0) < 0) {
+            LOG_ERROR_F(LogModule::INTERFACE, "sendReq: sendmsg failed: %s", strerror(errno));
+            throw std::runtime_error("sendmsg failed");
+        }
     }
 
     void dumpInitial() {

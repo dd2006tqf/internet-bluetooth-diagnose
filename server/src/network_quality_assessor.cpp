@@ -17,7 +17,9 @@ NetworkQualityAssessor::NetworkQualityAssessor()
 }
 
 NetworkQualityResult NetworkQualityAssessor::assessQuality(const std::vector<NetInfo>& interfaces) {
+    LOG_INFO(LogModule::WEAK_MGR, "assessQuality: assessing " << interfaces.size() << " interfaces");
     if (interfaces.empty()) {
+        LOG_INFO(LogModule::WEAK_MGR, "assessQuality: no interfaces available");
         NetworkQualityResult result;
         result.level = NetworkQualityLevel::UNKNOWN;
         result.levelName = "UNKNOWN";
@@ -190,22 +192,22 @@ double NetworkQualityAssessor::calculateTrafficScore(const NetInfo& interface) {
 
 std::vector<std::string> NetworkQualityAssessor::detectNetworkIssues(const NetInfo& interface, double score) {
     std::vector<std::string> issues;
-    
+
     // RTT问题检测
     if (interface.rttMs() > thresholds_.rtt_fair) {
         issues.push_back("High latency: " + std::to_string(interface.rttMs()) + "ms");
     }
-    
+
     // TCP丢包问题检测
     if (interface.tcpLossRate() > thresholds_.tcp_loss_fair) {
         issues.push_back("High packet loss: " + std::to_string(interface.tcpLossRate()) + "%");
     }
-    
+
     // RSSI问题检测
     if (interface.rssiDbm() != 0 && interface.rssiDbm() < thresholds_.rssi_fair) {
         issues.push_back("Weak signal: " + std::to_string(interface.rssiDbm()) + "dBm");
     }
-    
+
     // 流量问题检测
     if (interface.trafficActiveFlows() > 0) {
         double bps = interface.trafficTotalBps();
@@ -217,14 +219,18 @@ std::vector<std::string> NetworkQualityAssessor::detectNetworkIssues(const NetIn
             }
         }
     }
-    
+
     // 总体质量评估
     if (score < 30) {
         issues.push_back("Poor overall network quality");
     } else if (score < 50) {
         issues.push_back("Below average network quality");
     }
-    
+
+    if (!issues.empty()) {
+        LOG_INFO(LogModule::WEAK_MGR, "detectNetworkIssues: found " << issues.size() << " issues for " << interface.ifName());
+    }
+
     return issues;
 }
 

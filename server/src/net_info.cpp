@@ -3,6 +3,7 @@
 
 #include "net_info.hpp"
 #include "serializer.hpp"
+#include "logger.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -284,7 +285,10 @@ std::string NetInfo::toJson() const {
 }
 
 bool NetInfo::fromJson(const std::string& json) {
-    if (json.empty()) return false;
+    if (json.empty()) {
+        LOG_ERROR(LogModule::WEAK_MGR, "fromJson: empty JSON input");
+        return false;
+    }
 
     // 使用临时对象构建，仅当全部解析成功时才提交到当前对象，保证失败不变性
     NetInfo tmp;
@@ -415,7 +419,10 @@ std::vector<uint8_t> NetInfo::toBinary() const {
 }
 
 bool NetInfo::fromBinary(const std::vector<uint8_t>& buffer) {
-    if (buffer.empty()) return false;
+    if (buffer.empty()) {
+        LOG_ERROR(LogModule::WEAK_MGR, "fromBinary: empty buffer");
+        return false;
+    }
 
     NetInfo tmp;
     size_t offset = 0;

@@ -16,6 +16,7 @@
 #include "bt_audio_fusion.hpp"
 #include "bt_monitor.hpp"
 #include "bt_audio_analyzer.hpp"
+#include "logger.hpp"
 #include <algorithm>
 #include <cmath>
 #include <sstream>
@@ -53,6 +54,8 @@ BtAudioFusionResult BtAudioFusion::evaluate(
     result.deviceMac = transport.deviceMac;
     result.isActive = (transport.state == "active");
     result.ebpfAvailable = ebpfAvailable;
+
+    LOG_INFO(LogModule::BLUETOOTH, "evaluate: device=" << transport.deviceMac << " state=" << transport.state << " ebpf=" << ebpfAvailable);
 
     // 非活跃状态：直接返回最低评分
     if (!result.isActive) {
@@ -100,6 +103,9 @@ BtAudioFusionResult BtAudioFusion::evaluate(
     // 3. 判断疑似卡顿
     //    卡顿条件：包间隔 > stallThresholdMs 的次数超过阈值
     result.suspectedStall = (gapDelta > config_.stallCountThreshold);
+    if (result.suspectedStall) {
+        LOG_WARNING(LogModule::BLUETOOTH, "evaluate: stall suspected for " << transport.deviceMac << " gap_count=" << gapDelta);
+    }
 
     // 4. 计算最大包间隔（毫秒）
     result.maxGapMs = maxGapDelta / 1000000ULL;  // ns → ms
