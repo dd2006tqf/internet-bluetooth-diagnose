@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
   "workflow": "openspec",
-  "active_change": null,
-  "phase": "idle",
-  "current_step": null,
-  "next_step": null,
-  "updated_at": "2026-07-31T17:54:54.189Z",
+  "active_change": "fix-degraded-mode-log",
+  "phase": "evaluation_in_progress",
+  "current_step": "evaluation-started",
+  "next_step": "Run independent commands and write evaluation.json",
+  "updated_at": "2026-08-01T02:02:16.686Z",
   "last_archived_change": {
     "change_name": "fix-ping-error-logging",
     "archived_as": "2026-07-30-fix-ping-error-logging",

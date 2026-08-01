@@ -216,6 +216,9 @@ void WeakNetMgr::startTrafficAnalysis(const std::string& interface, int interval
         traffic_analyzer_ = std::make_shared<TrafficAnalyzer>();
     }
     traffic_analyzer_->start(interface, interval_seconds);
+    if (traffic_analyzer_->isDegradedMode()) {
+        LOG_WARNING(LogModule::WEAK_MGR, "Traffic analysis started in degraded mode for interface: " << interface);
+    }
     LOG_INFO(LogModule::WEAK_MGR, "Started traffic analysis for interface: " << interface);
 }
 

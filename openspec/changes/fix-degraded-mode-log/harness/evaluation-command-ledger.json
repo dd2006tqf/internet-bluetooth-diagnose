@@ -1,0 +1,33 @@
+{
+  "schema_version": 2,
+  "evaluation_id": "eval-20260801T020216Z-85e267",
+  "change_name": "fix-degraded-mode-log",
+  "commands": [
+    {
+      "id": "eval-cmd-1785549769878-2171018",
+      "kind": "build",
+      "argv": [
+        "scripts/project_command.sh",
+        "build-server",
+        "--change",
+        "fix-degraded-mode-log",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"build-server\" \"--change\" \"fix-degraded-mode-log\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-08-01T02:02:34.015Z",
+      "finished_at": "2026-08-01T02:02:48.066Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "exit code in [0]",
+      "observed": "exit code 0; output sha256:afcc26bf8397a6f84a8c664dfedace4b11cacb31a835c7119dd8d5138d928a59",
+      "result": "Pass",
+      "output_sha256": "sha256:afcc26bf8397a6f84a8c664dfedace4b11cacb31a835c7119dd8d5138d928a59",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ]
+}

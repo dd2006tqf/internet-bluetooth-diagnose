@@ -379,7 +379,7 @@
       "path": "scripts/evaluation_fix.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:b2352b57f3fd8e23a58d4490940f3e0c79acb38355a33a34e72c14da1b28a4f0"
+      "content_sha256": "sha256:d7c39d16bf55919187d52e2bdefc46282fa7157c2cf4eff3b2cc945974bf4a45"
     },
     {
       "path": "scripts/evaluation_template.sh",
@@ -391,7 +391,7 @@
       "path": "scripts/evaluator_check.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:1cb9d12f0892b426ad98bb043d87fe352836fe8a25401197f41dae1732bbb8c4"
+      "content_sha256": "sha256:f8fb9810af7f23b52042b6b02464bb6b199f01f80874eab6d3c28607be6fb4ec"
     },
     {
       "path": "scripts/event_audit.js",

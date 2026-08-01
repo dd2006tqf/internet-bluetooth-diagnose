@@ -50,12 +50,20 @@ const cmdIds=e.commands.map(c=>c.id);
 const passCmds=e.commands.filter(c=>c.result==='Pass').map(c=>c.id);
 const allCandidates=[...(report.structural_candidates||[]),...(report.path_candidates||[])];
 
-// ── 1. Parse tasks for requirement refs ──────────────────────
+// ── 1. Parse tasks for requirement refs ───(直接解析 tasks.md)───
 const parsed=manifest.parseTddPolicy(designText,tasksText);
 const taskIds=[...parsed.tasks.keys()];
 const allRefs=[];
-for(const t of parsed.tasks.values()){
-  for(const r of t.refs||[])allRefs.push(r);
+const taskLines=tasksText.split(/\r?\n/);
+for(const line of taskLines){
+  const m=line.match(/^\s*- Covers:\s*`([^`]+)`\s*\|\s*`(ADDED|MODIFIED|REMOVED|RENAMED)`\s*\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*$/);
+  if(m){
+    let requirement=m[3],renamed_to=null;
+    if(m[2]==='RENAMED'){const p=requirement.split(' -> ');if(p.length===2){requirement=p[0];renamed_to=p[1];}}
+    const r={spec_path:m[1],operation:m[2],requirement,scenarios:m[4]==='<none>'?[]:[m[4]]};
+    if(renamed_to)r.renamed_to=renamed_to;
+    allRefs.push(r);
+  }
 }
 
 // ── 2. Parse budget thresholds ──────────────────────────────
