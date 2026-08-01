@@ -1,14 +1,25 @@
 {
   "schema_version": 2,
   "workflow": "openspec",
-  "active_change": "fix-degraded-mode-log",
-  "phase": "evaluation_in_progress",
-  "current_step": "evaluation-started",
-  "next_step": "Run independent commands and write evaluation.json",
-  "updated_at": "2026-08-01T02:02:16.686Z",
+  "active_change": null,
+  "phase": "idle",
+  "current_step": "archive-failure-acknowledged",
+  "next_step": "Inspect change status and obtain fresh approval before any archive retry",
+  "updated_at": "2026-08-01T02:43:53.938Z",
   "last_archived_change": {
     "change_name": "fix-ping-error-logging",
     "archived_as": "2026-07-30-fix-ping-error-logging",
     "archived_at": "2026-07-30T16:54:01.821Z"
+  },
+  "last_archive_recovery_acknowledgment": {
+    "change_name": "fix-degraded-mode-log",
+    "acknowledged_at": "2026-08-01T02:37:56.192Z",
+    "reason": "OpenSpec spec scenario format corrected",
+    "recovered_state": "source-retained",
+    "failure_recorded_at": "2026-08-01T02:35:49.104Z",
+    "failure_message": "OpenSpec archive exited 1",
+    "log_path": ".ai-harness/logs/archive-fix-degraded-mode-log-20260801T023342Z.sUWOEi.log",
+    "main_specs_fingerprint": "sha256:b746f32878622864729860e88d14c4104f27ecf7d9cf8725d6a4f07c38a5128a",
+    "strict_validation_failed_count": 0
   }
 }
