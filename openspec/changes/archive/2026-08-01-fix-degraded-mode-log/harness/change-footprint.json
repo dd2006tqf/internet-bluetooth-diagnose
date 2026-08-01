@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "change_name": "fix-degraded-mode-log",
+  "implementation_base_commit": "3171e12a80fac85b96a11630aa6c0a888f12ab35",
+  "source_fingerprint": "sha256:14bc953da5111f34c83571215f943d1b232ae6f69e9099006f4a653041bb8bbb",
+  "budget_block_sha256": "sha256:1ffcfd506eed9b06f9739f07a4389f284bd42a184963a53842383817110f3e9f",
+  "status": "within_expected",
+  "production": {
+    "added_lines": 0,
+    "deleted_lines": 0,
+    "net_lines": 0,
+    "touched_files": 0,
+    "new_files": 0
+  },
+  "tests": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0
+  },
+  "project_support": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0,
+    "paths_by_class": {
+      "project_docs": [],
+      "project_tooling": [],
+      "examples": []
+    }
+  },
+  "generated": {
+    "files": 0,
+    "bytes": 0
+  },
+  "vendor": {
+    "changed_paths": []
+  },
+  "binary": {
+    "files": 0,
+    "bytes": 0,
+    "paths": []
+  },
+  "structural_candidates": [],
+  "unclassified_paths": [],
+  "classification_overlaps": []
+}

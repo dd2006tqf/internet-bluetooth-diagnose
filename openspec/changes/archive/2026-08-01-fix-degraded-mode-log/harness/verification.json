@@ -1,0 +1,64 @@
+{
+  "schema_version": 3,
+  "change_name": "fix-degraded-mode-log",
+  "migration": null,
+  "tasks": [
+    {
+      "task_id": "1",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "降级模式日志告警",
+          "scenarios": [
+            "降级模式触发 WARNING 日志"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/src/weak_netmgr.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785553612239-2245494",
+          "phase": "REGRESSION",
+          "cycle_id": "fix-cycle",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "fix-degraded-mode-log",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-01T03:06:33.355Z",
+          "finished_at": "2026-08-01T03:06:49.937Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:14bc953da5111f34c83571215f943d1b232ae6f69e9099006f4a653041bb8bbb",
+          "source_fingerprint_after": "sha256:14bc953da5111f34c83571215f943d1b232ae6f69e9099006f4a653041bb8bbb",
+          "planning_fingerprint_before": "sha256:35082a8e3251e5a1594facf69ed280d8c52ebe190432bbaa702bdafd05fa3e18",
+          "planning_fingerprint_after": "sha256:35082a8e3251e5a1594facf69ed280d8c52ebe190432bbaa702bdafd05fa3e18",
+          "tdd_policy_sha256": "sha256:3662d87938b1154e56c09bc67c1e9f8f997cbee1858e2c3e9b1ce3a8f354e675",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:9fa416b64e9fd0970e58f126bec7872cbb06258fccff9524773f22bc5ac747d2",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    }
+  ]
+}

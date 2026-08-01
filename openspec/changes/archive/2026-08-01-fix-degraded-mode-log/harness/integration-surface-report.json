@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "change_name": "fix-degraded-mode-log",
+  "implementation_base_commit": "3171e12a80fac85b96a11630aa6c0a888f12ab35",
+  "discovery_mode": "reviewed_inventory",
+  "source_fingerprint": "sha256:14bc953da5111f34c83571215f943d1b232ae6f69e9099006f4a653041bb8bbb",
+  "planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+  "change_footprint_json_sha256": "sha256:6ae51dbef9bfb7ca0a2472fcc55069d08a714c9b35651f4ce93ede8a75bcdc7b",
+  "scope_classifier_identity": {
+    "schema_version": 1,
+    "path": "scripts/change_scope.js",
+    "sha256": "sha256:f7c5dc2d02366cf05b9a01da5c6caad6c47e5e8fdefbcd497bea91d70352755e",
+    "output_sha256": "sha256:0ba9301771f0cdaafa2dde9fd0de39b7745fcc4ac51aaaab542c97c18af2a2f2"
+  },
+  "discovery_adapter_identity": {
+    "id": "reviewed-inventory-v1",
+    "schema_version": 1,
+    "sha256": "sha256:cbcf64a8afbdcafa3221b48b1ea76c7ea5de1a45aba0e78037da0fdb3bec9045"
+  },
+  "compile_commands_sha256": null,
+  "ast_tool_identity": null,
+  "planned_surface_ids": [],
+  "changed_production_paths": [],
+  "path_candidates": [],
+  "structural_candidates": [],
+  "ast_candidates": [],
+  "surface_candidate_bindings": [],
+  "unmatched_candidates": [],
+  "status": "complete"
+}

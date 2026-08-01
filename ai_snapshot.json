@@ -3,13 +3,13 @@
   "workflow": "openspec",
   "active_change": null,
   "phase": "idle",
-  "current_step": "archive-failure-acknowledged",
-  "next_step": "Inspect change status and obtain fresh approval before any archive retry",
-  "updated_at": "2026-08-01T02:43:53.938Z",
+  "current_step": "change-archived",
+  "next_step": "Create or select the next change",
+  "updated_at": "2026-08-01T03:18:47.501Z",
   "last_archived_change": {
-    "change_name": "fix-ping-error-logging",
-    "archived_as": "2026-07-30-fix-ping-error-logging",
-    "archived_at": "2026-07-30T16:54:01.821Z"
+    "change_name": "fix-degraded-mode-log",
+    "archived_as": "2026-08-01-fix-degraded-mode-log",
+    "archived_at": "2026-08-01T03:18:47.501Z"
   },
   "last_archive_recovery_acknowledgment": {
     "change_name": "fix-degraded-mode-log",

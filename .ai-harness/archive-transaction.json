@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "transaction_id": "archive-txn-cd8d8732ac7b48c1cd11b102",
+  "change_name": "fix-degraded-mode-log",
+  "status": "committed",
+  "prepared_at": "2026-08-01T03:18:36.028Z",
+  "completed_at": "2026-08-01T03:18:47.891Z",
+  "target_path": "openspec/changes/archive/2026-08-01-fix-degraded-mode-log",
+  "log_path": ".ai-harness/logs/archive-fix-degraded-mode-log-20260801T031636Z.0bIUo5.log",
+  "root_snapshot_sha256": "sha256:c5fbeb0930a6b9010c63502ded60c32d014d9cede99133907d8e5a49bc7f53b7",
+  "fingerprints": {
+    "source_fingerprint": "sha256:14bc953da5111f34c83571215f943d1b232ae6f69e9099006f4a653041bb8bbb",
+    "profile_sha256": "sha256:37cfdb19cb68d81d977dce247339448775a1d908b521d7eb7168dc8d015cb938",
+    "artifact_fingerprint": "sha256:a9d9b744517eaa581be793f77670b26ccee4ae70c583730af9d874df4d041684",
+    "base_specs_fingerprint": "sha256:b746f32878622864729860e88d14c4104f27ecf7d9cf8725d6a4f07c38a5128a"
+  },
+  "evidence_sha256": "sha256:e10d0aaf1738b651d19870f396ac884b7cb2718c0fcce5aabed403f6c229d24b"
+}
