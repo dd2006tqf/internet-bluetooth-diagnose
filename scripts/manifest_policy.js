@@ -10,6 +10,7 @@ const templatePaths = [
   'docs/ai/evaluation.md', 'docs/ai/check-rules.md', 'docs/ai/quick-brief.md',
   'docs/ai/tooling.md', 'docs/ai/cpp.md', 'docs/ai/testing.md', 'docs/ai/build.md',
   'docs/ai/golden-principles.md', 'docs/ai/rca.md',
+  'docs/ai/workflow-rules.md',
   'prompts/planner.md', 'prompts/generator.md', 'prompts/evaluator.md', 'prompts/archive.md',
   'prompts/handoff.md', 'prompts/resume.md', 'prompts/full-code-review.md', 'prompts/rca.md',
   'prompts/debt-scan.md', 'prompts/debt-fix.md',

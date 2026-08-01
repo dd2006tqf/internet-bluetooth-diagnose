@@ -184,6 +184,12 @@
       "content_sha256": "sha256:a33fa0c739d5df1ff917068d5fdd7ab5342a5dd1eb785bc4f00f23de134fc3b1"
     },
     {
+      "path": "docs/ai/workflow-rules.md",
+      "ownership": "template",
+      "template_version": 2,
+      "content_sha256": "sha256:a3d35982f4d84d824c0ed5912132f3e5b5a4ab24fb733d9d59cc7dfa0c3fb5ad"
+    },
+    {
       "path": "docs/ai/workflow.md",
       "ownership": "template",
       "template_version": 2,
@@ -439,7 +445,7 @@
       "path": "scripts/manifest_policy.js",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:62d5b76a79c1738560a9b5c9cfd5b79854543d2a23ad05a1a5df32d562454e7f"
+      "content_sha256": "sha256:a9f547a6ab06f5e53e399662f50a24b8f6dd737d1bd6ae57d0e18324a74f4310"
     },
     {
       "path": "scripts/manifest_sync.sh",
