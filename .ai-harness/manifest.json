@@ -187,7 +187,7 @@
       "path": "docs/ai/workflow-rules.md",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:2bac99ac66652e7aabb41f66ffbf2066d08b7ee2ac0762c3f73c887162c3cb08"
+      "content_sha256": "sha256:cd80d3ac5e2fb827d8bc4c4bc43410b9b9a19565b6d5710a605ea15356017620"
     },
     {
       "path": "docs/ai/workflow.md",
@@ -427,7 +427,7 @@
       "path": "scripts/harness_lock.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:e6643ad5ff0e7a4daf979e2f1fd3bbdd33bfb27e547b3bb442e93ad50b387f00"
+      "content_sha256": "sha256:d80fabac219eb35ad4bdd979d97a2ab94a204e7a4b3dff23c976511c712bc3c8"
     },
     {
       "path": "scripts/integration_surface_check.sh",
@@ -565,7 +565,7 @@
       "path": "scripts/task_verify.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:e2b39d05648af80d6b4d775c81b67363fd1b86a1ef3c2041a4562abb8e40148c"
+      "content_sha256": "sha256:9bc4810553eb19893dc07af7a25c6f6999123f1935911cd6e23b8c95eca6d173"
     },
     {
       "path": "scripts/verification_workspace.sh",

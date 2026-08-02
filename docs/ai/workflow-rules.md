@@ -88,6 +88,20 @@
 - **不要用 `--adopt-path` 纳入无关文件**：adopted 路径会出现在 review_input 中但不在任何 task 的 `changed_paths` 里，evaluator 会拒绝
 - **如果无关文件已经纳入**：在归档前将其从 adopted 路径移除，或在 evaluation.json 中添加 residual_risks 说明
 
+### eBPF 变更必须从第一天就用 observability_only 例外
+新增 eBPF 程序、日志、监控器等**纯可观测性功能**，在规划阶段就应该在 design.md 中声明 `observability_only` 例外，而不是等 evidence 失败后再补。
+
+- 失败后再补例外 → 修改 design.md → planning_fingerprint 变化 → 已记录的 evidence 全废
+- **规划时就决定**每个任务的验证方式（observability_only → alternative build）
+- eBPF 编译要用容器流程（`docker exec weaknet-arm64-dev ... make`），开发机裸编译会报 `user_pt_regs` 错误
+
+### 永远不要手工编辑 evidence 文件
+`verification.json`、`evaluation.json`、`evaluation-baseline.json` 等 evidence 文件只能通过 harness 命令（`task_verify.sh`、`evaluator_check.sh`、`sync_hashes.sh`）维护。
+
+- 手工 Write/Edit 很容易破坏 schema（例如 commands 数组嵌套）
+- 发现坏数据时，用 harness 的正确流程重跑命令，不要手动改 JSON
+- 错误结构一旦写入，`--complete` 校验会以 "TDD command schema mismatch" 拒绝
+
 ## 常见错误速查
 
 | 症状 | 原因 | 解决 |
@@ -104,6 +118,7 @@
 | `[ERR] lock owner purpose does not authorize` | 锁授权列表缺失组合 | 检查 harness_lock.sh 的授权列表 |
 | `Error: planning changed during command` | 修改了 design.md 导致 planning_fingerprint 变化 | 不要改 design.md！重跑所有 evidence |
 | `Error: undeclared implementation paths` | 脏文件不在任何 task 的 changed_paths 中 | 创建 change 前清理无关文件，或用 residual_risks 说明 |
+| `Error: TDD command schema mismatch` | 手工编辑了 verification.json 导致结构损坏 | 不要手改 evidence！重跑 task_verify.sh |
 
 ## 工具速查
 

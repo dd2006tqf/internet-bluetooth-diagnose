@@ -3,16 +3,18 @@ CXXFLAGS=-std=c++17 -O2 -Wall -Wextra -Wpedantic
 INCLUDES=`pkg-config --cflags dbus-1`
 LDFLAGS=`pkg-config --libs dbus-1` -lglog -lbpf -pthread
 
-SRC=src/server.cpp src/dbus_service.cpp src/looper.cpp src/net_iface.cpp src/serializer.cpp src/net_info.cpp src/weak_netmgr.cpp src/iface_type.cpp src/using_iface.cpp src/net_ping.cpp src/rtt_monitor.cpp src/rssi_monitor.cpp src/net_wifiriss.cpp src/net_tcp.cpp src/tcp_loss_monitor.cpp src/event_manager.cpp src/logger.cpp src/traffic_analyzer.cpp src/net_traffic.cpp src/traffic_anomaly_detector.cpp src/network_quality_assessor.cpp src/bt_monitor.cpp src/jitter_monitor.cpp src/band_conflict_detector.cpp src/bt_audio_analyzer.cpp src/bt_audio_fusion.cpp src/main.cpp
-INC=include/common.hpp include/net_iface.h include/serializer.hpp include/server.hpp include/net_tcp.h include/tcp_loss_monitor.hpp include/weak_netmgr.hpp include/net_info.hpp include/rtt_monitor.hpp include/rssi_monitor.hpp include/dbus_service.hpp include/looper.hpp include/event_manager.hpp include/logger.hpp include/traffic_analyzer.hpp include/network_quality_assessor.hpp include/bt_monitor.hpp include/jitter_monitor.hpp include/bt_audio_analyzer.hpp include/bt_audio_fusion.hpp include/iface_type.hpp
+SRC=src/server.cpp src/dbus_service.cpp src/looper.cpp src/net_iface.cpp src/serializer.cpp src/net_info.cpp src/weak_netmgr.cpp src/iface_type.cpp src/using_iface.cpp src/net_ping.cpp src/rtt_monitor.cpp src/rssi_monitor.cpp src/net_wifiriss.cpp src/net_tcp.cpp src/tcp_loss_monitor.cpp src/event_manager.cpp src/logger.cpp src/traffic_analyzer.cpp src/net_traffic.cpp src/traffic_anomaly_detector.cpp src/network_quality_assessor.cpp src/bt_monitor.cpp src/jitter_monitor.cpp src/band_conflict_detector.cpp src/bt_audio_analyzer.cpp src/bt_audio_fusion.cpp src/tcp_retransmit_monitor.cpp src/dns_monitor.cpp src/main.cpp
+INC=include/common.hpp include/net_iface.h include/serializer.hpp include/server.hpp include/net_tcp.h include/tcp_loss_monitor.hpp include/weak_netmgr.hpp include/net_info.hpp include/rtt_monitor.hpp include/rssi_monitor.hpp include/dbus_service.hpp include/looper.hpp include/event_manager.hpp include/logger.hpp include/traffic_analyzer.hpp include/network_quality_assessor.hpp include/bt_monitor.hpp include/jitter_monitor.hpp include/bt_audio_analyzer.hpp include/bt_audio_fusion.hpp include/iface_type.hpp include/tcp_retransmit_monitor.hpp include/dns_monitor.hpp
 
 BIN_DIR=bin
 BUILD_DIR=build
 TARGET=$(BIN_DIR)/weaknet-dbus-server
 BPF_TARGET=$(BUILD_DIR)/flow_rate.bpf.o
 BPF_BT_TARGET=$(BUILD_DIR)/a2dp_media.bpf.o
+BPF_TCP_RETRANS_TARGET=$(BUILD_DIR)/tcp_retransmit.bpf.o
+BPF_DNS_TARGET=$(BUILD_DIR)/dns_monitor.bpf.o
 
-all: dirs $(BPF_TARGET) $(BPF_BT_TARGET) $(TARGET)
+all: dirs $(BPF_TARGET) $(BPF_BT_TARGET) $(BPF_TCP_RETRANS_TARGET) $(BPF_DNS_TARGET) $(TARGET)
 
 dirs:
 	mkdir -p $(BIN_DIR) $(BUILD_DIR)
@@ -35,7 +37,13 @@ $(BPF_TARGET): src/flow_rate.bpf.c $(BUILD_DIR)/vmlinux.h
 $(BPF_BT_TARGET): src/bpf/a2dp_media.bpf.c $(BUILD_DIR)/vmlinux.h
 	clang -g -O2 -target bpf -I$(BUILD_DIR) -c $< -o $@
 
-$(TARGET): $(SRC) $(INC) $(BPF_TARGET) $(BPF_BT_TARGET)
+$(BPF_TCP_RETRANS_TARGET): src/tcp_retransmit.bpf.c $(BUILD_DIR)/vmlinux.h
+	clang -g -O2 -target bpf -I$(BUILD_DIR) -c $< -o $@
+
+$(BPF_DNS_TARGET): src/dns_monitor.bpf.c $(BUILD_DIR)/vmlinux.h
+	clang -g -O2 -target bpf -I$(BUILD_DIR) -c $< -o $@
+
+$(TARGET): $(SRC) $(INC) $(BPF_TARGET) $(BPF_BT_TARGET) $(BPF_TCP_RETRANS_TARGET) $(BPF_DNS_TARGET)
 	$(CC) $(CXXFLAGS) $(INCLUDES) -Iinclude -o $@ $(SRC) $(LDFLAGS)
 
 .PHONY: clean run test test-unit test-integration test-ebpf test-all coverage test-clean
