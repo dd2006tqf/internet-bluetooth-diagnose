@@ -1,15 +1,15 @@
 {
   "schema_version": 2,
   "workflow": "openspec",
-  "active_change": "ebpf-tcp-retransmit-dns-monitor",
-  "phase": "implementing",
-  "current_step": "planning-reapproved",
-  "next_step": "Resume the first unchecked task, or begin Evaluation when all tasks are complete",
-  "updated_at": "2026-08-02T05:04:01.514Z",
+  "active_change": null,
+  "phase": "idle",
+  "current_step": "change-archived",
+  "next_step": "Create or select the next change",
+  "updated_at": "2026-08-02T15:17:35.740Z",
   "last_archived_change": {
-    "change_name": "fix-degraded-mode-log",
-    "archived_as": "2026-08-01-fix-degraded-mode-log",
-    "archived_at": "2026-08-01T03:18:47.501Z"
+    "change_name": "wifi-packet-loss-attribution",
+    "archived_as": "2026-08-02-wifi-packet-loss-attribution",
+    "archived_at": "2026-08-02T15:17:35.740Z"
   },
   "last_archive_recovery_acknowledgment": {
     "change_name": "fix-degraded-mode-log",

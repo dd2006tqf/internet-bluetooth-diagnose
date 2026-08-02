@@ -1,0 +1,34 @@
+{
+  "schema_version": 2,
+  "evaluation_id": "eval-20260802T143605Z-777b31",
+  "change_name": "wifi-packet-loss-attribution",
+  "commands": [
+    {
+      "id": "eval-cmd-1785681816461-3787784",
+      "kind": "build",
+      "argv": [
+        "docker",
+        "exec",
+        "weaknet-arm64-dev",
+        "bash",
+        "-lc",
+        "cd /src && make -C server -j1 all"
+      ],
+      "command": "\"docker\" \"exec\" \"weaknet-arm64-dev\" \"bash\" \"-lc\" \"cd /src && make -C server -j1 all\"",
+      "working_directory": ".",
+      "started_at": "2026-08-02T14:42:08.079Z",
+      "finished_at": "2026-08-02T14:43:33.829Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "编译成功",
+      "observed": "exit code 0; output sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+      "result": "Pass",
+      "output_sha256": "sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ]
+}

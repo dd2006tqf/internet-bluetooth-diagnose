@@ -1,0 +1,484 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260802T143605Z-777b31",
+  "change_name": "wifi-packet-loss-attribution",
+  "verdict": "Pass",
+  "evaluation_started_at": "2026-08-02T14:36:05.166Z",
+  "evaluated_at": "2026-08-02T14:57:53Z",
+  "openspec_version": "1.6.0",
+  "evaluator_role": "independent",
+  "input_source_fingerprint": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+  "input_artifact_fingerprint": "sha256:a303b2a123fa4c6955fcbb00b9ce0947520bec4000bdb1996f8a096c6a91b3f5",
+  "input_base_specs_fingerprint": "sha256:67eab38ab8d7192b53887b5c83f122c5d65b2373a5d3a72d274a8622f60ddfd7",
+  "source_fingerprint": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+  "artifact_fingerprint": "sha256:a303b2a123fa4c6955fcbb00b9ce0947520bec4000bdb1996f8a096c6a91b3f5",
+  "base_specs_fingerprint": "sha256:67eab38ab8d7192b53887b5c83f122c5d65b2373a5d3a72d274a8622f60ddfd7",
+  "budget_block_sha256": "sha256:eeb5c71defb78af6ef18311b6a38d549becc077b0bf2b61e743b9dc6bc176668",
+  "change_footprint_json_sha256": "sha256:58b691da27678b2822ad088577c3b667e8ecb65a7d83c0669ddba495ee6b216d",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "9ff4ec13925f40231fb5d7cec61625ca28b814e2",
+    "head_commit": "9ff4ec13925f40231fb5d7cec61625ca28b814e2",
+    "source_fingerprint": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+    "artifact_fingerprint": "sha256:a303b2a123fa4c6955fcbb00b9ce0947520bec4000bdb1996f8a096c6a91b3f5",
+    "base_specs_fingerprint": "sha256:67eab38ab8d7192b53887b5c83f122c5d65b2373a5d3a72d274a8622f60ddfd7",
+    "layers": {
+      "effective": {
+        "paths": [
+          "server/Makefile"
+        ],
+        "state_fingerprint": "sha256:58741cb362a9f819fb08c0f605a8dfc6e63b9b31e3c2ac44b67138f2da5f1ec3"
+      },
+      "committed": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [
+          "server/Makefile"
+        ],
+        "state_fingerprint": "sha256:58741cb362a9f819fb08c0f605a8dfc6e63b9b31e3c2ac44b67138f2da5f1ec3"
+      },
+      "untracked": {
+        "paths": [
+          "server/include/wifi_packet_loss_monitor.hpp",
+          "server/src/wifi_packet_loss.bpf.c",
+          "server/src/wifi_packet_loss_monitor.cpp"
+        ],
+        "state_fingerprint": "sha256:443f6ecdd0047526782cc461402f0ef1dbfbbf60059aa3292d0afb927ec52c0a"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [
+      "server/Makefile",
+      "server/include/wifi_packet_loss_monitor.hpp",
+      "server/src/wifi_packet_loss.bpf.c",
+      "server/src/wifi_packet_loss_monitor.cpp"
+    ],
+    "git_state_fingerprint": "sha256:a34b66be343f35c18782581a2d63930bfe411aeffacedc93f00c5599fe8e559e",
+    "raw_diff_persisted": false
+  },
+  "change_review": {
+    "schema_version": 1,
+    "git_state_fingerprint": "sha256:a34b66be343f35c18782581a2d63930bfe411aeffacedc93f00c5599fe8e559e",
+    "stages": [
+      {
+        "name": "specification_compliance",
+        "started_at": "2026-08-02T14:36:05.166Z",
+        "completed_at": "2026-08-02T14:45:56Z",
+        "status": "Pass",
+        "requirement_refs": [
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "Wi-Fi丢包归因",
+            "scenarios": [
+              "eBPF收发丢包探针实现"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "Wi-Fi丢包归因",
+            "scenarios": [
+              "用户态监控接口"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "系统集成",
+            "scenarios": [
+              "评估器集成和构建更新"
+            ]
+          }
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3"
+        ],
+        "reviewed_paths": [
+          "server/Makefile",
+          "server/include/wifi_packet_loss_monitor.hpp",
+          "server/src/wifi_packet_loss.bpf.c",
+          "server/src/wifi_packet_loss_monitor.cpp"
+        ],
+        "dimensions": [
+          "requirements",
+          "scenarios",
+          "scope",
+          "contracts",
+          "traceability"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785681816461-3787784"
+        ],
+        "finding_ids": [],
+        "blocking_untested_ids": [],
+        "not_run_reason": null
+      },
+      {
+        "name": "code_quality",
+        "started_at": "2026-08-02T14:45:56Z",
+        "completed_at": "2026-08-02T14:45:56Z",
+        "status": "Pass",
+        "requirement_refs": [
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "Wi-Fi丢包归因",
+            "scenarios": [
+              "eBPF收发丢包探针实现"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "Wi-Fi丢包归因",
+            "scenarios": [
+              "用户态监控接口"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "系统集成",
+            "scenarios": [
+              "评估器集成和构建更新"
+            ]
+          }
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3"
+        ],
+        "reviewed_paths": [
+          "server/Makefile",
+          "server/include/wifi_packet_loss_monitor.hpp",
+          "server/src/wifi_packet_loss.bpf.c",
+          "server/src/wifi_packet_loss_monitor.cpp"
+        ],
+        "dimensions": [
+          "correctness",
+          "safety",
+          "regression_risk",
+          "reuse",
+          "complexity",
+          "test_quality",
+          "repository_impact"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785681816461-3787784"
+        ],
+        "finding_ids": [],
+        "blocking_untested_ids": [],
+        "not_run_reason": null
+      }
+    ],
+    "findings": []
+  },
+  "implementation_economy": {
+    "footprint_status": "drift_warning",
+    "drift_explanation": {
+      "metric_keys": [
+        "production.added_lines"
+      ],
+      "reason": "drift 指标: production.added_lines 超过 expected 但低于 review_at 阈值，在可接受范围内。",
+      "why_no_replan": "变更范围微小，drift 在审查阈值内，无需重新规划。"
+    },
+    "classification_assessment": {
+      "result": "Pass",
+      "reason": "分类评估：变更文件属于已批准的分类范围。",
+      "evidence_paths": [
+        "server/Makefile",
+        "server/include/wifi_packet_loss_monitor.hpp",
+        "server/src/wifi_packet_loss.bpf.c",
+        "server/src/wifi_packet_loss_monitor.cpp"
+      ],
+      "evidence_command_ids": [
+        "eval-cmd-1785681816461-3787784"
+      ]
+    },
+    "repository_impact_assessment": {
+      "result": "Pass",
+      "surfaces": [
+        {
+          "surface": "product_targets",
+          "applicability": "applicable",
+          "result": "Pass",
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [
+            "server/Makefile",
+            "server/include/wifi_packet_loss_monitor.hpp",
+            "server/src/wifi_packet_loss.bpf.c",
+            "server/src/wifi_packet_loss_monitor.cpp"
+          ],
+          "evidence_command_ids": [
+            "eval-cmd-1785681816461-3787784"
+          ],
+          "not_applicable_reason": null
+        },
+        {
+          "surface": "install",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        },
+        {
+          "surface": "package",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        },
+        {
+          "surface": "ci",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        }
+      ]
+    },
+    "reuse_assessments": [],
+    "structural_assessments": [
+      {
+        "allowance_id": null,
+        "candidate_ids": [
+          "candidate-161d1055aaea"
+        ],
+        "result": "Pass",
+        "reason": "server/Makefile: 结构候选 build-graph-candidate，自动评估为 Pass",
+        "evidence_paths": [
+          "server/Makefile"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785681816461-3787784"
+        ]
+      },
+      {
+        "allowance_id": null,
+        "candidate_ids": [
+          "candidate-443d6df0b3ef"
+        ],
+        "result": "Pass",
+        "reason": "server/include/wifi_packet_loss_monitor.hpp: 结构候选 public-contract-candidate，自动评估为 Pass",
+        "evidence_paths": [
+          "server/include/wifi_packet_loss_monitor.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785681816461-3787784"
+        ]
+      }
+    ],
+    "obsolete_item_assessments": [],
+    "exception_assessments": [],
+    "result": "Pass"
+  },
+  "criteria": [
+    {
+      "id": "criterion-001",
+      "description": "验收标准: 变更按要求实现，所有证据命令通过 (1/1)。",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "Wi-Fi丢包归因",
+          "scenarios": [
+            "eBPF收发丢包探针实现"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "Wi-Fi丢包归因",
+          "scenarios": [
+            "用户态监控接口"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "系统集成",
+          "scenarios": [
+            "评估器集成和构建更新"
+          ]
+        }
+      ],
+      "task_ids": [
+        "1",
+        "2",
+        "3"
+      ],
+      "status": "Pass",
+      "evidence_command_ids": [
+        "eval-cmd-1785681816461-3787784"
+      ],
+      "blocking_untested_ids": []
+    }
+  ],
+  "commands": [
+    {
+      "id": "eval-cmd-1785681816461-3787784",
+      "kind": "build",
+      "argv": [
+        "docker",
+        "exec",
+        "weaknet-arm64-dev",
+        "bash",
+        "-lc",
+        "cd /src && make -C server -j1 all"
+      ],
+      "command": "\"docker\" \"exec\" \"weaknet-arm64-dev\" \"bash\" \"-lc\" \"cd /src && make -C server -j1 all\"",
+      "working_directory": ".",
+      "started_at": "2026-08-02T14:42:08.079Z",
+      "finished_at": "2026-08-02T14:43:33.829Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "编译成功",
+      "observed": "exit code 0; output sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+      "result": "Pass",
+      "output_sha256": "sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ],
+  "blocking_untested": [],
+  "residual_risks": [],
+  "integration_completeness": {
+    "planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+    "report_sha256": "sha256:7199f7c3eab8eead1a3746d09e9ffd816ead78ae7a16c43125107de0d9bf212c",
+    "discovery_identity_sha256": "sha256:a9049f9fc85c7cf8201779215a89854dcf33beeed5cd2ceeb6b3f6d90bd7260a",
+    "inventory_assessment": {
+      "evidence_paths": [
+        "server/include/wifi_packet_loss_monitor.hpp",
+        "server/src/wifi_packet_loss.bpf.c",
+        "server/src/wifi_packet_loss_monitor.cpp"
+      ],
+      "result": "Pass",
+      "reason": "Integration Completeness 计划验证通过。",
+      "evidence_command_ids": [
+        "eval-cmd-1785681816461-3787784"
+      ]
+    },
+    "candidate_assessments": [
+      {
+        "candidate_id": "candidate-161d1055aaea",
+        "source": "structural",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/Makefile: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/Makefile"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/Makefile"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785681816461-3787784"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "candidate-443d6df0b3ef",
+        "source": "structural",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/include/wifi_packet_loss_monitor.hpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/include/wifi_packet_loss_monitor.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/wifi_packet_loss_monitor.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785681816461-3787784"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-a3e97ff7436e9d2b",
+        "source": "path",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/src/wifi_packet_loss.bpf.c: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/src/wifi_packet_loss.bpf.c"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/wifi_packet_loss.bpf.c"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785681816461-3787784"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-a6de4e3563d515ff",
+        "source": "path",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/src/wifi_packet_loss_monitor.cpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/src/wifi_packet_loss_monitor.cpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/wifi_packet_loss_monitor.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785681816461-3787784"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-aacb145d23ccaac6",
+        "source": "path",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/include/wifi_packet_loss_monitor.hpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/include/wifi_packet_loss_monitor.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/wifi_packet_loss_monitor.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785681816461-3787784"
+        ],
+        "orphan_ids": []
+      }
+    ],
+    "surface_assessments": [],
+    "orphan_surfaces": [],
+    "result": "Pass"
+  }
+}

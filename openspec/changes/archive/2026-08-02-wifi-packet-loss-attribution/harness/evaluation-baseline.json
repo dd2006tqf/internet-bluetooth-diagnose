@@ -1,0 +1,68 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260802T143605Z-777b31",
+  "change_name": "wifi-packet-loss-attribution",
+  "status": "complete",
+  "started_at": "2026-08-02T14:36:05.166Z",
+  "source_fingerprint": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+  "artifact_fingerprint": "sha256:a303b2a123fa4c6955fcbb00b9ce0947520bec4000bdb1996f8a096c6a91b3f5",
+  "base_specs_fingerprint": "sha256:67eab38ab8d7192b53887b5c83f122c5d65b2373a5d3a72d274a8622f60ddfd7",
+  "verification_json_sha256": "sha256:61dc633261d88d9cd5dcf768b9af2b2e0e26d9a7b12ed2f00ceb8e4b7642b8f4",
+  "budget_block_sha256": "sha256:eeb5c71defb78af6ef18311b6a38d549becc077b0bf2b61e743b9dc6bc176668",
+  "change_footprint_json_sha256": "sha256:58b691da27678b2822ad088577c3b667e8ecb65a7d83c0669ddba495ee6b216d",
+  "integration_planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+  "integration_surface_report_sha256": "sha256:7199f7c3eab8eead1a3746d09e9ffd816ead78ae7a16c43125107de0d9bf212c",
+  "integration_discovery_identity_sha256": "sha256:a9049f9fc85c7cf8201779215a89854dcf33beeed5cd2ceeb6b3f6d90bd7260a",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "9ff4ec13925f40231fb5d7cec61625ca28b814e2",
+    "head_commit": "9ff4ec13925f40231fb5d7cec61625ca28b814e2",
+    "source_fingerprint": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+    "artifact_fingerprint": "sha256:a303b2a123fa4c6955fcbb00b9ce0947520bec4000bdb1996f8a096c6a91b3f5",
+    "base_specs_fingerprint": "sha256:67eab38ab8d7192b53887b5c83f122c5d65b2373a5d3a72d274a8622f60ddfd7",
+    "layers": {
+      "effective": {
+        "paths": [
+          "server/Makefile"
+        ],
+        "state_fingerprint": "sha256:58741cb362a9f819fb08c0f605a8dfc6e63b9b31e3c2ac44b67138f2da5f1ec3"
+      },
+      "committed": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [
+          "server/Makefile"
+        ],
+        "state_fingerprint": "sha256:58741cb362a9f819fb08c0f605a8dfc6e63b9b31e3c2ac44b67138f2da5f1ec3"
+      },
+      "untracked": {
+        "paths": [
+          "server/include/wifi_packet_loss_monitor.hpp",
+          "server/src/wifi_packet_loss.bpf.c",
+          "server/src/wifi_packet_loss_monitor.cpp"
+        ],
+        "state_fingerprint": "sha256:443f6ecdd0047526782cc461402f0ef1dbfbbf60059aa3292d0afb927ec52c0a"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [
+      "server/Makefile",
+      "server/include/wifi_packet_loss_monitor.hpp",
+      "server/src/wifi_packet_loss.bpf.c",
+      "server/src/wifi_packet_loss_monitor.cpp"
+    ],
+    "git_state_fingerprint": "sha256:a34b66be343f35c18782581a2d63930bfe411aeffacedc93f00c5599fe8e559e",
+    "raw_diff_persisted": false
+  },
+  "completed_at": "2026-08-02T15:04:40.897Z",
+  "evaluation_json_sha256": "sha256:7d44e36a1112564409b2b4d7dee9a8644059aebf78074bfff9e0ba19e3503058"
+}

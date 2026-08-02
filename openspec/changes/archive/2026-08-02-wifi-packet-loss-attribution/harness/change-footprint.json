@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "change_name": "wifi-packet-loss-attribution",
+  "implementation_base_commit": "9ff4ec13925f40231fb5d7cec61625ca28b814e2",
+  "source_fingerprint": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+  "budget_block_sha256": "sha256:eeb5c71defb78af6ef18311b6a38d549becc077b0bf2b61e743b9dc6bc176668",
+  "status": "drift_warning",
+  "production": {
+    "added_lines": 431,
+    "deleted_lines": 0,
+    "net_lines": 431,
+    "touched_files": 3,
+    "new_files": 3
+  },
+  "tests": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0
+  },
+  "project_support": {
+    "added_lines": 8,
+    "touched_files": 1,
+    "new_files": 0,
+    "paths_by_class": {
+      "project_docs": [],
+      "project_tooling": [
+        "server/Makefile"
+      ],
+      "examples": []
+    }
+  },
+  "generated": {
+    "files": 0,
+    "bytes": 0
+  },
+  "vendor": {
+    "changed_paths": []
+  },
+  "binary": {
+    "files": 0,
+    "bytes": 0,
+    "paths": []
+  },
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-161d1055aaea",
+      "path": "server/Makefile",
+      "kind": "build-graph-candidate",
+      "allowance_kind": "build_graph_entries"
+    },
+    {
+      "candidate_id": "candidate-443d6df0b3ef",
+      "path": "server/include/wifi_packet_loss_monitor.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts"
+    }
+  ],
+  "unclassified_paths": [],
+  "classification_overlaps": []
+}

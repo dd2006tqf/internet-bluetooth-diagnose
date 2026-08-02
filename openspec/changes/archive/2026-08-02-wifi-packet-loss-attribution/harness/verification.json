@@ -1,0 +1,182 @@
+{
+  "schema_version": 3,
+  "change_name": "wifi-packet-loss-attribution",
+  "migration": null,
+  "tasks": [
+    {
+      "task_id": "1",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "Wi-Fi丢包归因",
+          "scenarios": [
+            "eBPF收发丢包探针实现"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/src/wifi_packet_loss.bpf.c"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "drift_warning: production 431 lines added, within expected 600 review_at"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785675094270-3700572",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 build/wifi_packet_loss.bpf.o"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-02T12:50:19.188Z",
+          "finished_at": "2026-08-02T12:51:25.659Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+          "source_fingerprint_after": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+          "planning_fingerprint_before": "sha256:4aa8d24bc03ed985aaee2c187e400237555a04d58c13a050f5e410a64874f870",
+          "planning_fingerprint_after": "sha256:4aa8d24bc03ed985aaee2c187e400237555a04d58c13a050f5e410a64874f870",
+          "tdd_policy_sha256": "sha256:eb434e60f10976070098844995d3656205d32cb7a63312631c3be275ca627fc8",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:6d0c73cf253767ea0f12d29a1b41a72025fdd71ea7efc4aaa79f4bf559ed7a5e",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "2",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "Wi-Fi丢包归因",
+          "scenarios": [
+            "用户态监控接口"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/include/wifi_packet_loss_monitor.hpp",
+        "server/src/wifi_packet_loss_monitor.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "drift_warning: production 431 lines added, within expected 600 review_at"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785675565870-3706826",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 bin/weaknet-dbus-server"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-02T12:57:57.817Z",
+          "finished_at": "2026-08-02T12:59:16.584Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+          "source_fingerprint_after": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+          "planning_fingerprint_before": "sha256:4aa8d24bc03ed985aaee2c187e400237555a04d58c13a050f5e410a64874f870",
+          "planning_fingerprint_after": "sha256:4aa8d24bc03ed985aaee2c187e400237555a04d58c13a050f5e410a64874f870",
+          "tdd_policy_sha256": "sha256:eb434e60f10976070098844995d3656205d32cb7a63312631c3be275ca627fc8",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:28e1f9920c131a4a9afccef85f48e9ce5aa15eea8efba2f5efbb1032433910f6",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "3",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "系统集成",
+          "scenarios": [
+            "评估器集成和构建更新"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/Makefile"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "drift_warning: production 431 lines added, within expected 600 review_at"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785676028897-3715462",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 all"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-02T13:05:39.038Z",
+          "finished_at": "2026-08-02T13:07:00.940Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+          "source_fingerprint_after": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+          "planning_fingerprint_before": "sha256:4aa8d24bc03ed985aaee2c187e400237555a04d58c13a050f5e410a64874f870",
+          "planning_fingerprint_after": "sha256:4aa8d24bc03ed985aaee2c187e400237555a04d58c13a050f5e410a64874f870",
+          "tdd_policy_sha256": "sha256:eb434e60f10976070098844995d3656205d32cb7a63312631c3be275ca627fc8",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    }
+  ]
+}

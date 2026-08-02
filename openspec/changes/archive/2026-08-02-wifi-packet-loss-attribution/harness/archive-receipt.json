@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "change_name": "wifi-packet-loss-attribution",
+  "archived_as": "2026-08-02-wifi-packet-loss-attribution",
+  "archived_at": "2026-08-02T15:17:38.565Z",
+  "profile_sha256": "sha256:37cfdb19cb68d81d977dce247339448775a1d908b521d7eb7168dc8d015cb938",
+  "source_fingerprint": "sha256:bcd180abb17309cad75e9f41964ff1277b844af4710e6b65913499adc3cdb418",
+  "artifact_fingerprint": "sha256:a303b2a123fa4c6955fcbb00b9ce0947520bec4000bdb1996f8a096c6a91b3f5",
+  "base_specs_fingerprint_before": "sha256:67eab38ab8d7192b53887b5c83f122c5d65b2373a5d3a72d274a8622f60ddfd7",
+  "archive_output_sha256": "sha256:b15605e08a37b2a893784dc75f61866b62076b75d7f66e548c72980ae16fe7ae",
+  "main_specs_validation_sha256": "sha256:4cc1f7c654b8c6b516ea216563c36b0d8b7daedc477038d999bfc428c5208d14",
+  "authority": "retained-receipt-not-active-state"
+}
