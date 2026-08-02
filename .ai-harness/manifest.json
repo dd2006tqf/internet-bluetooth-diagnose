@@ -397,7 +397,7 @@
       "path": "scripts/evaluator_check.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:f8fb9810af7f23b52042b6b02464bb6b199f01f80874eab6d3c28607be6fb4ec"
+      "content_sha256": "sha256:b8c3f5c389e7647a0f0bb4629160969adcbd42e472a070af8801e338055765a2"
     },
     {
       "path": "scripts/event_audit.js",
@@ -427,7 +427,7 @@
       "path": "scripts/harness_lock.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:d80fabac219eb35ad4bdd979d97a2ab94a204e7a4b3dff23c976511c712bc3c8"
+      "content_sha256": "sha256:a78d0acff181a0a88a60774fd4893c792e8f5c1f625a93f9246c008864e34466"
     },
     {
       "path": "scripts/integration_surface_check.sh",

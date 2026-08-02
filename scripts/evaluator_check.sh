@@ -214,7 +214,7 @@ if [[ "$snapshot_schema" == 4 ]]; then
   elif [[ "$action" != --finish && "$action" != --recheck ]]; then
     echo '[INFO] integration-surface-report.json stale，自动刷新并同步哈希...' >&2
     parent=${AUTOAI_PARENT_PURPOSE:-$purpose}; AUTOAI_LOCK_TOKEN="$token" AUTOAI_PARENT_PURPOSE="$parent" scripts/integration_surface_check.sh "$change" --refresh --json >/dev/null || { echo '[ERR] 刷新 Integration Completeness report 失败' >&2; exit 6; }
-    node scripts/sync_hashes.js "$change" >/dev/null 2>&1 || echo '[WARN] sync_hashes.js 同步部分失败，请手动检查' >&2
+    AUTOAI_LOCK_TOKEN="$token" AUTOAI_PARENT_PURPOSE="$parent" node scripts/sync_hashes.js "$change" >/dev/null 2>&1 || echo '[WARN] sync_hashes.js 同步部分失败，请手动检查' >&2
   fi
   if [[ "$action" == --finish || "$action" == --recheck ]]; then
     # pre_finish.sh 已经验证过报告完整性，这里只检查文件存在
