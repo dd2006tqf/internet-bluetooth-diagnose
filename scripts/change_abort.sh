@@ -37,11 +37,18 @@ echo ""
 
 # 3. 清理 selector（如果指向此 change）
 SELECTOR="$ROOT/.ai-harness/active-change.txt"
+SELECTOR_JSON="$ROOT/ai_snapshot.json"
 if [ -f "$SELECTOR" ] && grep -q "$CHANGE" "$SELECTOR" 2>/dev/null; then
   rm -f "$SELECTOR"
   echo "[3/4] 已清理 active-change selector"
 else
   echo "[3/4] selector 无需清理"
+fi
+# 清理 ai_snapshot.json 中的 active_change 和 phase
+if [ -f "$SELECTOR_JSON" ]; then
+  node - "$SELECTOR_JSON" <<'NODE' > /dev/null 2>&1 || true
+const fs=require('fs'),f=process.argv[2];let d=JSON.parse(fs.readFileSync(f));if(d.active_change){delete d.active_change;d.phase='idle';d.current_step='change-aborted';d.next_step='Create or select the next change';d.updated_at=new Date().toISOString();fs.writeFileSync(f,JSON.stringify(d,null,2)+'\n')}
+NODE
 fi
 echo ""
 

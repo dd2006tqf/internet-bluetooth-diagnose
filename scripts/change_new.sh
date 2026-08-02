@@ -4,12 +4,15 @@ source "$(dirname "$0")/harness_lock.sh"
 switch=0; [[ $# -ge 1 && $# -le 2 ]] || { echo "usage: $0 <kebab-name> [--switch]" >&2; exit 2; }; change=$1; harness_validate_change_id "$change"
 if [[ $# -eq 2 ]]; then [[ "$2" == --switch ]] || exit 2; switch=1; fi
 harness_lock_acquire change-new "$change"; harness_require_no_archive_failure; harness_assert_changes_root || { echo '[ERR] unsafe OpenSpec changes tree' >&2; exit 4; }; active=$(harness_active_optional); [[ -z "$active" || "$active" == "$change" ]] || harness_require_isolation_authority "$active" change-new; [[ -z "$active" || "$switch" -eq 1 ]] || { echo "[ERR] '$active' is active; pass --switch explicitly" >&2; exit 4; }; [[ ! -e "openspec/changes/$change" && ! -L "openspec/changes/$change" ]] || { echo "[ERR] change already exists" >&2; exit 4; }
-# 预检：警告工作区中的无关脏文件
+# 预检：强制检查工作区中的无关脏文件
 dirty_count=$(git diff --name-only HEAD 2>/dev/null | wc -l)
 untracked_count=$(git ls-files --others --exclude-standard 2>/dev/null | wc -l)
 if [[ "$dirty_count" -gt 0 || "$untracked_count" -gt 0 ]]; then
-  echo "[WARN] 工作区有 $dirty_count 个已修改文件和 $untracked_count 个未跟踪文件" >&2
-  echo "[WARN] 建议：创建 change 前先提交或 stash 无关文件，避免 evaluator 报 undeclared implementation paths" >&2
+  echo "[ERROR] 工作区有 $dirty_count 个已修改文件和 $untracked_count 个未跟踪文件" >&2
+  echo "[ERROR] 创建 change 前必须先提交或 stash 所有脏文件，否则 evaluator 会报 undeclared implementation paths" >&2
+  echo "  建议: git stash -u  # 暂存所有修改和未跟踪文件" >&2
+  echo "  建议: git status   # 查看具体文件" >&2
+  exit 1
 fi
 new_json=$(mktemp "${TMPDIR:-/tmp}/autoai-new-change.XXXXXX"); trap 'rm -f -- "$new_json"; harness_lock_release' EXIT
 scripts/openspec_cli.sh new change "$change" --json > "$new_json" || { echo '[ERR] OpenSpec failed to create change' >&2; exit 6; }

@@ -2,15 +2,49 @@
 
 本文档记录工作流中反复踩过的坑和必须遵守的规则。每次创建 change 前必须回顾。
 
-## 铁律：禁止中途修改 harness 脚本
+## 铁律（Agent 必须无条件遵守）
+
+**违反以下任何一条导致的后果（fingerprint 失效、evidence 损坏、归档失败），Agent 不得自行修补，必须废弃当前 change 重来。**
+
+### 0. 遇阻塞必问，不得自作主张
+**工作流中任何步骤遇到阻塞或错误，Agent 必须立即停下来，向用户描述当前状态，给出至少两个选择并说明每个选择的后果，等待用户决策。** Agent 不得自行选择"绕过去"的方案。
+
+违反此条的后果：Agent 自行修补 → 越改越乱 → 最终 change 报废 → 浪费更多时间。
+
+### 1. 禁止中途修改 harness 脚本
 
 **任何情况下都不要在工作流运行期间修改 `scripts/` 目录下的任何文件。**
 
 修改脚本 → 源指纹(source_fingerprint)变化 → 所有已记录证据的 `source_fingerprint_after` 与当前不匹配 → 全部证据失效 → 必须重来。
 
-所有 harness 修改必须在创建 change 之前完成并提交。如果发现 harness bug，先归档或放弃当前 change，修完 harness 再开新 change。
+所有 harness 修改必须在创建 change 之前完成并提交。如果发现 harness bug，**先归档或放弃当前 change，修完 harness 再开新 change**。
 
-## 完整操作顺序
+### 2. 禁止中途修改 design.md
+
+一旦开始用 task_verify.sh 记录 evidence，**绝对不能修改 design.md**。
+
+修改 design.md → planning_fingerprint 和 tdd_policy_sha256 变化 → 所有已记录证据中的 planning_fingerprint_before/after 变成旧值 → "planning changed during command" → 所有任务无法完成。
+
+- **实施前**：确认 design.md 的所有修改（classification、exceptions、thresholds）已完成并冻结
+- **实施后**：只改代码文件和 tasks.md（勾选 checkbox），不碰 design.md
+- **必须改时**：先废弃当前 change，修完 design.md 后重新创建 change
+
+### 3. 禁止手工编辑 evidence 文件
+
+`verification.json`、`evaluation.json`、`evaluation-baseline.json` 等 evidence 文件只能通过 harness 命令（`task_verify.sh`、`evaluator_check.sh`、`sync_hashes.sh`）维护。
+
+- 手工 Write/Edit → schema 损坏 → "TDD command schema mismatch"
+- 发现坏数据时，**废弃当前 change 重来**，不要手动改 JSON
+
+### 4. 创建 change 前必须清理工作区
+
+创建 change 前必须 `git status` 检查工作区，确保没有脏文件。如果有，必须先提交或 stash。
+
+违反此条的后果：`undeclared implementation paths` → evaluator 拒绝 → change 报废。
+
+### 5. 完整的操作顺序
+
+**必须严格按照以下顺序执行，不可跳步，不可调换顺序。**
 
 ```
 # 规划阶段

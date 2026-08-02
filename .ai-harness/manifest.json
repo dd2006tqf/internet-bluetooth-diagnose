@@ -187,7 +187,7 @@
       "path": "docs/ai/workflow-rules.md",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:cd80d3ac5e2fb827d8bc4c4bc43410b9b9a19565b6d5710a605ea15356017620"
+      "content_sha256": "sha256:33dcce1c9debbc3d394ae8928eadef3ac07e41da197ea2f9a0e85da4c86912fa"
     },
     {
       "path": "docs/ai/workflow.md",
@@ -337,7 +337,7 @@
       "path": "scripts/change_new.sh",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:211a80fa31ced50d24402bf7c8918f76df5aee9c14063d1598cf16a28b75fdde"
+      "content_sha256": "sha256:058875c62c37f5e2ca002f57331f8b2bab60ea7f9edd83daa7305cf0185622f7"
     },
     {
       "path": "scripts/change_scope.js",
