@@ -1,0 +1,182 @@
+{
+  "schema_version": 3,
+  "change_name": "http-request-latency-monitor",
+  "migration": null,
+  "tasks": [
+    {
+      "task_id": "1",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "HTTP请求延迟监控",
+          "scenarios": [
+            "eBPF HTTP延迟探针实现"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/src/http_latency.bpf.c"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "drift_warning: production 465 lines added, within expected 600 review_at"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785775119335-1047795",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 build/http_latency.bpf.o"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-03T16:38:25.261Z",
+          "finished_at": "2026-08-03T16:38:37.943Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+          "source_fingerprint_after": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+          "planning_fingerprint_before": "sha256:78283fd6d64771668261b88d4787ea02472b06872c785d951e6be94d943ab5dd",
+          "planning_fingerprint_after": "sha256:78283fd6d64771668261b88d4787ea02472b06872c785d951e6be94d943ab5dd",
+          "tdd_policy_sha256": "sha256:45454adf8ce7a6566b7ad808a6d30e15af3a8a768f557211221cc630a36fba41",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:d4a85596ab3741e4a53e23c4c662b77c0ba8faece4d8807142fe522bc53397c0",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "2",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "HTTP请求延迟监控",
+          "scenarios": [
+            "用户态监控接口"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/include/http_latency_monitor.hpp",
+        "server/src/http_latency_monitor.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "drift_warning: production 465 lines added, within expected 600 review_at"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785775388249-1055001",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 bin/weaknet-dbus-server"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-03T16:42:50.927Z",
+          "finished_at": "2026-08-03T16:43:04.704Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+          "source_fingerprint_after": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+          "planning_fingerprint_before": "sha256:78283fd6d64771668261b88d4787ea02472b06872c785d951e6be94d943ab5dd",
+          "planning_fingerprint_after": "sha256:78283fd6d64771668261b88d4787ea02472b06872c785d951e6be94d943ab5dd",
+          "tdd_policy_sha256": "sha256:45454adf8ce7a6566b7ad808a6d30e15af3a8a768f557211221cc630a36fba41",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:28e1f9920c131a4a9afccef85f48e9ce5aa15eea8efba2f5efbb1032433910f6",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "3",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "HTTP延迟集成",
+          "scenarios": [
+            "构建更新"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/Makefile"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "drift_warning: production 465 lines added, within expected 600 review_at"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785775599052-1060707",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 all"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-03T16:46:23.101Z",
+          "finished_at": "2026-08-03T16:46:37.915Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+          "source_fingerprint_after": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+          "planning_fingerprint_before": "sha256:78283fd6d64771668261b88d4787ea02472b06872c785d951e6be94d943ab5dd",
+          "planning_fingerprint_after": "sha256:78283fd6d64771668261b88d4787ea02472b06872c785d951e6be94d943ab5dd",
+          "tdd_policy_sha256": "sha256:45454adf8ce7a6566b7ad808a6d30e15af3a8a768f557211221cc630a36fba41",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "change_name": "http-request-latency-monitor",
+  "archived_as": "2026-08-03-http-request-latency-monitor",
+  "archived_at": "2026-08-03T16:57:45.601Z",
+  "profile_sha256": "sha256:37cfdb19cb68d81d977dce247339448775a1d908b521d7eb7168dc8d015cb938",
+  "source_fingerprint": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+  "artifact_fingerprint": "sha256:f52fb9036b2db89ad0cf70cbb4a99cdc177972615b0b08b8e20e8afd3917b95f",
+  "base_specs_fingerprint_before": "sha256:c6f43a9d2aa33195fc4c4122e9f9c797ba529f6adafc87d7b2c573abddc7aa68",
+  "archive_output_sha256": "sha256:ab2078ab34c939f6f216ccf7c5d000b72e11f39a69b300abb82a7e21a24657b4",
+  "main_specs_validation_sha256": "sha256:31cc09ffa1b6aef649e94770d20b8eb646c575040c770f22964f926c27717fbe",
+  "authority": "retained-receipt-not-active-state"
+}

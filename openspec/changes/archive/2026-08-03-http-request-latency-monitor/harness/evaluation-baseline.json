@@ -1,0 +1,68 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260803T165051Z-a61bc2",
+  "change_name": "http-request-latency-monitor",
+  "status": "complete",
+  "started_at": "2026-08-03T16:50:51.750Z",
+  "source_fingerprint": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+  "artifact_fingerprint": "sha256:f52fb9036b2db89ad0cf70cbb4a99cdc177972615b0b08b8e20e8afd3917b95f",
+  "base_specs_fingerprint": "sha256:c6f43a9d2aa33195fc4c4122e9f9c797ba529f6adafc87d7b2c573abddc7aa68",
+  "verification_json_sha256": "sha256:3958370ce8ba73176326254a9b3309b1af88beb4b5f328147aa66eb286678765",
+  "budget_block_sha256": "sha256:9c5874bacde547b2ca394bc832cbb72fe2a1405710a9fca5f6c3924b19782490",
+  "change_footprint_json_sha256": "sha256:5c39f2c692d87d4709f543104c0bdcf182c9807ca52b70334dfeced2f416c153",
+  "integration_planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+  "integration_surface_report_sha256": "sha256:261fc4fd4790326c829c5657601b4f4aab2d40f4583c4dfc5ee310d7b681c013",
+  "integration_discovery_identity_sha256": "sha256:c657e9431dac56fd98740c3cb55cced20a55729b277cac305961ecbff43ef845",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "130466eaa80f153fb6b30b46f3cc8abd0714b3bc",
+    "head_commit": "130466eaa80f153fb6b30b46f3cc8abd0714b3bc",
+    "source_fingerprint": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+    "artifact_fingerprint": "sha256:f52fb9036b2db89ad0cf70cbb4a99cdc177972615b0b08b8e20e8afd3917b95f",
+    "base_specs_fingerprint": "sha256:c6f43a9d2aa33195fc4c4122e9f9c797ba529f6adafc87d7b2c573abddc7aa68",
+    "layers": {
+      "effective": {
+        "paths": [
+          "server/Makefile"
+        ],
+        "state_fingerprint": "sha256:dc17f3fb13008c9b6ad24d90d70b993585442bfd57f92229daa02482b8300788"
+      },
+      "committed": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [
+          "server/Makefile"
+        ],
+        "state_fingerprint": "sha256:dc17f3fb13008c9b6ad24d90d70b993585442bfd57f92229daa02482b8300788"
+      },
+      "untracked": {
+        "paths": [
+          "server/include/http_latency_monitor.hpp",
+          "server/src/http_latency.bpf.c",
+          "server/src/http_latency_monitor.cpp"
+        ],
+        "state_fingerprint": "sha256:6b6da141cf7d97d2c52f614e6b000e57f9293364a313668720e41e44ad6fa6a4"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [
+      "server/Makefile",
+      "server/include/http_latency_monitor.hpp",
+      "server/src/http_latency.bpf.c",
+      "server/src/http_latency_monitor.cpp"
+    ],
+    "git_state_fingerprint": "sha256:2befa4f4de1a6cc5cec019aab7f1b7235ed73d3e1c0a4c2fa3fa1f7a2bdaca0e",
+    "raw_diff_persisted": false
+  },
+  "completed_at": "2026-08-03T16:55:37.535Z",
+  "evaluation_json_sha256": "sha256:c9dda73c5de5fd873e0e2b2b969e7bcedc5f1c73495c22b8d43c215ce6ad182b"
+}

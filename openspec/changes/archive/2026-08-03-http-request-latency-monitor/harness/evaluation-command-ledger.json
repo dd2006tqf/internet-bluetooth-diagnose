@@ -1,0 +1,34 @@
+{
+  "schema_version": 2,
+  "evaluation_id": "eval-20260803T165051Z-a61bc2",
+  "change_name": "http-request-latency-monitor",
+  "commands": [
+    {
+      "id": "eval-cmd-1785775922276-1068473",
+      "kind": "build",
+      "argv": [
+        "docker",
+        "exec",
+        "weaknet-arm64-dev",
+        "bash",
+        "-lc",
+        "cd /src && make -C server -j1 all"
+      ],
+      "command": "\"docker\" \"exec\" \"weaknet-arm64-dev\" \"bash\" \"-lc\" \"cd /src && make -C server -j1 all\"",
+      "working_directory": ".",
+      "started_at": "2026-08-03T16:51:48.908Z",
+      "finished_at": "2026-08-03T16:52:01.672Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "编译成功",
+      "observed": "exit code 0; output sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+      "result": "Pass",
+      "output_sha256": "sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ]
+}

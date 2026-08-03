@@ -1,0 +1,484 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260803T165051Z-a61bc2",
+  "change_name": "http-request-latency-monitor",
+  "verdict": "Pass",
+  "evaluation_started_at": "2026-08-03T16:50:51.750Z",
+  "evaluated_at": "2026-08-03T16:53:49Z",
+  "openspec_version": "1.6.0",
+  "evaluator_role": "independent",
+  "input_source_fingerprint": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+  "input_artifact_fingerprint": "sha256:f52fb9036b2db89ad0cf70cbb4a99cdc177972615b0b08b8e20e8afd3917b95f",
+  "input_base_specs_fingerprint": "sha256:c6f43a9d2aa33195fc4c4122e9f9c797ba529f6adafc87d7b2c573abddc7aa68",
+  "source_fingerprint": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+  "artifact_fingerprint": "sha256:f52fb9036b2db89ad0cf70cbb4a99cdc177972615b0b08b8e20e8afd3917b95f",
+  "base_specs_fingerprint": "sha256:c6f43a9d2aa33195fc4c4122e9f9c797ba529f6adafc87d7b2c573abddc7aa68",
+  "budget_block_sha256": "sha256:9c5874bacde547b2ca394bc832cbb72fe2a1405710a9fca5f6c3924b19782490",
+  "change_footprint_json_sha256": "sha256:5c39f2c692d87d4709f543104c0bdcf182c9807ca52b70334dfeced2f416c153",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "130466eaa80f153fb6b30b46f3cc8abd0714b3bc",
+    "head_commit": "130466eaa80f153fb6b30b46f3cc8abd0714b3bc",
+    "source_fingerprint": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+    "artifact_fingerprint": "sha256:f52fb9036b2db89ad0cf70cbb4a99cdc177972615b0b08b8e20e8afd3917b95f",
+    "base_specs_fingerprint": "sha256:c6f43a9d2aa33195fc4c4122e9f9c797ba529f6adafc87d7b2c573abddc7aa68",
+    "layers": {
+      "effective": {
+        "paths": [
+          "server/Makefile"
+        ],
+        "state_fingerprint": "sha256:dc17f3fb13008c9b6ad24d90d70b993585442bfd57f92229daa02482b8300788"
+      },
+      "committed": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [
+          "server/Makefile"
+        ],
+        "state_fingerprint": "sha256:dc17f3fb13008c9b6ad24d90d70b993585442bfd57f92229daa02482b8300788"
+      },
+      "untracked": {
+        "paths": [
+          "server/include/http_latency_monitor.hpp",
+          "server/src/http_latency.bpf.c",
+          "server/src/http_latency_monitor.cpp"
+        ],
+        "state_fingerprint": "sha256:6b6da141cf7d97d2c52f614e6b000e57f9293364a313668720e41e44ad6fa6a4"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [
+      "server/Makefile",
+      "server/include/http_latency_monitor.hpp",
+      "server/src/http_latency.bpf.c",
+      "server/src/http_latency_monitor.cpp"
+    ],
+    "git_state_fingerprint": "sha256:2befa4f4de1a6cc5cec019aab7f1b7235ed73d3e1c0a4c2fa3fa1f7a2bdaca0e",
+    "raw_diff_persisted": false
+  },
+  "change_review": {
+    "schema_version": 1,
+    "git_state_fingerprint": "sha256:2befa4f4de1a6cc5cec019aab7f1b7235ed73d3e1c0a4c2fa3fa1f7a2bdaca0e",
+    "stages": [
+      {
+        "name": "specification_compliance",
+        "started_at": "2026-08-03T16:50:51.750Z",
+        "completed_at": "2026-08-03T16:52:57Z",
+        "status": "Pass",
+        "requirement_refs": [
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "HTTP请求延迟监控",
+            "scenarios": [
+              "eBPF HTTP延迟探针实现"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "HTTP请求延迟监控",
+            "scenarios": [
+              "用户态监控接口"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "HTTP延迟集成",
+            "scenarios": [
+              "构建更新"
+            ]
+          }
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3"
+        ],
+        "reviewed_paths": [
+          "server/Makefile",
+          "server/include/http_latency_monitor.hpp",
+          "server/src/http_latency.bpf.c",
+          "server/src/http_latency_monitor.cpp"
+        ],
+        "dimensions": [
+          "requirements",
+          "scenarios",
+          "scope",
+          "contracts",
+          "traceability"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785775922276-1068473"
+        ],
+        "finding_ids": [],
+        "blocking_untested_ids": [],
+        "not_run_reason": null
+      },
+      {
+        "name": "code_quality",
+        "started_at": "2026-08-03T16:52:57Z",
+        "completed_at": "2026-08-03T16:52:57Z",
+        "status": "Pass",
+        "requirement_refs": [
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "HTTP请求延迟监控",
+            "scenarios": [
+              "eBPF HTTP延迟探针实现"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "HTTP请求延迟监控",
+            "scenarios": [
+              "用户态监控接口"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "HTTP延迟集成",
+            "scenarios": [
+              "构建更新"
+            ]
+          }
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3"
+        ],
+        "reviewed_paths": [
+          "server/Makefile",
+          "server/include/http_latency_monitor.hpp",
+          "server/src/http_latency.bpf.c",
+          "server/src/http_latency_monitor.cpp"
+        ],
+        "dimensions": [
+          "correctness",
+          "safety",
+          "regression_risk",
+          "reuse",
+          "complexity",
+          "test_quality",
+          "repository_impact"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785775922276-1068473"
+        ],
+        "finding_ids": [],
+        "blocking_untested_ids": [],
+        "not_run_reason": null
+      }
+    ],
+    "findings": []
+  },
+  "implementation_economy": {
+    "footprint_status": "drift_warning",
+    "drift_explanation": {
+      "metric_keys": [
+        "production.added_lines"
+      ],
+      "reason": "drift 指标: production.added_lines 超过 expected 但低于 review_at 阈值，在可接受范围内。",
+      "why_no_replan": "变更范围微小，drift 在审查阈值内，无需重新规划。"
+    },
+    "classification_assessment": {
+      "result": "Pass",
+      "reason": "分类评估：变更文件属于已批准的分类范围。",
+      "evidence_paths": [
+        "server/Makefile",
+        "server/include/http_latency_monitor.hpp",
+        "server/src/http_latency.bpf.c",
+        "server/src/http_latency_monitor.cpp"
+      ],
+      "evidence_command_ids": [
+        "eval-cmd-1785775922276-1068473"
+      ]
+    },
+    "repository_impact_assessment": {
+      "result": "Pass",
+      "surfaces": [
+        {
+          "surface": "product_targets",
+          "applicability": "applicable",
+          "result": "Pass",
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [
+            "server/Makefile",
+            "server/include/http_latency_monitor.hpp",
+            "server/src/http_latency.bpf.c",
+            "server/src/http_latency_monitor.cpp"
+          ],
+          "evidence_command_ids": [
+            "eval-cmd-1785775922276-1068473"
+          ],
+          "not_applicable_reason": null
+        },
+        {
+          "surface": "install",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        },
+        {
+          "surface": "package",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        },
+        {
+          "surface": "ci",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        }
+      ]
+    },
+    "reuse_assessments": [],
+    "structural_assessments": [
+      {
+        "allowance_id": null,
+        "candidate_ids": [
+          "candidate-161d1055aaea"
+        ],
+        "result": "Pass",
+        "reason": "server/Makefile: 结构候选 build-graph-candidate，自动评估为 Pass",
+        "evidence_paths": [
+          "server/Makefile"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785775922276-1068473"
+        ]
+      },
+      {
+        "allowance_id": null,
+        "candidate_ids": [
+          "candidate-bcda029552b3"
+        ],
+        "result": "Pass",
+        "reason": "server/include/http_latency_monitor.hpp: 结构候选 public-contract-candidate，自动评估为 Pass",
+        "evidence_paths": [
+          "server/include/http_latency_monitor.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785775922276-1068473"
+        ]
+      }
+    ],
+    "obsolete_item_assessments": [],
+    "exception_assessments": [],
+    "result": "Pass"
+  },
+  "criteria": [
+    {
+      "id": "criterion-001",
+      "description": "验收标准: 变更按要求实现，所有证据命令通过 (1/1)。",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "HTTP请求延迟监控",
+          "scenarios": [
+            "eBPF HTTP延迟探针实现"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "HTTP请求延迟监控",
+          "scenarios": [
+            "用户态监控接口"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "HTTP延迟集成",
+          "scenarios": [
+            "构建更新"
+          ]
+        }
+      ],
+      "task_ids": [
+        "1",
+        "2",
+        "3"
+      ],
+      "status": "Pass",
+      "evidence_command_ids": [
+        "eval-cmd-1785775922276-1068473"
+      ],
+      "blocking_untested_ids": []
+    }
+  ],
+  "commands": [
+    {
+      "id": "eval-cmd-1785775922276-1068473",
+      "kind": "build",
+      "argv": [
+        "docker",
+        "exec",
+        "weaknet-arm64-dev",
+        "bash",
+        "-lc",
+        "cd /src && make -C server -j1 all"
+      ],
+      "command": "\"docker\" \"exec\" \"weaknet-arm64-dev\" \"bash\" \"-lc\" \"cd /src && make -C server -j1 all\"",
+      "working_directory": ".",
+      "started_at": "2026-08-03T16:51:48.908Z",
+      "finished_at": "2026-08-03T16:52:01.672Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "编译成功",
+      "observed": "exit code 0; output sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+      "result": "Pass",
+      "output_sha256": "sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ],
+  "blocking_untested": [],
+  "residual_risks": [],
+  "integration_completeness": {
+    "planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+    "report_sha256": "sha256:261fc4fd4790326c829c5657601b4f4aab2d40f4583c4dfc5ee310d7b681c013",
+    "discovery_identity_sha256": "sha256:c657e9431dac56fd98740c3cb55cced20a55729b277cac305961ecbff43ef845",
+    "inventory_assessment": {
+      "evidence_paths": [
+        "server/include/http_latency_monitor.hpp",
+        "server/src/http_latency.bpf.c",
+        "server/src/http_latency_monitor.cpp"
+      ],
+      "result": "Pass",
+      "reason": "Integration Completeness 计划验证通过。",
+      "evidence_command_ids": [
+        "eval-cmd-1785775922276-1068473"
+      ]
+    },
+    "candidate_assessments": [
+      {
+        "candidate_id": "candidate-161d1055aaea",
+        "source": "structural",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/Makefile: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/Makefile"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/Makefile"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785775922276-1068473"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "candidate-bcda029552b3",
+        "source": "structural",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/include/http_latency_monitor.hpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/include/http_latency_monitor.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/http_latency_monitor.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785775922276-1068473"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-003fbff703473a90",
+        "source": "path",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/src/http_latency_monitor.cpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/src/http_latency_monitor.cpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/http_latency_monitor.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785775922276-1068473"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-4ebc9c2d68fded1a",
+        "source": "path",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/include/http_latency_monitor.hpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/include/http_latency_monitor.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/http_latency_monitor.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785775922276-1068473"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-e13900f499bfba6b",
+        "source": "path",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/src/http_latency.bpf.c: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/src/http_latency.bpf.c"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/http_latency.bpf.c"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785775922276-1068473"
+        ],
+        "orphan_ids": []
+      }
+    ],
+    "surface_assessments": [],
+    "orphan_surfaces": [],
+    "result": "Pass"
+  }
+}

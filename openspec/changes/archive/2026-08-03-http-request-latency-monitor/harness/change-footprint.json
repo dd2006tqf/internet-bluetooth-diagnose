@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "change_name": "http-request-latency-monitor",
+  "implementation_base_commit": "130466eaa80f153fb6b30b46f3cc8abd0714b3bc",
+  "source_fingerprint": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+  "budget_block_sha256": "sha256:9c5874bacde547b2ca394bc832cbb72fe2a1405710a9fca5f6c3924b19782490",
+  "status": "drift_warning",
+  "production": {
+    "added_lines": 465,
+    "deleted_lines": 0,
+    "net_lines": 465,
+    "touched_files": 3,
+    "new_files": 3
+  },
+  "tests": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0
+  },
+  "project_support": {
+    "added_lines": 8,
+    "touched_files": 1,
+    "new_files": 0,
+    "paths_by_class": {
+      "project_docs": [],
+      "project_tooling": [
+        "server/Makefile"
+      ],
+      "examples": []
+    }
+  },
+  "generated": {
+    "files": 0,
+    "bytes": 0
+  },
+  "vendor": {
+    "changed_paths": []
+  },
+  "binary": {
+    "files": 0,
+    "bytes": 0,
+    "paths": []
+  },
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-161d1055aaea",
+      "path": "server/Makefile",
+      "kind": "build-graph-candidate",
+      "allowance_kind": "build_graph_entries"
+    },
+    {
+      "candidate_id": "candidate-bcda029552b3",
+      "path": "server/include/http_latency_monitor.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts"
+    }
+  ],
+  "unclassified_paths": [],
+  "classification_overlaps": []
+}

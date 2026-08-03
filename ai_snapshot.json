@@ -3,12 +3,12 @@
   "workflow": "openspec",
   "active_change": null,
   "phase": "idle",
-  "current_step": "change-aborted",
+  "current_step": "change-archived",
   "next_step": "Create or select the next change",
-  "updated_at": "2026-08-03T13:19:37.247Z",
+  "updated_at": "2026-08-03T16:57:44.857Z",
   "last_archived_change": {
-    "change_name": "ebpf-tcp-retransmit-dns-formalize",
-    "archived_as": "2026-08-03-ebpf-tcp-retransmit-dns-formalize",
-    "archived_at": "2026-08-03T11:09:16.940Z"
+    "change_name": "http-request-latency-monitor",
+    "archived_as": "2026-08-03-http-request-latency-monitor",
+    "archived_at": "2026-08-03T16:57:44.857Z"
   }
 }

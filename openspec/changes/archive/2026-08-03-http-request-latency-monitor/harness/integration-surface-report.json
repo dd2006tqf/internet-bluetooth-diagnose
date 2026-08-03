@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "change_name": "http-request-latency-monitor",
+  "implementation_base_commit": "130466eaa80f153fb6b30b46f3cc8abd0714b3bc",
+  "discovery_mode": "reviewed_inventory",
+  "source_fingerprint": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+  "planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+  "change_footprint_json_sha256": "sha256:5c39f2c692d87d4709f543104c0bdcf182c9807ca52b70334dfeced2f416c153",
+  "scope_classifier_identity": {
+    "schema_version": 1,
+    "path": "scripts/change_scope.js",
+    "sha256": "sha256:f7c5dc2d02366cf05b9a01da5c6caad6c47e5e8fdefbcd497bea91d70352755e",
+    "output_sha256": "sha256:a48515e843d9a219842fa2810b101c010971e3ad8f95ef61b0fa9583e2110d78"
+  },
+  "discovery_adapter_identity": {
+    "id": "reviewed-inventory-v1",
+    "schema_version": 1,
+    "sha256": "sha256:cbcf64a8afbdcafa3221b48b1ea76c7ea5de1a45aba0e78037da0fdb3bec9045"
+  },
+  "compile_commands_sha256": null,
+  "ast_tool_identity": null,
+  "planned_surface_ids": [],
+  "changed_production_paths": [
+    "server/include/http_latency_monitor.hpp",
+    "server/src/http_latency.bpf.c",
+    "server/src/http_latency_monitor.cpp"
+  ],
+  "path_candidates": [
+    {
+      "candidate_id": "path-candidate-003fbff703473a90",
+      "source": "path",
+      "path": "server/src/http_latency_monitor.cpp",
+      "old_path": null,
+      "change_status": "added"
+    },
+    {
+      "candidate_id": "path-candidate-4ebc9c2d68fded1a",
+      "source": "path",
+      "path": "server/include/http_latency_monitor.hpp",
+      "old_path": null,
+      "change_status": "added"
+    },
+    {
+      "candidate_id": "path-candidate-e13900f499bfba6b",
+      "source": "path",
+      "path": "server/src/http_latency.bpf.c",
+      "old_path": null,
+      "change_status": "added"
+    }
+  ],
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-161d1055aaea",
+      "source": "structural",
+      "path": "server/Makefile",
+      "kind": "build-graph-candidate",
+      "allowance_kind": "build_graph_entries",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "candidate-bcda029552b3",
+      "source": "structural",
+      "path": "server/include/http_latency_monitor.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts",
+      "old_path": null,
+      "change_status": "added"
+    }
+  ],
+  "ast_candidates": [],
+  "surface_candidate_bindings": [],
+  "unmatched_candidates": [
+    {
+      "candidate_id": "candidate-161d1055aaea",
+      "source": "structural",
+      "reason": "The changed path is not mapped to an approved product surface."
+    },
+    {
+      "candidate_id": "candidate-bcda029552b3",
+      "source": "structural",
+      "reason": "The changed path is not mapped to an approved product surface."
+    },
+    {
+      "candidate_id": "path-candidate-003fbff703473a90",
+      "source": "path",
+      "reason": "The changed path is not mapped to an approved product surface."
+    },
+    {
+      "candidate_id": "path-candidate-4ebc9c2d68fded1a",
+      "source": "path",
+      "reason": "The changed path is not mapped to an approved product surface."
+    },
+    {
+      "candidate_id": "path-candidate-e13900f499bfba6b",
+      "source": "path",
+      "reason": "The changed path is not mapped to an approved product surface."
+    }
+  ],
+  "status": "review_required"
+}
