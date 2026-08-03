@@ -1,6 +1,7 @@
 {
   "schema_version": 2,
   "workflow": "openspec",
+  "active_change": null,
   "phase": "idle",
   "current_step": "change-aborted",
   "next_step": "Create or select the next change",
@@ -9,16 +10,5 @@
     "change_name": "ebpf-tcp-retransmit-dns-formalize",
     "archived_as": "2026-08-03-ebpf-tcp-retransmit-dns-formalize",
     "archived_at": "2026-08-03T11:09:16.940Z"
-  },
-  "last_archive_recovery_acknowledgment": {
-    "change_name": "fix-degraded-mode-log",
-    "acknowledged_at": "2026-08-01T02:37:56.192Z",
-    "reason": "OpenSpec spec scenario format corrected",
-    "recovered_state": "source-retained",
-    "failure_recorded_at": "2026-08-01T02:35:49.104Z",
-    "failure_message": "OpenSpec archive exited 1",
-    "log_path": ".ai-harness/logs/archive-fix-degraded-mode-log-20260801T023342Z.sUWOEi.log",
-    "main_specs_fingerprint": "sha256:b746f32878622864729860e88d14c4104f27ecf7d9cf8725d6a4f07c38a5128a",
-    "strict_validation_failed_count": 0
   }
 }
