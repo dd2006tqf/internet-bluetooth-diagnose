@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "change_name": "process-network-profiling",
+  "archived_as": "2026-08-03-process-network-profiling",
+  "archived_at": "2026-08-03T06:53:17.540Z",
+  "profile_sha256": "sha256:37cfdb19cb68d81d977dce247339448775a1d908b521d7eb7168dc8d015cb938",
+  "source_fingerprint": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+  "artifact_fingerprint": "sha256:89ea9561d96754bc00f025ab909dccac148acdc481ef9af7482cc9546f54e879",
+  "base_specs_fingerprint_before": "sha256:57aafc3593e8e24695d4472a36b69ac78d9cd31b63358e809a765e8239f3ee2f",
+  "archive_output_sha256": "sha256:0d4895c1d0d18b3f3cb63093c5485852c76738e12ed446d73f982d4fd523f341",
+  "main_specs_validation_sha256": "sha256:4c62f6c1c2a773e664c797ec665e75e91fa1eb96587c410470fa119df5c947c7",
+  "authority": "retained-receipt-not-active-state"
+}

@@ -1,0 +1,217 @@
+{
+  "schema_version": 3,
+  "change_name": "process-network-profiling",
+  "migration": null,
+  "tasks": [
+    {
+      "task_id": "1",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "进程网络画像",
+          "scenarios": [
+            "eBPF进程统计探针"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/src/flow_rate.bpf.c"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "drift_warning: production 276 lines added, within expected 400 review_at"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785709280010-30301",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 build/flow_rate.bpf.o"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-02T22:19:58.898Z",
+          "finished_at": "2026-08-02T22:21:12.953Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+          "source_fingerprint_after": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+          "planning_fingerprint_before": "sha256:9897a5dfceb8db73f9b864c2e591d32592d2f878d1586e6d8d6e695b7f3c88a4",
+          "planning_fingerprint_after": "sha256:9897a5dfceb8db73f9b864c2e591d32592d2f878d1586e6d8d6e695b7f3c88a4",
+          "tdd_policy_sha256": "sha256:fc5005a5ef56990296c184323fe88741359d9188bb69e967be2ac05a3a8a4199",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:1d1e91378315315b649e6c100341be96135eda284224385f1885618420400a73",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "2",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "进程网络画像",
+          "scenarios": [
+            "用户态监控接口"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/include/process_net_profiler.hpp",
+        "server/src/process_net_profiler.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "drift_warning: production 276 lines added, within expected 400 review_at"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785724044382-13095",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 bin/weaknet-dbus-server"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-03T02:27:13.144Z",
+          "finished_at": "2026-08-03T02:27:23.117Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 1,
+          "result": "Fail",
+          "source_fingerprint_before": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+          "source_fingerprint_after": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+          "planning_fingerprint_before": "sha256:9897a5dfceb8db73f9b864c2e591d32592d2f878d1586e6d8d6e695b7f3c88a4",
+          "planning_fingerprint_after": "sha256:9897a5dfceb8db73f9b864c2e591d32592d2f878d1586e6d8d6e695b7f3c88a4",
+          "tdd_policy_sha256": "sha256:fc5005a5ef56990296c184323fe88741359d9188bb69e967be2ac05a3a8a4199",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Fail",
+          "output_sha256": "sha256:892b8bd40a2b98913f363449c76029cab079dca93d8c57cb6728bfada7e2000a",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        },
+        {
+          "id": "gen-cmd-1785737777713-283042",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 bin/weaknet-dbus-server"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-03T06:16:06.820Z",
+          "finished_at": "2026-08-03T06:16:16.698Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+          "source_fingerprint_after": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+          "planning_fingerprint_before": "sha256:9897a5dfceb8db73f9b864c2e591d32592d2f878d1586e6d8d6e695b7f3c88a4",
+          "planning_fingerprint_after": "sha256:9897a5dfceb8db73f9b864c2e591d32592d2f878d1586e6d8d6e695b7f3c88a4",
+          "tdd_policy_sha256": "sha256:fc5005a5ef56990296c184323fe88741359d9188bb69e967be2ac05a3a8a4199",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:28e1f9920c131a4a9afccef85f48e9ce5aa15eea8efba2f5efbb1032433910f6",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "3",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "进程画像集成",
+          "scenarios": [
+            "构建更新"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/Makefile"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "drift_warning: production 276 lines added, within expected 400 review_at"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785738046093-290613",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 all"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-03T06:20:34.530Z",
+          "finished_at": "2026-08-03T06:20:44.949Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+          "source_fingerprint_after": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+          "planning_fingerprint_before": "sha256:9897a5dfceb8db73f9b864c2e591d32592d2f878d1586e6d8d6e695b7f3c88a4",
+          "planning_fingerprint_after": "sha256:9897a5dfceb8db73f9b864c2e591d32592d2f878d1586e6d8d6e695b7f3c88a4",
+          "tdd_policy_sha256": "sha256:fc5005a5ef56990296c184323fe88741359d9188bb69e967be2ac05a3a8a4199",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    }
+  ]
+}

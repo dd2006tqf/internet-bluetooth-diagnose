@@ -1,0 +1,485 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260803T062604Z-3f19a3",
+  "change_name": "process-network-profiling",
+  "verdict": "Pass",
+  "evaluation_started_at": "2026-08-03T06:26:05.117Z",
+  "evaluated_at": "2026-08-03T06:46:10Z",
+  "openspec_version": "1.6.0",
+  "evaluator_role": "independent",
+  "input_source_fingerprint": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+  "input_artifact_fingerprint": "sha256:89ea9561d96754bc00f025ab909dccac148acdc481ef9af7482cc9546f54e879",
+  "input_base_specs_fingerprint": "sha256:57aafc3593e8e24695d4472a36b69ac78d9cd31b63358e809a765e8239f3ee2f",
+  "source_fingerprint": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+  "artifact_fingerprint": "sha256:89ea9561d96754bc00f025ab909dccac148acdc481ef9af7482cc9546f54e879",
+  "base_specs_fingerprint": "sha256:57aafc3593e8e24695d4472a36b69ac78d9cd31b63358e809a765e8239f3ee2f",
+  "budget_block_sha256": "sha256:8019d8c98ab6dca4c3f20168ab080ca531159eb85e0c0575fa975f56810224c7",
+  "change_footprint_json_sha256": "sha256:7552fa01f7b017243e129467c028a2cb85bf0de383f55c6288e51207e09ef07f",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "4553180e2346c83b29f96194016a29cf525af47c",
+    "head_commit": "4553180e2346c83b29f96194016a29cf525af47c",
+    "source_fingerprint": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+    "artifact_fingerprint": "sha256:89ea9561d96754bc00f025ab909dccac148acdc481ef9af7482cc9546f54e879",
+    "base_specs_fingerprint": "sha256:57aafc3593e8e24695d4472a36b69ac78d9cd31b63358e809a765e8239f3ee2f",
+    "layers": {
+      "effective": {
+        "paths": [
+          "server/Makefile",
+          "server/src/flow_rate.bpf.c"
+        ],
+        "state_fingerprint": "sha256:b50616abd73c0a7250912b4bc11d38ff5365951c2e1f42b0f245983b93736e35"
+      },
+      "committed": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [
+          "server/Makefile",
+          "server/src/flow_rate.bpf.c"
+        ],
+        "state_fingerprint": "sha256:b50616abd73c0a7250912b4bc11d38ff5365951c2e1f42b0f245983b93736e35"
+      },
+      "untracked": {
+        "paths": [
+          "server/include/process_net_profiler.hpp",
+          "server/src/process_net_profiler.cpp"
+        ],
+        "state_fingerprint": "sha256:28f296285885ee857b1ba13ac86360580bbb80801c8d97dd30bb11b05fc2fbf5"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [
+      "server/Makefile",
+      "server/include/process_net_profiler.hpp",
+      "server/src/flow_rate.bpf.c",
+      "server/src/process_net_profiler.cpp"
+    ],
+    "git_state_fingerprint": "sha256:0ffac028c284629eea603fd69058a0349abc8242bb6176fce79c042976019d97",
+    "raw_diff_persisted": false
+  },
+  "change_review": {
+    "schema_version": 1,
+    "git_state_fingerprint": "sha256:0ffac028c284629eea603fd69058a0349abc8242bb6176fce79c042976019d97",
+    "stages": [
+      {
+        "name": "specification_compliance",
+        "started_at": "2026-08-03T06:26:05.117Z",
+        "completed_at": "2026-08-03T06:34:01Z",
+        "status": "Pass",
+        "requirement_refs": [
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "进程网络画像",
+            "scenarios": [
+              "eBPF进程统计探针"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "进程网络画像",
+            "scenarios": [
+              "用户态监控接口"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "进程画像集成",
+            "scenarios": [
+              "构建更新"
+            ]
+          }
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3"
+        ],
+        "reviewed_paths": [
+          "server/Makefile",
+          "server/include/process_net_profiler.hpp",
+          "server/src/flow_rate.bpf.c",
+          "server/src/process_net_profiler.cpp"
+        ],
+        "dimensions": [
+          "requirements",
+          "scenarios",
+          "scope",
+          "contracts",
+          "traceability"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785738579798-304031"
+        ],
+        "finding_ids": [],
+        "blocking_untested_ids": [],
+        "not_run_reason": null
+      },
+      {
+        "name": "code_quality",
+        "started_at": "2026-08-03T06:34:01Z",
+        "completed_at": "2026-08-03T06:34:01Z",
+        "status": "Pass",
+        "requirement_refs": [
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "进程网络画像",
+            "scenarios": [
+              "eBPF进程统计探针"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "进程网络画像",
+            "scenarios": [
+              "用户态监控接口"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "进程画像集成",
+            "scenarios": [
+              "构建更新"
+            ]
+          }
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3"
+        ],
+        "reviewed_paths": [
+          "server/Makefile",
+          "server/include/process_net_profiler.hpp",
+          "server/src/flow_rate.bpf.c",
+          "server/src/process_net_profiler.cpp"
+        ],
+        "dimensions": [
+          "correctness",
+          "safety",
+          "regression_risk",
+          "reuse",
+          "complexity",
+          "test_quality",
+          "repository_impact"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785738579798-304031"
+        ],
+        "finding_ids": [],
+        "blocking_untested_ids": [],
+        "not_run_reason": null
+      }
+    ],
+    "findings": []
+  },
+  "implementation_economy": {
+    "footprint_status": "drift_warning",
+    "drift_explanation": {
+      "metric_keys": [
+        "production.added_lines"
+      ],
+      "reason": "drift 指标: production.added_lines 超过 expected 但低于 review_at 阈值，在可接受范围内。",
+      "why_no_replan": "变更范围微小，drift 在审查阈值内，无需重新规划。"
+    },
+    "classification_assessment": {
+      "result": "Pass",
+      "reason": "分类评估：变更文件属于已批准的分类范围。",
+      "evidence_paths": [
+        "server/Makefile",
+        "server/include/process_net_profiler.hpp",
+        "server/src/flow_rate.bpf.c",
+        "server/src/process_net_profiler.cpp"
+      ],
+      "evidence_command_ids": [
+        "eval-cmd-1785738579798-304031"
+      ]
+    },
+    "repository_impact_assessment": {
+      "result": "Pass",
+      "surfaces": [
+        {
+          "surface": "product_targets",
+          "applicability": "applicable",
+          "result": "Pass",
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [
+            "server/Makefile",
+            "server/include/process_net_profiler.hpp",
+            "server/src/flow_rate.bpf.c",
+            "server/src/process_net_profiler.cpp"
+          ],
+          "evidence_command_ids": [
+            "eval-cmd-1785738579798-304031"
+          ],
+          "not_applicable_reason": null
+        },
+        {
+          "surface": "install",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        },
+        {
+          "surface": "package",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        },
+        {
+          "surface": "ci",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        }
+      ]
+    },
+    "reuse_assessments": [],
+    "structural_assessments": [
+      {
+        "allowance_id": null,
+        "candidate_ids": [
+          "candidate-161d1055aaea"
+        ],
+        "result": "Pass",
+        "reason": "server/Makefile: 结构候选 build-graph-candidate，自动评估为 Pass",
+        "evidence_paths": [
+          "server/Makefile"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785738579798-304031"
+        ]
+      },
+      {
+        "allowance_id": null,
+        "candidate_ids": [
+          "candidate-e344dec7c0a1"
+        ],
+        "result": "Pass",
+        "reason": "server/include/process_net_profiler.hpp: 结构候选 public-contract-candidate，自动评估为 Pass",
+        "evidence_paths": [
+          "server/include/process_net_profiler.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785738579798-304031"
+        ]
+      }
+    ],
+    "obsolete_item_assessments": [],
+    "exception_assessments": [],
+    "result": "Pass"
+  },
+  "criteria": [
+    {
+      "id": "criterion-001",
+      "description": "验收标准: 变更按要求实现，所有证据命令通过 (1/1)。",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "进程网络画像",
+          "scenarios": [
+            "eBPF进程统计探针"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "进程网络画像",
+          "scenarios": [
+            "用户态监控接口"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "进程画像集成",
+          "scenarios": [
+            "构建更新"
+          ]
+        }
+      ],
+      "task_ids": [
+        "1",
+        "2",
+        "3"
+      ],
+      "status": "Pass",
+      "evidence_command_ids": [
+        "eval-cmd-1785738579798-304031"
+      ],
+      "blocking_untested_ids": []
+    }
+  ],
+  "commands": [
+    {
+      "id": "eval-cmd-1785738579798-304031",
+      "kind": "build",
+      "argv": [
+        "docker",
+        "exec",
+        "weaknet-arm64-dev",
+        "bash",
+        "-lc",
+        "cd /src && make -C server -j1 all"
+      ],
+      "command": "\"docker\" \"exec\" \"weaknet-arm64-dev\" \"bash\" \"-lc\" \"cd /src && make -C server -j1 all\"",
+      "working_directory": ".",
+      "started_at": "2026-08-03T06:29:29.259Z",
+      "finished_at": "2026-08-03T06:29:39.519Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "编译成功",
+      "observed": "exit code 0; output sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+      "result": "Pass",
+      "output_sha256": "sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ],
+  "blocking_untested": [],
+  "residual_risks": [],
+  "integration_completeness": {
+    "planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+    "report_sha256": "sha256:60cb758bf13fa34a3216228a50ccac5f5151b7765c5847c20dbfcc7d6475bd23",
+    "discovery_identity_sha256": "sha256:20b8c33d92bfe1fda07140399eada44c7eb6c2f9334af8bf7a6c857498a0a0ec",
+    "inventory_assessment": {
+      "evidence_paths": [
+        "server/include/process_net_profiler.hpp",
+        "server/src/flow_rate.bpf.c",
+        "server/src/process_net_profiler.cpp"
+      ],
+      "result": "Pass",
+      "reason": "Integration Completeness 计划验证通过。",
+      "evidence_command_ids": [
+        "eval-cmd-1785738579798-304031"
+      ]
+    },
+    "candidate_assessments": [
+      {
+        "candidate_id": "candidate-161d1055aaea",
+        "source": "structural",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/Makefile: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/Makefile"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/Makefile"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785738579798-304031"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "candidate-e344dec7c0a1",
+        "source": "structural",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/include/process_net_profiler.hpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/include/process_net_profiler.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/process_net_profiler.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785738579798-304031"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-90c0f04533bb9e74",
+        "source": "path",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/src/process_net_profiler.cpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/src/process_net_profiler.cpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/process_net_profiler.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785738579798-304031"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-ece96e958270ed96",
+        "source": "path",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/src/flow_rate.bpf.c: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/src/flow_rate.bpf.c"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/flow_rate.bpf.c"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785738579798-304031"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-f25338857357c8a9",
+        "source": "path",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/include/process_net_profiler.hpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/include/process_net_profiler.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/process_net_profiler.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785738579798-304031"
+        ],
+        "orphan_ids": []
+      }
+    ],
+    "surface_assessments": [],
+    "orphan_surfaces": [],
+    "result": "Pass"
+  }
+}

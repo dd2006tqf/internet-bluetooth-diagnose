@@ -5,11 +5,11 @@
   "phase": "idle",
   "current_step": "change-archived",
   "next_step": "Create or select the next change",
-  "updated_at": "2026-08-02T15:17:35.740Z",
+  "updated_at": "2026-08-03T06:53:17.056Z",
   "last_archived_change": {
-    "change_name": "wifi-packet-loss-attribution",
-    "archived_as": "2026-08-02-wifi-packet-loss-attribution",
-    "archived_at": "2026-08-02T15:17:35.740Z"
+    "change_name": "process-network-profiling",
+    "archived_as": "2026-08-03-process-network-profiling",
+    "archived_at": "2026-08-03T06:53:17.056Z"
   },
   "last_archive_recovery_acknowledgment": {
     "change_name": "fix-degraded-mode-log",

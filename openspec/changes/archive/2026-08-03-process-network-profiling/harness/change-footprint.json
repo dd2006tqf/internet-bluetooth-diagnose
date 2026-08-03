@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "change_name": "process-network-profiling",
+  "implementation_base_commit": "4553180e2346c83b29f96194016a29cf525af47c",
+  "source_fingerprint": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+  "budget_block_sha256": "sha256:8019d8c98ab6dca4c3f20168ab080ca531159eb85e0c0575fa975f56810224c7",
+  "status": "drift_warning",
+  "production": {
+    "added_lines": 276,
+    "deleted_lines": 0,
+    "net_lines": 276,
+    "touched_files": 3,
+    "new_files": 2
+  },
+  "tests": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0
+  },
+  "project_support": {
+    "added_lines": 2,
+    "touched_files": 1,
+    "new_files": 0,
+    "paths_by_class": {
+      "project_docs": [],
+      "project_tooling": [
+        "server/Makefile"
+      ],
+      "examples": []
+    }
+  },
+  "generated": {
+    "files": 0,
+    "bytes": 0
+  },
+  "vendor": {
+    "changed_paths": []
+  },
+  "binary": {
+    "files": 0,
+    "bytes": 0,
+    "paths": []
+  },
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-161d1055aaea",
+      "path": "server/Makefile",
+      "kind": "build-graph-candidate",
+      "allowance_kind": "build_graph_entries"
+    },
+    {
+      "candidate_id": "candidate-e344dec7c0a1",
+      "path": "server/include/process_net_profiler.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts"
+    }
+  ],
+  "unclassified_paths": [],
+  "classification_overlaps": []
+}

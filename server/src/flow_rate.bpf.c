@@ -24,6 +24,14 @@ struct flow_data {
     __u32 pid;
 };
 
+// 进程级网络统计
+struct process_net_stats {
+    char  comm[16];        // 进程名
+    __u64 tx_bytes;        // 发送字节数
+    __u64 tx_packets;      // 发送包数
+    __u64 retrans_count;   // TCP 重传次数
+};
+
 // 统计当前窗口数据
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -31,6 +39,14 @@ struct {
     __type(key, struct conn_key);
     __type(value, struct flow_data);
 } current_sec SEC(".maps");
+
+// 进程级统计（新增，用于进程网络画像）
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u32);            // pid
+    __type(value, struct process_net_stats);
+} process_stats SEC(".maps");
 
 // 可选：绑定的网卡 ifindex（0 表示不过滤）
 struct {
@@ -78,6 +94,38 @@ static __always_inline void account_flow(struct conn_key *k, __u64 add_bytes)
         __sync_fetch_and_add(&v->packets, 1);
         v->pid = (__u32)(bpf_get_current_pid_tgid() & 0xffffffff);
     }
+
+    // 更新进程级统计
+    __u32 pid = (__u32)(bpf_get_current_pid_tgid() & 0xffffffff);
+    struct process_net_stats *ps = bpf_map_lookup_elem(&process_stats, &pid);
+    if (!ps) {
+        struct process_net_stats init = {};
+        bpf_get_current_comm(init.comm, sizeof(init.comm));
+        init.tx_bytes = add_bytes;
+        init.tx_packets = 1;
+        bpf_map_update_elem(&process_stats, &pid, &init, 0);
+    } else {
+        __sync_fetch_and_add(&ps->tx_bytes, add_bytes);
+        __sync_fetch_and_add(&ps->tx_packets, 1);
+    }
+}
+
+// kprobe: int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
+// 每次 TCP 重传时累计到发起进程
+SEC("kprobe/tcp_retransmit_skb")
+int trace_tcp_retransmit(struct pt_regs *ctx)
+{
+    __u32 pid = (__u32)(bpf_get_current_pid_tgid() & 0xffffffff);
+    struct process_net_stats *ps = bpf_map_lookup_elem(&process_stats, &pid);
+    if (!ps) {
+        struct process_net_stats init = {};
+        bpf_get_current_comm(init.comm, sizeof(init.comm));
+        init.retrans_count = 1;
+        bpf_map_update_elem(&process_stats, &pid, &init, 0);
+    } else {
+        __sync_fetch_and_add(&ps->retrans_count, 1);
+    }
+    return 0;
 }
 
 // kprobe: __ip_queue_xmit(struct sock *sk, struct sk_buff *skb, ...)

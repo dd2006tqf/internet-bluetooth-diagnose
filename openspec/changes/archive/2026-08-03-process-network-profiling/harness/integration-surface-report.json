@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "change_name": "process-network-profiling",
+  "implementation_base_commit": "4553180e2346c83b29f96194016a29cf525af47c",
+  "discovery_mode": "reviewed_inventory",
+  "source_fingerprint": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+  "planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+  "change_footprint_json_sha256": "sha256:7552fa01f7b017243e129467c028a2cb85bf0de383f55c6288e51207e09ef07f",
+  "scope_classifier_identity": {
+    "schema_version": 1,
+    "path": "scripts/change_scope.js",
+    "sha256": "sha256:f7c5dc2d02366cf05b9a01da5c6caad6c47e5e8fdefbcd497bea91d70352755e",
+    "output_sha256": "sha256:83cb0bb8b66dde223ffea00ba489de4fd82c7e6550f63dc54c49292ad0d2f755"
+  },
+  "discovery_adapter_identity": {
+    "id": "reviewed-inventory-v1",
+    "schema_version": 1,
+    "sha256": "sha256:cbcf64a8afbdcafa3221b48b1ea76c7ea5de1a45aba0e78037da0fdb3bec9045"
+  },
+  "compile_commands_sha256": null,
+  "ast_tool_identity": null,
+  "planned_surface_ids": [],
+  "changed_production_paths": [
+    "server/include/process_net_profiler.hpp",
+    "server/src/flow_rate.bpf.c",
+    "server/src/process_net_profiler.cpp"
+  ],
+  "path_candidates": [
+    {
+      "candidate_id": "path-candidate-90c0f04533bb9e74",
+      "source": "path",
+      "path": "server/src/process_net_profiler.cpp",
+      "old_path": null,
+      "change_status": "added"
+    },
+    {
+      "candidate_id": "path-candidate-ece96e958270ed96",
+      "source": "path",
+      "path": "server/src/flow_rate.bpf.c",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-f25338857357c8a9",
+      "source": "path",
+      "path": "server/include/process_net_profiler.hpp",
+      "old_path": null,
+      "change_status": "added"
+    }
+  ],
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-161d1055aaea",
+      "source": "structural",
+      "path": "server/Makefile",
+      "kind": "build-graph-candidate",
+      "allowance_kind": "build_graph_entries",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "candidate-e344dec7c0a1",
+      "source": "structural",
+      "path": "server/include/process_net_profiler.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts",
+      "old_path": null,
+      "change_status": "added"
+    }
+  ],
+  "ast_candidates": [],
+  "surface_candidate_bindings": [],
+  "unmatched_candidates": [
+    {
+      "candidate_id": "candidate-161d1055aaea",
+      "source": "structural",
+      "reason": "The changed path is not mapped to an approved product surface."
+    },
+    {
+      "candidate_id": "candidate-e344dec7c0a1",
+      "source": "structural",
+      "reason": "The changed path is not mapped to an approved product surface."
+    },
+    {
+      "candidate_id": "path-candidate-90c0f04533bb9e74",
+      "source": "path",
+      "reason": "The changed path is not mapped to an approved product surface."
+    },
+    {
+      "candidate_id": "path-candidate-ece96e958270ed96",
+      "source": "path",
+      "reason": "The changed path is not mapped to an approved product surface."
+    },
+    {
+      "candidate_id": "path-candidate-f25338857357c8a9",
+      "source": "path",
+      "reason": "The changed path is not mapped to an approved product surface."
+    }
+  ],
+  "status": "review_required"
+}

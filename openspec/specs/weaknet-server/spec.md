@@ -35,21 +35,21 @@ MUST 在流量分析启动后检查降级模式状态并输出 WARNING 日志。
 - **WHEN** 服务端编译
 - **THEN** MUST 编译新的 wifi_packet_loss.bpf.o，server/Makefile 包含新的编译规则
 
-### Requirement: Wi-Fi丢包归因
-服务端 MUST 通过 eBPF 探针区分发送丢包和接收丢包，精确定位网络故障点。
+### Requirement: 进程网络画像
+服务端 MUST 通过 eBPF 探针统计每个进程的网络流量，定位占带宽或大量重传的进程。
 
-#### Scenario: eBPF收发丢包探针实现
+#### Scenario: eBPF进程统计探针
 - **WHEN** 服务端启动且内核支持 eBPF
-- **THEN** MUST 挂载收发路径 tracepoint（netif_receive_skb / net_dev_queue / net_dev_xmit），统计每接口的收发/丢弃/重试包数
+- **THEN** MUST 在现有 flow_rate.bpf.c 中新增 process_stats Map，按 PID 记录进程名、发送字节数、包数、重传次数
 
 #### Scenario: 用户态监控接口
-- **WHEN** WifiPacketLossMonitor 被调用 getStats()
-- **THEN** MUST 返回所有接口的收发/丢弃/重传统计，并支持分析指定接口的丢包归因
+- **WHEN** ProcessNetProfiler 被调用 getTopBandwidth() 或 getTopRetransmit()
+- **THEN** MUST 返回按带宽或重传排序的进程统计列表
 
-### Requirement: 系统集成
-丢包归因 MUST 集成到网络质量评估和构建系统。
+### Requirement: 进程画像集成
+进程级画像 MUST 集成到构建系统。
 
-#### Scenario: 评估器集成和构建更新
+#### Scenario: 构建更新
 - **WHEN** 服务端编译
-- **THEN** MUST 编译新的 wifi_packet_loss.bpf.o，server/Makefile 包含新的编译规则
+- **THEN** MUST 编译新增的 process_net_profiler.cpp，server/Makefile 包含新的源文件
 
