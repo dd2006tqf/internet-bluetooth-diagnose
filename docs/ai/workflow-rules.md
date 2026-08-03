@@ -97,6 +97,14 @@
 - **THEN** 预期结果
 ```
 
+### 主 spec 不能有重复 requirement
+修改 `openspec/specs/*/spec.md` 时，必须检查是否已存在同名 requirement。重复 requirement 会导致 `--freeze-planning-baseline` 校验失败（`duplicate main requirement`）。
+
+修改主 spec 的正确流程：
+1. 先 grep 确认 requirement 名称不存在
+2. 如果已存在，跳过添加或先合并已有内容
+3. 每次归档后检查主 spec，确认无重复
+
 ### Footprint 与 drift_reason
 - `change_footprint.sh --json` 查看 status
 - `within_expected` → task_verify **不加** `--drift-reason`
@@ -153,6 +161,7 @@
 | `Error: planning changed during command` | 修改了 design.md 导致 planning_fingerprint 变化 | 不要改 design.md！重跑所有 evidence |
 | `Error: undeclared implementation paths` | 脏文件不在任何 task 的 changed_paths 中 | 创建 change 前清理无关文件，或用 residual_risks 说明 |
 | `Error: TDD command schema mismatch` | 手工编辑了 verification.json 导致结构损坏 | 不要手改 evidence！重跑 task_verify.sh |
+| `Error: duplicate main requirement` | 主 spec 中有重复 requirement 名称 | 先 grep 确认不存在，再添加 |
 
 ## 工具速查
 
