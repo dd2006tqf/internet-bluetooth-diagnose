@@ -1,18 +1,18 @@
 {
   "schema_version": 1,
-  "transaction_id": "archive-txn-11a65d8f18e9f111355fb4b2",
-  "change_name": "process-network-profiling",
+  "transaction_id": "archive-txn-71b0871802c118aab90c0980",
+  "change_name": "ebpf-tcp-retransmit-dns-formalize",
   "status": "committed",
-  "prepared_at": "2026-08-03T06:53:06.282Z",
-  "completed_at": "2026-08-03T06:53:17.287Z",
-  "target_path": "openspec/changes/archive/2026-08-03-process-network-profiling",
-  "log_path": ".ai-harness/logs/archive-process-network-profiling-20260803T065134Z.y9CP2m.log",
-  "root_snapshot_sha256": "sha256:b97dd864e50671bc029e255a03dc3a292c671112bb7036f3f9eefb04fe6e6a9b",
+  "prepared_at": "2026-08-03T11:09:05.698Z",
+  "completed_at": "2026-08-03T11:09:17.306Z",
+  "target_path": "openspec/changes/archive/2026-08-03-ebpf-tcp-retransmit-dns-formalize",
+  "log_path": ".ai-harness/logs/archive-ebpf-tcp-retransmit-dns-formalize-20260803T110739Z.8VHt6t.log",
+  "root_snapshot_sha256": "sha256:8d8cd1fb05762cd1fe421627d061a74c56a4a631f4f25a42b4cd3816b1252af7",
   "fingerprints": {
-    "source_fingerprint": "sha256:9c8108911bd0fec0799147ed24ab8cde7f9b9820ac17257753f977d6a6a65f4c",
+    "source_fingerprint": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
     "profile_sha256": "sha256:37cfdb19cb68d81d977dce247339448775a1d908b521d7eb7168dc8d015cb938",
-    "artifact_fingerprint": "sha256:89ea9561d96754bc00f025ab909dccac148acdc481ef9af7482cc9546f54e879",
-    "base_specs_fingerprint": "sha256:57aafc3593e8e24695d4472a36b69ac78d9cd31b63358e809a765e8239f3ee2f"
+    "artifact_fingerprint": "sha256:1e1cb4f3d3689a1781dd4eaf6bbe3110bdba82db16a58a0e0ab4438e36f7f34a",
+    "base_specs_fingerprint": "sha256:d7c15f03d8461469ba3560e8ecedeb407d17e90183fa1b7616301eecba2cf5ff"
   },
-  "evidence_sha256": "sha256:acaad2e19e6e0cf05b0d92bf5ddb3e358a01742bd397db1574db8b7fd21b8e0e"
+  "evidence_sha256": "sha256:2a407d05e72fc1892867d1a762c621868280785c0c725175ca9341631385680b"
 }

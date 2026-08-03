@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "change_name": "ebpf-tcp-retransmit-dns-formalize",
+  "implementation_base_commit": "80ef0f2fc5ff83cf3d058368f923a4dae91ee9da",
+  "source_fingerprint": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+  "budget_block_sha256": "sha256:550dc44e6a6f4a68fcb930e02d8eb2b5bdee40954deb7a931212d1d06c029fd0",
+  "status": "within_expected",
+  "production": {
+    "added_lines": 0,
+    "deleted_lines": 0,
+    "net_lines": 0,
+    "touched_files": 0,
+    "new_files": 0
+  },
+  "tests": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0
+  },
+  "project_support": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0,
+    "paths_by_class": {
+      "project_docs": [],
+      "project_tooling": [],
+      "examples": []
+    }
+  },
+  "generated": {
+    "files": 0,
+    "bytes": 0
+  },
+  "vendor": {
+    "changed_paths": []
+  },
+  "binary": {
+    "files": 0,
+    "bytes": 0,
+    "paths": []
+  },
+  "structural_candidates": [],
+  "unclassified_paths": [],
+  "classification_overlaps": []
+}

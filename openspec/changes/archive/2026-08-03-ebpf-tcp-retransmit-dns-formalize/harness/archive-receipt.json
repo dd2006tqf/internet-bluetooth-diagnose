@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "change_name": "ebpf-tcp-retransmit-dns-formalize",
+  "archived_as": "2026-08-03-ebpf-tcp-retransmit-dns-formalize",
+  "archived_at": "2026-08-03T11:09:17.646Z",
+  "profile_sha256": "sha256:37cfdb19cb68d81d977dce247339448775a1d908b521d7eb7168dc8d015cb938",
+  "source_fingerprint": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+  "artifact_fingerprint": "sha256:1e1cb4f3d3689a1781dd4eaf6bbe3110bdba82db16a58a0e0ab4438e36f7f34a",
+  "base_specs_fingerprint_before": "sha256:d7c15f03d8461469ba3560e8ecedeb407d17e90183fa1b7616301eecba2cf5ff",
+  "archive_output_sha256": "sha256:e77f72cd9cdb16bd134382c2a39693c2397ac3e861150c521d6a856f184e598f",
+  "main_specs_validation_sha256": "sha256:5a78a652c05d45a7f93939bb6d95f07d318fc0a9646a77621bb1ce28a06a410b",
+  "authority": "retained-receipt-not-active-state"
+}

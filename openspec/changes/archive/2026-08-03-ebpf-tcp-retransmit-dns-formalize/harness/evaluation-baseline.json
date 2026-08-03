@@ -1,0 +1,55 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260803T105110Z-405b50",
+  "change_name": "ebpf-tcp-retransmit-dns-formalize",
+  "status": "complete",
+  "started_at": "2026-08-03T10:51:10.292Z",
+  "source_fingerprint": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+  "artifact_fingerprint": "sha256:1e1cb4f3d3689a1781dd4eaf6bbe3110bdba82db16a58a0e0ab4438e36f7f34a",
+  "base_specs_fingerprint": "sha256:d7c15f03d8461469ba3560e8ecedeb407d17e90183fa1b7616301eecba2cf5ff",
+  "verification_json_sha256": "sha256:3d17e4123ad5685cdfd488939c924179b42ae6ec2f07b735fc601b3e8a131328",
+  "budget_block_sha256": "sha256:550dc44e6a6f4a68fcb930e02d8eb2b5bdee40954deb7a931212d1d06c029fd0",
+  "change_footprint_json_sha256": "sha256:a7dc5225485a91226b827169ffc995337eae6f4e541608b554ce6c787143f7d7",
+  "integration_planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+  "integration_surface_report_sha256": "sha256:3a296778ce2c0d34e06041ad9d9b278ac62a3166038564c2a8b901b429be44a2",
+  "integration_discovery_identity_sha256": "sha256:20a0be52dbd169edc491a7f5499710c955b2780bb13eaef49ab1690c55005861",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "80ef0f2fc5ff83cf3d058368f923a4dae91ee9da",
+    "head_commit": "80ef0f2fc5ff83cf3d058368f923a4dae91ee9da",
+    "source_fingerprint": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+    "artifact_fingerprint": "sha256:1e1cb4f3d3689a1781dd4eaf6bbe3110bdba82db16a58a0e0ab4438e36f7f34a",
+    "base_specs_fingerprint": "sha256:d7c15f03d8461469ba3560e8ecedeb407d17e90183fa1b7616301eecba2cf5ff",
+    "layers": {
+      "effective": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "committed": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "untracked": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [],
+    "git_state_fingerprint": "sha256:2236be7b2f4e0090e0563b704105444ed77b7cc8625dcf544d109a917574cf9b",
+    "raw_diff_persisted": false
+  },
+  "completed_at": "2026-08-03T11:05:57.505Z",
+  "evaluation_json_sha256": "sha256:74dd90591b5e027c9e88c5c90781307b25afdb43efae2e3eb23aedd05fdf3575"
+}

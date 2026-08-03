@@ -5,11 +5,11 @@
   "phase": "idle",
   "current_step": "change-archived",
   "next_step": "Create or select the next change",
-  "updated_at": "2026-08-03T06:53:17.056Z",
+  "updated_at": "2026-08-03T11:09:16.940Z",
   "last_archived_change": {
-    "change_name": "process-network-profiling",
-    "archived_as": "2026-08-03-process-network-profiling",
-    "archived_at": "2026-08-03T06:53:17.056Z"
+    "change_name": "ebpf-tcp-retransmit-dns-formalize",
+    "archived_as": "2026-08-03-ebpf-tcp-retransmit-dns-formalize",
+    "archived_at": "2026-08-03T11:09:16.940Z"
   },
   "last_archive_recovery_acknowledgment": {
     "change_name": "fix-degraded-mode-log",

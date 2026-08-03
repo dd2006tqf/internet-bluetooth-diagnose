@@ -1,0 +1,199 @@
+{
+  "schema_version": 3,
+  "change_name": "ebpf-tcp-retransmit-dns-formalize",
+  "migration": null,
+  "tasks": [
+    {
+      "task_id": "1",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "TCP重传追踪",
+          "scenarios": [
+            "eBPF重传探针实现"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "TCP重传追踪",
+          "scenarios": [
+            "用户态监控接口"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/src/tcp_retransmit.bpf.c",
+        "server/src/tcp_retransmit_monitor.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785753598572-549981",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 build/tcp_retransmit.bpf.o"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-03T10:39:45.892Z",
+          "finished_at": "2026-08-03T10:39:57.164Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+          "source_fingerprint_after": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+          "planning_fingerprint_before": "sha256:0611b098f3de05653254de3e998ea1e3db25613f604e3084701f607c7e8b155d",
+          "planning_fingerprint_after": "sha256:0611b098f3de05653254de3e998ea1e3db25613f604e3084701f607c7e8b155d",
+          "tdd_policy_sha256": "sha256:78879bf05f303cb12f4bb3ec18902ff1db912b8704b9422d025c06abe47381b3",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:d30b4eaa163faba4e55716f45e8173d4a3994709d380c5655d1543671b35c44b",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "2",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "DNS监控",
+          "scenarios": [
+            "eBPF DNS探针实现"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "DNS监控",
+          "scenarios": [
+            "用户态监控接口"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/src/dns_monitor.bpf.c",
+        "server/src/dns_monitor.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785753848356-558219",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 build/dns_monitor.bpf.o"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-03T10:43:54.463Z",
+          "finished_at": "2026-08-03T10:44:07.240Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+          "source_fingerprint_after": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+          "planning_fingerprint_before": "sha256:0611b098f3de05653254de3e998ea1e3db25613f604e3084701f607c7e8b155d",
+          "planning_fingerprint_after": "sha256:0611b098f3de05653254de3e998ea1e3db25613f604e3084701f607c7e8b155d",
+          "tdd_policy_sha256": "sha256:78879bf05f303cb12f4bb3ec18902ff1db912b8704b9422d025c06abe47381b3",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:ae4dccb7c0aedd5d511f80a639647373c71de47e8848c9e595bc0ae5d3b4583b",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "3",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "TCP DNS 重传集成",
+          "scenarios": [
+            "构建更新"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/Makefile"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785754057874-565368",
+          "phase": "REGRESSION",
+          "cycle_id": "cycle-1",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "docker",
+            "exec",
+            "weaknet-arm64-dev",
+            "bash",
+            "-lc",
+            "cd /src && make -C server -j1 all"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-03T10:47:24.280Z",
+          "finished_at": "2026-08-03T10:47:36.671Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+          "source_fingerprint_after": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+          "planning_fingerprint_before": "sha256:0611b098f3de05653254de3e998ea1e3db25613f604e3084701f607c7e8b155d",
+          "planning_fingerprint_after": "sha256:0611b098f3de05653254de3e998ea1e3db25613f604e3084701f607c7e8b155d",
+          "tdd_policy_sha256": "sha256:78879bf05f303cb12f4bb3ec18902ff1db912b8704b9422d025c06abe47381b3",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    }
+  ]
+}

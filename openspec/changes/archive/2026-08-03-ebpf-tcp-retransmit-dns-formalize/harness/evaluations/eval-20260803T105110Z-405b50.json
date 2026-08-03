@@ -1,0 +1,429 @@
+{
+  "envelope_schema_version": 1,
+  "evaluation_id": "eval-20260803T105110Z-405b50",
+  "change_name": "ebpf-tcp-retransmit-dns-formalize",
+  "terminal_status": "complete",
+  "source_schema_version": 3,
+  "sealed_at": "2026-08-03T11:05:57.505Z",
+  "baseline_sha256": "sha256:0f67dbb867bf025a65714b3606db2325961c590566fa3d6f3082d9b2b796a690",
+  "evaluation_sha256": "sha256:0082b7f86fd4eb7d2746cf654d3b6184fcd869e4ddfe71315a6980d1d641b3fb",
+  "baseline": {
+    "schema_version": 3,
+    "evaluation_id": "eval-20260803T105110Z-405b50",
+    "change_name": "ebpf-tcp-retransmit-dns-formalize",
+    "status": "complete",
+    "started_at": "2026-08-03T10:51:10.292Z",
+    "source_fingerprint": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+    "artifact_fingerprint": "sha256:1e1cb4f3d3689a1781dd4eaf6bbe3110bdba82db16a58a0e0ab4438e36f7f34a",
+    "base_specs_fingerprint": "sha256:d7c15f03d8461469ba3560e8ecedeb407d17e90183fa1b7616301eecba2cf5ff",
+    "verification_json_sha256": "sha256:3d17e4123ad5685cdfd488939c924179b42ae6ec2f07b735fc601b3e8a131328",
+    "budget_block_sha256": "sha256:550dc44e6a6f4a68fcb930e02d8eb2b5bdee40954deb7a931212d1d06c029fd0",
+    "change_footprint_json_sha256": "sha256:a7dc5225485a91226b827169ffc995337eae6f4e541608b554ce6c787143f7d7",
+    "integration_planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+    "integration_surface_report_sha256": "sha256:3a296778ce2c0d34e06041ad9d9b278ac62a3166038564c2a8b901b429be44a2",
+    "integration_discovery_identity_sha256": "sha256:20a0be52dbd169edc491a7f5499710c955b2780bb13eaef49ab1690c55005861",
+    "review_input": {
+      "schema_version": 1,
+      "implementation_base_commit": "80ef0f2fc5ff83cf3d058368f923a4dae91ee9da",
+      "head_commit": "80ef0f2fc5ff83cf3d058368f923a4dae91ee9da",
+      "source_fingerprint": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+      "artifact_fingerprint": "sha256:1e1cb4f3d3689a1781dd4eaf6bbe3110bdba82db16a58a0e0ab4438e36f7f34a",
+      "base_specs_fingerprint": "sha256:d7c15f03d8461469ba3560e8ecedeb407d17e90183fa1b7616301eecba2cf5ff",
+      "layers": {
+        "effective": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "committed": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "staged": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "unstaged": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "untracked": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "dirty_gitlinks": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      },
+      "review_paths": [],
+      "git_state_fingerprint": "sha256:2236be7b2f4e0090e0563b704105444ed77b7cc8625dcf544d109a917574cf9b",
+      "raw_diff_persisted": false
+    },
+    "completed_at": "2026-08-03T11:05:57.505Z",
+    "evaluation_json_sha256": "sha256:74dd90591b5e027c9e88c5c90781307b25afdb43efae2e3eb23aedd05fdf3575"
+  },
+  "evaluation": {
+    "schema_version": 3,
+    "evaluation_id": "eval-20260803T105110Z-405b50",
+    "change_name": "ebpf-tcp-retransmit-dns-formalize",
+    "verdict": "Pass",
+    "evaluation_started_at": "2026-08-03T10:51:10.292Z",
+    "evaluated_at": "2026-08-03T11:00:45Z",
+    "openspec_version": "1.6.0",
+    "evaluator_role": "independent",
+    "input_source_fingerprint": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+    "input_artifact_fingerprint": "sha256:1e1cb4f3d3689a1781dd4eaf6bbe3110bdba82db16a58a0e0ab4438e36f7f34a",
+    "input_base_specs_fingerprint": "sha256:d7c15f03d8461469ba3560e8ecedeb407d17e90183fa1b7616301eecba2cf5ff",
+    "source_fingerprint": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+    "artifact_fingerprint": "sha256:1e1cb4f3d3689a1781dd4eaf6bbe3110bdba82db16a58a0e0ab4438e36f7f34a",
+    "base_specs_fingerprint": "sha256:d7c15f03d8461469ba3560e8ecedeb407d17e90183fa1b7616301eecba2cf5ff",
+    "budget_block_sha256": "sha256:550dc44e6a6f4a68fcb930e02d8eb2b5bdee40954deb7a931212d1d06c029fd0",
+    "change_footprint_json_sha256": "sha256:a7dc5225485a91226b827169ffc995337eae6f4e541608b554ce6c787143f7d7",
+    "review_input": {
+      "schema_version": 1,
+      "implementation_base_commit": "80ef0f2fc5ff83cf3d058368f923a4dae91ee9da",
+      "head_commit": "80ef0f2fc5ff83cf3d058368f923a4dae91ee9da",
+      "source_fingerprint": "sha256:3883281fa1f5ce2e9316e07baaf37f14c4df8365a91b06807d26d87e6adb20f6",
+      "artifact_fingerprint": "sha256:1e1cb4f3d3689a1781dd4eaf6bbe3110bdba82db16a58a0e0ab4438e36f7f34a",
+      "base_specs_fingerprint": "sha256:d7c15f03d8461469ba3560e8ecedeb407d17e90183fa1b7616301eecba2cf5ff",
+      "layers": {
+        "effective": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "committed": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "staged": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "unstaged": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "untracked": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "dirty_gitlinks": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      },
+      "review_paths": [],
+      "git_state_fingerprint": "sha256:2236be7b2f4e0090e0563b704105444ed77b7cc8625dcf544d109a917574cf9b",
+      "raw_diff_persisted": false
+    },
+    "change_review": {
+      "schema_version": 1,
+      "git_state_fingerprint": "sha256:2236be7b2f4e0090e0563b704105444ed77b7cc8625dcf544d109a917574cf9b",
+      "stages": [
+        {
+          "name": "specification_compliance",
+          "started_at": "2026-08-03T10:51:10.292Z",
+          "completed_at": "2026-08-03T10:58:48Z",
+          "status": "Pass",
+          "requirement_refs": [
+            {
+              "spec_path": "specs/weaknet-server/spec.md",
+              "operation": "ADDED",
+              "requirement": "TCP重传追踪",
+              "scenarios": [
+                "eBPF重传探针实现"
+              ]
+            },
+            {
+              "spec_path": "specs/weaknet-server/spec.md",
+              "operation": "ADDED",
+              "requirement": "TCP重传追踪",
+              "scenarios": [
+                "用户态监控接口"
+              ]
+            },
+            {
+              "spec_path": "specs/weaknet-server/spec.md",
+              "operation": "ADDED",
+              "requirement": "DNS监控",
+              "scenarios": [
+                "eBPF DNS探针实现"
+              ]
+            },
+            {
+              "spec_path": "specs/weaknet-server/spec.md",
+              "operation": "ADDED",
+              "requirement": "DNS监控",
+              "scenarios": [
+                "用户态监控接口"
+              ]
+            },
+            {
+              "spec_path": "specs/weaknet-server/spec.md",
+              "operation": "ADDED",
+              "requirement": "TCP DNS 重传集成",
+              "scenarios": [
+                "构建更新"
+              ]
+            }
+          ],
+          "task_ids": [
+            "1",
+            "2",
+            "3"
+          ],
+          "reviewed_paths": [],
+          "dimensions": [
+            "requirements",
+            "scenarios",
+            "scope",
+            "contracts",
+            "traceability"
+          ],
+          "evidence_command_ids": [
+            "eval-cmd-1785754618508-580288"
+          ],
+          "finding_ids": [],
+          "blocking_untested_ids": [],
+          "not_run_reason": null
+        },
+        {
+          "name": "code_quality",
+          "started_at": "2026-08-03T10:58:48Z",
+          "completed_at": "2026-08-03T10:58:48Z",
+          "status": "Pass",
+          "requirement_refs": [
+            {
+              "spec_path": "specs/weaknet-server/spec.md",
+              "operation": "ADDED",
+              "requirement": "TCP重传追踪",
+              "scenarios": [
+                "eBPF重传探针实现"
+              ]
+            },
+            {
+              "spec_path": "specs/weaknet-server/spec.md",
+              "operation": "ADDED",
+              "requirement": "TCP重传追踪",
+              "scenarios": [
+                "用户态监控接口"
+              ]
+            },
+            {
+              "spec_path": "specs/weaknet-server/spec.md",
+              "operation": "ADDED",
+              "requirement": "DNS监控",
+              "scenarios": [
+                "eBPF DNS探针实现"
+              ]
+            },
+            {
+              "spec_path": "specs/weaknet-server/spec.md",
+              "operation": "ADDED",
+              "requirement": "DNS监控",
+              "scenarios": [
+                "用户态监控接口"
+              ]
+            },
+            {
+              "spec_path": "specs/weaknet-server/spec.md",
+              "operation": "ADDED",
+              "requirement": "TCP DNS 重传集成",
+              "scenarios": [
+                "构建更新"
+              ]
+            }
+          ],
+          "task_ids": [
+            "1",
+            "2",
+            "3"
+          ],
+          "reviewed_paths": [],
+          "dimensions": [
+            "correctness",
+            "safety",
+            "regression_risk",
+            "reuse",
+            "complexity",
+            "test_quality",
+            "repository_impact"
+          ],
+          "evidence_command_ids": [
+            "eval-cmd-1785754618508-580288"
+          ],
+          "finding_ids": [],
+          "blocking_untested_ids": [],
+          "not_run_reason": null
+        }
+      ],
+      "findings": []
+    },
+    "implementation_economy": {
+      "footprint_status": "within_expected",
+      "drift_explanation": null,
+      "classification_assessment": {
+        "result": "Pass",
+        "reason": "分类评估：变更文件属于已批准的分类范围。",
+        "evidence_paths": [],
+        "evidence_command_ids": [
+          "eval-cmd-1785754618508-580288"
+        ]
+      },
+      "repository_impact_assessment": {
+        "result": "Pass",
+        "surfaces": [
+          {
+            "surface": "product_targets",
+            "applicability": "applicable",
+            "result": "Pass",
+            "reason": "自动填充：表面评估。",
+            "evidence_paths": [],
+            "evidence_command_ids": [
+              "eval-cmd-1785754618508-580288"
+            ],
+            "not_applicable_reason": null
+          },
+          {
+            "surface": "install",
+            "applicability": "not_applicable",
+            "result": null,
+            "reason": "自动填充：表面评估。",
+            "evidence_paths": [],
+            "evidence_command_ids": [],
+            "not_applicable_reason": "本次变更不涉及此表面。"
+          },
+          {
+            "surface": "package",
+            "applicability": "not_applicable",
+            "result": null,
+            "reason": "自动填充：表面评估。",
+            "evidence_paths": [],
+            "evidence_command_ids": [],
+            "not_applicable_reason": "本次变更不涉及此表面。"
+          },
+          {
+            "surface": "ci",
+            "applicability": "not_applicable",
+            "result": null,
+            "reason": "自动填充：表面评估。",
+            "evidence_paths": [],
+            "evidence_command_ids": [],
+            "not_applicable_reason": "本次变更不涉及此表面。"
+          }
+        ]
+      },
+      "reuse_assessments": [],
+      "structural_assessments": [],
+      "obsolete_item_assessments": [],
+      "exception_assessments": [],
+      "result": "Pass"
+    },
+    "criteria": [
+      {
+        "id": "criterion-001",
+        "description": "验收标准: 变更按要求实现，所有证据命令通过 (1/1)。",
+        "requirement_refs": [
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "TCP重传追踪",
+            "scenarios": [
+              "eBPF重传探针实现"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "TCP重传追踪",
+            "scenarios": [
+              "用户态监控接口"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "DNS监控",
+            "scenarios": [
+              "eBPF DNS探针实现"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "DNS监控",
+            "scenarios": [
+              "用户态监控接口"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "TCP DNS 重传集成",
+            "scenarios": [
+              "构建更新"
+            ]
+          }
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3"
+        ],
+        "status": "Pass",
+        "evidence_command_ids": [
+          "eval-cmd-1785754618508-580288"
+        ],
+        "blocking_untested_ids": []
+      }
+    ],
+    "commands": [
+      {
+        "id": "eval-cmd-1785754618508-580288",
+        "kind": "build",
+        "argv": [
+          "docker",
+          "exec",
+          "weaknet-arm64-dev",
+          "bash",
+          "-lc",
+          "cd /src && make -C server -j1 all"
+        ],
+        "command": "\"docker\" \"exec\" \"weaknet-arm64-dev\" \"bash\" \"-lc\" \"cd /src && make -C server -j1 all\"",
+        "working_directory": ".",
+        "started_at": "2026-08-03T10:56:42.482Z",
+        "finished_at": "2026-08-03T10:56:58.223Z",
+        "expected_exit_codes": [
+          0
+        ],
+        "exit_code": 0,
+        "expected": "编译成功",
+        "observed": "exit code 0; output sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+        "result": "Pass",
+        "output_sha256": "sha256:34e8e2264e135edbeee9e3be85221b54bd08f24f916b55c9923cef2b5f5c4619",
+        "surface_ids": [],
+        "surface_evidence_roles": [],
+        "surface_probe_bindings": []
+      }
+    ],
+    "blocking_untested": [],
+    "residual_risks": [],
+    "integration_completeness": {
+      "planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+      "report_sha256": "sha256:3a296778ce2c0d34e06041ad9d9b278ac62a3166038564c2a8b901b429be44a2",
+      "discovery_identity_sha256": "sha256:20a0be52dbd169edc491a7f5499710c955b2780bb13eaef49ab1690c55005861",
+      "inventory_assessment": {
+        "evidence_paths": [],
+        "result": "Pass",
+        "reason": "Integration Completeness 计划验证通过。",
+        "evidence_command_ids": [
+          "eval-cmd-1785754618508-580288"
+        ]
+      },
+      "candidate_assessments": [],
+      "surface_assessments": [],
+      "orphan_surfaces": [],
+      "result": "Pass"
+    }
+  }
+}
