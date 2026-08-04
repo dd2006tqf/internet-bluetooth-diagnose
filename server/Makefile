@@ -134,7 +134,7 @@ $(TEST_BIN_DIR)/test_net_info: $(TEST_DIR)/test_net_info.cpp \
     src/net_info.cpp src/serializer.cpp \
     include/net_info.hpp include/serializer.hpp
 	@mkdir -p $(TEST_BIN_DIR)
-	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/test_net_info.cpp src/net_info.cpp src/serializer.cpp
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/test_net_info.cpp src/net_info.cpp src/serializer.cpp $(TEST_LDFLAGS)
 
 # test_quality_assessor（网络质量加权评分算法）
 $(TEST_BIN_DIR)/test_quality_assessor: $(TEST_DIR)/unit/test_quality_assessor.cpp \
