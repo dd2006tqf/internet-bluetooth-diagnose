@@ -9,6 +9,9 @@
 bin/
 build/
 
+# 交叉编译部署产物（tools/deploy_and_test.sh 每次重建）
+dist-arm64/
+
 # IDE
 .vscode/
 .idea/

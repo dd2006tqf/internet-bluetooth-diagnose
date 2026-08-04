@@ -403,8 +403,8 @@ fi
 
 echo "开发板 ${BOARD} 可达，开始部署..."
 
-# 先删除旧产物
-ssh "${BOARD}" "rm -rf '${BOARD_DIR}' && mkdir -p '${BOARD_DIR}'" 2>&1
+# 先删除旧产物（部分文件由 sudo 创建，需 sudo 删除）
+ssh "${BOARD}" "echo radxa | sudo -S rm -rf '${BOARD_DIR}' && mkdir -p '${BOARD_DIR}'" 2>&1
 echo "  [OK] 已删除旧产物"
 
 # scp 传输
