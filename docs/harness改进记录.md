@@ -123,6 +123,42 @@ bash scripts/change_abort.sh <change-name> --purge
 
 ---
 
+## 改进点8：probe argv 契约不匹配（evaluation 阶段才暴露）
+
+### 问题
+
+`design.md` 中 surface 的 `evidence_contracts` 里 probe `argv` 写成了裸命令形式（如 `["make","-C","server"]`），但在 Generator/Evaluator 用 `--project-command build-server` 记录证据时，实际 argv 是包装器形式 `["scripts/project_command.sh","build-server","--change","<change>","--json"]`。`--plan-check` 阶段不校验 probe argv 与 runtime argv 匹配，只在 evaluation `--run` 阶段才报 `surface command does not match the approved probe contract`，导致返工。
+
+### 修复（规则，非代码）
+
+根据 `docs/ai/workflow.md` 的规则：
+> "The command-ID form is recorded and matched as the normalized argv `scripts/project_command.sh <command-id> --change <active-change> --json`, so the Integration probe must declare that exact wrapper argv."
+
+即：design.md 里 `evidence_contracts` 的 `argv`，只要是用 `--project-command` 记录证据的 surface，**必须**写 wrapper 形式，不能写裸命令。
+
+### 教训
+
+规划阶段写 `design.md` 之前，必须完整阅读 `docs/ai/workflow.md`（probe 契约）、`docs/ai/evaluation.md`（evaluation schema）。这个教训已写入 `CLAUDE.md` "Before any work" 节。
+
+---
+
+## 改进点9：纯编译验证的 surface 应设计为 build_or_install 类型
+
+### 问题
+
+本项目的 eBPF 运行时 + D-Bus 服务端需在 ARM64 开发板上运行，当前 VM/容器内无法独立跑行为验证。若 surface 设计为非 `build_or_install` 类型且 `verify_kinds` 只写 `["build"]`，`--plan-check` 会报 `surface needs test or behavior evidence`。
+
+### 修复（规则，非代码）
+
+涉及纯编译期接口变更（如新增成员、新增函数声明）、运行时需真机的 surface，应设计为 `build_or_install` 类型：
+- `"kind": "build_or_install"`
+- `"runnable_artifact": false`（无法运行真机时）
+- `verify_kinds`: `["build"]`（build_or_install 类型允许只含 build）
+
+这样避免强制要求 test/behavior 证据，同时用 TDD policy 的 `unavailable_hardware` 例外声明。
+
+---
+
 ## 改进点汇总
 
 | 改进点 | 问题 | 修复方式 | 状态 |
@@ -132,3 +168,5 @@ bash scripts/change_abort.sh <change-name> --purge
 | 4 | 审计噪声太大 | 新建 audit_summary.sh 生成人类可读汇总 | ✅ 已修复 |
 | 6 | 缺少逃生舱 | 新建 change_abort.sh 优雅中止 | ✅ 已修复 |
 | 7 | 文档分散重复 | 使用指南新增文档导航 | ✅ 已修复 |
+| 8 | probe argv 契约不匹配 | 规则：design 中必须写 wrapper argv | ✅ 已记录 |
+| 9 | 纯编译 surface 验证 | 规则：设计为 build_or_install | ✅ 已记录 |
