@@ -1,0 +1,196 @@
+{
+  "schema_version": 3,
+  "change_name": "integrate-ebpf-monitor-lifecycle",
+  "migration": null,
+  "tasks": [
+    {
+      "task_id": "1",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "eBPF监控器生命周期统一管理",
+          "scenarios": [
+            "ServerContext 持有 eBPF 监控器成员"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-server-context-members"
+      ],
+      "changed_paths": [
+        "server/include/server.hpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "新增 4 个 eBPF 监控器成员"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785896786369-2954147",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exception-no-target-hardware",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "integrate-ebpf-monitor-lifecycle",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-05T02:26:11.229Z",
+          "finished_at": "2026-08-05T02:26:24.760Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:55b8ad2eb65869af86c25d75af7e55856f7a485c7989601e7722290c8a47fa34",
+          "source_fingerprint_after": "sha256:55b8ad2eb65869af86c25d75af7e55856f7a485c7989601e7722290c8a47fa34",
+          "planning_fingerprint_before": "sha256:d769a1a6a387f0dd3a2de1c60c180d9362e40e9f7f6a3cb8cd7aaeefb76dfa10",
+          "planning_fingerprint_after": "sha256:d769a1a6a387f0dd3a2de1c60c180d9362e40e9f7f6a3cb8cd7aaeefb76dfa10",
+          "tdd_policy_sha256": "sha256:a14e6bdf893a41d567b0bf0e0b3de48149df12e0b719f90aec965e4de12c2e09",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:76c959a24260e2b4d645e220379aee6d249b13789617c7998e8261e93c9ffdcb",
+          "surface_ids": [
+            "surface-server-context-members"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-server-context-members",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "2",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "eBPF监控器生命周期统一管理",
+          "scenarios": [
+            "server.cpp 启动并停止 eBPF 监控器"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-server-thread-startup"
+      ],
+      "changed_paths": [
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "新增 4 个线程启动函数"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785896834082-2955392",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exception-no-target-hardware",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "integrate-ebpf-monitor-lifecycle",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-05T02:26:59.747Z",
+          "finished_at": "2026-08-05T02:27:12.410Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:55b8ad2eb65869af86c25d75af7e55856f7a485c7989601e7722290c8a47fa34",
+          "source_fingerprint_after": "sha256:55b8ad2eb65869af86c25d75af7e55856f7a485c7989601e7722290c8a47fa34",
+          "planning_fingerprint_before": "sha256:d769a1a6a387f0dd3a2de1c60c180d9362e40e9f7f6a3cb8cd7aaeefb76dfa10",
+          "planning_fingerprint_after": "sha256:d769a1a6a387f0dd3a2de1c60c180d9362e40e9f7f6a3cb8cd7aaeefb76dfa10",
+          "tdd_policy_sha256": "sha256:a14e6bdf893a41d567b0bf0e0b3de48149df12e0b719f90aec965e4de12c2e09",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:e651907b0a14e638652d9905e6fe218ab748862c45da7fae1f355945571db0ba",
+          "surface_ids": [
+            "surface-server-thread-startup"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-server-thread-startup",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "3",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "同探针双消费者共享义务明确化",
+          "scenarios": [
+            "同探针不合并、绑定同一生命周期"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "同探针共享义务明确化"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1785897190818-2964310",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exception-no-target-hardware",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "integrate-ebpf-monitor-lifecycle",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-05T02:32:56.287Z",
+          "finished_at": "2026-08-05T02:33:09.112Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:55b8ad2eb65869af86c25d75af7e55856f7a485c7989601e7722290c8a47fa34",
+          "source_fingerprint_after": "sha256:55b8ad2eb65869af86c25d75af7e55856f7a485c7989601e7722290c8a47fa34",
+          "planning_fingerprint_before": "sha256:d769a1a6a387f0dd3a2de1c60c180d9362e40e9f7f6a3cb8cd7aaeefb76dfa10",
+          "planning_fingerprint_after": "sha256:d769a1a6a387f0dd3a2de1c60c180d9362e40e9f7f6a3cb8cd7aaeefb76dfa10",
+          "tdd_policy_sha256": "sha256:a14e6bdf893a41d567b0bf0e0b3de48149df12e0b719f90aec965e4de12c2e09",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:e6fa392a95c2bc2397df62d6a5e516bb312022d536f7724437c8bda931b4a6f4",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    }
+  ]
+}

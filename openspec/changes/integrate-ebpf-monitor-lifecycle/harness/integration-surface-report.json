@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "change_name": "integrate-ebpf-monitor-lifecycle",
+  "implementation_base_commit": "996effd800bd06ca2c725f12592cda9db816bff8",
+  "discovery_mode": "reviewed_inventory",
+  "source_fingerprint": "sha256:55b8ad2eb65869af86c25d75af7e55856f7a485c7989601e7722290c8a47fa34",
+  "planning_block_sha256": "sha256:9c9d6d806cea2a5e014e14f85951e02e460ceee7656fcf1108a7931f4aa557db",
+  "change_footprint_json_sha256": "sha256:c044113406040a26954cda795c9aaf8b252fd9506d951dc824eb1df0f98cdb65",
+  "scope_classifier_identity": {
+    "schema_version": 1,
+    "path": "scripts/change_scope.js",
+    "sha256": "sha256:f7c5dc2d02366cf05b9a01da5c6caad6c47e5e8fdefbcd497bea91d70352755e",
+    "output_sha256": "sha256:ce8dd07fec2378ddf6e79ee7f0748a3496fe62fec979f24217acc28116ee6bd7"
+  },
+  "discovery_adapter_identity": {
+    "id": "reviewed-inventory-v1",
+    "schema_version": 1,
+    "sha256": "sha256:cbcf64a8afbdcafa3221b48b1ea76c7ea5de1a45aba0e78037da0fdb3bec9045"
+  },
+  "compile_commands_sha256": null,
+  "ast_tool_identity": null,
+  "planned_surface_ids": [
+    "surface-server-context-members",
+    "surface-server-thread-startup"
+  ],
+  "changed_production_paths": [
+    "server/include/server.hpp",
+    "server/src/server.cpp"
+  ],
+  "path_candidates": [
+    {
+      "candidate_id": "path-candidate-66dcca3458ce08b6",
+      "source": "path",
+      "path": "server/src/server.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-77c5a50b6bae05b5",
+      "source": "path",
+      "path": "server/include/server.hpp",
+      "old_path": null,
+      "change_status": "modified"
+    }
+  ],
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-c8248dcf181f",
+      "source": "structural",
+      "path": "server/include/server.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts",
+      "old_path": null,
+      "change_status": "modified"
+    }
+  ],
+  "ast_candidates": [],
+  "surface_candidate_bindings": [
+    {
+      "surface_id": "surface-server-context-members",
+      "candidate_bindings": [
+        {
+          "candidate_id": "candidate-c8248dcf181f",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-66dcca3458ce08b6",
+          "role": "consumer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-77c5a50b6bae05b5",
+          "role": "producer",
+          "tree_side": "both"
+        }
+      ],
+      "producer_paths": [
+        "server/include/server.hpp"
+      ],
+      "consumer_paths": [
+        "server/src/server.cpp"
+      ],
+      "old_consumer_paths": [],
+      "replacement_consumer_paths": []
+    },
+    {
+      "surface_id": "surface-server-thread-startup",
+      "candidate_bindings": [
+        {
+          "candidate_id": "path-candidate-66dcca3458ce08b6",
+          "role": "consumer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-66dcca3458ce08b6",
+          "role": "producer",
+          "tree_side": "current"
+        }
+      ],
+      "producer_paths": [
+        "server/src/server.cpp"
+      ],
+      "consumer_paths": [
+        "server/src/server.cpp"
+      ],
+      "old_consumer_paths": [],
+      "replacement_consumer_paths": []
+    }
+  ],
+  "unmatched_candidates": [],
+  "status": "complete"
+}

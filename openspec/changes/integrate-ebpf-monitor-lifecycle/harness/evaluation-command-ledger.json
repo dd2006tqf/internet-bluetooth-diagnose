@@ -1,0 +1,33 @@
+{
+  "schema_version": 2,
+  "evaluation_id": "eval-20260805T023716Z-f76fb9",
+  "change_name": "integrate-ebpf-monitor-lifecycle",
+  "commands": [
+    {
+      "id": "eval-cmd-1785897483595-2972711",
+      "kind": "build",
+      "argv": [
+        "scripts/project_command.sh",
+        "build-server",
+        "--change",
+        "integrate-ebpf-monitor-lifecycle",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"build-server\" \"--change\" \"integrate-ebpf-monitor-lifecycle\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-08-05T02:37:50.085Z",
+      "finished_at": "2026-08-05T02:38:02.723Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "exit code in [0]",
+      "observed": "exit code 0; output sha256:b6ea55a7d52b1e1f19193ad7fbd377db57d7d684c3839159a3d8efbc25739a83",
+      "result": "Pass",
+      "output_sha256": "sha256:b6ea55a7d52b1e1f19193ad7fbd377db57d7d684c3839159a3d8efbc25739a83",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ]
+}

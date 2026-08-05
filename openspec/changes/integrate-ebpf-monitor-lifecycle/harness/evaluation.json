@@ -1,0 +1,465 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260805T023716Z-f76fb9",
+  "change_name": "integrate-ebpf-monitor-lifecycle",
+  "verdict": "Pass",
+  "evaluation_started_at": "2026-08-05T02:37:16.776Z",
+  "evaluated_at": "2026-08-05T02:40:13Z",
+  "openspec_version": "1.6.0",
+  "evaluator_role": "independent",
+  "input_source_fingerprint": "sha256:55b8ad2eb65869af86c25d75af7e55856f7a485c7989601e7722290c8a47fa34",
+  "input_artifact_fingerprint": "sha256:f47f0bf582f51835eff6dabe1bb8f9a70b4f03c6cd0090c96a205e77cb9df8a5",
+  "input_base_specs_fingerprint": "sha256:ad11f9d3cdac5f4f30f747c23eae7809ccd0fd8785cf413466b24a5da04580c7",
+  "source_fingerprint": "sha256:55b8ad2eb65869af86c25d75af7e55856f7a485c7989601e7722290c8a47fa34",
+  "artifact_fingerprint": "sha256:f47f0bf582f51835eff6dabe1bb8f9a70b4f03c6cd0090c96a205e77cb9df8a5",
+  "base_specs_fingerprint": "sha256:ad11f9d3cdac5f4f30f747c23eae7809ccd0fd8785cf413466b24a5da04580c7",
+  "budget_block_sha256": "sha256:215451c0c4df8225e5726db59336a608749545d50004ae81b8b2269518458e4f",
+  "change_footprint_json_sha256": "sha256:c044113406040a26954cda795c9aaf8b252fd9506d951dc824eb1df0f98cdb65",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "996effd800bd06ca2c725f12592cda9db816bff8",
+    "head_commit": "183d8368c454f7783a377b47f012e94629965ed6",
+    "source_fingerprint": "sha256:55b8ad2eb65869af86c25d75af7e55856f7a485c7989601e7722290c8a47fa34",
+    "artifact_fingerprint": "sha256:f47f0bf582f51835eff6dabe1bb8f9a70b4f03c6cd0090c96a205e77cb9df8a5",
+    "base_specs_fingerprint": "sha256:ad11f9d3cdac5f4f30f747c23eae7809ccd0fd8785cf413466b24a5da04580c7",
+    "layers": {
+      "effective": {
+        "paths": [
+          "server/include/server.hpp",
+          "server/src/server.cpp"
+        ],
+        "state_fingerprint": "sha256:5a349de238328d4a25d38378ba7f333a86eb50b53b63f3b84a3e7cb862c4c1cb"
+      },
+      "committed": {
+        "paths": [
+          "server/include/server.hpp",
+          "server/src/server.cpp"
+        ],
+        "state_fingerprint": "sha256:cf4165f23e1c79e37ef8d12c3478ad252dbbc157523e8b11cbb2ddd68b95f4b9"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "untracked": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [
+      "server/include/server.hpp",
+      "server/src/server.cpp"
+    ],
+    "git_state_fingerprint": "sha256:24b2f177d87426f541be98dfcf27c0a911b10b75b23c66e68f82d6198d672545",
+    "raw_diff_persisted": false
+  },
+  "change_review": {
+    "schema_version": 1,
+    "git_state_fingerprint": "sha256:24b2f177d87426f541be98dfcf27c0a911b10b75b23c66e68f82d6198d672545",
+    "stages": [
+      {
+        "name": "specification_compliance",
+        "started_at": "2026-08-05T02:37:16.776Z",
+        "completed_at": "2026-08-05T02:40:13Z",
+        "status": "Pass",
+        "requirement_refs": [
+          null,
+          null,
+          null
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3"
+        ],
+        "reviewed_paths": [
+          "server/include/server.hpp",
+          "server/src/server.cpp"
+        ],
+        "dimensions": [
+          "requirements",
+          "scenarios",
+          "scope",
+          "contracts",
+          "traceability"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785897483595-2972711"
+        ],
+        "finding_ids": [],
+        "blocking_untested_ids": [],
+        "not_run_reason": null
+      },
+      {
+        "name": "code_quality",
+        "started_at": "2026-08-05T02:40:13Z",
+        "completed_at": "2026-08-05T02:40:13Z",
+        "status": "Pass",
+        "requirement_refs": [
+          null,
+          null,
+          null
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3"
+        ],
+        "reviewed_paths": [
+          "server/include/server.hpp",
+          "server/src/server.cpp"
+        ],
+        "dimensions": [
+          "correctness",
+          "safety",
+          "regression_risk",
+          "reuse",
+          "complexity",
+          "test_quality",
+          "repository_impact"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785897483595-2972711"
+        ],
+        "finding_ids": [],
+        "blocking_untested_ids": [],
+        "not_run_reason": null
+      }
+    ],
+    "findings": []
+  },
+  "implementation_economy": {
+    "footprint_status": "drift_warning",
+    "drift_explanation": {
+      "metric_keys": [],
+      "reason": "生产代码新增 176 行，超出 expected 120 行但在 review_at 200 行以内",
+      "why_no_replan": "增量在 review_at 阈值内，变更范围明确，无需重新规划"
+    },
+    "classification_assessment": {
+      "result": "Pass",
+      "reason": "server.hpp 和 server.cpp 均为 production 分类，修改范围明确",
+      "evidence_paths": [
+        "server/include/server.hpp",
+        "server/src/server.cpp"
+      ],
+      "evidence_command_ids": [
+        "eval-cmd-1785897483595-2972711"
+      ]
+    },
+    "repository_impact_assessment": {
+      "result": "Pass",
+      "surfaces": [
+        {
+          "surface": "product_targets",
+          "applicability": "applicable",
+          "result": "Pass",
+          "reason": "编译通过验证，新增函数不改变已有接口",
+          "evidence_paths": [
+            "server/include/server.hpp",
+            "server/src/server.cpp"
+          ],
+          "evidence_command_ids": [
+            "eval-cmd-1785897483595-2972711"
+          ],
+          "not_applicable_reason": null
+        },
+        {
+          "surface": "install",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "本变更仅修改服务端源码，不涉及 install 目标",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "无 install 相关变更"
+        },
+        {
+          "surface": "package",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "本变更仅修改服务端源码，不涉及打包",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "无 package 相关变更"
+        },
+        {
+          "surface": "ci",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "本变更仅修改服务端源码，不涉及 CI 配置",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "无 CI 相关变更"
+        }
+      ]
+    },
+    "reuse_assessments": [],
+    "structural_assessments": [],
+    "obsolete_item_assessments": [],
+    "exception_assessments": [
+      {
+        "id": "exc-no-target-hardware",
+        "result": "Pass",
+        "reason": "ARM64 容器内编译通过（make -C server exit 0）",
+        "evidence_paths": [],
+        "evidence_command_ids": [
+          "eval-cmd-1785897483595-2972711"
+        ]
+      }
+    ],
+    "result": "Pass"
+  },
+  "criteria": [
+    {
+      "id": "criterion-001",
+      "description": "4 个 eBPF 监控器已通过 ServerContext 统一生命周期接入 server.cpp 启动链，编译通过",
+      "requirement_refs": [
+        null,
+        null,
+        null
+      ],
+      "task_ids": [
+        "1",
+        "2",
+        "3"
+      ],
+      "status": "Pass",
+      "evidence_command_ids": [
+        "eval-cmd-1785897483595-2972711"
+      ],
+      "blocking_untested_ids": []
+    }
+  ],
+  "commands": [
+    {
+      "id": "eval-cmd-1785897483595-2972711",
+      "kind": "build",
+      "argv": [
+        "scripts/project_command.sh",
+        "build-server",
+        "--change",
+        "integrate-ebpf-monitor-lifecycle",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"build-server\" \"--change\" \"integrate-ebpf-monitor-lifecycle\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-08-05T02:37:50.085Z",
+      "finished_at": "2026-08-05T02:38:02.723Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "exit code in [0]",
+      "observed": "exit code 0; output sha256:b6ea55a7d52b1e1f19193ad7fbd377db57d7d684c3839159a3d8efbc25739a83",
+      "result": "Pass",
+      "output_sha256": "sha256:b6ea55a7d52b1e1f19193ad7fbd377db57d7d684c3839159a3d8efbc25739a83",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ],
+  "blocking_untested": [],
+  "residual_risks": [],
+  "integration_completeness": {
+    "planning_block_sha256": "sha256:9c9d6d806cea2a5e014e14f85951e02e460ceee7656fcf1108a7931f4aa557db",
+    "report_sha256": "sha256:a84f9b4f3e9856a46b05eaa21f08c7909b24c760b832a84a4633d05ee3e27ced",
+    "discovery_identity_sha256": "sha256:6462bde0195d47723bff5177358a18108b0779a0657e1e4b533ac79cbe855237",
+    "inventory_assessment": {
+      "result": "Pass",
+      "reason": "变更路径 server/include/server.hpp 和 server/src/server.cpp 均为已知 production 路径，ARM64 编译通过",
+      "evidence_paths": [
+        "server/include/server.hpp",
+        "server/src/server.cpp"
+      ],
+      "evidence_command_ids": [
+        "eval-cmd-1785897483595-2972711"
+      ]
+    },
+    "candidate_assessments": [
+      {
+        "candidate_id": "candidate-c8248dcf181f",
+        "source": "structural",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-server-context-members"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-server-context-members",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "downstream_build",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          }
+        ],
+        "reason": "candidate mapped to approved build surface",
+        "producer_paths": [
+          "server/include/server.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/server.hpp",
+          "server/src/server.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785897483595-2972711"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-66dcca3458ce08b6",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-server-context-members",
+          "surface-server-thread-startup"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-server-context-members",
+            "candidate_roles": [
+              "consumer"
+            ],
+            "consumer_kind": "downstream_build",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          },
+          {
+            "surface_id": "surface-server-thread-startup",
+            "candidate_roles": [
+              "producer",
+              "consumer"
+            ],
+            "consumer_kind": "downstream_build",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          }
+        ],
+        "reason": "candidate mapped to approved build surface",
+        "producer_paths": [
+          "server/src/server.cpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/server.hpp",
+          "server/src/server.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785897483595-2972711"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-77c5a50b6bae05b5",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-server-context-members"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-server-context-members",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "downstream_build",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          }
+        ],
+        "reason": "candidate mapped to approved build surface",
+        "producer_paths": [
+          "server/include/server.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/server.hpp",
+          "server/src/server.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785897483595-2972711"
+        ],
+        "orphan_ids": []
+      }
+    ],
+    "surface_assessments": [
+      {
+        "surface_id": "surface-server-context-members",
+        "result": "Pass",
+        "reason": "surface verified by independent ARM64 build",
+        "consumer_paths": [
+          "server/src/server.cpp"
+        ],
+        "old_consumer_paths": [],
+        "replacement_consumer_paths": [],
+        "kind_evidence": [
+          {
+            "kind": "build",
+            "evidence_command_ids": [
+              "eval-cmd-1785897483595-2972711"
+            ]
+          }
+        ],
+        "role_evidence": [
+          {
+            "role": "current",
+            "evidence_command_ids": [
+              "eval-cmd-1785897483595-2972711"
+            ]
+          }
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785897483595-2972711"
+        ],
+        "blocking_untested_ids": [],
+        "orphan_ids": []
+      },
+      {
+        "surface_id": "surface-server-thread-startup",
+        "result": "Pass",
+        "reason": "surface verified by independent ARM64 build",
+        "consumer_paths": [
+          "server/src/server.cpp"
+        ],
+        "old_consumer_paths": [],
+        "replacement_consumer_paths": [],
+        "kind_evidence": [
+          {
+            "kind": "build",
+            "evidence_command_ids": [
+              "eval-cmd-1785897483595-2972711"
+            ]
+          }
+        ],
+        "role_evidence": [
+          {
+            "role": "current",
+            "evidence_command_ids": [
+              "eval-cmd-1785897483595-2972711"
+            ]
+          }
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1785897483595-2972711"
+        ],
+        "blocking_untested_ids": [],
+        "orphan_ids": []
+      }
+    ],
+    "orphan_surfaces": [],
+    "result": "Pass"
+  }
+}
