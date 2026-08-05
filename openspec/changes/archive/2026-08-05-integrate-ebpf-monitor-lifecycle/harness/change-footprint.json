@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "change_name": "integrate-ebpf-monitor-lifecycle",
+  "implementation_base_commit": "996effd800bd06ca2c725f12592cda9db816bff8",
+  "source_fingerprint": "sha256:55b8ad2eb65869af86c25d75af7e55856f7a485c7989601e7722290c8a47fa34",
+  "budget_block_sha256": "sha256:215451c0c4df8225e5726db59336a608749545d50004ae81b8b2269518458e4f",
+  "status": "drift_warning",
+  "production": {
+    "added_lines": 176,
+    "deleted_lines": 0,
+    "net_lines": 176,
+    "touched_files": 2,
+    "new_files": 0
+  },
+  "tests": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0
+  },
+  "project_support": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0,
+    "paths_by_class": {
+      "project_docs": [],
+      "project_tooling": [],
+      "examples": []
+    }
+  },
+  "generated": {
+    "files": 0,
+    "bytes": 0
+  },
+  "vendor": {
+    "changed_paths": []
+  },
+  "binary": {
+    "files": 0,
+    "bytes": 0,
+    "paths": []
+  },
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-c8248dcf181f",
+      "path": "server/include/server.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts"
+    }
+  ],
+  "unclassified_paths": [],
+  "classification_overlaps": []
+}

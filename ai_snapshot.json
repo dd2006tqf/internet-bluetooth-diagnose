@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
   "workflow": "openspec",
-  "active_change": "integrate-ebpf-monitor-lifecycle",
-  "phase": "evaluation_in_progress",
-  "current_step": "evaluation-started",
-  "next_step": "Run independent commands and write evaluation.json",
-  "updated_at": "2026-08-05T02:37:17.037Z",
+  "active_change": null,
+  "phase": "idle",
+  "current_step": "change-archived",
+  "next_step": "Create or select the next change",
+  "updated_at": "2026-08-05T04:28:52.068Z",
   "last_archived_change": {
     "change_name": "http-request-latency-monitor",
     "archived_as": "2026-08-03-http-request-latency-monitor",
