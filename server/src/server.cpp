@@ -32,6 +32,10 @@
 #include "bt_monitor.hpp"
 #include "band_conflict_detector.hpp"
 #include "bt_audio_fusion.hpp"
+#include "dns_monitor.hpp"
+#include "wifi_packet_loss_monitor.hpp"
+#include "http_latency_monitor.hpp"
+#include "process_net_profiler.hpp"
 #include <iomanip>
 
 using namespace std::chrono_literals;
@@ -469,6 +473,127 @@ static void start_network_quality_thread(ServerContext* ctx) {
     });
 }
 
+// ====================================================================
+// eBPF 监控器线程启动函数
+// 将此前孤立的 BPF 监控器纳入 ServerContext 统一生命周期
+// ====================================================================
+
+void start_dns_monitor_thread(ServerContext* ctx) {
+    ctx->dns_monitor_thread = std::thread([ctx]() {
+        LOG_INFO(LogModule::NETWORK, "DNS monitor thread started");
+        auto monitor = std::make_unique<DnsMonitor>();
+        ctx->dns_monitor = monitor.get();
+        if (!monitor->init("build/dns_monitor.bpf.o")) {
+            LOG_INFO(LogModule::NETWORK, "DNS monitor: BPF init failed, thread exiting");
+            ctx->dns_monitor = nullptr;
+            return;
+        }
+        while (ctx->running.load()) {
+            auto stats = monitor->getStats();
+            if (stats.totalQueries > 0) {
+                LOG_INFO(LogModule::NETWORK, "DNS tick: queries=" << stats.totalQueries
+                    << " avgLatency=" << stats.avgLatencyMs << "ms"
+                    << " timeoutRate=" << stats.timeoutRate() << "%");
+            }
+            std::this_thread::sleep_for(10000ms);
+        }
+        monitor->stop();
+        ctx->dns_monitor = nullptr;
+        LOG_INFO(LogModule::NETWORK, "DNS monitor thread stopped");
+    });
+}
+
+void start_wifi_loss_monitor_thread(ServerContext* ctx) {
+    ctx->wifi_loss_monitor_thread = std::thread([ctx]() {
+        LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor thread started");
+        auto monitor = std::make_unique<WifiPacketLossMonitor>();
+        ctx->wifi_loss_monitor = monitor.get();
+        if (!monitor->init("build/wifi_packet_loss.bpf.o")) {
+            LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor: BPF init failed, thread exiting");
+            ctx->wifi_loss_monitor = nullptr;
+            return;
+        }
+        while (ctx->running.load()) {
+            auto stats = monitor->getStats();
+            for (auto& [ifindex, s] : stats) {
+                double txLoss = s.txLossRate();
+                if (txLoss > 0.1) {
+                    LOG_INFO(LogModule::NETWORK, "Wi-Fi loss tick: ifindex=" << ifindex
+                        << " txLoss=" << txLoss << "%"
+                        << " txDrops=" << s.txDrops << "/" << s.txPkts);
+                }
+            }
+            std::this_thread::sleep_for(10000ms);
+        }
+        monitor->stop();
+        ctx->wifi_loss_monitor = nullptr;
+        LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor thread stopped");
+    });
+}
+
+void start_http_latency_monitor_thread(ServerContext* ctx) {
+    ctx->http_latency_monitor_thread = std::thread([ctx]() {
+        LOG_INFO(LogModule::NETWORK, "HTTP latency monitor thread started");
+        auto monitor = std::make_unique<HttpLatencyMonitor>();
+        ctx->http_latency_monitor = monitor.get();
+        if (!monitor->init("build/http_latency.bpf.o")) {
+            LOG_INFO(LogModule::NETWORK, "HTTP latency monitor: BPF init failed, thread exiting");
+            ctx->http_latency_monitor = nullptr;
+            return;
+        }
+        while (ctx->running.load()) {
+            auto globalStats = monitor->getGlobalStats();
+            if (globalStats.totalTxns > 0) {
+                LOG_INFO(LogModule::NETWORK, "HTTP tick: txns=" << globalStats.totalTxns
+                    << " p50=" << (globalStats.p50Ns / 1000000) << "ms"
+                    << " p99=" << (globalStats.p99Ns / 1000000) << "ms"
+                    << " analysis=" << globalStats.analysis);
+            }
+            std::this_thread::sleep_for(10000ms);
+        }
+        monitor->stop();
+        ctx->http_latency_monitor = nullptr;
+        LOG_INFO(LogModule::NETWORK, "HTTP latency monitor thread stopped");
+    });
+}
+
+void start_process_net_profiler_thread(ServerContext* ctx) {
+    ctx->process_net_profiler_thread = std::thread([ctx]() {
+        LOG_INFO(LogModule::NETWORK, "Process net profiler thread started");
+        auto profiler = std::make_unique<ProcessNetProfiler>();
+        ctx->process_net_profiler = profiler.get();
+        if (!profiler->init("build/flow_rate.bpf.o")) {
+            LOG_INFO(LogModule::NETWORK, "Process net profiler: BPF init failed, thread exiting");
+            ctx->process_net_profiler = nullptr;
+            return;
+        }
+        while (ctx->running.load()) {
+            auto topBw = profiler->getTopBandwidth(5);
+            for (auto& p : topBw) {
+                if (p.txBytes > 0) {
+                    LOG_INFO(LogModule::NETWORK, "PROC_BW pid=" << p.pid
+                        << " comm=" << p.comm
+                        << " txBytes=" << p.txBytes
+                        << " retrans=" << p.retransCount);
+                }
+            }
+            auto topRetrans = profiler->getTopRetransmit(5);
+            for (auto& p : topRetrans) {
+                if (p.retransCount > 0) {
+                    LOG_INFO(LogModule::NETWORK, "PROC_RETRANS pid=" << p.pid
+                        << " comm=" << p.comm
+                        << " retrans=" << p.retransCount
+                        << " txBytes=" << p.txBytes);
+                }
+            }
+            std::this_thread::sleep_for(15000ms);
+        }
+        profiler->stop();
+        ctx->process_net_profiler = nullptr;
+        LOG_INFO(LogModule::NETWORK, "Process net profiler thread stopped");
+    });
+}
+
 // 启动服务
 int start_server() {
     // 初始化日志系统
@@ -515,10 +640,40 @@ int start_server() {
     // 启动蓝牙监测线程 (通过 BlueZ D-Bus API)
     LOG_INFO(LogModule::BLUETOOTH, "starting bluetooth monitor thread");
     start_bt_monitor_thread(&ctx, &ctx.bt_monitor);
+
+    // ================================================================
+    // eBPF 监控器统一启动（由 ServerContext 持有实例，退出时统一 stop）
+    // 任务：消除孤儿数据路径，确保每个加载的 BPF 程序有消费者
+    // ================================================================
+
+    // DNS 监控器：挂载 kprobe/udp_sendmsg + kprobe/udp_recvmsg
+    LOG_INFO(LogModule::NETWORK, "starting DNS monitor thread (interval=10s)");
+    start_dns_monitor_thread(&ctx);
+
+    // Wi-Fi 丢包归因：挂载 tracepoint/net/netif_receive_skb 等
+    LOG_INFO(LogModule::NETWORK, "starting Wi-Fi packet loss monitor thread (interval=10s)");
+    start_wifi_loss_monitor_thread(&ctx);
+
+    // HTTP 请求延迟：挂载 kprobe/tcp_sendmsg + kprobe/tcp_recvmsg
+    LOG_INFO(LogModule::NETWORK, "starting HTTP latency monitor thread (interval=10s)");
+    start_http_latency_monitor_thread(&ctx);
+
+    // 进程网络画像：挂载 kprobe/tcp_retransmit_skb + kprobe/ip_queue_xmit + kprobe/udp_sendmsg
+    // 同探针 tcp_retransmit_skb 双消费者之一（另一个在 TcpLossMonitor），各自独立加载，不合并
+    LOG_INFO(LogModule::NETWORK, "starting process net profiler thread (interval=15s)");
+    start_process_net_profiler_thread(&ctx);
+
     // 主线程进入阻塞式 looper
     auto* lp = Looper::current();
     lp->attach(ctx.connection);
     lp->run(&ctx);
+    // Looper::run() 退出后，逆序停止 eBPF 监控器释放 BPF 资源
+    LOG_INFO(LogModule::NETWORK, "server shutting down, stopping eBPF monitors...");
+    if (ctx.process_net_profiler) ctx.process_net_profiler->stop();
+    if (ctx.http_latency_monitor) ctx.http_latency_monitor->stop();
+    if (ctx.wifi_loss_monitor) ctx.wifi_loss_monitor->stop();
+    if (ctx.dns_monitor) ctx.dns_monitor->stop();
+    LOG_INFO(LogModule::NETWORK, "all eBPF monitors stopped");
     // 按当前要求，服务常驻不退出，以下代码不会到达；保留以备扩展
    // ctx.iface_thread.join();
    // ctx.tcp_loss_thread.join();

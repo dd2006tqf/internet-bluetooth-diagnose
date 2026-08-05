@@ -18,6 +18,10 @@ class DbusService;  // 前置声明
 class WeakNetMgr;   // 前置声明
 class NetInfo;      // 前置声明
 class BtMonitor;    // 前置声明
+class DnsMonitor;                // 前置声明
+class WifiPacketLossMonitor;     // 前置声明
+class HttpLatencyMonitor;        // 前置声明
+class ProcessNetProfiler;        // 前置声明
 
 struct ServerContext {
     // DBus 连接
@@ -51,6 +55,17 @@ struct ServerContext {
 
     // 蓝牙监测器
     BtMonitor* bt_monitor = nullptr;
+
+    // eBPF 监控器（由 server.cpp 统一管理生命周期）
+    DnsMonitor* dns_monitor = nullptr;
+    WifiPacketLossMonitor* wifi_loss_monitor = nullptr;
+    HttpLatencyMonitor* http_latency_monitor = nullptr;
+    ProcessNetProfiler* process_net_profiler = nullptr;
+    // eBPF 监控器线程
+    std::thread dns_monitor_thread;
+    std::thread wifi_loss_monitor_thread;
+    std::thread http_latency_monitor_thread;
+    std::thread process_net_profiler_thread;
 };
 
 // 初始化 DBus（线程支持、连接、请求服务名、注册对象路径与回调）
@@ -59,6 +74,12 @@ struct ServerContext {
 
 // 启动网卡监控线程（维护接口列表并发送 Changed 信号）
 void start_iface_monitor_thread(ServerContext* ctx);
+
+// 启动 eBPF 监控器线程
+void start_dns_monitor_thread(ServerContext* ctx);
+void start_wifi_loss_monitor_thread(ServerContext* ctx);
+void start_http_latency_monitor_thread(ServerContext* ctx);
+void start_process_net_profiler_thread(ServerContext* ctx);
 
 // 启动流量分析线程（内部函数）
 // void start_traffic_analysis_thread(ServerContext* ctx);
