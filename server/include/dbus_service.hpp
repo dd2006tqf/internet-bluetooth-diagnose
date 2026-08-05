@@ -10,6 +10,14 @@
 struct DBusConnection;
 struct DBusMessage;
 
+// 前置声明监控器类型（仅用于指针成员，避免头文件依赖）
+namespace weaknet_dbus {
+class DnsMonitor;
+class WifiPacketLossMonitor;
+class HttpLatencyMonitor;
+class ProcessNetProfiler;
+}
+
 namespace weaknet_dbus {
 
 class ServerContext;
@@ -40,6 +48,12 @@ public:
     bool handlePing(DBusConnection* conn, DBusMessage* msg);
     bool handleGetBluetoothDevices(DBusConnection* conn, DBusMessage* msg);
     bool handleGetBluetoothAdapter(DBusConnection* conn, DBusMessage* msg);
+
+    // eBPF 监控数据方法
+    bool handleGetDnsStats(DBusConnection* conn, DBusMessage* msg);
+    bool handleGetWifiLossStats(DBusConnection* conn, DBusMessage* msg);
+    bool handleGetHttpLatencyStats(DBusConnection* conn, DBusMessage* msg);
+    bool handleGetProcessProfiling(DBusConnection* conn, DBusMessage* msg);
 
 private:
     // 将字符串数组作为返回

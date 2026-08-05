@@ -15,6 +15,11 @@
 #include "network_quality_assessor.hpp"
 #include "net_ping.h"
 #include "bt_monitor.hpp"
+#include "dns_monitor.hpp"
+#include "wifi_packet_loss_monitor.hpp"
+#include "http_latency_monitor.hpp"
+#include "process_net_profiler.hpp"
+#include <sstream>
 
 namespace weaknet_dbus {
 
@@ -50,6 +55,22 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetBluetoothAdapter)) {
         self->handleGetBluetoothAdapter(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetDnsStats)) {
+        self->handleGetDnsStats(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetWifiLossStats)) {
+        self->handleGetWifiLossStats(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetHttpLatencyStats)) {
+        self->handleGetHttpLatencyStats(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetProcessProfiling)) {
+        self->handleGetProcessProfiling(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -382,6 +403,138 @@ bool DbusService::handleGetBluetoothAdapter(DBusConnection* conn, DBusMessage* m
             + "|Pairable:" + (state.pairable ? "1" : "0");
     } else {
         result = "No Bluetooth adapter available";
+    }
+
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = result.c_str();
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+// ====================================================================
+// eBPF 监控数据 D-Bus 方法
+// ====================================================================
+
+bool DbusService::handleGetDnsStats(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetDnsStats called");
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    std::string result;
+    if (ctx_ && ctx_->dns_monitor && ctx_->dns_monitor->isAvailable()) {
+        auto stats = ctx_->dns_monitor->getStats();
+        result = "totalQueries:" + std::to_string(stats.totalQueries)
+            + "|totalResponses:" + std::to_string(stats.totalResponses)
+            + "|totalTimeouts:" + std::to_string(stats.totalTimeouts)
+            + "|totalErrors:" + std::to_string(stats.totalErrors)
+            + "|avgLatencyMs:" + std::to_string(stats.avgLatencyMs)
+            + "|maxLatencyMs:" + std::to_string(stats.maxLatencyMs)
+            + "|timeoutRate:" + std::to_string(stats.timeoutRate());
+    } else {
+        result = "DNS monitor not available";
+    }
+
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = result.c_str();
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+bool DbusService::handleGetWifiLossStats(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetWifiLossStats called");
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    std::string result;
+    if (ctx_ && ctx_->wifi_loss_monitor && ctx_->wifi_loss_monitor->isAvailable()) {
+        auto stats = ctx_->wifi_loss_monitor->getStats();
+        for (auto& [ifindex, s] : stats) {
+            result += "ifindex:" + std::to_string(ifindex)
+                + " rxPkts:" + std::to_string(s.rxPkts)
+                + " txPkts:" + std::to_string(s.txPkts)
+                + " txDrops:" + std::to_string(s.txDrops)
+                + " txLossRate:" + std::to_string(s.txLossRate()) + "%"
+                + "|";
+        }
+        if (result.empty()) result = "No interface stats available";
+    } else {
+        result = "Wi-Fi loss monitor not available";
+    }
+
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = result.c_str();
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+bool DbusService::handleGetHttpLatencyStats(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetHttpLatencyStats called");
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    std::string result;
+    if (ctx_ && ctx_->http_latency_monitor && ctx_->http_latency_monitor->isAvailable()) {
+        auto stats = ctx_->http_latency_monitor->getGlobalStats();
+        result = "totalTxns:" + std::to_string(stats.totalTxns)
+            + "|p50Ms:" + std::to_string(stats.p50Ns / 1000000)
+            + "|p95Ms:" + std::to_string(stats.p95Ns / 1000000)
+            + "|p99Ms:" + std::to_string(stats.p99Ns / 1000000)
+            + "|maxMs:" + std::to_string(stats.maxNs / 1000000)
+            + "|analysis:" + stats.analysis;
+    } else {
+        result = "HTTP latency monitor not available";
+    }
+
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = result.c_str();
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+bool DbusService::handleGetProcessProfiling(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetProcessProfiling called");
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    std::string result;
+    if (ctx_ && ctx_->process_net_profiler && ctx_->process_net_profiler->isAvailable()) {
+        result += "=== Top Bandwidth ===|";
+        auto topBw = ctx_->process_net_profiler->getTopBandwidth(5);
+        for (auto& p : topBw) {
+            result += "pid:" + std::to_string(p.pid)
+                + " comm:" + p.comm
+                + " txBytes:" + std::to_string(p.txBytes)
+                + " txPackets:" + std::to_string(p.txPackets)
+                + " retrans:" + std::to_string(p.retransCount)
+                + "|";
+        }
+        result += "=== Top Retransmit ===|";
+        auto topRetrans = ctx_->process_net_profiler->getTopRetransmit(5);
+        for (auto& p : topRetrans) {
+            result += "pid:" + std::to_string(p.pid)
+                + " comm:" + p.comm
+                + " txBytes:" + std::to_string(p.txBytes)
+                + " retrans:" + std::to_string(p.retransCount)
+                + "|";
+        }
+    } else {
+        result = "Process net profiler not available";
     }
 
     DBusMessageIter args;

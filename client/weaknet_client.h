@@ -262,6 +262,52 @@ bool weaknet_get_bluetooth_adapter(char* buffer, size_t buffer_size, char* error
  */
 bool weaknet_subscribe_bluetooth_events(weaknet_event_callback_t callback);
 
+/* ============================== eBPF 监控数据 API ============================== */
+
+/**
+ * 获取 DNS 监控统计
+ *
+ * @param buffer 结果缓冲区，格式: "totalQueries:N|avgLatencyMs:N|timeoutRate:N%"
+ * @param buffer_size 缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size 错误信息缓冲区大小
+ * @return true-成功, false-失败
+ */
+bool weaknet_get_dns_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
+/**
+ * 获取 Wi-Fi 丢包统计
+ *
+ * @param buffer 结果缓冲区，格式: "ifindex:N rxPkts:N txPkts:N txLossRate:N%"
+ * @param buffer_size 缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size 错误信息缓冲区大小
+ * @return true-成功, false-失败
+ */
+bool weaknet_get_wifi_loss_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
+/**
+ * 获取 HTTP 请求延迟统计
+ *
+ * @param buffer 结果缓冲区，格式: "totalTxns:N|p50Ms:N|p95Ms:N|p99Ms:N|analysis:xxx"
+ * @param buffer_size 缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size 错误信息缓冲区大小
+ * @return true-成功, false-失败
+ */
+bool weaknet_get_http_latency_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
+/**
+ * 获取进程网络画像
+ *
+ * @param buffer 结果缓冲区，Top 带宽/重传进程列表
+ * @param buffer_size 缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size 错误信息缓冲区大小
+ * @return true-成功, false-失败
+ */
+bool weaknet_get_process_profiling(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
 #ifdef __cplusplus
 }
 #endif

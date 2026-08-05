@@ -563,6 +563,69 @@ public:
         return true;
     }
 
+    // 获取 DNS 监控统计
+    bool getDnsStats(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        return requestStringData(kMethodGetDnsStats, "DNS 监控统计", result, errorMsg);
+    }
+
+    // 获取 Wi-Fi 丢包统计
+    bool getWifiLossStats(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        return requestStringData(kMethodGetWifiLossStats, "Wi-Fi 丢包统计", result, errorMsg);
+    }
+
+    // 获取 HTTP 请求延迟统计
+    bool getHttpLatencyStats(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        return requestStringData(kMethodGetHttpLatencyStats, "HTTP 请求延迟统计", result, errorMsg);
+    }
+
+    // 获取进程网络画像
+    bool getProcessProfiling(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        return requestStringData(kMethodGetProcessProfiling, "进程网络画像", result, errorMsg);
+    }
+
+private:
+    // 统一失败的辅助函数
+    bool fail(const char* msg, std::string& errorMsg) {
+        errorMsg = msg;
+        return false;
+    }
+
+    // 通用字符串返回型 D-Bus 方法调用
+    bool requestStringData(const char* methodName, const char* label,
+                           std::string& result, std::string& errorMsg) {
+        DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, methodName);
+        if (!msg) {
+            errorMsg = std::string("创建") + label + "查询消息失败";
+            return false;
+        }
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 3000, &err);
+        dbus_message_unref(msg);
+        if (dbus_error_is_set(&err)) {
+            errorMsg = std::string(label) + "查询失败: " + err.message;
+            dbus_error_free(&err);
+            return false;
+        }
+        if (!reply) {
+            errorMsg = "未收到" + std::string(label) + "查询应答";
+            return false;
+        }
+        const char* data = nullptr;
+        if (!dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &data, DBUS_TYPE_INVALID)) {
+            errorMsg = "解析" + std::string(label) + "信息失败";
+            dbus_message_unref(reply);
+            return false;
+        }
+        result = data ? data : "";
+        dbus_message_unref(reply);
+        return true;
+    }
+
     // 订阅蓝牙设备变化事件
     bool subscribeToBluetoothEvents(bool (*callback)(const std::string& message, int32_t counter) = nullptr) {
         if (!isConnected()) return false;
@@ -924,6 +987,68 @@ extern "C" bool weaknet_subscribe_bluetooth_events(weaknet_event_callback_t call
     // 先添加 D-Bus 信号订阅
     weaknet_dbus::g_client->subscribeToEvent(weaknet_dbus::kSignalBluetoothDeviceChanged);
     return true;
+}
+
+// ============== eBPF 监控数据 API ==============
+
+extern "C" bool weaknet_get_dns_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getDnsStats(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    } else {
+        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+        return false;
+    }
+}
+
+extern "C" bool weaknet_get_wifi_loss_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getWifiLossStats(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    } else {
+        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+        return false;
+    }
+}
+
+extern "C" bool weaknet_get_http_latency_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getHttpLatencyStats(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    } else {
+        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+        return false;
+    }
+}
+
+extern "C" bool weaknet_get_process_profiling(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getProcessProfiling(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    } else {
+        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+        return false;
+    }
 }
 
 // 注意: 此文件现在作为动态库使用，不包含main函数
