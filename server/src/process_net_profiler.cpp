@@ -39,6 +39,9 @@ struct process_net_stats {
 struct ProcessNetProfiler::Impl {
     int process_stats_fd = -1;
     struct bpf_object *obj = nullptr;
+    struct bpf_link *link_retrans = nullptr;
+    struct bpf_link *link_xmit = nullptr;
+    struct bpf_link *link_udp = nullptr;
 };
 
 ProcessNetProfiler::ProcessNetProfiler()
@@ -57,7 +60,7 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
 #else
     LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: loading BPF object from " << bpfObjPath);
 
-    struct bpf_object_open_opts opts = {};
+    LIBBPF_OPTS(bpf_object_open_opts, opts);
     struct bpf_object *obj = bpf_object__open_file(bpfObjPath.c_str(), &opts);
     if (!obj) {
         LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: failed to open BPF object: " << bpfObjPath);
@@ -83,6 +86,36 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
         return false;
     }
 
+    // attach 3 个探针：tcp_retransmit_skb + ip_queue_xmit + udp_sendmsg
+    struct bpf_program *retrans_prog = bpf_object__find_program_by_name(obj, "trace_tcp_retransmit");
+    struct bpf_program *xmit_prog = bpf_object__find_program_by_name(obj, "tcp_transmit_entry");
+    struct bpf_program *udp_prog = bpf_object__find_program_by_name(obj, "udp_send_entry");
+
+    impl_->link_retrans = retrans_prog ? bpf_program__attach(retrans_prog) : nullptr;
+    if (impl_->link_retrans && libbpf_get_error(impl_->link_retrans)) {
+        LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: attach tcp_retransmit_skb failed");
+        impl_->link_retrans = nullptr;
+    }
+    impl_->link_xmit = xmit_prog ? bpf_program__attach(xmit_prog) : nullptr;
+    if (impl_->link_xmit && libbpf_get_error(impl_->link_xmit)) {
+        LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: attach ip_queue_xmit failed");
+        impl_->link_xmit = nullptr;
+    }
+    impl_->link_udp = udp_prog ? bpf_program__attach(udp_prog) : nullptr;
+    if (impl_->link_udp && libbpf_get_error(impl_->link_udp)) {
+        LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: attach udp_sendmsg failed");
+        impl_->link_udp = nullptr;
+    }
+
+    if (!impl_->link_retrans && !impl_->link_xmit && !impl_->link_udp) {
+        LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: all probes failed to attach");
+        bpf_object__close(obj);
+        impl_->link_retrans = impl_->link_xmit = impl_->link_udp = nullptr;
+        available_ = false;
+        initialized_ = true;
+        return false;
+    }
+
     impl_->obj = obj;
     available_ = true;
     initialized_ = true;
@@ -93,6 +126,11 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
 }
 
 void ProcessNetProfiler::stop() {
+#if HAVE_LIBBPF
+    if (impl_->link_retrans) { bpf_link__destroy(impl_->link_retrans); impl_->link_retrans = nullptr; }
+    if (impl_->link_xmit) { bpf_link__destroy(impl_->link_xmit); impl_->link_xmit = nullptr; }
+    if (impl_->link_udp) { bpf_link__destroy(impl_->link_udp); impl_->link_udp = nullptr; }
+#endif
     if (impl_->obj) {
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;

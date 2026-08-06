@@ -51,6 +51,8 @@ struct http_txn_record {
 struct HttpLatencyMonitor::Impl {
     int http_txn_stats_fd = -1;
     struct bpf_object *obj = nullptr;
+    struct bpf_link *link_send = nullptr;
+    struct bpf_link *link_recv = nullptr;
 };
 
 HttpLatencyMonitor::HttpLatencyMonitor()
@@ -69,7 +71,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
 #else
     LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: loading BPF object from " << bpfObjPath);
 
-    struct bpf_object_open_opts opts = {};
+    LIBBPF_OPTS(bpf_object_open_opts, opts);
     struct bpf_object *obj = bpf_object__open_file(bpfObjPath.c_str(), &opts);
     if (!obj) {
         LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: failed to open BPF object: " << bpfObjPath);
@@ -95,6 +97,40 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
         return false;
     }
 
+    // attach 探针到 kprobe/tcp_sendmsg 和 kprobe/tcp_recvmsg
+    struct bpf_program *send_prog = bpf_object__find_program_by_name(obj, "trace_tcp_sendmsg");
+    struct bpf_program *recv_prog = bpf_object__find_program_by_name(obj, "trace_tcp_recvmsg");
+    if (!send_prog || !recv_prog) {
+        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: BPF program not found");
+        bpf_object__close(obj);
+        available_ = false;
+        initialized_ = true;
+        return false;
+    }
+
+    impl_->link_send = bpf_program__attach(send_prog);
+    long err_send = libbpf_get_error(impl_->link_send);
+    if (err_send) {
+        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: attach tcp_sendmsg failed err=" << err_send);
+        impl_->link_send = nullptr;
+    }
+
+    impl_->link_recv = bpf_program__attach(recv_prog);
+    long err_recv = libbpf_get_error(impl_->link_recv);
+    if (err_recv) {
+        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: attach tcp_recvmsg failed err=" << err_recv);
+        impl_->link_recv = nullptr;
+    }
+
+    if (!impl_->link_send && !impl_->link_recv) {
+        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: both probes failed to attach");
+        bpf_object__close(obj);
+        impl_->link_send = impl_->link_recv = nullptr;
+        available_ = false;
+        initialized_ = true;
+        return false;
+    }
+
     impl_->obj = obj;
     available_ = true;
     initialized_ = true;
@@ -105,6 +141,10 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
 }
 
 void HttpLatencyMonitor::stop() {
+#if HAVE_LIBBPF
+    if (impl_->link_send) { bpf_link__destroy(impl_->link_send); impl_->link_send = nullptr; }
+    if (impl_->link_recv) { bpf_link__destroy(impl_->link_recv); impl_->link_recv = nullptr; }
+#endif
     if (impl_->obj) {
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;

@@ -81,6 +81,8 @@ struct TcpRetransMonitor::Impl {
     int retrans_events_fd = -1;  // retrans_events Map fd
     int retrans_stats_fd = -1;   // retrans_stats Map fd
     struct bpf_object *obj = nullptr;
+    struct bpf_link *link_retrans = nullptr;
+    struct bpf_link *link_send = nullptr;
 };
 
 TcpRetransMonitor::TcpRetransMonitor()
@@ -100,7 +102,7 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath) {
     LOG_INFO(LogModule::TCP_LOSS, "TcpRetransMonitor: loading BPF object from " << bpfObjPath);
 
     // 打开 BPF 对象
-    struct bpf_object_open_opts opts = {};
+    LIBBPF_OPTS(bpf_object_open_opts, opts);
     struct bpf_object *obj = bpf_object__open_file(bpfObjPath.c_str(), &opts);
     if (!obj) {
         LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: failed to open BPF object: " << bpfObjPath);
@@ -137,6 +139,37 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath) {
         return false;
     }
 
+    // attach 探针到 kprobe/tcp_retransmit_skb 和 kprobe/tcp_sendmsg
+    struct bpf_program *retrans_prog = bpf_object__find_program_by_name(obj, "trace_tcp_retransmit");
+    struct bpf_program *send_prog = bpf_object__find_program_by_name(obj, "trace_tcp_sendmsg");
+    if (!retrans_prog || !send_prog) {
+        LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: BPF program not found");
+        bpf_object__close(obj);
+        available_ = false;
+        initialized_ = true;
+        return false;
+    }
+
+    impl_->link_retrans = bpf_program__attach(retrans_prog);
+    if (libbpf_get_error(impl_->link_retrans)) {
+        LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: attach tcp_retransmit_skb failed");
+        impl_->link_retrans = nullptr;
+    }
+    impl_->link_send = bpf_program__attach(send_prog);
+    if (libbpf_get_error(impl_->link_send)) {
+        LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: attach tcp_sendmsg failed");
+        impl_->link_send = nullptr;
+    }
+
+    if (!impl_->link_retrans && !impl_->link_send) {
+        LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: both probes failed to attach");
+        bpf_object__close(obj);
+        impl_->link_retrans = impl_->link_send = nullptr;
+        available_ = false;
+        initialized_ = true;
+        return false;
+    }
+
     impl_->obj = obj;
     available_ = true;
     initialized_ = true;
@@ -147,6 +180,10 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath) {
 }
 
 void TcpRetransMonitor::stop() {
+#if HAVE_LIBBPF
+    if (impl_->link_retrans) { bpf_link__destroy(impl_->link_retrans); impl_->link_retrans = nullptr; }
+    if (impl_->link_send) { bpf_link__destroy(impl_->link_send); impl_->link_send = nullptr; }
+#endif
     if (impl_->obj) {
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;

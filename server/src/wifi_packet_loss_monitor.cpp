@@ -36,11 +36,32 @@ struct iface_packet_stats {
     __u64 tx_retries;
 };
 
+#if HAVE_LIBBPF
+// 辅助：按名字找到 BPF 程序并 attach，返回 link 或 nullptr
+static struct bpf_link* attachProgram(struct bpf_object* obj, const char* progName) {
+    struct bpf_program* prog = bpf_object__find_program_by_name(obj, progName);
+    if (!prog) {
+        LOG_ERROR(LogModule::NETWORK, "WifiPacketLossMonitor: BPF program " << progName << " not found");
+        return nullptr;
+    }
+    struct bpf_link* link = bpf_program__attach(prog);
+    if (libbpf_get_error(link)) {
+        LOG_ERROR(LogModule::NETWORK, "WifiPacketLossMonitor: attach " << progName << " failed err=" << libbpf_get_error(link));
+        return nullptr;
+    }
+    LOG_INFO(LogModule::NETWORK, "WifiPacketLossMonitor: " << progName << " attached");
+    return link;
+}
+#endif
+
 // ---- 实现 ----
 
 struct WifiPacketLossMonitor::Impl {
     int packet_stats_fd = -1;
     struct bpf_object *obj = nullptr;
+    struct bpf_link *link_rx = nullptr;
+    struct bpf_link *link_tx_queue = nullptr;
+    struct bpf_link *link_tx_xmit = nullptr;
 };
 
 WifiPacketLossMonitor::WifiPacketLossMonitor()
@@ -59,7 +80,7 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
 #else
     LOG_INFO(LogModule::NETWORK, "WifiPacketLossMonitor: loading BPF object from " << bpfObjPath);
 
-    struct bpf_object_open_opts opts = {};
+    LIBBPF_OPTS(bpf_object_open_opts, opts);
     struct bpf_object *obj = bpf_object__open_file(bpfObjPath.c_str(), &opts);
     if (!obj) {
         LOG_ERROR(LogModule::NETWORK, "WifiPacketLossMonitor: failed to open BPF object: " << bpfObjPath);
@@ -85,6 +106,20 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
         return false;
     }
 
+    // attach 3 个 tracepoint
+    impl_->link_rx = attachProgram(obj, "trace_net_rx");
+    impl_->link_tx_queue = attachProgram(obj, "trace_net_tx_queue");
+    impl_->link_tx_xmit = attachProgram(obj, "trace_net_tx_xmit");
+
+    if (!impl_->link_rx && !impl_->link_tx_queue && !impl_->link_tx_xmit) {
+        LOG_ERROR(LogModule::NETWORK, "WifiPacketLossMonitor: all tracepoints failed to attach");
+        bpf_object__close(obj);
+        impl_->link_rx = impl_->link_tx_queue = impl_->link_tx_xmit = nullptr;
+        available_ = false;
+        initialized_ = true;
+        return false;
+    }
+
     impl_->obj = obj;
     available_ = true;
     initialized_ = true;
@@ -95,6 +130,11 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
 }
 
 void WifiPacketLossMonitor::stop() {
+#if HAVE_LIBBPF
+    if (impl_->link_rx) { bpf_link__destroy(impl_->link_rx); impl_->link_rx = nullptr; }
+    if (impl_->link_tx_queue) { bpf_link__destroy(impl_->link_tx_queue); impl_->link_tx_queue = nullptr; }
+    if (impl_->link_tx_xmit) { bpf_link__destroy(impl_->link_tx_xmit); impl_->link_tx_xmit = nullptr; }
+#endif
     if (impl_->obj) {
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
