@@ -132,6 +132,105 @@ Planner puts exactly one closed block in `design.md`. `reviewed_inventory` is th
 
 `producer_paths`, `consumer_paths`, compatibility paths, focused RED tests and evidence argv must not point into `.ai-harness/logs/verification-workspaces`. Keep a consumer/test in the repository only when it is approved long-term regression or compatibility coverage. For a one-off C++ consumer, approve an exact command whose durable driver is invoked through `scripts/verification_workspace.sh run <change> -- ...`; the wrapper provides `AUTOAI_VERIFY_TMPDIR`, starts empty and removes generated sources, binaries and output when the synchronous driver returns. A killed wrapper or detached background writer may leave crash residue, which the next lifecycle gate must clean or reject.
 
+## 完整工作流实例：http-request-latency-monitor
+
+> 以下以实际完成的 change `http-request-latency-monitor`（归档于 `openspec/changes/archive/2026-08-03-http-request-latency-monitor/`）为例，
+> 展示从创建到归档的完整工作流流程。该 change 新增了一个 eBPF 程序监控 HTTP 请求级延迟（TTFB），包含 3 个 task。
+
+### 规划阶段（Planner 角色）
+
+**Step 1: 创建 change**
+```bash
+bash scripts/change_new.sh http-request-latency-monitor --switch
+```
+说明：创建变更目录 `openspec/changes/http-request-latency-monitor/`，包含 `design.md` 和 `harness/` 子目录。`--switch` 表示将其设为当前活动 change。
+
+**Step 2: 编写规划文档**
+- `proposal.md`：说明 Why（为什么需要 HTTP 延迟监控——区分应用慢 vs 网络慢）和 What（新增 eBPF 探针、用户态监控器、Makefile 集成）
+- `design.md`：架构设计（内核态 eBPF 探针流程 → BPF Map → 用户态读取）、变更文件清单、BPF 数据结构设计、HTTP 首部检测策略。**注意**：如果 surface 使用 `--project-command` 记录证据，`evidence_contracts` 的 `argv` 必须写包装器形式 `["scripts/project_command.sh","build-server","--change","http-request-latency-monitor","--json"]`
+- `specs/weaknet-server/spec.md`：定义 ADDED 需求（`HTTP请求延迟监控` 和 `HTTP延迟集成`），每个需求下有一个或多个 Scenario（`eBPF HTTP延迟探针实现`、`用户态监控接口`、`构建更新`）。**注意**：每个 Scenario 名称必须唯一、后续 task Covers 引用的场景名必须与 spec 完全一致（含空格）。
+- `tasks.md`：3 个 task，每个有 Covers 引用 spec 中的 requirement+scenario，Verify 声明为 `build`。task 编号必须唯一。
+
+**Step 3: 校验并冻结规划**
+```bash
+bash scripts/openspec_cli.sh validate http-request-latency-monitor --strict
+bash scripts/evaluator_check.sh --plan
+bash scripts/snapshot_update.sh --freeze-planning-baseline
+```
+说明：`validate --strict` 检查 spec 格式（requirement 必须含 MUST/SHALL、scenario 有 WHEN/THEN）。`--plan` 检查 plan 完整性。`freeze-planning-baseline` 锁定 planning_fingerprint 和 tdd_policy_sha256。**冻结后不能再改 design.md**，否则已记录 evidence 会因 fingerprint 变化而作废。
+
+### 实现阶段（Generator 角色）
+
+**Step 4: 冻结实现基线并改代码**
+```bash
+bash scripts/snapshot_update.sh --freeze-implementation-base
+# 现在才能改代码！改完后提交
+```
+说明：**必须先 freeze 再改代码**。如果反序（先改代码再 freeze），diff 为空、footprint 无变化、`--path` 引用会不匹配。
+
+**Step 5: 记录 evidence 并完成任务**
+```bash
+# 查看 footprint 状态
+bash scripts/change_footprint.sh http-request-latency-monitor --json
+
+# 记录 build 证据（由于 eBPF 运行时需 ARM64 真机，用 unavailable_hardware 例外走 ALTERNATIVE）
+bash scripts/task_verify.sh 1 --phase alternative --kind build \
+  --exception-id exc-no-target-hardware --path server/src/http_latency.bpf.c \
+  --project-command build-server
+
+# 完成任务
+bash scripts/task_verify.sh --complete 1
+
+# 对 task 2 和 task 3 重复相同操作
+bash scripts/task_verify.sh 2 --phase alternative --kind build ...
+bash scripts/task_verify.sh --complete 2
+bash scripts/task_verify.sh 3 --phase alternative --kind build ...
+bash scripts/task_verify.sh --complete 3
+```
+说明：`--project-command build-server` 会执行 `scripts/project_command.sh build-server --change http-request-latency-monitor --json`（包装器形式），evidence 记录的是这个包装器 argv。task 的 `--path` 必须在 exception 允许的路径范围内。
+
+**Step 6: 刷新集成报告**
+```bash
+bash scripts/integration_surface_check.sh http-request-latency-monitor --refresh --json
+```
+说明：`--refresh` 从冻结的 plan、implementation-base diff 和 footprint 推导出 `integration-surface-report.json`。
+
+### 评估阶段（Evaluator 角色）
+
+**Step 7: 生成 evaluation 并完成评估**
+```bash
+# 开始 evaluation
+bash scripts/evaluator_check.sh --begin
+
+# 运行独立验证命令（用 --project-command，与 Generator 证据独立）
+bash scripts/evaluator_check.sh --run --kind build --project-command build-server
+
+# 生成 evaluation.json 骨架并填充
+bash scripts/evaluation_template.sh http-request-latency-monitor
+# 手工或 evaluation_fix.sh 填充 TODO 字段
+
+# 预检 + 完成
+bash scripts/pre_finish.sh http-request-latency-monitor
+bash scripts/evaluator_check.sh --finish
+```
+说明：Evaluator 是独立于 Generator 的验证，不能复用 Generator 的命令输出。`--finish` 会校验所有 fingerprints、evidence 完整性、integration completeness。最终 verdict 为 Pass 后才能归档。
+
+### 归档阶段
+
+**Step 8: 归档**
+```bash
+bash scripts/change_archive.sh http-request-latency-monitor
+```
+说明：归档将 change 目录移到 `openspec/changes/archive/`，主 spec 更新，active selector 清空。**归档后必须全量提交**，确保工作区干净。
+
+### 关键注意事项
+
+- **surface 设计**：纯编译期变更的 surface（如新增 eBPF 探针，运行时需 ARM64 真机）应使用 `"kind":"build_or_install"` + `"runnable_artifact":false`，避免 `--plan-check` 报 `surface needs test or behavior evidence`。
+- **probe argv 格式**：使用 `--project-command` 时，`evidence_contracts` 的 `argv` 必须写包装器形式 `["scripts/project_command.sh","<command-id>","--change","<change>","--json"]`，不能写裸命令如 `["make","-C","server"]`。
+- **eBPF 编译**：必须通过 ARM64 Docker 容器 `weaknet-arm64-dev` 编译，禁止在 x86 开发机上直接 `make`。
+- **design.md 不可修改**：记录 evidence 后不能再改 design.md 的任何字段（含 exception task_ids、classification 路径、thresholds），否则指纹变化会导致所有 evidence 作废。
+- **代码先存在时不追认**：若功能代码已写好并提交，不要创建 change 试图"追认"它。要么直接提交为普通 commit，要么 `git revert` 后走完整流程。
+
 `change_kind` is `added`, `modified`, `deprecated` or `removed`. `contract_impact` is `compatible`, `breaking`, `deprecation` or `removal`; the last two pair only with deprecated/removed. Non-compatible surfaces carry the closed compatibility fields `old_consumer_paths`, `replacement_consumer_paths`, `replacement_policy`, `expected_old_result`, `migration_path` and `exit_condition`. Set `replacement_policy` to `required` whenever a replacement path exists. Only a removal whose referenced requirements are all `REMOVED` may use `requirement_approved_none`, and then the replacement path array must be empty. Evidence roles are `current`, `old_consumer`, `replacement_consumer` and `absence_probe`: compatible needs current; breaking/deprecation need old and replacement; removal needs old and absence, plus replacement when planned.
 
 Run `scripts/integration_surface_check.sh <change> --plan-check --json` before human approval and planning freeze. A valid plan is intent, not proof that paths are implemented.
