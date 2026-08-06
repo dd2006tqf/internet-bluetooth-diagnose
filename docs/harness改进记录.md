@@ -170,3 +170,31 @@ bash scripts/change_abort.sh <change-name> --purge
 | 7 | 文档分散重复 | 使用指南新增文档导航 | ✅ 已修复 |
 | 8 | probe argv 契约不匹配 | 规则：design 中必须写 wrapper argv | ✅ 已记录 |
 | 9 | 纯编译 surface 验证 | 规则：设计为 build_or_install | ✅ 已记录 |
+
+## 改进点10：freeze 前改代码导致 adopt 死锁
+
+### 问题
+
+正确顺序必须先 `freeze-implementation-base`（代码未改时），再改代码。若反序（先改代码再 freeze），freeze 时 `implementation_base_commit` 已写入，之后想 adopt 那些"已修改但未提交"的路径会报 `cannot adopt new paths after implementation starts`，形成死锁只能废弃 change。
+
+### 教训
+
+- 严格按 workflow-rules 顺序：**先 freeze-implementation-base，再改代码**
+- 若已先改代码，别尝试 adopt，直接废弃重来（`change_abort.sh --purge`），代码改动 commit 保留，重走工作流
+
+---
+
+## 改进点11：ai_snapshot 的 active_change 字段不能删除
+
+### 问题
+
+`change_abort.sh` 清理 selector 时若直接删掉 `active_change` 字段（而非设为 null），后续 `harness_active_optional`（依赖该字段存在）会静默返回 4，导致 `change_new` 等命令报奇怪的 exit 4 且无错误信息。
+
+### 教训
+
+`ai_snapshot.json` 必须保留 `active_change` 键（无活动 change 时为 `null`）。若发现缺失，补回 `"active_change": null` 并提交。
+
+| 改进点 | 问题 | 修复方式 | 状态 |
+|---|---|---|---|
+| 10 | freeze 前改代码致 adopt 死锁 | 严格先 freeze 再改代码 | ✅ 已记录 |
+| 11 | active_change 字段删除致 exit 4 | 保留该键为 null | ✅ 已记录 |
