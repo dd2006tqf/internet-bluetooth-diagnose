@@ -22,7 +22,7 @@
 - Must read，一次性通读，不遗漏：
   - `CLAUDE.md`（本文件）、`PROJECT_ATTRIBUTION.md`、`AGENTS.md`、`README.md`
   - **工作流相关全部内容**（最高优先级，是反复踩坑的记录，不读等于不知道哪些路不能走）：
-    - `docs/ai/` 下所有文档：`openspec.md`、`workflow.md`、**`workflow-rules.md`**、`golden-principles.md`、`quick-brief.md`、`testing.md`、`rca.md`、`evaluation.md`、`implementation-economy.md`、`check-rules.md`、`build.md`、`cpp.md`、`tooling.md`、`工作流使用指南.md`
+    - `docs/ai/` 下所有文档：`openspec.md`、`workflow.md`、`golden-principles.md`、`quick-brief.md`、`testing.md`、`rca.md`、`evaluation.md`、`implementation-economy.md`、`check-rules.md`、`build.md`、`cpp.md`、`tooling.md`、`工作流使用指南.md`
     - `prompts/` 下所有角色提示词：`planner.md`、`generator.md`、`evaluator.md`、`resume.md`、`handoff.md`、`rca.md`、`full-code-review.md`、`debt-fix.md`、`debt-scan.md`、`archive.md`
   - `docs/` 下项目领域文档（架构、交叉编译与开发板部署、项目评估等）
 - 这是硬性前置要求，不是可选项。跳过通读直接开始任务会导致规划/实现/评审违反铁律而返工。
@@ -46,6 +46,20 @@
 
 ## Hard rules
 
+> 铁律集中于此。违反以下任何一条导致的后果（fingerprint 失效、evidence 损坏、归档失败），Agent 不得自行修补，必须废弃当前 change 重来。
+
+### 工作流纪律
+
+- **遇阻塞必问，不得自作主张**：工作流中任何步骤遇到阻塞或错误，Agent 必须立即停下来，向用户描述当前状态、给出至少两个选择并说明每个选择的后果，等待用户决策。不得自行选择"绕过去"的方案。违反此条会越改越乱、最终 change 报废。
+- **禁止中途修改 harness 脚本**：任何情况下都不要在工作流运行期间修改 `scripts/` 目录下的任何文件。修改脚本 → 源指纹变化 → 所有已记录证据失效 → 必须重来。所有 harness 修改必须在创建 change 之前完成并提交。
+- **禁止中途修改 design.md**：一旦开始用 `task_verify.sh` 记录 evidence，**绝对不能修改 design.md**。修改 → planning_fingerprint 变化 → "planning changed during command" → 所有任务无法完成。必须改时，先废弃当前 change，修完 design.md 后重新创建 change。
+- **禁止手工编辑 evidence 文件**：`verification.json`、`evaluation.json`、`evaluation-baseline.json` 等证据文件只能通过 harness 命令（`task_verify.sh`、`evaluator_check.sh`、`sync_hashes.sh`）维护。手工编辑 → schema 损坏 → "TDD command schema mismatch"。发现坏数据时，废弃当前 change 重来，不要手动改 JSON。
+- **创建 change 前必须清理工作区**：创建 change 前必须 `git status` 检查工作区，确保没有脏文件。如果有，必须先提交或 stash。违反此条 → `undeclared implementation paths` → evaluator 拒绝 → change 报废。
+- **严格按照操作顺序执行**：不可跳步，不可调换顺序（见下方"操作顺序"一节）。
+- **规划冻结后不得改动 design.md 的 exception/classification/task_ids**：指纹（`planning_fingerprint` / `tdd_policy_sha256`）会在记录 evidence 后锁定。任何对 design.md 的修改都会使已记录 evidence 失效。必须在记录第一条 evidence 之前就把 design.md 内容定稿并冻结。
+
+### 代码与接口
+
 - Search for and extend existing code before adding helpers, managers, parsers or targets.
 - Implement the smallest independently verifiable closure; unrelated cleanup is out of scope.
 - Existing APIs may change when the approved design classifies the contract impact. Breaking changes require consumers, migration and rollback plans.
@@ -60,11 +74,11 @@
 - Never create branches/worktrees, commit, merge, push, stash, reset, clean up worktrees or install dependencies without explicit user authorization.
 - Archive only through `scripts/change_archive.sh`.
 - Never remove `archive_failure` by editing the snapshot; use `scripts/archive_recover.sh` after manual inspection.
-- **遇阻塞必问，不得自作主张**：工作流中任何步骤遇到阻塞或错误，Agent 必须立即停下来，向用户描述当前状态、给出至少两个选择并说明每个选择的后果，等待用户决策。不得自行选择"绕过去"的方案。违反此条会越改越乱、最终 change 报废。
-- **surface probe argv 必须匹配 runtime**：用 `--project-command` 记录证据的 surface，其 `evidence_contracts` 的 `argv` 必须写包装器形式 `["scripts/project_command.sh", "<command-id>", "--change", "<change>", "--json"]`，不能写裸命令（如 `["make","-C","server"]`）。`--plan-check` 不校验 argv 匹配，只在 evaluation `--run` 阶段暴露，会导致返工。
-- **纯编译验证 surface 设计为 build_or_install**：仅需编译验证、运行时需真机环境的 surface 应使用 `"kind":"build_or_install"` + `"runnable_artifact":false`，`verify_kinds` 可只含 `["build"]`，避免 plan-check 强制要求 test/behavior 证据。
 - **文档与代码同步**：当代码修改与仓库现有文档相左（即文档落后于代码）时，必须顺带同步更新相应文档，保持文档与代码一致。
 - **归档后全量提交**：工作流的最后一步（归档成功后），必须把所有改动文件全部提交到 git，确保工作区干净、无未提交改动。
+
+### eBPF 与编译环境
+
 - **eBPF/服务端编译必须用 ARM64 Docker 容器**：本项目目标是 ARM64 开发板（Radxa Cubie A7A），eBPF 程序和 C++ 服务端的编译验证必须通过常驻 ARM64 容器 `weaknet-arm64-dev`（基于 `weaknet-builder:bullseye-arm64` 镜像）执行，并预置开发板的 `board-assets/vmlinux.h`。**禁止在 x86 开发机上直接 `make` 编译**（会因 `user_pt_regs` 报错且产物架构错误）。详见 `docs/交叉编译与开发板部署.md`。容器内编译命令：
   ```bash
   docker exec weaknet-arm64-dev bash -c \
@@ -72,4 +86,67 @@
   ```
   编译前若 `build/vmlinux.h` 缺失/错误，先 `cp board-assets/vmlinux.h server/build/vmlinux.h`。
 
-Project capability and command details live in `.ai-harness/project-profile.json`; OpenSpec remains the only source for requirements, design and tasks.
+### surface 与 evidence 契约
+
+- **surface probe argv 必须匹配 runtime**：用 `--project-command` 记录证据的 surface，其 `evidence_contracts` 的 `argv` 必须写包装器形式 `["scripts/project_command.sh", "<command-id>", "--change", "<change>", "--json"]`，不能写裸命令（如 `["make","-C","server"]`）。`--plan-check` 不校验 argv 匹配，只在 evaluation `--run` 阶段暴露，会导致返工。
+- **纯编译验证 surface 设计为 build_or_install**：仅需编译验证、运行时需真机环境的 surface 应使用 `"kind":"build_or_install"` + `"runnable_artifact":false`，`verify_kinds` 可只含 `["build"]`，避免 plan-check 强制要求 test/behavior 证据。
+
+### 规划与实现分离
+
+- **代码已实现时不套用 OpenSpec change 流程追认**：若功能代码已写好并提交（无论是否在工作流之外完成），不要创建 change 试图"追认"它。工作流前提是"先规划、后实现、再记录证据"，代码先存在会导致：footprint 为 0（改动在基线内）、`--path` 引用的文件与 diff 不符、`planning changed during command` 死锁。正确做法：
+  - 若代码未启动工作流就写好 → 直接提交为普通 commit，不创建 change；
+  - 若必须纳入受管流程 → 先 `git revert` 代码到变更前，走完「freeze → 改代码 → 记录 evidence → evaluation」干净流程，再归档；
+  - **严禁**在提交代码后再用 change 追认，否则会因 footprint 为 0 和 fingerprint 反复变化而报废。
+
+## 操作顺序
+
+**必须严格按照以下顺序执行，不可跳步，不可调换顺序。**
+
+```
+# 规划阶段
+1.  change_new.sh <name> --switch
+2.  写 proposal.md / design.md / specs/ / tasks.md
+3.  openspec_cli.sh validate <name> --strict
+4.  evaluator_check.sh --plan
+5.  snapshot_update.sh --freeze-planning-baseline
+
+# 实现阶段
+6.  snapshot_update.sh --freeze-implementation-base   # 先冻结！代码还没改
+7.  修改代码                                          # 现在改代码
+8.  change_footprint.sh <name> --json
+9.  task_verify.sh <id> --phase regression ...        # 记录证据
+    - within_expected → 不加 --drift-reason
+    - drift_warning 等 → 必须加 --drift-reason
+10. task_verify.sh --complete <id>
+
+# 评估阶段
+11. integration_surface_check.sh <name> --refresh
+12. sync_hashes.sh <name>
+13. evaluator_check.sh --begin
+14. evaluator_check.sh --run ...
+15. evaluation_template.sh <name>
+16. evaluation_fix.sh <name>
+17. pre_finish.sh <name>
+18. evaluator_check.sh --finish
+
+# 归档
+19. change_archive.sh <name>
+```
+
+## 关键操作规则
+
+### Footprint 与 drift_reason
+- `change_footprint.sh --json` 查看 status
+- `within_expected` → task_verify **不加** `--drift-reason`
+- `drift_warning` / `review_required` / `hard_exceeded` → **必须加** `--drift-reason`
+
+### 冻结时机
+- **先 freeze-implementation-base，再改代码**
+- 如果反过来（先改代码再提交再 freeze），diff 为空，footprint 无变化
+
+### 其他规则
+- `--finish` 之前必须运行 `pre_finish.sh`
+- 修改任何 `scripts/` 文件后，运行 `manifest_sync.sh` 同步所有哈希
+- **不要用 `--adopt-path` 纳入无关文件**
+- 新增 eBPF 程序在规划阶段就应该声明 `observability_only` 例外
+- Spec 的 requirement 描述必须包含 `MUST` 或 `SHALL`，scenario 必须有 WHEN/THEN

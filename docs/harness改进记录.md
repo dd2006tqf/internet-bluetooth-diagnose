@@ -179,7 +179,7 @@ bash scripts/change_abort.sh <change-name> --purge
 
 ### 教训
 
-- 严格按 workflow-rules 顺序：**先 freeze-implementation-base，再改代码**
+- 严格按工作流操作顺序：**先 freeze-implementation-base，再改代码**
 - 若已先改代码，别尝试 adopt，直接废弃重来（`change_abort.sh --purge`），代码改动 commit 保留，重走工作流
 
 ---
