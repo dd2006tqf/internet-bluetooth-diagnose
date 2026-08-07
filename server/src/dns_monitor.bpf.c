@@ -137,6 +137,17 @@ int trace_dns_send(struct pt_regs *ctx)
     rec.is_response = 0;
     bpf_map_update_elem(&dns_queries, &key, &rec, BPF_ANY);
 
+    // 发送请求即累计 total_queries，不依赖响应路径
+    __u32 stats_key = 0;
+    struct dns_stats_record *stat = bpf_map_lookup_elem(&dns_stats, &stats_key);
+    if (stat) {
+        __sync_fetch_and_add(&stat->total_queries, 1);
+    } else {
+        struct dns_stats_record init = {0};
+        init.total_queries = 1;
+        bpf_map_update_elem(&dns_stats, &stats_key, &init, BPF_ANY);
+    }
+
     return 0;
 }
 
@@ -156,8 +167,10 @@ int trace_dns_recv(struct pt_regs *ctx)
     __u16 sport = BPF_CORE_READ(sk, __sk_common.skc_num);
     __u16 dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
 
-    // 过滤源端口 53（DNS 响应从服务器 53 端口回来）
-    if (!is_dns_port(dport))
+    // 响应对端是 DNS 服务器 (端口53)，本机是随机端口
+    // 需同时检查 dport==53（服务器端 socket）或 sport==53（客户端 socket收到响应）
+    bool is_server_side = is_dns_port(dport);
+    if (!is_server_side && !is_dns_port(sport))
         return 0;
 
     __u32 saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
@@ -165,9 +178,17 @@ int trace_dns_recv(struct pt_regs *ctx)
 
     // 反转方向：响应的 sport=53, dport=客户端端口
     struct dns_query_key key = {0};
-    key.saddr = daddr;  // 客户端 IP
-    key.daddr = saddr;  // DNS 服务器 IP
-    key.sport = dport;  // 客户端端口
+    // 服务器端 socket：saddr=服务器, daddr=客户端
+    // 客户端 socket：saddr=客户端, daddr=服务器
+    if (is_server_side) {
+        key.saddr = daddr;  // 客户端 IP
+        key.daddr = saddr;  // DNS 服务器 IP
+        key.sport = sport;  // 服务器端中本机端口，非客户端源端口
+    } else {
+        key.saddr = daddr;  // DNS 服务器 IP
+        key.daddr = saddr;  // 客户端 IP
+        key.sport = sport;  // 客户端源端口（本机）
+    }
 
     struct dns_query_record *rec = bpf_map_lookup_elem(&dns_queries, &key);
     if (!rec || rec->send_time_ns == 0)
