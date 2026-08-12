@@ -97,8 +97,8 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
         return false;
     }
 
-    // attach 探针到 kprobe/tcp_sendmsg 和 kprobe/tcp_recvmsg
-    struct bpf_program *send_prog = bpf_object__find_program_by_name(obj, "trace_tcp_sendmsg");
+    // attach 探针到 kprobe/ip_queue_xmit (出站请求) 和 kprobe/tcp_recvmsg (响应)
+    struct bpf_program *send_prog = bpf_object__find_program_by_name(obj, "probe_http_req");
     struct bpf_program *recv_prog = bpf_object__find_program_by_name(obj, "trace_tcp_recvmsg");
     if (!send_prog || !recv_prog) {
         LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: BPF program not found");

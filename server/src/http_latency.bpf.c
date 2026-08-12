@@ -51,6 +51,21 @@ struct {
     __type(value, struct http_txn_record);
 } http_txn_stats SEC(".maps");
 
+// ---- debug map ----
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 64);
+    __type(key, __u32);
+    __type(value, __u64);
+} http_debug SEC(".maps");
+
+static __always_inline void dbg_inc(__u32 idx) {
+    __u32 k = idx;
+    __u64 *v = bpf_map_lookup_elem(&http_debug, &k);
+    if (v) __sync_fetch_and_add(v, 1);
+    else { __u64 one = 1; bpf_map_update_elem(&http_debug, &k, &one, BPF_ANY); }
+}
+
 // ---- HTTP 检测辅助 ----
 
 static __always_inline int check_http_request(void *data_start)
@@ -109,33 +124,87 @@ static __always_inline struct tcp_conn_key get_conn_key(struct sock *sk)
 
 // ---- 挂点 ----
 
-// kprobe: int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
-SEC("kprobe/tcp_sendmsg")
-int BPF_KPROBE(trace_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
+// 从出站 skb 读取 HTTP 明文。
+// 用 skb->network_header 定位网络头部起点（IP 头），再跳过 IP 头 + TCP 头读 payload。
+static __always_inline int read_http_from_skb(struct sk_buff *skb, char *http_buf, __u32 buf_sz)
 {
-    if (!sk || !msg || size < 10) return 0;
+    unsigned char *head = BPF_CORE_READ(skb, head);
+    __u16 nh_off = BPF_CORE_READ(skb, network_header);
+    __u32 total_len = BPF_CORE_READ(skb, len);
+    if (!head) { dbg_inc(21); return 0; }
+    if (!nh_off) { dbg_inc(22); return 0; }
+    if (total_len < 40) { dbg_inc(23); return 0; }
+    dbg_inc(24);  // head/nh_off/len OK
 
-    struct tcp_conn_key key = get_conn_key(sk);
-    if (key.saddr == 0 && key.daddr == 0) return 0;
+    // IP 头起点 = head + network_header
+    unsigned char *ip_start = head + nh_off;
 
-    // 尝试从 msg 中读取数据前缀，检查是否是 HTTP 请求
-    // msg->msg_iter.iov 的数据地址在内核内存中
-    // 简化：直接用 probe_read 从 msg->msg_iter 开始读取
+    // IPv4: 首字节 = version(4bit) | IHL(4bit)
+    __u8 version_ihl;
+    if (bpf_probe_read_kernel(&version_ihl, 1, ip_start) < 0) { dbg_inc(25); return 0; }
+    __u8 version = version_ihl >> 4;
+    if (version != 4) { dbg_inc(26); return 0; }  // 非 IPv4
+    __u8 ihl = version_ihl & 0x0F;
+    if (ihl < 5) { dbg_inc(27); return 0; }
+    __u16 ip_hdr_len = ihl * 4;
+    dbg_inc(28);  // IPv4 ihl OK
+
+    // TCP 头: data_off 在 TCP 头偏移 12（低 nibble）
+    __u8 tcp_off;
+    if (bpf_probe_read_kernel(&tcp_off, 1, ip_start + ip_hdr_len + 12) < 0) { dbg_inc(29); return 0; }
+    __u16 tcp_hdr_len = (tcp_off >> 4) * 4;
+    if (tcp_hdr_len < 20) { dbg_inc(30); return 0; }
+    dbg_inc(31);  // tcp hdr OK
+
+    __u32 payload_off = ip_hdr_len + tcp_hdr_len;
+    if (payload_off + buf_sz > total_len) { dbg_inc(32); return 0; }
+    if (bpf_probe_read_kernel(http_buf, buf_sz, ip_start + payload_off) < 0) { dbg_inc(33); return 0; }
+    dbg_inc(34);  // payload 读取成功
+
+    // 取样：把 payload 前 4 字节写成 uint32 存 debug map key 40
+    {
+        __u32 sample = ((__u32)(__u8)http_buf[0]) |
+                       ((__u32)(__u8)http_buf[1] << 8) |
+                       ((__u32)(__u8)http_buf[2] << 16) |
+                       ((__u32)(__u8)http_buf[3] << 24);
+        __u32 k40 = 40;
+        bpf_map_update_elem(&http_debug, &k40, &sample, BPF_ANY);
+    }
+    return 1;
+}
+
+// kprobe: int dev_queue_xmit(struct sk_buff *skb)  // 出站，PT_REGS_PARM1 = skb
+SEC("kprobe/dev_queue_xmit")
+int BPF_KPROBE(probe_http_req, struct sk_buff *skb)
+{
+    if (!skb) return 0;
+    dbg_inc(0);
+
+    struct tcp_conn_key key = {};
+    __u32 len = BPF_CORE_READ(skb, len);
+
     char http_buf[MAX_HTTP_PAYLOAD] = {};
-    // msg_iter 在偏移量 16 处是迭代器，第一个 iov_base
-    if (bpf_probe_read_kernel(&http_buf, sizeof(http_buf), (void *)msg + 16) < 0)
-        return 0;
+    if (!read_http_from_skb(skb, http_buf, sizeof(http_buf))) {
+        dbg_inc(2); return 0;
+    }
+    dbg_inc(3);
+    if (!check_http_request(http_buf)) {
+        dbg_inc(4); return 0;
+    }
+    dbg_inc(5);
 
-    if (!check_http_request(http_buf))
-        return 0;
+    // 用 5 元组（从 skb 的 sock/头提取）作为 key。dev_queue_xmit 只有 skb，从 skb->sk 拿 sock
+    struct sock *sk = BPF_CORE_READ(skb, sk);
+    if (sk) key = get_conn_key(sk);
+    if (key.saddr == 0 && key.daddr == 0) {
+        dbg_inc(6); return 0;
+    }
 
-    // 是 HTTP 请求，记录发送时间
     struct http_txn_record rec = {};
     rec.send_ns = bpf_ktime_get_ns();
-    rec.req_bytes = (__u32)size;
+    rec.req_bytes = len;
     rec.is_request = 1;
     bpf_map_update_elem(&http_txn_stats, &key, &rec, BPF_ANY);
-
     return 0;
 }
 
@@ -154,8 +223,13 @@ int BPF_KPROBE(trace_tcp_recvmsg, struct sock *sk, struct msghdr *msg, size_t le
         return 0;  // 没有对应的请求，或已经是响应状态
 
     // 尝试读取接收数据前缀，检查是否是 HTTP 响应
+    // 用 bpf_probe_read_user 读用户态 msg->msg_iter.iov[0].iov_base
     char http_buf[MAX_HTTP_PAYLOAD] = {};
-    if (bpf_probe_read_kernel(&http_buf, sizeof(http_buf), (void *)msg + 16) < 0)
+    struct iovec *iov = BPF_CORE_READ(msg, msg_iter.iov);
+    if (!iov) return 0;
+    void *data = BPF_CORE_READ(iov, iov_base);
+    if (!data) return 0;
+    if (bpf_probe_read_user(&http_buf, sizeof(http_buf), data) < 0)
         return 0;
 
     if (!check_http_response(http_buf))
