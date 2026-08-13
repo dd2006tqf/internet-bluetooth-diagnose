@@ -103,7 +103,7 @@
       "path": "CLAUDE.md",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:f34f71783c736352c4a47a62b427b78c8fb2fbc1fa67c1b2c46c8a8ebb54a63d"
+      "content_sha256": "sha256:bd4c881698b58fd7c08aa34438c11d1662a60b5ccf4a58ef4872c36a1f471264"
     },
     {
       "path": "debt-register.md",
@@ -184,16 +184,16 @@
       "content_sha256": "sha256:a33fa0c739d5df1ff917068d5fdd7ab5342a5dd1eb785bc4f00f23de134fc3b1"
     },
     {
-      "path": "docs/ai/workflow-rules.md",
+      "path": "docs/ai/workflow-errors-ref.md",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:4a7c8efce8f3ad6927cb4b951d8ed2296a039ba241197dc8f6839cd571e5ff6a"
+      "content_sha256": "sha256:96fb7788d4c8e7c18deea94ef24f2edc356e7f39e6820c233ce2baea6bf37984"
     },
     {
       "path": "docs/ai/workflow.md",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:d0a181eadd55f0f8cde031e7ae9cce035efb638710bb9264890673140f4e8685"
+      "content_sha256": "sha256:ad12cca8415453e8d0c862552c443ca7f5bedd812d8725d0f42520668d8a75c7"
     },
     {
       "path": "init.sh",
