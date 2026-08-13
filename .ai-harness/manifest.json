@@ -43,7 +43,7 @@
       "path": ".ai-harness/workflow-contract.json",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:c08bf8f900c67d07cc19335136e247ee27b5ecebc058b51eeadd59fa190f6692"
+      "content_sha256": "sha256:cac5bd2c5c79a0fb4a21e7f0b04a152785275985b128cab408749519b779605b"
     },
     {
       "path": ".claude/settings.json",
@@ -445,7 +445,7 @@
       "path": "scripts/manifest_policy.js",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:0b0d240402d751732482154b75481fb868bdb8489c3dd36b77d00b306ead5900"
+      "content_sha256": "sha256:9d9dd522230547b3f96231c753c024bb3fdef2b6643f12d9e7a7f4e24e5e922f"
     },
     {
       "path": "scripts/manifest_sync.sh",
