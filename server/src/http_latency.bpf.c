@@ -124,126 +124,107 @@ static __always_inline struct tcp_conn_key get_conn_key(struct sock *sk)
 
 // ---- 挂点 ----
 
-// 从出站 skb 读取 HTTP 明文。
-// 用 skb->network_header 定位网络头部起点（IP 头），再跳过 IP 头 + TCP 头读 payload。
-static __always_inline int read_http_from_skb(struct sk_buff *skb, char *http_buf, __u32 buf_sz)
+// tcp_sendmsg 是应用层明文入口，msg_iter 直接指向用户态待发 HTTP 明文。
+// 关键点（文档 3.2）：
+//   - msg_iter.iov 可能有多段（count>1），HTTP 首部可能跨段
+//   - 必须按 iov_base/iov_len 逐段 bpf_probe_read_user，拼接前 N 字节到 http_buf
+//   - 只处理 msg_iter 指向的用户态 iovec
+// dev_queue_xmit 已实测走不通：skb->len 含非线性 fragment(data_len)，明文 payload
+// 不在线性区 head+offset，继续细化偏移无意义。（见 ebpf-http-debug记录.md 第四版）
+
+// 从用户态 msg->msg_iter 读取明文前 buf_sz 字节。为满足 eBPF 验证器对固定偏移的要求，
+// 仅读取**首段** iov（curl/常见 HTTP 客户端 send 多为单段，首段即含请求首部）。
+// 返回填充字节数。若后续需要多段拼接，需改用固定 nr=1 的循环边界或 bpf_dynptr。
+static __always_inline int read_http_user(void *http_buf, __u32 buf_sz,
+                                          struct msghdr *msg)
 {
-    unsigned char *head = BPF_CORE_READ(skb, head);
-    __u16 nh_off = BPF_CORE_READ(skb, network_header);
-    __u32 total_len = BPF_CORE_READ(skb, len);
-    if (!head) { dbg_inc(21); return 0; }
-    if (!nh_off) { dbg_inc(22); return 0; }
-    if (total_len < 40) { dbg_inc(23); return 0; }
-    dbg_inc(24);  // head/nh_off/len OK
+    struct iovec *iov = (struct iovec *)BPF_CORE_READ(msg, msg_iter.iov);
+    if (!iov) { dbg_inc(72); return 0; }
+    __u32 nr = BPF_CORE_READ(msg, msg_iter.count);
+    if (nr == 0) { dbg_inc(73); return 0; }
+    dbg_inc(74);  // iov+count OK
 
-    // IP 头起点 = head + network_header
-    unsigned char *ip_start = head + nh_off;
-
-    // IPv4: 首字节 = version(4bit) | IHL(4bit)
-    __u8 version_ihl;
-    if (bpf_probe_read_kernel(&version_ihl, 1, ip_start) < 0) { dbg_inc(25); return 0; }
-    __u8 version = version_ihl >> 4;
-    if (version != 4) { dbg_inc(26); return 0; }  // 非 IPv4
-    __u8 ihl = version_ihl & 0x0F;
-    if (ihl < 5) { dbg_inc(27); return 0; }
-    __u16 ip_hdr_len = ihl * 4;
-    dbg_inc(28);  // IPv4 ihl OK
-
-    // TCP 头: data_off 在 TCP 头偏移 12（低 nibble）
-    __u8 tcp_off;
-    if (bpf_probe_read_kernel(&tcp_off, 1, ip_start + ip_hdr_len + 12) < 0) { dbg_inc(29); return 0; }
-    __u16 tcp_hdr_len = (tcp_off >> 4) * 4;
-    if (tcp_hdr_len < 20) { dbg_inc(30); return 0; }
-    dbg_inc(31);  // tcp hdr OK
-
-    __u32 payload_off = ip_hdr_len + tcp_hdr_len;
-    if (payload_off + buf_sz > total_len) { dbg_inc(32); return 0; }
-    if (bpf_probe_read_kernel(http_buf, buf_sz, ip_start + payload_off) < 0) { dbg_inc(33); return 0; }
-    dbg_inc(34);  // payload 读取成功
-
-    // 取样：把 payload 前 4 字节写成 uint32 存 debug map key 40
-    {
-        __u32 sample = ((__u32)(__u8)http_buf[0]) |
-                       ((__u32)(__u8)http_buf[1] << 8) |
-                       ((__u32)(__u8)http_buf[2] << 16) |
-                       ((__u32)(__u8)http_buf[3] << 24);
-        __u32 k40 = 40;
-        bpf_map_update_elem(&http_debug, &k40, &sample, BPF_ANY);
-    }
-    return 1;
+    void *base = BPF_CORE_READ(iov, iov_base);
+    __u64 len = BPF_CORE_READ(iov, iov_len);
+    if (!base || len == 0) { dbg_inc(77); return 0; }
+    __u32 take = buf_sz;
+    if (len < take) take = (__u32)len;
+    if (bpf_probe_read_user(http_buf, take, base) != 0) { dbg_inc(75); return 0; }
+    dbg_inc(76);  // 首段读成功
+    return (int)take;
 }
 
-// kprobe: int dev_queue_xmit(struct sk_buff *skb)  // 出站，PT_REGS_PARM1 = skb
-SEC("kprobe/dev_queue_xmit")
-int BPF_KPROBE(probe_http_req, struct sk_buff *skb)
+// tcp_sendmsg: int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
+SEC("kprobe/tcp_sendmsg")
+int BPF_KPROBE(probe_http_req, struct sock *sk, struct msghdr *msg, size_t size)
 {
-    if (!skb) return 0;
+    if (!sk || !msg) return 0;
     dbg_inc(0);
 
-    struct tcp_conn_key key = {};
-    __u32 len = BPF_CORE_READ(skb, len);
+    // 仅处理应用层有实际数据发送的情况
+    if (size <= 0) return 0;
 
     char http_buf[MAX_HTTP_PAYLOAD] = {};
-    if (!read_http_from_skb(skb, http_buf, sizeof(http_buf))) {
-        dbg_inc(2); return 0;
-    }
+    int n = read_http_user(http_buf, sizeof(http_buf), msg);
+    if (n <= 0) { dbg_inc(2); return 0; }
     dbg_inc(3);
-    if (!check_http_request(http_buf)) {
-        dbg_inc(4); return 0;
-    }
+    if (!check_http_request(http_buf)) { dbg_inc(4); return 0; }
     dbg_inc(5);
 
-    // 用 5 元组（从 skb 的 sock/头提取）作为 key。dev_queue_xmit 只有 skb，从 skb->sk 拿 sock
-    struct sock *sk = BPF_CORE_READ(skb, sk);
-    if (sk) key = get_conn_key(sk);
-    if (key.saddr == 0 && key.daddr == 0) {
-        dbg_inc(6); return 0;
-    }
+    struct tcp_conn_key key = get_conn_key(sk);
+    if (key.saddr == 0 && key.daddr == 0) { dbg_inc(6); return 0; }
 
     struct http_txn_record rec = {};
     rec.send_ns = bpf_ktime_get_ns();
-    rec.req_bytes = len;
+    rec.req_bytes = (__u32)size;
     rec.is_request = 1;
     bpf_map_update_elem(&http_txn_stats, &key, &rec, BPF_ANY);
     return 0;
 }
 
-// kprobe: int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags, int *addr_len)
-SEC("kprobe/tcp_recvmsg")
+// kprobe: kretprobe on tcp_recvmsg_locked(struct sock *sk, struct msghdr *msg, size_t len, int flags, ...)
+// 响应侧必须用 **kretprobe**：
+//   tcp_recvmsg_locked 入口时，用户态 msg_iter.iov[0].iov_base 尚未被内核填充，
+//   只有该函数返回后（skb_copy_datagram_iter 已把响应拷入）iov_base 里才是真实明文。
+// 因此用户态 http_latency_monitor.cpp 以 bpf_program__attach_kprobe(prog, true /*retprobe*/, "tcp_recvmsg_locked") 挂载，
+// 本探针在返回时执行，读 msg_iter 用户缓冲即可命中 HTTP/1.x 响应。
+SEC("kprobe/tcp_recvmsg_locked")
 int BPF_KPROBE(trace_tcp_recvmsg, struct sock *sk, struct msghdr *msg, size_t len, int flags)
 {
     if (!sk || !msg) return 0;
+    dbg_inc(90);  // recvmsg kretprobe 触发
 
     struct tcp_conn_key key = get_conn_key(sk);
-    if (key.saddr == 0 && key.daddr == 0) return 0;
+    if (key.saddr == 0 && key.daddr == 0) { dbg_inc(91); return 0; }
 
     // 查找是否有对应的请求在等待响应
     struct http_txn_record *existing = bpf_map_lookup_elem(&http_txn_stats, &key);
-    if (!existing || existing->is_request == 0)
-        return 0;  // 没有对应的请求，或已经是响应状态
+    if (!existing) { dbg_inc(92); return 0; }
+    if (existing->is_request == 0) { dbg_inc(93); return 0; }
 
     // 尝试读取接收数据前缀，检查是否是 HTTP 响应
     // 用 bpf_probe_read_user 读用户态 msg->msg_iter.iov[0].iov_base
     char http_buf[MAX_HTTP_PAYLOAD] = {};
     struct iovec *iov = BPF_CORE_READ(msg, msg_iter.iov);
-    if (!iov) return 0;
+    if (!iov) { dbg_inc(80); return 0; }
     void *data = BPF_CORE_READ(iov, iov_base);
-    if (!data) return 0;
-    if (bpf_probe_read_user(&http_buf, sizeof(http_buf), data) < 0)
-        return 0;
+    if (!data) { dbg_inc(81); return 0; }
+    if (bpf_probe_read_user(&http_buf, sizeof(http_buf), data) < 0) { dbg_inc(82); return 0; }
+    dbg_inc(83);  // 读响应明文成功
 
-    if (!check_http_response(http_buf))
-        return 0;
-
-    // 计算 TTFB
+    if (!check_http_response(http_buf)) { dbg_inc(84); return 0; }
+    dbg_inc(85);  // 识别为 HTTP 响应
     __u64 recv_ns = bpf_ktime_get_ns();
+    dbg_inc(86);  // 走到计算
     __u16 status = extract_status_code(http_buf);
+    dbg_inc(87);  // 状态码提取完成
 
     // 更新记录：设置响应接收时间和状态码
     existing->recv_ns = recv_ns;
     existing->resp_bytes = (__u32)len;
     existing->status_code = status;
     existing->is_request = 0;  // 标记为响应已接收
+    dbg_inc(88);  // 完整更新提交
 
     return 0;
 }

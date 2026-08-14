@@ -1,6 +1,7 @@
 # eBPF HTTP 延迟监控问题排查记录与下一步方向
 
 > 文档日期：2026-08-12（第三版，含 dev_queue_xmit 探索结论）
+> 更新日期：2026-08-13（第四版，dev_queue_xmit 实测定性为不可行，转向 tcp_sendmsg msghdr 校正）
 > 关联模块：`server/src/http_latency.bpf.c` + `server/src/http_latency_monitor.cpp`
 > 涉及特性：`GetHttpLatencyStats` D-Bus 接口（`totalTxns` / TTFB）
 
@@ -65,20 +66,40 @@
 - **但读到 `0x00000000` 全零**（key 40）→ 读到的不是 HTTP 明文
 - 根因仍是 payload 偏移读取到了非 HTTP 数据区域（或读到 UDP 包/TCP 头部等，偏移需细化）
 
+### 方案 5（2026-08-13 实测）：dev_queue_xmit —— 定性为「payload 在非线性 fragment，取数不可行」
+
+新增键盘偏移/协议/线性区取样后板端实测（`http_debug` array map）：
+
+| debug key | 值 | 含义 |
+|-----------|-----|------|
+| 41 | 8 | `skb->protocol` = 0x0008（IPv4，大端 0x0800） |
+| 42 | 6 | **IPv4 protocol = 6（TCP）** → 不是 UDP |
+| 43 | 138 | `skb->len` = 138（纯小段） |
+| 44 | 84 | **`skb->data_len` = 84 → 非线性 fragment** |
+| 45 | 54 | `linear_len` = 138 − 84 = 54（线性区仅含 IP/TCP 头） |
+| 47/48 | 280 / 300 | network_header / transport_header |
+| 54 | 73 | 线性守卫：`nh(280)+payload(40)+64=384 > linear(54)` → 全部被线性边界拦下 |
+| 34 / 50-53 | 0 | payload 读取成功 / 各偏移样本全部为 0 |
+
+**决定性结论**：
+- 这些 dev_queue_xmit 包都是 TCP 小段，`skb->len=138` 但 `data_len=84`，**HTTP 明文 payload 位于非线性 fragment**，不在线性区 `head + network_header + offset`。
+- `head+offset` 方案在此挂点天然取不到明文 → **不是偏移差一点，而是内存布局根本不包含 payload**。
+- 文档 3.1「payload 偏移细化」路线被实测推翻：无论怎么细化偏移，线性区里就没有 HTTP 明文。
+
+**处置**：放弃 `dev_queue_xmit + network_header` 路线，转向文档 3.2（`tcp_sendmsg` msghdr 校正）。dev_queue_xmit 相关的偏移/协议/线性区取样代码已从 `http_latency.bpf.c` 移除，探针改回 `kprobe/tcp_sendmsg`。
+
 ---
 
 ## 三、未来路线（专门开新会话时参考）
 
-### 3.1 下一步切入点：`dev_queue_xmit` 的 payload 偏移细化
+### 3.1 ~~`dev_queue_xmit` 的 payload 偏移细化~~（已废弃）
 
-方案 4 已验证挂点正确、能读到数据（虽为全零）。下一步：
-1. **区分 TCP/UDP**：`dev_queue_xmit` 也会过 UDP 包，只处理 TCP（`skb->protocol` 或从 IP 头 next_protocol 判断）
-2. **多偏移取样**：除 `ip_hdr_len + tcp_hdr_len` 外，尝试多个偏移读 payload，找出 HTTP 明文实际起点
-3. **排除空数据包**：过滤掉 `skb->len` 不含 payload 的纯 ACK/握手包，只在 payload 非空时取样
+> 方案 5 实测证明：本路线不可行。`dev_queue_xmit` 的 skb `data_len>0`，明文 payload 在非线性 fragment，
+> `head+offset` 线性区无 payload。2026-08-13 起不再沿此方向调试。
 
-### 3.2 备选：`tcp_sendmsg` msghdr 校正
+### 3.2 当前路线：`tcp_sendmsg` msghdr 校正（实施中）
 
-若 dev_queue_xmit 偏移仍难解，回到 `tcp_sendmsg`，重点校正 `msg_iter.iov` 的多 iov / iov_offset，读用户态缓冲的准确 HTTP 首部。
+回到 `tcp_sendmsg`，重点校正 `msg_iter.iov` 的**多 iov 段拼接**，逐段 `bpf_probe_read_user` 读用户态缓冲的前 N 字节，组合成准确的 HTTP 首部。当前 `http_latency.bpf.c` 已改为 `kprobe/tcp_sendmsg`（探针名 `probe_http_req`），并在容器内编译通过。
 
 ### 3.3 备选：tc egress / fentry
 
@@ -97,7 +118,7 @@
 | `e762c0d` | 5 个监控器补 attach（ProcessNetProfiler 真机抓取成功） |
 | `4ff878b` | DNS 请求路径累计计数（GetDnsStats 非 0） |
 
-**代码基线**：`http_latency.bpf.c` 当前含 dev_queue_xmit 探索改动（**未提交**）；`http_latency_monitor.cpp` attach 名已改为 `probe_http_req`（**未提交**）。
+**代码基线**：`http_latency.bpf.c` 已由 dev_queue_xmit 方案改为 `kprobe/tcp_sendmsg`（msghdr 多 iov 拼接，**未提交**）；`http_latency_monitor.cpp` attach 名已是 `probe_http_req`。dev_queue_xmit 的偏移/协议/线性区取样已移除。
 
 ---
 

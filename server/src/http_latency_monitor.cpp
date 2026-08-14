@@ -97,7 +97,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
         return false;
     }
 
-    // attach 探针到 kprobe/ip_queue_xmit (出站请求) 和 kprobe/tcp_recvmsg (响应)
+    // attach 探针到 kprobe/tcp_sendmsg (出站请求) 和 kprobe/tcp_recvmsg (响应)
     struct bpf_program *send_prog = bpf_object__find_program_by_name(obj, "probe_http_req");
     struct bpf_program *recv_prog = bpf_object__find_program_by_name(obj, "trace_tcp_recvmsg");
     if (!send_prog || !recv_prog) {
@@ -115,11 +115,32 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
         impl_->link_send = nullptr;
     }
 
-    impl_->link_recv = bpf_program__attach(recv_prog);
+    // 响应侧：真实接收路径在内层 tcp_recvmsg_locked（tracefs 实测外层 tcp_recvmsg 几乎不触发）。
+    // libbpf 的 bpf_program__attach() 按 SEC 段名挂符号，SEC 写的仍是 tcp_recvmsg；为把探针挂到
+    // tcp_recvmsg_locked，必须直接用 bpf_lookup_symbol + bpf_program__attach_kprobe 指定符号。
+    // 若开发板内核无此符号，退化为原 bpf_program__attach()（按 SEC 名）。
+    impl_->link_recv = bpf_program__attach(recv_prog);   // 兜底：按 SEC 段 tcp_recvmsg
     long err_recv = libbpf_get_error(impl_->link_recv);
-    if (err_recv) {
-        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: attach tcp_recvmsg failed err=" << err_recv);
+    if (!err_recv) {
+        // 已按 SEC tcp_recvmsg 挂上——但它不触发，改挂内层 locked
+        bpf_link__destroy(impl_->link_recv);
         impl_->link_recv = nullptr;
+    }
+    // 显式挂 tcp_recvmsg_locked 的 **kretprobe（retprobe=true）**：
+    // tcp_recvmsg_locked 在入口时尚未把响应数据 copy 进用户 msg_iter 缓冲，
+    // 只有从该函数返回后，iov_base 里才是真实响应明文。故必须用 retprobe 读取。
+    struct bpf_link *lrecv = bpf_program__attach_kprobe(recv_prog, true, "tcp_recvmsg_locked");
+    err_recv = libbpf_get_error(lrecv);
+    if (err_recv) {
+        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: attach kretprobe tcp_recvmsg_locked failed err=" << err_recv
+                  << ", fallback to entry kprobe");
+        // 回退：按入口 kprobe 再 attach 一次
+        impl_->link_recv = bpf_program__attach(recv_prog);
+        long e2 = libbpf_get_error(impl_->link_recv);
+        if (e2) { LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: attach tcp_recvmsg (fallback) failed err=" << e2); impl_->link_recv = nullptr; }
+    } else {
+        impl_->link_recv = lrecv;
+        LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: recv probe attached as kretprobe(tcp_recvmsg_locked)");
     }
 
     if (!impl_->link_send && !impl_->link_recv) {
