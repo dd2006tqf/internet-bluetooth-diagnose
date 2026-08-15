@@ -15,47 +15,43 @@ using namespace std::chrono_literals;
 namespace weaknet_dbus {
 
 void start_rssi_monitor_thread(ServerContext* ctx, const std::string& ctrlDir) {
-    std::thread([ctx, ctrlDir]{
+    // 加入可 join 句柄，由主线程退出路径 join，避免 detached 线程在 ctx 析构后野访问
+    ctx->rssi_thread = std::thread([ctx, ctrlDir]{
         LOG_INFO(LogModule::RSSI, "RSSI monitor thread started");
-        if (!ctx->weak_mgr) ctx->weak_mgr = new WeakNetMgr();
         int loop_count = 0;
         while (ctx->running.load()) {
             loop_count++;
             LOG_INFO(LogModule::RSSI, "RSSI monitor thread running, loop=" << loop_count << ", ctx->running=" << ctx->running.load());
-            
+
             // 直接调用线程安全的RSSI更新方法
             LOG_INFO(LogModule::RSSI, "RSSI monitor: calling updateWifiRssiSafe");
             bool changed = ctx->weak_mgr->updateWifiRssiSafe(ctrlDir);
             LOG_INFO(LogModule::RSSI, "RSSI monitor: updateWifiRssiSafe completed, changed=" << changed);
-            
+
             // 获取当前接口列表用于日志输出
             auto current_interfaces = ctx->weak_mgr->getCurrentInterfaces();
             LOG_INFO(LogModule::RSSI, "RSSI monitor: current interfaces count=" << current_interfaces.size());
-            
+
             // 输出RSSI监控信息
             for (const auto& net : current_interfaces) {
                 if (net.type() == NetType::WiFi) {
-                    LOG_INFO(LogModule::RSSI, "RSSI_MONITOR: " << net.ifName() 
-                        << " | RSSI: " << net.rssiDbm() << "dBm" 
+                    LOG_INFO(LogModule::RSSI, "RSSI_MONITOR: " << net.ifName()
+                        << " | RSSI: " << net.rssiDbm() << "dBm"
                         << " | Quality: " << static_cast<int>(net.quality())
                         << " | Using: " << (net.usingNow() ? "YES" : "NO"));
                 }
             }
-            
+
             if (changed && ctx->service) {
                 LOG_INFO(LogModule::RSSI, "WiFi RSSI updated - emitting signal");
-                // 异步发送DBus信号，避免阻塞RSSI线程
-                std::thread([ctx]() {
-                    ctx->service->emitChanged("WiFi RSSI updated", /*counter*/0);
-                }).detach();
+                // 同步发射（内部有锁），不创建 detached 子线程
+                ctx->service->emitChanged("WiFi RSSI updated", /*counter*/0);
             } else {
                 LOG_INFO(LogModule::RSSI, "RSSI_MONITOR: no changes detected (interfaces: " << current_interfaces.size() << ")");
             }
             std::this_thread::sleep_for(10000ms);
         }
-    }).detach();
+    });
 }
 
 }  // namespace weaknet_dbus
-
-

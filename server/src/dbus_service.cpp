@@ -83,6 +83,7 @@ bool DbusService::register_on_connection(DBusConnection* conn) {
 }
 
 bool DbusService::emitChanged(const std::string& message, int32_t counter) {
+    std::lock_guard<std::mutex> lock(send_mutex_);
     DBusMessage* sig = dbus_message_new_signal(kObjectPath, kInterface, kSignalChanged);
     if (!sig) {
         LOG_ERROR(LogModule::DBUS, "emitChanged: failed to create signal");
@@ -153,21 +154,15 @@ bool DbusService::replyStringArray(DBusConnection* conn, DBusMessage* msg, const
 
 bool DbusService::handleListInterfaces(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleListInterfaces called");
-    std::vector<std::string> snapshot;
-    {
-        std::lock_guard<std::mutex> lk(ctx_->iface_mutex);
-        snapshot = WeakNetMgr::namesOf(ctx_->iface_list);
-    }
-    return replyStringArray(conn, msg, snapshot);
+    // 接口列表唯一事实源 = WeakNetMgr::current_interfaces_（线程安全接口）
+    std::vector<NetInfo> snapshot = ctx_->weak_mgr->getCurrentInterfaces();
+    return replyStringArray(conn, msg, WeakNetMgr::namesOf(snapshot));
 }
 
 bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleHealthCheck called");
-    std::vector<NetInfo> snapshot;
-    {
-        std::lock_guard<std::mutex> lk(ctx_->iface_mutex);
-        snapshot = ctx_->iface_list;
-    }
+    // 接口列表唯一事实源 = WeakNetMgr::current_interfaces_（线程安全接口）
+    std::vector<NetInfo> snapshot = ctx_->weak_mgr->getCurrentInterfaces();
 
     NetworkQualityAssessor assessor;
     NetworkQualityResult result = assessor.assessQuality(snapshot);
@@ -187,6 +182,7 @@ bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
 
 bool DbusService::emitSpecificSignal(const std::string& signalName, const std::string& message, int32_t counter) {
     if (!ctx_ || !ctx_->connection) return false;
+    std::lock_guard<std::mutex> lock(send_mutex_);
 
     DBusMessage* signal = dbus_message_new_signal(kObjectPath, kInterface, signalName.c_str());
     if (!signal) return false;
@@ -215,6 +211,7 @@ bool DbusService::emitSpecificSignal(const std::string& signalName, const std::s
 
 bool DbusService::emitNetworkQualitySignal(const std::string& message, const std::string& details, int32_t counter) {
     if (!ctx_ || !ctx_->connection) return false;
+    std::lock_guard<std::mutex> lock(send_mutex_);
 
     DBusMessage* signal = dbus_message_new_signal(kObjectPath, kInterface, kSignalNetworkQualityChanged);
     if (!signal) return false;
@@ -281,11 +278,11 @@ bool DbusService::handlePing(DBusConnection* conn, DBusMessage* msg) {
     
     LOG_INFO(LogModule::DBUS, "Ping request for host: " << hostname);
     
-    // 获取当前上网网卡
+    // 获取当前上网网卡（接口列表唯一事实源 = WeakNetMgr::current_interfaces_）
     std::string currentIface;
     {
-        std::lock_guard<std::mutex> lk(ctx_->iface_mutex);
-        for (const auto& net : ctx_->iface_list) {
+        auto interfaces = ctx_->weak_mgr->getCurrentInterfaces();
+        for (const auto& net : interfaces) {
             if (net.usingNow()) {
                 currentIface = net.ifName();
                 break;

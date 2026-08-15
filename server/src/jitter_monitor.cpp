@@ -69,11 +69,9 @@ void start_jitter_monitor_thread(ServerContext* ctx,
                                  int intervalMs,
                                  int timeoutMs,
                                  int windowSize) {
-    std::thread([ctx, host, intervalMs, timeoutMs, windowSize]{
+    ctx->jitter_thread = std::thread([ctx, host, intervalMs, timeoutMs, windowSize]{
         LOG_INFO(LogModule::NETWORK, "Jitter monitor thread started (host=" << host
                  << ", interval=" << intervalMs << "ms, window=" << windowSize << ")");
-        if (!ctx->weak_mgr) ctx->weak_mgr = new WeakNetMgr();
-
         auto pinger = NetPing::getInstance();
 
         // 每个接口维护独立的 RTT 样本窗口
@@ -120,10 +118,8 @@ void start_jitter_monitor_thread(ServerContext* ctx,
 
                 if (anyChanged && ctx->service) {
                     LOG_INFO(LogModule::NETWORK, "Jitter updated - emitting signal");
-                    // 异步发送 DBus 信号，避免阻塞监控线程
-                    std::thread([ctx]() {
-                        ctx->service->emitChanged("Jitter updated", /*counter*/0);
-                    }).detach();
+                    // 同步发射（内部有锁），不创建 detached 子线程
+                    ctx->service->emitChanged("Jitter updated", /*counter*/0);
                 }
             } catch (const std::exception& e) {
                 LOG_ERROR(LogModule::NETWORK, "Jitter monitor thread exception: " << e.what());
@@ -134,7 +130,7 @@ void start_jitter_monitor_thread(ServerContext* ctx,
             std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
         }
         LOG_INFO(LogModule::NETWORK, "Jitter monitor thread exiting");
-    }).detach();
+    });
 }
 
 }  // namespace weaknet_dbus

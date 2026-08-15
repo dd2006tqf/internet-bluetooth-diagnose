@@ -1,0 +1,6 @@
+{
+  "schema_version": 3,
+  "change_name": "server-lifecycle-fix",
+  "migration": null,
+  "tasks": []
+}

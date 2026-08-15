@@ -1,14 +1,14 @@
 {
   "schema_version": 2,
   "workflow": "openspec",
-  "phase": "idle",
-  "current_step": "change-aborted",
-  "next_step": "Create or select the next change",
-  "updated_at": "2026-08-12T17:36:01.228Z",
+  "phase": "planning",
+  "current_step": "change-created",
+  "next_step": "Write and review planning artifacts",
+  "updated_at": "2026-08-15T14:43:15.543Z",
   "last_archived_change": {
     "change_name": "http-request-latency-monitor",
     "archived_as": "2026-08-03-http-request-latency-monitor",
     "archived_at": "2026-08-03T16:57:44.857Z"
   },
-  "active_change": null
+  "active_change": "server-lifecycle-fix"
 }
