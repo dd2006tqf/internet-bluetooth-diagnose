@@ -2,5 +2,490 @@
   "schema_version": 3,
   "change_name": "server-lifecycle-fix",
   "migration": null,
-  "tasks": []
+  "tasks": [
+    {
+      "task_id": "1",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务端生命周期统一管理",
+          "scenarios": [
+            "所有监控线程可被主线程 join"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-server-lifecycle-build"
+      ],
+      "changed_paths": [
+        "server/include/server.hpp",
+        "server/src/bt_monitor.cpp",
+        "server/src/jitter_monitor.cpp",
+        "server/src/rssi_monitor.cpp",
+        "server/src/rtt_monitor.cpp",
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786807136983-2367820",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-lifecycle-build-verify",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "server-lifecycle-fix",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-15T15:18:42.811Z",
+          "finished_at": "2026-08-15T15:18:55.024Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "source_fingerprint_after": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "planning_fingerprint_before": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "planning_fingerprint_after": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "tdd_policy_sha256": "sha256:2583e0c9981b980414c0338515353107eefed84d8a8c411b0837913ee64f0eee",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:2e78093eeb2cab3b73314e9d10b9c5a3680f60d4c32df4482278aa494645f59a",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        },
+        {
+          "id": "gen-cmd-1786807238808-2370159",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-lifecycle-build-verify",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "server-lifecycle-fix",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-15T15:20:24.004Z",
+          "finished_at": "2026-08-15T15:20:37.058Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "source_fingerprint_after": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "planning_fingerprint_before": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "planning_fingerprint_after": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "tdd_policy_sha256": "sha256:2583e0c9981b980414c0338515353107eefed84d8a8c411b0837913ee64f0eee",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:25b8a6633b1abf70b6c4058b9a7aea0858d0d59a68ad67cb1161e11ad7d9b325",
+          "surface_ids": [
+            "surface-server-lifecycle-build"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-server-lifecycle-build",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "2",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务端生命周期统一管理",
+          "scenarios": [
+            "ServerContext 析构释放资源"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-server-lifecycle-build"
+      ],
+      "changed_paths": [
+        "server/include/server.hpp",
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786807362410-2372748",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-lifecycle-build-verify",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "server-lifecycle-fix",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-15T15:22:25.676Z",
+          "finished_at": "2026-08-15T15:22:40.301Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "source_fingerprint_after": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "planning_fingerprint_before": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "planning_fingerprint_after": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "tdd_policy_sha256": "sha256:2583e0c9981b980414c0338515353107eefed84d8a8c411b0837913ee64f0eee",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:a4a3e4508e93b7705ec53faf52989496671764a439a4eeccd068072845580637",
+          "surface_ids": [
+            "surface-server-lifecycle-build"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-server-lifecycle-build",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "3",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务端生命周期统一管理",
+          "scenarios": [
+            "停止顺序先停循环再释放"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-server-lifecycle-build"
+      ],
+      "changed_paths": [
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786807421566-2374927",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-lifecycle-build-verify",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "server-lifecycle-fix",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-15T15:23:26.899Z",
+          "finished_at": "2026-08-15T15:23:39.774Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "source_fingerprint_after": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "planning_fingerprint_before": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "planning_fingerprint_after": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "tdd_policy_sha256": "sha256:2583e0c9981b980414c0338515353107eefed84d8a8c411b0837913ee64f0eee",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:552e9168ee1bd1a591ff5d4a519a9ae97f98fc32c3e8d9ffc59eca3643b87f84",
+          "surface_ids": [
+            "surface-server-lifecycle-build"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-server-lifecycle-build",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": []
+        },
+        {
+          "id": "gen-cmd-1786807579609-2377957",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-lifecycle-build-verify",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "server-lifecycle-fix",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-15T15:26:05.130Z",
+          "finished_at": "2026-08-15T15:26:17.739Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "source_fingerprint_after": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "planning_fingerprint_before": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "planning_fingerprint_after": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "tdd_policy_sha256": "sha256:2583e0c9981b980414c0338515353107eefed84d8a8c411b0837913ee64f0eee",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:1f614eaacf61d1fa7b59800915c7e936b1cbc6d828575e28a5e69f4b070c1d66",
+          "surface_ids": [
+            "surface-server-lifecycle-build"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-server-lifecycle-build",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "4",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "D-Bus 信号发射线程安全",
+          "scenarios": [
+            "信号发射加互斥"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-server-lifecycle-build"
+      ],
+      "changed_paths": [
+        "server/include/dbus_service.hpp",
+        "server/src/dbus_service.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786807650465-2380476",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-lifecycle-build-verify",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "server-lifecycle-fix",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-15T15:27:16.020Z",
+          "finished_at": "2026-08-15T15:27:28.807Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "source_fingerprint_after": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "planning_fingerprint_before": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "planning_fingerprint_after": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "tdd_policy_sha256": "sha256:2583e0c9981b980414c0338515353107eefed84d8a8c411b0837913ee64f0eee",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:9ce1193a392351409ea52ad5aff4322470560d68b831bd830f115c59e7cd7875",
+          "surface_ids": [
+            "surface-server-lifecycle-build"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-server-lifecycle-build",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "5",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务端生命周期统一管理",
+          "scenarios": [
+            "接口列表唯一事实源"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-server-lifecycle-build"
+      ],
+      "changed_paths": [
+        "server/src/jitter_monitor.cpp",
+        "server/src/rssi_monitor.cpp",
+        "server/src/rtt_monitor.cpp",
+        "server/src/server.cpp",
+        "server/src/tcp_loss_monitor.cpp",
+        "server/src/using_iface.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786807724634-2383377",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-lifecycle-build-verify",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "server-lifecycle-fix",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-15T15:28:30.056Z",
+          "finished_at": "2026-08-15T15:28:42.916Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "source_fingerprint_after": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "planning_fingerprint_before": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "planning_fingerprint_after": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "tdd_policy_sha256": "sha256:2583e0c9981b980414c0338515353107eefed84d8a8c411b0837913ee64f0eee",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:db0d94342105a384102eb6b03dba3329990cd8de40a227ee22e35d29f2afa5a0",
+          "surface_ids": [
+            "surface-server-lifecycle-build"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-server-lifecycle-build",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "6",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "D-Bus 信号发射线程安全",
+          "scenarios": [
+            "信号发射加互斥"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-server-lifecycle-build"
+      ],
+      "changed_paths": [
+        "server/src/dbus_service.cpp",
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786807812467-2385222",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-lifecycle-build-verify",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "server-lifecycle-fix",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-15T15:29:58.053Z",
+          "finished_at": "2026-08-15T15:30:10.629Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "source_fingerprint_after": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+          "planning_fingerprint_before": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "planning_fingerprint_after": "sha256:bc0b8175fe9da6fec0eab273c82bfe17778eb99cb3810fbe05281f7b3d4c407a",
+          "tdd_policy_sha256": "sha256:2583e0c9981b980414c0338515353107eefed84d8a8c411b0837913ee64f0eee",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:ec2a8f578e69842705bd7556254957d7b99b1797e2c6ce984a9364aa882b8c3b",
+          "surface_ids": [
+            "surface-server-lifecycle-build"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-server-lifecycle-build",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": []
+        }
+      ]
+    }
+  ]
 }
