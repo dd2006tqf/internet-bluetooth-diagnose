@@ -20,7 +20,7 @@
   - Verify: `build`
   - DbusService emit* 加锁；各 detach 信号子线程改为同步调用
 
-- [ ] 5 消除 weak_mgr 多线程并发创建（启动期一次性创建）
+- [x] 5 消除 weak_mgr 多线程并发创建（启动期一次性创建）
   - Covers: `specs/weaknet-server/spec.md` | `ADDED` | `服务端生命周期统一管理` | `接口列表唯一事实源`
   - Verify: `build`
   - 删除各监控线程内 `if (!ctx->weak_mgr) new`，由 start_server 预建
