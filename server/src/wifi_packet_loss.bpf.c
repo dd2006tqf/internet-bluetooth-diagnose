@@ -46,7 +46,8 @@ static __always_inline struct iface_packet_stats *get_stats(__u32 ifindex)
     struct iface_packet_stats *stats = bpf_map_lookup_elem(&packet_stats, &ifindex);
     if (!stats) {
         struct iface_packet_stats init = {};
-        bpf_map_update_elem(&packet_stats, &ifindex, &init, BPF_ANY);
+        if (bpf_map_update_elem(&packet_stats, &ifindex, &init, BPF_ANY) != 0)
+            return NULL;
         stats = bpf_map_lookup_elem(&packet_stats, &ifindex);
     }
     return stats;
@@ -56,36 +57,30 @@ static __always_inline struct iface_packet_stats *get_stats(__u32 ifindex)
 static __always_inline __u32 skb_ifindex(struct sk_buff *skb)
 {
     if (!skb) return 0;
-    void *dev = NULL;
-    if (bpf_probe_read_kernel(&dev, sizeof(dev), &skb->dev) < 0)
-        return 0;
+    struct net_device *dev = BPF_CORE_READ(skb, dev);
     if (!dev) return 0;
-    __u32 ifindex = 0;
-    if (bpf_probe_read_kernel(&ifindex, sizeof(ifindex), (char *)dev + offsetof(struct net_device, ifindex)) < 0)
-        return 0;
-    return ifindex;
+    return BPF_CORE_READ(dev, ifindex);
 }
 
 // ---- 挂点 1: 接收路径 ----
 
 // tracepoint: void netif_receive_skb(struct sk_buff *skb)
+// 用 tracepoint/net/... 普通挂法；事件第一个数据字段 skbaddr(指针)在通用头(8B)之后
+// 偏移 8。libbpf 对 tracepoint 不做自动解参，需从事件结构按偏移读。
 SEC("tracepoint/net/netif_receive_skb")
-int trace_net_rx(void *ctx)
+int trace_net_rx(struct trace_event_raw_netif_receive_skb *ctx)
 {
-    // tracepoint 第一个参数是 sk_buff *
     struct sk_buff *skb = NULL;
-    if (bpf_probe_read_kernel(&skb, sizeof(skb), ctx) < 0)
-        return 0;
+    bpf_probe_read_kernel(&skb, sizeof(skb), (void*)ctx + 8);  // skbaddr
+    if (!skb) return 0;
     __u32 ifindex = skb_ifindex(skb);
     if (ifindex == 0) return 0;
 
     struct iface_packet_stats *stats = get_stats(ifindex);
     if (!stats) return 0;
-
     __sync_fetch_and_add(&stats->rx_pkts, 1);
-    __u32 len = 0;
-    if (bpf_probe_read_kernel(&len, sizeof(len), (char *)skb + offsetof(struct sk_buff, len)) == 0)
-        __sync_fetch_and_add(&stats->rx_bytes, len);
+    __u32 len = BPF_CORE_READ(skb, len);
+    __sync_fetch_and_add(&stats->rx_bytes, len);
     return 0;
 }
 
@@ -93,21 +88,19 @@ int trace_net_rx(void *ctx)
 
 // tracepoint: void net_dev_queue(struct sk_buff *skb)
 SEC("tracepoint/net/net_dev_queue")
-int trace_net_tx_queue(void *ctx)
+int trace_net_tx_queue(struct trace_event_raw_net_dev_queue *ctx)
 {
     struct sk_buff *skb = NULL;
-    if (bpf_probe_read_kernel(&skb, sizeof(skb), ctx) < 0)
-        return 0;
+    bpf_probe_read_kernel(&skb, sizeof(skb), (void*)ctx + 8);  // skbaddr
+    if (!skb) return 0;
     __u32 ifindex = skb_ifindex(skb);
     if (ifindex == 0) return 0;
 
     struct iface_packet_stats *stats = get_stats(ifindex);
     if (!stats) return 0;
-
     __sync_fetch_and_add(&stats->tx_pkts, 1);
-    __u32 len = 0;
-    if (bpf_probe_read_kernel(&len, sizeof(len), (char *)skb + offsetof(struct sk_buff, len)) == 0)
-        __sync_fetch_and_add(&stats->tx_bytes, len);
+    __u32 len = BPF_CORE_READ(skb, len);
+    __sync_fetch_and_add(&stats->tx_bytes, len);
     return 0;
 }
 
@@ -115,24 +108,15 @@ int trace_net_tx_queue(void *ctx)
 
 // tracepoint: net_dev_xmit(struct sk_buff *skb, int rc, struct net_device *dev, unsigned int skb_len)
 SEC("tracepoint/net/net_dev_xmit")
-int trace_net_tx_xmit(void *ctx)
+int trace_net_tx_xmit(struct trace_event_raw_net_dev_xmit *ctx)
 {
-    // tracepoint 参数布局: skb(0), rc(1), dev(2), len(3)
+    // 事件结构: ent(8B) + skbaddr(8B) + len(4B) + rc(4B)
     struct sk_buff *skb = NULL;
     int rc = 0;
-    struct net_device *dev = NULL;
-    if (bpf_probe_read_kernel(&skb, sizeof(skb), ctx) < 0)
-        return 0;
-    if (bpf_probe_read_kernel(&rc, sizeof(rc), (char *)ctx + sizeof(void *) * 1) < 0)
-        return 0;
-    if (bpf_probe_read_kernel(&dev, sizeof(dev), (char *)ctx + sizeof(void *) * 2) < 0)
-        return 0;
+    bpf_probe_read_kernel(&skb, sizeof(skb), (void*)ctx + 8);   // skbaddr
+    bpf_probe_read_kernel(&rc, sizeof(rc), (void*)ctx + 20);    // rc
     __u32 ifindex = 0;
-    if (dev) {
-        if (bpf_probe_read_kernel(&ifindex, sizeof(ifindex), (char *)dev + offsetof(struct net_device, ifindex)) < 0)
-            ifindex = 0;
-    }
-    if (ifindex == 0) ifindex = skb_ifindex(skb);
+    if (skb) ifindex = skb_ifindex(skb);
     if (ifindex == 0) return 0;
 
     struct iface_packet_stats *stats = get_stats(ifindex);
