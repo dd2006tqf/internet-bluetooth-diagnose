@@ -385,8 +385,8 @@ static void start_network_quality_thread(ServerContext* ctx) {
 
                 // 获取蓝牙 RSSI（取所有已连接设备的平均 RSSI）
                 int btRssi = -1000;
-                if (ctx->bt_monitor && ctx->bt_monitor->isInitialized()) {
-                    auto rssiSnapshot = ctx->bt_monitor->getRssiSnapshot();
+                if (auto* mon = ctx->bt_monitor.load(); mon && mon->isInitialized()) {
+                    auto rssiSnapshot = mon->getRssiSnapshot();
                     int sum = 0, count = 0;
                     for (const auto& [mac, rssi] : rssiSnapshot) {
                         if (rssi != 0 && rssi > -1000) {
@@ -430,11 +430,12 @@ static void start_network_quality_thread(ServerContext* ctx) {
             // 可检测 "active 但卡顿" 状态，eBPF 不可用时自动降级
             // ================================================================
             try {
-                if (ctx->bt_monitor && ctx->bt_monitor->isInitialized()) {
-                    auto connected = ctx->bt_monitor->getConnectedDevices();
+                BtMonitor* mon = ctx->bt_monitor.load();
+                if (mon && mon->isInitialized()) {
+                    auto connected = mon->getConnectedDevices();
                     for (const auto& dev : connected) {
                         BtAudioFusionResult fusionResult;
-                        if (ctx->bt_monitor->getAudioFusionResult(dev.macAddress, &fusionResult)) {
+                        if (mon->getAudioFusionResult(dev.macAddress, &fusionResult)) {
                             // 仅在有异常时输出日志（减少正常情况下的日志量）
                             if (fusionResult.suspectedStall) {
                                 LOG_WARNING(LogModule::BLUETOOTH,
@@ -479,16 +480,20 @@ static void start_network_quality_thread(ServerContext* ctx) {
 // ====================================================================
 
 void start_dns_monitor_thread(ServerContext* ctx) {
-    ctx->dns_monitor_thread = std::thread([ctx]() {
+    // 指针成员改为 atomic，读写用 load()/store()（TSan 证实 dbus_service 读 vs
+    // 此处写是数据竞争根因）。捕获 ctx 的副本并判空属额外防御。
+    ServerContext* const ctx_capture = ctx;
+    ctx_capture->dns_monitor_thread = std::thread([ctx_capture]() {
+        if (!ctx_capture) return;
         LOG_INFO(LogModule::NETWORK, "DNS monitor thread started");
         auto monitor = std::make_unique<DnsMonitor>();
-        ctx->dns_monitor = monitor.get();
+        ctx_capture->dns_monitor.store(monitor.get());
         if (!monitor->init("build/dns_monitor.bpf.o")) {
             LOG_INFO(LogModule::NETWORK, "DNS monitor: BPF init failed, thread exiting");
-            ctx->dns_monitor = nullptr;
+            ctx_capture->dns_monitor.store(nullptr);
             return;
         }
-        while (ctx->running.load()) {
+        while (ctx_capture->running.load()) {
             auto stats = monitor->getStats();
             if (stats.totalQueries > 0) {
                 LOG_INFO(LogModule::NETWORK, "DNS tick: queries=" << stats.totalQueries
@@ -498,7 +503,7 @@ void start_dns_monitor_thread(ServerContext* ctx) {
             std::this_thread::sleep_for(10000ms);
         }
         monitor->stop();
-        ctx->dns_monitor = nullptr;
+        ctx_capture->dns_monitor.store(nullptr);
         LOG_INFO(LogModule::NETWORK, "DNS monitor thread stopped");
     });
 }
@@ -507,10 +512,10 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx) {
     ctx->wifi_loss_monitor_thread = std::thread([ctx]() {
         LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor thread started");
         auto monitor = std::make_unique<WifiPacketLossMonitor>();
-        ctx->wifi_loss_monitor = monitor.get();
+        ctx->wifi_loss_monitor.store(monitor.get());
         if (!monitor->init("build/wifi_packet_loss.bpf.o")) {
             LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor: BPF init failed, thread exiting");
-            ctx->wifi_loss_monitor = nullptr;
+            ctx->wifi_loss_monitor.store(nullptr);
             return;
         }
         while (ctx->running.load()) {
@@ -526,7 +531,7 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx) {
             std::this_thread::sleep_for(10000ms);
         }
         monitor->stop();
-        ctx->wifi_loss_monitor = nullptr;
+        ctx->wifi_loss_monitor.store(nullptr);
         LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor thread stopped");
     });
 }
@@ -535,10 +540,10 @@ void start_http_latency_monitor_thread(ServerContext* ctx) {
     ctx->http_latency_monitor_thread = std::thread([ctx]() {
         LOG_INFO(LogModule::NETWORK, "HTTP latency monitor thread started");
         auto monitor = std::make_unique<HttpLatencyMonitor>();
-        ctx->http_latency_monitor = monitor.get();
+        ctx->http_latency_monitor.store(monitor.get());
         if (!monitor->init("build/http_latency.bpf.o")) {
             LOG_INFO(LogModule::NETWORK, "HTTP latency monitor: BPF init failed, thread exiting");
-            ctx->http_latency_monitor = nullptr;
+            ctx->http_latency_monitor.store(nullptr);
             return;
         }
         while (ctx->running.load()) {
@@ -552,7 +557,7 @@ void start_http_latency_monitor_thread(ServerContext* ctx) {
             std::this_thread::sleep_for(10000ms);
         }
         monitor->stop();
-        ctx->http_latency_monitor = nullptr;
+        ctx->http_latency_monitor.store(nullptr);
         LOG_INFO(LogModule::NETWORK, "HTTP latency monitor thread stopped");
     });
 }
@@ -561,10 +566,10 @@ void start_process_net_profiler_thread(ServerContext* ctx) {
     ctx->process_net_profiler_thread = std::thread([ctx]() {
         LOG_INFO(LogModule::NETWORK, "Process net profiler thread started");
         auto profiler = std::make_unique<ProcessNetProfiler>();
-        ctx->process_net_profiler = profiler.get();
+        ctx->process_net_profiler.store(profiler.get());
         if (!profiler->init("build/flow_rate.bpf.o")) {
             LOG_INFO(LogModule::NETWORK, "Process net profiler: BPF init failed, thread exiting");
-            ctx->process_net_profiler = nullptr;
+            ctx->process_net_profiler.store(nullptr);
             return;
         }
         while (ctx->running.load()) {
@@ -589,7 +594,7 @@ void start_process_net_profiler_thread(ServerContext* ctx) {
             std::this_thread::sleep_for(15000ms);
         }
         profiler->stop();
-        ctx->process_net_profiler = nullptr;
+        ctx->process_net_profiler.store(nullptr);
         LOG_INFO(LogModule::NETWORK, "Process net profiler thread stopped");
     });
 }
@@ -601,22 +606,22 @@ int start_server() {
         std::cerr << "Failed to initialize logger" << std::endl;
         return 1;
     }
-    
+
     ServerContext ctx;
     if (!init_dbus(&ctx)) return 1;
-    
+
     // 启动事件监控
     getEventManager().startEventMonitoring(&ctx);
-    
+
     // 初始化WeakNetMgr
     if (!ctx.weak_mgr) ctx.weak_mgr = new WeakNetMgr();
-    
+
     // 初始化接口列表到WeakNetMgr中
     LOG_INFO(LogModule::WEAK_MGR, "initializing interface list...");
     auto initial_interfaces = ctx.weak_mgr->collectCurrentInterfaces();
     ctx.weak_mgr->updateInterfaces(initial_interfaces);
     LOG_INFO(LogModule::WEAK_MGR, "interface list initialized with " << initial_interfaces.size() << " interfaces");
-    
+
     start_iface_monitor_thread(&ctx);
     start_using_iface_thread(&ctx);
     // 启动 RTT 监控线程：使用阿里云 DNS 223.5.5.5 作为目标
@@ -639,7 +644,9 @@ int start_server() {
     start_network_quality_thread(&ctx);
     // 启动蓝牙监测线程 (通过 BlueZ D-Bus API)
     LOG_INFO(LogModule::BLUETOOTH, "starting bluetooth monitor thread");
-    start_bt_monitor_thread(&ctx, &ctx.bt_monitor);
+    // ctx.bt_monitor 是 atomic<BtMonitor*>，不能取地址作 BtMonitor**；改传 nullptr 并在
+    // start_bt_monitor_thread 内部已直接写 ctx->bt_monitor.store()（见其实现）。
+    start_bt_monitor_thread(&ctx, nullptr);
 
     // ================================================================
     // eBPF 监控器统一启动（由 ServerContext 持有实例，退出时统一 stop）
@@ -669,19 +676,39 @@ int start_server() {
     lp->run(&ctx);
     // Looper::run() 退出后，逆序停止 eBPF 监控器释放 BPF 资源
     LOG_INFO(LogModule::NETWORK, "server shutting down, stopping eBPF monitors...");
-    if (ctx.process_net_profiler) ctx.process_net_profiler->stop();
-    if (ctx.http_latency_monitor) ctx.http_latency_monitor->stop();
-    if (ctx.wifi_loss_monitor) ctx.wifi_loss_monitor->stop();
-    if (ctx.dns_monitor) ctx.dns_monitor->stop();
+    if (auto* p = ctx.process_net_profiler.load(); p) p->stop();
+    if (auto* p = ctx.http_latency_monitor.load(); p) p->stop();
+    if (auto* p = ctx.wifi_loss_monitor.load(); p) p->stop();
+    if (auto* p = ctx.dns_monitor.load(); p) p->stop();
     LOG_INFO(LogModule::NETWORK, "all eBPF monitors stopped");
-    // 按当前要求，服务常驻不退出，以下代码不会到达；保留以备扩展
-   // ctx.iface_thread.join();
-   // ctx.tcp_loss_thread.join();
-  //  ctx.traffic_analysis_thread.join();
-    
+
+    // 修复 ServerContext 生命周期竞态：
+    // 监控线程 lambda 捕获 ctx* 并循环读 ctx->running，若此处直接返回，
+    // ctx（start_server 的栈对象）析构，仍在运行的监控线程会野访问 ctx->running 而 SIGSEGV。
+    // 故先置 running=false 让各线程退出循环，再 join 所有以 ctx->xxx_thread 持有的线程，
+    // 确保它们全部结束后才让 ctx 析构。
+    ctx.running = false;
+
+    // 先 join 带 std::thread 句柄的 eBPF 监控线程（必须 join，不能 detach）
+    if (ctx.dns_monitor_thread.joinable())            ctx.dns_monitor_thread.join();
+    if (ctx.wifi_loss_monitor_thread.joinable())      ctx.wifi_loss_monitor_thread.join();
+    if (ctx.http_latency_monitor_thread.joinable())   ctx.http_latency_monitor_thread.join();
+    if (ctx.process_net_profiler_thread.joinable())   ctx.process_net_profiler_thread.join();
+
+    // 其余历史监控线程（iface/using/rtt/jitter/rssi/tcp_loss/traffic/quality/bluetooth）也
+    // 捕获 ctx* 并读 ctx->running，统一置 false 后 join，避免它们成为野指针访问源。
+    if (ctx.iface_thread.joinable())                  ctx.iface_thread.join();
+    if (ctx.using_thread.joinable())                  ctx.using_thread.join();
+    if (ctx.rtt_thread.joinable())                    ctx.rtt_thread.join();
+    if (ctx.tcp_loss_thread.joinable())               ctx.tcp_loss_thread.join();
+    if (ctx.traffic_analysis_thread.joinable())       ctx.traffic_analysis_thread.join();
+    if (ctx.network_quality_thread.joinable())        ctx.network_quality_thread.join();
+
+    LOG_INFO(LogModule::NETWORK, "all monitor threads joined");
+
     // 清理glog
     google::ShutdownGoogleLogging();
-    
+
     return 0;
 }
 

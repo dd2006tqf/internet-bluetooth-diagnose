@@ -1059,14 +1059,16 @@ std::vector<std::string> BtMonitor::getStringArrayProperty(DBusConnection* conn,
 // 蓝牙监测线程入口 (集成到 server.cpp)
 // ============================================================================
 
-void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** outMonitor) {
-    std::thread([ctx, outMonitor]() {
+void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** /*outMonitor*/) {
+    // BtMonitor* 已改为 atomic 成员，写回由本线程序直接 ctx->bt_monitor.store()；
+    // outMonitor 参数保留以兼容调用签名，但不再直接取值。
+    std::thread([ctx]() {
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread started");
 
         // 创建独立的 BtMonitor 实例
         auto monitor = std::make_unique<BtMonitor>();
-        // 将原始指针写回 ServerContext，供 DbusService 查询
-        if (outMonitor) *outMonitor = monitor.get();
+        // 将原始指针写回 ServerContext(atomic)，供 DbusService 查询读取
+        ctx->bt_monitor.store(monitor.get());
 
         if (!monitor->initialize()) {
             LOG_INFO(LogModule::BLUETOOTH, "BT monitor: no Bluetooth adapter available, "
@@ -1187,7 +1189,7 @@ void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** outMonitor) {
 
         monitor->cleanup();
         monitor->stopPhase2();  // Phase 2: 释放 eBPF 内核资源
-        if (outMonitor) *outMonitor = nullptr;
+        ctx->bt_monitor.store(nullptr);
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread stopped");
     }).detach();
 }

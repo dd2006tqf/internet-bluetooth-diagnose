@@ -352,7 +352,8 @@ bool DbusService::handlePing(DBusConnection* conn, DBusMessage* msg) {
 bool DbusService::handleGetBluetoothDevices(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleGetBluetoothDevices called");
 
-    if (!ctx_ || !ctx_->bt_monitor) {
+    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor.load() : nullptr;
+    if (!monitor) {
         // 无蓝牙监测器 → 返回空数组
         DBusMessage* reply = dbus_message_new_method_return(msg);
         if (reply) {
@@ -369,7 +370,7 @@ bool DbusService::handleGetBluetoothDevices(DBusConnection* conn, DBusMessage* m
     }
 
     // 获取设备列表，格式化为 JSON 风格字符串数组
-    auto devices = ctx_->bt_monitor->getDevices();
+    auto devices = monitor->getDevices();
     std::vector<std::string> lines;
     lines.reserve(devices.size());
     for (const auto& dev : devices) {
@@ -393,8 +394,9 @@ bool DbusService::handleGetBluetoothAdapter(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    if (ctx_ && ctx_->bt_monitor && ctx_->bt_monitor->isInitialized()) {
-        auto state = ctx_->bt_monitor->getAdapterState();
+    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor.load() : nullptr;
+    if (monitor && monitor->isInitialized()) {
+        auto state = monitor->getAdapterState();
         result = std::string("Powered:") + (state.powered ? "1" : "0")
             + "|Name:" + state.name
             + "|Address:" + state.macAddress
@@ -425,8 +427,9 @@ bool DbusService::handleGetDnsStats(DBusConnection* conn, DBusMessage* msg) {
     if (!reply) return false;
 
     std::string result;
-    if (ctx_ && ctx_->dns_monitor && ctx_->dns_monitor->isAvailable()) {
-        auto stats = ctx_->dns_monitor->getStats();
+    DnsMonitor* monitor = ctx_ ? ctx_->dns_monitor.load() : nullptr;
+    if (monitor && monitor->isAvailable()) {
+        auto stats = monitor->getStats();
         result = "totalQueries:" + std::to_string(stats.totalQueries)
             + "|totalResponses:" + std::to_string(stats.totalResponses)
             + "|totalTimeouts:" + std::to_string(stats.totalTimeouts)
@@ -454,8 +457,9 @@ bool DbusService::handleGetWifiLossStats(DBusConnection* conn, DBusMessage* msg)
     if (!reply) return false;
 
     std::string result;
-    if (ctx_ && ctx_->wifi_loss_monitor && ctx_->wifi_loss_monitor->isAvailable()) {
-        auto stats = ctx_->wifi_loss_monitor->getStats();
+    WifiPacketLossMonitor* monitor = ctx_ ? ctx_->wifi_loss_monitor.load() : nullptr;
+    if (monitor && monitor->isAvailable()) {
+        auto stats = monitor->getStats();
         for (auto& [ifindex, s] : stats) {
             result += "ifindex:" + std::to_string(ifindex)
                 + " rxPkts:" + std::to_string(s.rxPkts)
@@ -485,8 +489,9 @@ bool DbusService::handleGetHttpLatencyStats(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    if (ctx_ && ctx_->http_latency_monitor && ctx_->http_latency_monitor->isAvailable()) {
-        auto stats = ctx_->http_latency_monitor->getGlobalStats();
+    HttpLatencyMonitor* monitor = ctx_ ? ctx_->http_latency_monitor.load() : nullptr;
+    if (monitor && monitor->isAvailable()) {
+        auto stats = monitor->getGlobalStats();
         result = "totalTxns:" + std::to_string(stats.totalTxns)
             + "|p50Ms:" + std::to_string(stats.p50Ns / 1000000)
             + "|p95Ms:" + std::to_string(stats.p95Ns / 1000000)
@@ -513,9 +518,10 @@ bool DbusService::handleGetProcessProfiling(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    if (ctx_ && ctx_->process_net_profiler && ctx_->process_net_profiler->isAvailable()) {
+    ProcessNetProfiler* monitor = ctx_ ? ctx_->process_net_profiler.load() : nullptr;
+    if (monitor && monitor->isAvailable()) {
         result += "=== Top Bandwidth ===|";
-        auto topBw = ctx_->process_net_profiler->getTopBandwidth(5);
+        auto topBw = monitor->getTopBandwidth(5);
         for (auto& p : topBw) {
             result += "pid:" + std::to_string(p.pid)
                 + " comm:" + p.comm
@@ -525,7 +531,7 @@ bool DbusService::handleGetProcessProfiling(DBusConnection* conn, DBusMessage* m
                 + "|";
         }
         result += "=== Top Retransmit ===|";
-        auto topRetrans = ctx_->process_net_profiler->getTopRetransmit(5);
+        auto topRetrans = monitor->getTopRetransmit(5);
         for (auto& p : topRetrans) {
             result += "pid:" + std::to_string(p.pid)
                 + " comm:" + p.comm
