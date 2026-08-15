@@ -1,0 +1,218 @@
+{
+  "schema_version": 1,
+  "change_name": "server-lifecycle-fix",
+  "implementation_base_commit": "d32f5c0d79d059be596d5ef478bc376843c5cd4c",
+  "discovery_mode": "reviewed_inventory",
+  "source_fingerprint": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+  "planning_block_sha256": "sha256:2184a6e5ed5c219fdca341846183c0b1e5d5a8425157ac12337a04d7701d8b5b",
+  "change_footprint_json_sha256": "sha256:7311acdb98251a4dcc5e98e123cb97668d8af32fd185417fe5fdb743997b89b6",
+  "scope_classifier_identity": {
+    "schema_version": 1,
+    "path": "scripts/change_scope.js",
+    "sha256": "sha256:f7c5dc2d02366cf05b9a01da5c6caad6c47e5e8fdefbcd497bea91d70352755e",
+    "output_sha256": "sha256:bdad81f6a58be4935793b5579fbdf748c42d028133dcdba1eaa9a1674c082d54"
+  },
+  "discovery_adapter_identity": {
+    "id": "reviewed-inventory-v1",
+    "schema_version": 1,
+    "sha256": "sha256:cbcf64a8afbdcafa3221b48b1ea76c7ea5de1a45aba0e78037da0fdb3bec9045"
+  },
+  "compile_commands_sha256": null,
+  "ast_tool_identity": null,
+  "planned_surface_ids": [
+    "surface-server-lifecycle-build"
+  ],
+  "changed_production_paths": [
+    "server/include/dbus_service.hpp",
+    "server/include/server.hpp",
+    "server/src/bt_monitor.cpp",
+    "server/src/dbus_service.cpp",
+    "server/src/jitter_monitor.cpp",
+    "server/src/rssi_monitor.cpp",
+    "server/src/rtt_monitor.cpp",
+    "server/src/server.cpp",
+    "server/src/tcp_loss_monitor.cpp",
+    "server/src/using_iface.cpp"
+  ],
+  "path_candidates": [
+    {
+      "candidate_id": "path-candidate-320d4660435802cf",
+      "source": "path",
+      "path": "server/src/rtt_monitor.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-66dcca3458ce08b6",
+      "source": "path",
+      "path": "server/src/server.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-73fb3df8c92cafc0",
+      "source": "path",
+      "path": "server/src/using_iface.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-77c5a50b6bae05b5",
+      "source": "path",
+      "path": "server/include/server.hpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-8a269d23c94389db",
+      "source": "path",
+      "path": "server/src/rssi_monitor.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-8a3bef9d6c3574da",
+      "source": "path",
+      "path": "server/src/dbus_service.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-8f11ab58e3ff94b9",
+      "source": "path",
+      "path": "server/src/bt_monitor.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-bc1f8371134773f1",
+      "source": "path",
+      "path": "server/src/jitter_monitor.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-cdc1cb37d49c36e7",
+      "source": "path",
+      "path": "server/include/dbus_service.hpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-e1f83357ce5b2d6c",
+      "source": "path",
+      "path": "server/src/tcp_loss_monitor.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    }
+  ],
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-583e7e7aaa4f",
+      "source": "structural",
+      "path": "server/include/dbus_service.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "candidate-c8248dcf181f",
+      "source": "structural",
+      "path": "server/include/server.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts",
+      "old_path": null,
+      "change_status": "modified"
+    }
+  ],
+  "ast_candidates": [],
+  "surface_candidate_bindings": [
+    {
+      "surface_id": "surface-server-lifecycle-build",
+      "candidate_bindings": [
+        {
+          "candidate_id": "candidate-583e7e7aaa4f",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "candidate-c8248dcf181f",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-320d4660435802cf",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-66dcca3458ce08b6",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-73fb3df8c92cafc0",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-77c5a50b6bae05b5",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-8a269d23c94389db",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-8a3bef9d6c3574da",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-8f11ab58e3ff94b9",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-bc1f8371134773f1",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-cdc1cb37d49c36e7",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-e1f83357ce5b2d6c",
+          "role": "producer",
+          "tree_side": "both"
+        }
+      ],
+      "producer_paths": [
+        "server/include/dbus_service.hpp",
+        "server/include/server.hpp",
+        "server/include/weak_netmgr.hpp",
+        "server/src/bt_monitor.cpp",
+        "server/src/dbus_service.cpp",
+        "server/src/jitter_monitor.cpp",
+        "server/src/rssi_monitor.cpp",
+        "server/src/rtt_monitor.cpp",
+        "server/src/server.cpp",
+        "server/src/tcp_loss_monitor.cpp",
+        "server/src/using_iface.cpp",
+        "server/src/weak_netmgr.cpp"
+      ],
+      "consumer_paths": [
+        "server/Makefile"
+      ],
+      "old_consumer_paths": [],
+      "replacement_consumer_paths": []
+    }
+  ],
+  "unmatched_candidates": [],
+  "status": "complete"
+}

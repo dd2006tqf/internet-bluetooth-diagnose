@@ -130,7 +130,7 @@ After (目标):
     ],
     "tests": [],
     "project_docs": [],
-    "project_tooling": [],
+    "project_tooling": ["server/Makefile"],
     "examples": [],
     "generated": [],
     "vendor": []
