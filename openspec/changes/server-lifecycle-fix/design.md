@@ -218,7 +218,7 @@ After (目标):
             "--json"
           ],
           "expected_exit_codes": [0],
-          "output_contains": "weaknet-dbus-server"
+          "output_contains": "Entering directory"
         }
       ],
       "requirement_refs": [

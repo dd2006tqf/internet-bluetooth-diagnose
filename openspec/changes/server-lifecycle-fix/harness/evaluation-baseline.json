@@ -1,0 +1,88 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260815T175946Z-039723",
+  "change_name": "server-lifecycle-fix",
+  "status": "aborted",
+  "started_at": "2026-08-15T17:59:47.383Z",
+  "source_fingerprint": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+  "artifact_fingerprint": "sha256:cf1c44d978bbcd0fa1818f6776f9ec738a1f25953d3bf80736a116a20ed4e854",
+  "base_specs_fingerprint": "sha256:ad11f9d3cdac5f4f30f747c23eae7809ccd0fd8785cf413466b24a5da04580c7",
+  "verification_json_sha256": "sha256:b53311070242ac5858b1f6b661ec0a36f14a3cf27a96229abf83a2fededc16d4",
+  "budget_block_sha256": "sha256:e753bde4b616525f8f582f9657bff5acb4d96f5121500a3aa2549c8140ec61d2",
+  "change_footprint_json_sha256": "sha256:7311acdb98251a4dcc5e98e123cb97668d8af32fd185417fe5fdb743997b89b6",
+  "integration_planning_block_sha256": "sha256:e4eb8b9be84eb02fbe74aae7603f17f8fd7317f555ad1c22607641b33ce52860",
+  "integration_surface_report_sha256": "sha256:a83618ab9df1f331d97940ad727904cca14b6a9d58df04096e3c96cb18e43269",
+  "integration_discovery_identity_sha256": "sha256:8a0cf554d0a0745396b25d9b0cd4f10e710efb5a2572dff7981c4e5e3945fec4",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "d32f5c0d79d059be596d5ef478bc376843c5cd4c",
+    "head_commit": "da4f538da025d58285d2589cdb674b7b1528bfa5",
+    "source_fingerprint": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+    "artifact_fingerprint": "sha256:cf1c44d978bbcd0fa1818f6776f9ec738a1f25953d3bf80736a116a20ed4e854",
+    "base_specs_fingerprint": "sha256:ad11f9d3cdac5f4f30f747c23eae7809ccd0fd8785cf413466b24a5da04580c7",
+    "layers": {
+      "effective": {
+        "paths": [
+          "server/include/dbus_service.hpp",
+          "server/include/server.hpp",
+          "server/src/bt_monitor.cpp",
+          "server/src/dbus_service.cpp",
+          "server/src/jitter_monitor.cpp",
+          "server/src/rssi_monitor.cpp",
+          "server/src/rtt_monitor.cpp",
+          "server/src/server.cpp",
+          "server/src/tcp_loss_monitor.cpp",
+          "server/src/using_iface.cpp"
+        ],
+        "state_fingerprint": "sha256:a4fba10c545f7186a54e29face18e0da5e6cf6f7258ee2b42dd7e021ea2c05d1"
+      },
+      "committed": {
+        "paths": [
+          "server/include/dbus_service.hpp",
+          "server/include/server.hpp",
+          "server/src/bt_monitor.cpp",
+          "server/src/dbus_service.cpp",
+          "server/src/jitter_monitor.cpp",
+          "server/src/rssi_monitor.cpp",
+          "server/src/rtt_monitor.cpp",
+          "server/src/server.cpp",
+          "server/src/tcp_loss_monitor.cpp",
+          "server/src/using_iface.cpp"
+        ],
+        "state_fingerprint": "sha256:fc7f84ec1b2a2863dad6987ee6224db121bc122e12bbb64be33f0316c5602914"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "untracked": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [
+      "server/include/dbus_service.hpp",
+      "server/include/server.hpp",
+      "server/src/bt_monitor.cpp",
+      "server/src/dbus_service.cpp",
+      "server/src/jitter_monitor.cpp",
+      "server/src/rssi_monitor.cpp",
+      "server/src/rtt_monitor.cpp",
+      "server/src/server.cpp",
+      "server/src/tcp_loss_monitor.cpp",
+      "server/src/using_iface.cpp"
+    ],
+    "git_state_fingerprint": "sha256:014e798fa6be59565417bc9e9b1c3ccda3fd62f2bccb113441c634e4f1146cba",
+    "raw_diff_persisted": false
+  },
+  "aborted_at": "2026-08-15T18:02:23.469Z",
+  "reason": "surface probe output mismatch"
+}

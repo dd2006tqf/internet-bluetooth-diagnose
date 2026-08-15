@@ -4,7 +4,7 @@
   "implementation_base_commit": "d32f5c0d79d059be596d5ef478bc376843c5cd4c",
   "discovery_mode": "reviewed_inventory",
   "source_fingerprint": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
-  "planning_block_sha256": "sha256:2184a6e5ed5c219fdca341846183c0b1e5d5a8425157ac12337a04d7701d8b5b",
+  "planning_block_sha256": "sha256:e4eb8b9be84eb02fbe74aae7603f17f8fd7317f555ad1c22607641b33ce52860",
   "change_footprint_json_sha256": "sha256:7311acdb98251a4dcc5e98e123cb97668d8af32fd185417fe5fdb743997b89b6",
   "scope_classifier_identity": {
     "schema_version": 1,

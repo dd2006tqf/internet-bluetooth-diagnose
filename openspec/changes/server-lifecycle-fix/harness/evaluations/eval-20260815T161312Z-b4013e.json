@@ -1,0 +1,99 @@
+{
+  "envelope_schema_version": 1,
+  "evaluation_id": "eval-20260815T161312Z-b4013e",
+  "change_name": "server-lifecycle-fix",
+  "terminal_status": "aborted",
+  "source_schema_version": 3,
+  "sealed_at": "2026-08-15T17:55:33.643Z",
+  "baseline_sha256": "sha256:f383fdc0fd25f81a25a5ec6e11d928d24ff6e4b93181197d3f8233022b721fce",
+  "evaluation_sha256": null,
+  "baseline": {
+    "schema_version": 3,
+    "evaluation_id": "eval-20260815T161312Z-b4013e",
+    "change_name": "server-lifecycle-fix",
+    "status": "aborted",
+    "started_at": "2026-08-15T16:13:12.828Z",
+    "source_fingerprint": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+    "artifact_fingerprint": "sha256:ea1e49ea7cf913d5b40dc6396b18079619d2f60ec790d0eb3b7a1fdd38650d4b",
+    "base_specs_fingerprint": "sha256:ad11f9d3cdac5f4f30f747c23eae7809ccd0fd8785cf413466b24a5da04580c7",
+    "verification_json_sha256": "sha256:b53311070242ac5858b1f6b661ec0a36f14a3cf27a96229abf83a2fededc16d4",
+    "budget_block_sha256": "sha256:e753bde4b616525f8f582f9657bff5acb4d96f5121500a3aa2549c8140ec61d2",
+    "change_footprint_json_sha256": "sha256:7311acdb98251a4dcc5e98e123cb97668d8af32fd185417fe5fdb743997b89b6",
+    "integration_planning_block_sha256": "sha256:2184a6e5ed5c219fdca341846183c0b1e5d5a8425157ac12337a04d7701d8b5b",
+    "integration_surface_report_sha256": "sha256:19ebb1c3c263f7d9117af8deafc3eee4a68a3bd03f8a12a2e3dcd6489b88bd04",
+    "integration_discovery_identity_sha256": "sha256:8a0cf554d0a0745396b25d9b0cd4f10e710efb5a2572dff7981c4e5e3945fec4",
+    "review_input": {
+      "schema_version": 1,
+      "implementation_base_commit": "d32f5c0d79d059be596d5ef478bc376843c5cd4c",
+      "head_commit": "da4f538da025d58285d2589cdb674b7b1528bfa5",
+      "source_fingerprint": "sha256:4df01c035b50df5bb4a4c3cf99701d1741ddb8042c1339953e28dfdf8db9ebb8",
+      "artifact_fingerprint": "sha256:ea1e49ea7cf913d5b40dc6396b18079619d2f60ec790d0eb3b7a1fdd38650d4b",
+      "base_specs_fingerprint": "sha256:ad11f9d3cdac5f4f30f747c23eae7809ccd0fd8785cf413466b24a5da04580c7",
+      "layers": {
+        "effective": {
+          "paths": [
+            "server/include/dbus_service.hpp",
+            "server/include/server.hpp",
+            "server/src/bt_monitor.cpp",
+            "server/src/dbus_service.cpp",
+            "server/src/jitter_monitor.cpp",
+            "server/src/rssi_monitor.cpp",
+            "server/src/rtt_monitor.cpp",
+            "server/src/server.cpp",
+            "server/src/tcp_loss_monitor.cpp",
+            "server/src/using_iface.cpp"
+          ],
+          "state_fingerprint": "sha256:a4fba10c545f7186a54e29face18e0da5e6cf6f7258ee2b42dd7e021ea2c05d1"
+        },
+        "committed": {
+          "paths": [
+            "server/include/dbus_service.hpp",
+            "server/include/server.hpp",
+            "server/src/bt_monitor.cpp",
+            "server/src/dbus_service.cpp",
+            "server/src/jitter_monitor.cpp",
+            "server/src/rssi_monitor.cpp",
+            "server/src/rtt_monitor.cpp",
+            "server/src/server.cpp",
+            "server/src/tcp_loss_monitor.cpp",
+            "server/src/using_iface.cpp"
+          ],
+          "state_fingerprint": "sha256:fc7f84ec1b2a2863dad6987ee6224db121bc122e12bbb64be33f0316c5602914"
+        },
+        "staged": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "unstaged": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "untracked": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        },
+        "dirty_gitlinks": {
+          "paths": [],
+          "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      },
+      "review_paths": [
+        "server/include/dbus_service.hpp",
+        "server/include/server.hpp",
+        "server/src/bt_monitor.cpp",
+        "server/src/dbus_service.cpp",
+        "server/src/jitter_monitor.cpp",
+        "server/src/rssi_monitor.cpp",
+        "server/src/rtt_monitor.cpp",
+        "server/src/server.cpp",
+        "server/src/tcp_loss_monitor.cpp",
+        "server/src/using_iface.cpp"
+      ],
+      "git_state_fingerprint": "sha256:014e798fa6be59565417bc9e9b1c3ccda3fd62f2bccb113441c634e4f1146cba",
+      "raw_diff_persisted": false
+    },
+    "aborted_at": "2026-08-15T17:55:33.643Z",
+    "reason": "fix surface binding and restart evaluation"
+  },
+  "evaluation": null
+}
