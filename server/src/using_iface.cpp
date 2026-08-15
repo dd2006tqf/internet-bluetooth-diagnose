@@ -35,7 +35,7 @@ std::shared_ptr<UsingInterfaceManager> UsingInterfaceManager::getInstance() {
 }
 
 UsingInterfaceManager::UsingInterfaceManager() = default;
-// 析构体在下方 Impl 完整定义之后提供（pimpl 需要完整类型才能 delete impl_）
+UsingInterfaceManager::~UsingInterfaceManager() = default;
 
 struct UsingInterfaceManager::Impl {
 #if defined(__linux__)
@@ -260,21 +260,6 @@ struct UsingInterfaceManager::Impl {
     void eventLoop(UsingInterfaceManager*) {}
 #endif
 };
-
-// pimpl 完整定义处提供析构：结束 netlink 事件循环线程（置停标志 + join），
-// 避免 detached 线程在单例析构后野访问；再释放 Impl。
-#if defined(__linux__)
-UsingInterfaceManager::~UsingInterfaceManager() {
-    if (impl_) {
-        impl_->running.store(false);
-        if (impl_->worker.joinable()) impl_->worker.join();
-        delete impl_;
-        impl_ = nullptr;
-    }
-}
-#else
-UsingInterfaceManager::~UsingInterfaceManager() = default;
-#endif
 
 void UsingInterfaceManager::start() {
 #if defined(__linux__)

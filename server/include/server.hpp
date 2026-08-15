@@ -8,7 +8,6 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
-#include <memory>
 
 // 前置声明，避免强依赖 dbus 头
 struct DBusConnection;
@@ -35,14 +34,8 @@ struct ServerContext {
     std::thread iface_thread;
     // 当前上网网卡监控线程
     std::thread using_thread;
-    // RTT 监控线程
+    // RTT 监控线程（detach 管理，保留占位以便未来 join）
     std::thread rtt_thread;
-    // Jitter 监控线程
-    std::thread jitter_thread;
-    // Wi-Fi RSSI 监控线程
-    std::thread rssi_thread;
-    // 蓝牙监控线程
-    std::thread bt_thread;
     // TCP丢包率监控线程
     std::thread tcp_loss_thread;
     // 流量分析线程
@@ -51,15 +44,13 @@ struct ServerContext {
     std::thread network_quality_thread;
 
     // 共享的可上网网卡列表（NetInfo）
-    // 注意：接口列表的唯一事实源是 WeakNetMgr::current_interfaces_，
-    //         此处 iface_list/iface_mutex 已废弃，统一经 ctx->weak_mgr 读取。
     std::mutex iface_mutex;
     std::vector<NetInfo> iface_list;
 
-    // 服务对象（方法处理与信号发送），统一所有权由 ~ServerContext 释放
+    // 服务对象（方法处理与信号发送）
     DbusService* service = nullptr;
 
-    // 弱网管理器，统一所有权由 ~ServerContext 释放
+    // 弱网管理器
     WeakNetMgr* weak_mgr = nullptr;
 
     // 蓝牙监测器
@@ -80,8 +71,6 @@ struct ServerContext {
     std::thread wifi_loss_monitor_thread;
     std::thread http_latency_monitor_thread;
     std::thread process_net_profiler_thread;
-
-    ~ServerContext();
 };
 
 // 初始化 DBus（线程支持、连接、请求服务名、注册对象路径与回调）

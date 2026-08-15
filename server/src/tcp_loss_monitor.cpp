@@ -18,7 +18,9 @@ namespace weaknet_dbus {
 void start_tcp_loss_monitor_thread(ServerContext* ctx) {
     ctx->tcp_loss_thread = std::thread([ctx](){
         LOG_INFO(LogModule::TCP_LOSS, "monitor thread started");
-
+        
+        if (!ctx->weak_mgr) ctx->weak_mgr = new WeakNetMgr();
+        
         auto tcpMonitor = TcpLossMonitor::getInstance();
         TcpStats prevStats, currStats;
         bool hasPrevStats = false;
@@ -70,8 +72,10 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
                         std::string msg = std::string("TCP loss rate updated for ") + currentIface + 
                                          ": " + std::to_string(result.ratePercent) + "% (" + result.level + ")";
                         LOG_INFO(LogModule::TCP_LOSS, "TCP loss rate updated - emitting signal: " << msg);
-                        // 同步发射（内部有锁），不创建 detached 子线程
-                        ctx->service->emitChanged(msg, /*counter*/0);
+                        // 异步发送DBus信号，避免阻塞TCP丢包率线程
+                        std::thread([ctx, msg]() {
+                            ctx->service->emitChanged(msg, /*counter*/0);
+                        }).detach();
                     }
                 }
             }

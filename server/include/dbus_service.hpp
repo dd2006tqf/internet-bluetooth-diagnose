@@ -61,8 +61,6 @@ private:
 
 private:
     ServerContext* ctx_;
-    // 保护对同一个 DBusConnection 的并发信号发射写
-    std::mutex send_mutex_;
 };
 
 }  // namespace weaknet_dbus

@@ -15,8 +15,9 @@ using namespace std::chrono_literals;
 namespace weaknet_dbus {
 
 void start_rssi_monitor_thread(ServerContext* ctx, const std::string& ctrlDir) {
-    ctx->rssi_thread = std::thread([ctx, ctrlDir]{
+    std::thread([ctx, ctrlDir]{
         LOG_INFO(LogModule::RSSI, "RSSI monitor thread started");
+        if (!ctx->weak_mgr) ctx->weak_mgr = new WeakNetMgr();
         int loop_count = 0;
         while (ctx->running.load()) {
             loop_count++;
@@ -43,14 +44,16 @@ void start_rssi_monitor_thread(ServerContext* ctx, const std::string& ctrlDir) {
             
             if (changed && ctx->service) {
                 LOG_INFO(LogModule::RSSI, "WiFi RSSI updated - emitting signal");
-                // 同步发射（内部有锁），不创建 detached 子线程
-                ctx->service->emitChanged("WiFi RSSI updated", /*counter*/0);
+                // 异步发送DBus信号，避免阻塞RSSI线程
+                std::thread([ctx]() {
+                    ctx->service->emitChanged("WiFi RSSI updated", /*counter*/0);
+                }).detach();
             } else {
                 LOG_INFO(LogModule::RSSI, "RSSI_MONITOR: no changes detected (interfaces: " << current_interfaces.size() << ")");
             }
             std::this_thread::sleep_for(10000ms);
         }
-    });
+    }).detach();
 }
 
 }  // namespace weaknet_dbus
