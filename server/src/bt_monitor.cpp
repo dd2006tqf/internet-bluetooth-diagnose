@@ -1062,7 +1062,8 @@ std::vector<std::string> BtMonitor::getStringArrayProperty(DBusConnection* conn,
 void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** /*outMonitor*/) {
     // BtMonitor* 已改为 atomic 成员，写回由本线程序直接 ctx->bt_monitor.store()；
     // outMonitor 参数保留以兼容调用签名，但不再直接取值。
-    std::thread([ctx]() {
+    // 线程加入可 join 句柄，由主线程退出路径 join，避免 detached 线程在 ctx 析构后野访问。
+    ctx->bt_thread = std::thread([ctx]() {
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread started");
 
         // 创建独立的 BtMonitor 实例
@@ -1191,7 +1192,7 @@ void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** /*outMonitor*/) {
         monitor->stopPhase2();  // Phase 2: 释放 eBPF 内核资源
         ctx->bt_monitor.store(nullptr);
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread stopped");
-    }).detach();
+    });
 }
 
 

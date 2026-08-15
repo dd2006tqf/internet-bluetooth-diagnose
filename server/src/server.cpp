@@ -44,6 +44,19 @@ namespace weaknet_dbus {
 
 // 共享列表迁移至 ServerContext，在 server.hpp 中定义
 
+// ServerContext 析构：释放 DBus 连接与 service/weak_mgr 资源。
+// 调用前提：所有捕获 ctx* 的监控线程已在 start_server() 退出路径完成 join，
+// 之后才进入本析构，避免在回收线程访问尚未析构的成员。
+ServerContext::~ServerContext() {
+    if (connection) {
+        dbus_connection_close(connection);
+        dbus_connection_unref(connection);
+        connection = nullptr;
+    }
+    if (service) { delete service; service = nullptr; }
+    if (weak_mgr) { delete weak_mgr; weak_mgr = nullptr; }
+}
+
 // 使用 DbusService 替代手写处理函数
 
 // 将字符串作为方法返回，通过序列化保存到文件
@@ -156,7 +169,6 @@ DBusConnection* init_dbus(ServerContext* ctx) {
 void start_iface_monitor_thread(ServerContext* ctx) {
     ctx->iface_thread = std::thread([ctx](){
         LOG_INFO(LogModule::INTERFACE, "monitor thread started");
-        if (!ctx->weak_mgr) ctx->weak_mgr = new WeakNetMgr();
         std::vector<NetInfo> current;
         int32_t change_counter = 0;
 
@@ -203,13 +215,10 @@ void start_iface_monitor_thread(ServerContext* ctx) {
                         LOG_INFO(LogModule::INTERFACE, "[using] " << x.ifName() << " is current uplink");
                     }
                 }
-                // 异步发送DBus信号，避免阻塞接口监控线程
+                // 同步发射（内部有锁），不创建 detached 子线程；事件更新经 EventManager 在主上下文同步
                 if (ctx->service) {
-                    std::thread([ctx, msg, change_counter]() {
-                        ctx->service->emitChanged(msg, change_counter);
-                        // 发送网卡变化事件
-                        getEventManager().emitInterfaceChanged(msg, "network_manager");
-                    }).detach();
+                    ctx->service->emitChanged(msg, change_counter);
+                    getEventManager().emitInterfaceChanged(msg, "network_manager");
                 }
             } else {
                 LOG_INFO(LogModule::INTERFACE, "no changes detected");
@@ -223,9 +232,8 @@ void start_iface_monitor_thread(ServerContext* ctx) {
 static void start_traffic_analysis_thread(ServerContext* ctx) {
     ctx->traffic_analysis_thread = std::thread([ctx](){
         LOG_INFO(LogModule::WEAK_MGR, "traffic analysis thread started");
-        if (!ctx->weak_mgr) ctx->weak_mgr = new WeakNetMgr();
-        
-        // 启动流量分析器（使用eth0作为默认接口）
+
+        // 启动流量分析器（使用当前接口，此处因原实现硬编码 wlan0，保持既有行为；接口一致性属另一变更）
         ctx->weak_mgr->startTrafficAnalysis("wlan0", 10);
         
         int loop_count = 0;
@@ -244,10 +252,8 @@ static void start_traffic_analysis_thread(ServerContext* ctx) {
                 
                 if (changed && ctx->service) {
                     LOG_INFO(LogModule::WEAK_MGR, "Traffic analysis updated - emitting signal");
-                    // 异步发送DBus信号，避免阻塞流量分析线程
-                    std::thread([ctx]() {
-                        ctx->service->emitChanged("Traffic analysis updated", /*counter*/0);
-                    }).detach();
+                    // 同步发射（内部有锁），不创建 detached 子线程
+                    ctx->service->emitChanged("Traffic analysis updated", /*counter*/0);
                 } else {
                     LOG_INFO(LogModule::WEAK_MGR, "TRAFFIC_ANALYSIS: no changes detected (interfaces: " << current_interfaces.size() << ")");
                 }
@@ -268,8 +274,7 @@ static void start_traffic_analysis_thread(ServerContext* ctx) {
 static void start_using_iface_thread(ServerContext* ctx) {
     ctx->using_thread = std::thread([ctx](){
         LOG_INFO(LogModule::WEAK_MGR, "monitor thread started");
-        if (!ctx->weak_mgr) ctx->weak_mgr = new WeakNetMgr();
-        
+
         int loop_count = 0;
         while (ctx->running.load()) {
             loop_count++;
@@ -295,12 +300,9 @@ static void start_using_iface_thread(ServerContext* ctx) {
                 }
                 
                 std::string msg = std::string("Using iface updated: ") + (currentIf.empty() ? "(none)" : currentIf);
-                // 异步发送DBus信号，避免阻塞当前使用接口监控线程
-                std::thread([ctx, msg, currentIf]() {
-                    ctx->service->emitChanged(msg, /*counter*/0);
-                    // 发送上网方式变化事件
-                    getEventManager().emitConnectionModeChanged(msg, currentIf.empty() ? "none" : currentIf);
-                }).detach();
+                // 同步发射（内部有锁），不创建 detached 子线程
+                ctx->service->emitChanged(msg, /*counter*/0);
+                getEventManager().emitConnectionModeChanged(msg, currentIf.empty() ? "none" : currentIf);
             } else {
                 LOG_INFO(LogModule::WEAK_MGR, "unchanged (interfaces: " << current_interfaces.size() << ")");
             }
@@ -613,7 +615,7 @@ int start_server() {
     // 启动事件监控
     getEventManager().startEventMonitoring(&ctx);
 
-    // 初始化WeakNetMgr
+    // 初始化WeakNetMgr（一次性预建，各监控线程不再各自 new）
     if (!ctx.weak_mgr) ctx.weak_mgr = new WeakNetMgr();
 
     // 初始化接口列表到WeakNetMgr中
@@ -674,39 +676,33 @@ int start_server() {
     auto* lp = Looper::current();
     lp->attach(ctx.connection);
     lp->run(&ctx);
-    // Looper::run() 退出后，逆序停止 eBPF 监控器释放 BPF 资源
-    LOG_INFO(LogModule::NETWORK, "server shutting down, stopping eBPF monitors...");
-    if (auto* p = ctx.process_net_profiler.load(); p) p->stop();
-    if (auto* p = ctx.http_latency_monitor.load(); p) p->stop();
-    if (auto* p = ctx.wifi_loss_monitor.load(); p) p->stop();
-    if (auto* p = ctx.dns_monitor.load(); p) p->stop();
-    LOG_INFO(LogModule::NETWORK, "all eBPF monitors stopped");
-
-    // 修复 ServerContext 生命周期竞态：
-    // 监控线程 lambda 捕获 ctx* 并循环读 ctx->running，若此处直接返回，
-    // ctx（start_server 的栈对象）析构，仍在运行的监控线程会野访问 ctx->running 而 SIGSEGV。
-    // 故先置 running=false 让各线程退出循环，再 join 所有以 ctx->xxx_thread 持有的线程，
-    // 确保它们全部结束后才让 ctx 析构。
+    // Looper::run() 退出后，按顺序收尾：
+    // 1) 先置 running=false 让所有监控线程退出循环
+    // 2) join 全部捕获 ctx* 的线程（含蓝牙/RTT/Jitter/RSSI 及新增句柄），
+    //    确保它们完全结束、不再访问 ctx 后才释放资源
+    // 3) 各 worker 退出时已自行 stop() 其本地 make_unique 监控器并 store(nullptr)，
+    //    故不再在此显式 stop()（避免 worker 正读 map 时资源被销毁的竞态）
+    LOG_INFO(LogModule::NETWORK, "server shutting down, stopping monitor threads...");
     ctx.running = false;
 
-    // 先 join 带 std::thread 句柄的 eBPF 监控线程（必须 join，不能 detach）
-    if (ctx.dns_monitor_thread.joinable())            ctx.dns_monitor_thread.join();
-    if (ctx.wifi_loss_monitor_thread.joinable())      ctx.wifi_loss_monitor_thread.join();
-    if (ctx.http_latency_monitor_thread.joinable())   ctx.http_latency_monitor_thread.join();
-    if (ctx.process_net_profiler_thread.joinable())   ctx.process_net_profiler_thread.join();
-
-    // 其余历史监控线程（iface/using/rtt/jitter/rssi/tcp_loss/traffic/quality/bluetooth）也
-    // 捕获 ctx* 并读 ctx->running，统一置 false 后 join，避免它们成为野指针访问源。
-    if (ctx.iface_thread.joinable())                  ctx.iface_thread.join();
-    if (ctx.using_thread.joinable())                  ctx.using_thread.join();
-    if (ctx.rtt_thread.joinable())                    ctx.rtt_thread.join();
-    if (ctx.tcp_loss_thread.joinable())               ctx.tcp_loss_thread.join();
-    if (ctx.traffic_analysis_thread.joinable())       ctx.traffic_analysis_thread.join();
-    if (ctx.network_quality_thread.joinable())        ctx.network_quality_thread.join();
+    // join 全部监控线程（所有 *_thread 均为 joinable 句柄）
+    if (ctx.iface_thread.joinable())                    ctx.iface_thread.join();
+    if (ctx.using_thread.joinable())                    ctx.using_thread.join();
+    if (ctx.rtt_thread.joinable())                      ctx.rtt_thread.join();
+    if (ctx.jitter_thread.joinable())                   ctx.jitter_thread.join();
+    if (ctx.rssi_thread.joinable())                     ctx.rssi_thread.join();
+    if (ctx.tcp_loss_thread.joinable())                 ctx.tcp_loss_thread.join();
+    if (ctx.traffic_analysis_thread.joinable())         ctx.traffic_analysis_thread.join();
+    if (ctx.network_quality_thread.joinable())          ctx.network_quality_thread.join();
+    if (ctx.bt_thread.joinable())                       ctx.bt_thread.join();
+    if (ctx.dns_monitor_thread.joinable())              ctx.dns_monitor_thread.join();
+    if (ctx.wifi_loss_monitor_thread.joinable())        ctx.wifi_loss_monitor_thread.join();
+    if (ctx.http_latency_monitor_thread.joinable())     ctx.http_latency_monitor_thread.join();
+    if (ctx.process_net_profiler_thread.joinable())     ctx.process_net_profiler_thread.join();
 
     LOG_INFO(LogModule::NETWORK, "all monitor threads joined");
 
-    // 清理glog
+    // 清理glog。资源（DBus 连接 / service / weak_mgr）由 ~ServerContext 统一释放。
     google::ShutdownGoogleLogging();
 
     return 0;
