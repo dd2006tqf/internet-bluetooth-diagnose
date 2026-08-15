@@ -1,14 +1,13 @@
 {
   "schema_version": 2,
   "workflow": "openspec",
-  "phase": "implementing",
-  "current_step": "planning-reapproved",
-  "next_step": "Resume the first unchecked task, or begin Evaluation when all tasks are complete",
-  "updated_at": "2026-08-15T18:07:18.642Z",
+  "phase": "idle",
+  "current_step": "change-aborted",
+  "next_step": "Create or select the next change",
+  "updated_at": "2026-08-15T18:39:43.594Z",
   "last_archived_change": {
     "change_name": "http-request-latency-monitor",
     "archived_as": "2026-08-03-http-request-latency-monitor",
     "archived_at": "2026-08-03T16:57:44.857Z"
-  },
-  "active_change": "server-lifecycle-fix"
+  }
 }
