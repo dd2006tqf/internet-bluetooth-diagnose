@@ -5,6 +5,7 @@
 
 #define __TARGET_ARCH_arm64
 #define AF_INET 2
+#define AF_INET6 10
 #define MAX_HTTP_PAYLOAD 64  // 只读取前 64 字节用于 HTTP 识别
 
 #include "vmlinux.h"
@@ -19,15 +20,15 @@ char LICENSE[] SEC("license") = "GPL";
 
 // TCP 连接标识
 struct tcp_conn_key {
-    __u32 saddr;
-    __u32 daddr;
+    __u32 saddr[4];  // IPv4 时低 32 位有效，IPv6 时 128 位有效
+    __u32 daddr[4];
     __u16 sport;
     __u16 dport;
 };
 
 struct http_txn_key {
-    __u32 saddr;
-    __u32 daddr;
+    __u32 saddr[4];
+    __u32 daddr[4];
     __u16 sport;
     __u16 dport;
 };
@@ -125,9 +126,20 @@ static __always_inline struct tcp_conn_key get_conn_key(struct sock *sk)
 {
     struct tcp_conn_key k = {};
     __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
-    if (family != AF_INET) return k;
-    k.saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-    k.daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    if (family == AF_INET) {
+        __u32 saddr4 = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+        __u32 daddr4 = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+        k.saddr[3] = saddr4;
+        k.daddr[3] = daddr4;
+    } else if (family == AF_INET6) {
+        // 读 skc_v6_rcv_saddr / skc_v6_daddr（各 16 字节 in6_addr）
+        bpf_probe_read_kernel(k.saddr, sizeof(k.saddr),
+            (char *)sk + offsetof(struct sock, __sk_common) + offsetof(struct sock_common, skc_v6_rcv_saddr));
+        bpf_probe_read_kernel(k.daddr, sizeof(k.daddr),
+            (char *)sk + offsetof(struct sock, __sk_common) + offsetof(struct sock_common, skc_v6_daddr));
+    } else {
+        return k;
+    }
     __u16 sport_host = BPF_CORE_READ(sk, __sk_common.skc_num);
     k.sport = bpf_htons(sport_host);
     k.dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
@@ -184,7 +196,11 @@ int BPF_KPROBE(probe_http_req, struct sock *sk, struct msghdr *msg, size_t size)
     dbg_inc(5);
 
     struct tcp_conn_key key = get_conn_key(sk);
-    if (key.saddr == 0 && key.daddr == 0) { dbg_inc(6); return 0; }
+    // 检查地址是否全零（跳过非 IPv4/IPv6 族）
+    __u32 addr_sum = 0;
+    #pragma unroll
+    for (int i = 0; i < 4; i++) { addr_sum |= key.saddr[i] | key.daddr[i]; }
+    if (addr_sum == 0) { dbg_inc(6); return 0; }
 
     struct http_txn_record rec = {};
     rec.send_ns = bpf_ktime_get_ns();
@@ -221,7 +237,10 @@ int BPF_KPROBE(trace_recvmsg_return, long ret)
     bpf_map_delete_elem(&recvmsg_ctx_map, &pid);
 
     struct tcp_conn_key key = get_conn_key(sk);
-    if (key.saddr == 0 && key.daddr == 0) { dbg_inc(91); return 0; }
+    __u32 addr_sum = 0;
+    #pragma unroll
+    for (int i = 0; i < 4; i++) { addr_sum |= key.saddr[i] | key.daddr[i]; }
+    if (addr_sum == 0) { dbg_inc(91); return 0; }
 
     // 查找是否有对应的请求在等待响应
     struct http_txn_record *existing = bpf_map_lookup_elem(&http_txn_stats, &key);
