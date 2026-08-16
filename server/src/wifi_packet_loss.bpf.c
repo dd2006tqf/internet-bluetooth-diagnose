@@ -33,7 +33,7 @@ struct iface_packet_stats {
 
 // 每接口收发统计（PERCPU，避免锁竞争）
 struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 256);   // 最多监控 256 个接口
     __type(key, __u32);          // ifindex
     __type(value, struct iface_packet_stats);
