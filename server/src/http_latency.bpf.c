@@ -51,6 +51,18 @@ struct {
     __type(value, struct http_txn_record);
 } http_txn_stats SEC(".maps");
 
+// entry kprobe 保存的 sk + msg 指针（key = PID），retprobe 读取
+struct recvmsg_ctx {
+    struct sock *sk;
+    struct msghdr *msg;
+};
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32);                // PID
+    __type(value, struct recvmsg_ctx); // sk + msg 指针
+} recvmsg_ctx_map SEC(".maps");
+
 // ---- debug map ----
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -182,17 +194,31 @@ int BPF_KPROBE(probe_http_req, struct sock *sk, struct msghdr *msg, size_t size)
     return 0;
 }
 
-// kprobe: kretprobe on tcp_recvmsg_locked(struct sock *sk, struct msghdr *msg, size_t len, int flags, ...)
-// 响应侧必须用 **kretprobe**：
-//   tcp_recvmsg_locked 入口时，用户态 msg_iter.iov[0].iov_base 尚未被内核填充，
-//   只有该函数返回后（skb_copy_datagram_iter 已把响应拷入）iov_base 里才是真实明文。
-// 因此用户态 http_latency_monitor.cpp 以 bpf_program__attach_kprobe(prog, true /*retprobe*/, "tcp_recvmsg_locked") 挂载，
-// 本探针在返回时执行，读 msg_iter 用户缓冲即可命中 HTTP/1.x 响应。
+// entry kprobe：保存 sk + msg 到 map，供 retprobe 读取
+// kretprobe 触发时 PT_REGS_PARM1 是返回值不是入口参数，必须用 entry→return 配对
 SEC("kprobe/tcp_recvmsg_locked")
-int BPF_KPROBE(trace_tcp_recvmsg, struct sock *sk, struct msghdr *msg, size_t len, int flags)
+int BPF_KPROBE(trace_recvmsg_entry, struct sock *sk, struct msghdr *msg, size_t len, int flags)
 {
     if (!sk || !msg) return 0;
-    dbg_inc(90);  // recvmsg kretprobe 触发
+    __u32 pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
+    struct recvmsg_ctx saved = { .sk = sk, .msg = msg };
+    bpf_map_update_elem(&recvmsg_ctx_map, &pid, &saved, BPF_ANY);
+    return 0;
+}
+
+// kretprobe：读取 entry 保存的 sk + msg，用 sk 构造 key 匹配请求
+SEC("kretprobe/tcp_recvmsg_locked")
+int BPF_KPROBE(trace_recvmsg_return, long ret)
+{
+    dbg_inc(90);
+
+    // 从 map 读取 entry probe 保存的 sk + msg
+    __u32 pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
+    struct recvmsg_ctx *saved = bpf_map_lookup_elem(&recvmsg_ctx_map, &pid);
+    if (!saved || !saved->sk || !saved->msg) { dbg_inc(91); return 0; }
+    struct sock *sk = saved->sk;
+    struct msghdr *msg = saved->msg;
+    bpf_map_delete_elem(&recvmsg_ctx_map, &pid);
 
     struct tcp_conn_key key = get_conn_key(sk);
     if (key.saddr == 0 && key.daddr == 0) { dbg_inc(91); return 0; }
@@ -221,7 +247,7 @@ int BPF_KPROBE(trace_tcp_recvmsg, struct sock *sk, struct msghdr *msg, size_t le
 
     // 更新记录：设置响应接收时间和状态码
     existing->recv_ns = recv_ns;
-    existing->resp_bytes = (__u32)len;
+    existing->resp_bytes = (__u32)ret;
     existing->status_code = status;
     existing->is_request = 0;  // 标记为响应已接收
     dbg_inc(88);  // 完整更新提交
