@@ -1,0 +1,33 @@
+{
+  "schema_version": 2,
+  "evaluation_id": "eval-20260816T125359Z-b890ac",
+  "change_name": "timestamped-log-file",
+  "commands": [
+    {
+      "id": "eval-cmd-1786884881463-3308774",
+      "kind": "build",
+      "argv": [
+        "scripts/project_command.sh",
+        "build-server",
+        "--change",
+        "timestamped-log-file",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"build-server\" \"--change\" \"timestamped-log-file\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-08-16T12:54:28.191Z",
+      "finished_at": "2026-08-16T12:54:40.541Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "exit code in [0]",
+      "observed": "exit code 0; output sha256:4cf2e18cf6e3aa7fee5166d8461b5b4a45f33a2a42adb97ebb0ba23d9587d397",
+      "result": "Pass",
+      "output_sha256": "sha256:4cf2e18cf6e3aa7fee5166d8461b5b4a45f33a2a42adb97ebb0ba23d9587d397",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ]
+}

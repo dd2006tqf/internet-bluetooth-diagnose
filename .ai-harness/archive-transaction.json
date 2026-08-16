@@ -1,18 +1,18 @@
 {
   "schema_version": 1,
-  "transaction_id": "archive-txn-e4fec8b1f1c4444ec32bb76b",
-  "change_name": "http-request-latency-monitor",
+  "transaction_id": "archive-txn-1526db07324dd6537aa71c7f",
+  "change_name": "timestamped-log-file",
   "status": "committed",
-  "prepared_at": "2026-08-03T16:57:28.787Z",
-  "completed_at": "2026-08-03T16:57:45.290Z",
-  "target_path": "openspec/changes/archive/2026-08-03-http-request-latency-monitor",
-  "log_path": ".ai-harness/logs/archive-http-request-latency-monitor-20260803T165558Z.yWOlp6.log",
-  "root_snapshot_sha256": "sha256:ebdf0530b90b8cf5a7043dffa3836d8ea6b459793841e7c9b15b084ac1fe8e37",
+  "prepared_at": "2026-08-16T12:59:15.224Z",
+  "completed_at": "2026-08-16T12:59:25.136Z",
+  "target_path": "openspec/changes/archive/2026-08-16-timestamped-log-file",
+  "log_path": ".ai-harness/logs/archive-timestamped-log-file-20260816T125800Z.jXYtEG.log",
+  "root_snapshot_sha256": "sha256:be6fd7cb081523bbaa85202f81add4489164e2acef94fb0b7f37d802a131dd60",
   "fingerprints": {
-    "source_fingerprint": "sha256:2665f579d317f530ffd3bd2d3499cc47af98a09458080b78f39696cb1dca1225",
+    "source_fingerprint": "sha256:99566b49618f4007e0bdf0cd92942fbafdca879d154dc8f3ef67344833e7a1ed",
     "profile_sha256": "sha256:37cfdb19cb68d81d977dce247339448775a1d908b521d7eb7168dc8d015cb938",
-    "artifact_fingerprint": "sha256:f52fb9036b2db89ad0cf70cbb4a99cdc177972615b0b08b8e20e8afd3917b95f",
-    "base_specs_fingerprint": "sha256:c6f43a9d2aa33195fc4c4122e9f9c797ba529f6adafc87d7b2c573abddc7aa68"
+    "artifact_fingerprint": "sha256:03e392a6d2787be45d73eec638f84de324c4ca99ab70f204437621cccbfed5ee",
+    "base_specs_fingerprint": "sha256:ad11f9d3cdac5f4f30f747c23eae7809ccd0fd8785cf413466b24a5da04580c7"
   },
-  "evidence_sha256": "sha256:9aea754403a679331b948f87bdd516f6f655d61b56eb1e24afa8e45cfb5d3e77"
+  "evidence_sha256": "sha256:957b3ebfd0cc0a69c17c6d428d0ddc255417dca824416e385aefac7b327e158a"
 }

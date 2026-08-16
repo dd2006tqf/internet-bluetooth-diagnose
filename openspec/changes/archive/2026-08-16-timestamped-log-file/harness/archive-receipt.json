@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "change_name": "timestamped-log-file",
+  "archived_as": "2026-08-16-timestamped-log-file",
+  "archived_at": "2026-08-16T12:59:25.409Z",
+  "profile_sha256": "sha256:37cfdb19cb68d81d977dce247339448775a1d908b521d7eb7168dc8d015cb938",
+  "source_fingerprint": "sha256:99566b49618f4007e0bdf0cd92942fbafdca879d154dc8f3ef67344833e7a1ed",
+  "artifact_fingerprint": "sha256:03e392a6d2787be45d73eec638f84de324c4ca99ab70f204437621cccbfed5ee",
+  "base_specs_fingerprint_before": "sha256:ad11f9d3cdac5f4f30f747c23eae7809ccd0fd8785cf413466b24a5da04580c7",
+  "archive_output_sha256": "sha256:8391b14d2aa468118d0783b1e0844396ea71ffa38939aa0126ef1585c3dde918",
+  "main_specs_validation_sha256": "sha256:ad2cb5e03556697a9ec665e588d1ac2ce3cb03705d1304df63f8309cb95b1595",
+  "authority": "retained-receipt-not-active-state"
+}

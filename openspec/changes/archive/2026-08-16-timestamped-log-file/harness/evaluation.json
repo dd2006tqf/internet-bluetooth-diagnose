@@ -1,0 +1,607 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260816T125359Z-b890ac",
+  "change_name": "timestamped-log-file",
+  "verdict": "Pass",
+  "evaluation_started_at": "2026-08-16T12:53:59.636Z",
+  "evaluated_at": "2026-08-16T12:56:12Z",
+  "openspec_version": "1.6.0",
+  "evaluator_role": "independent",
+  "input_source_fingerprint": "sha256:99566b49618f4007e0bdf0cd92942fbafdca879d154dc8f3ef67344833e7a1ed",
+  "input_artifact_fingerprint": "sha256:03e392a6d2787be45d73eec638f84de324c4ca99ab70f204437621cccbfed5ee",
+  "input_base_specs_fingerprint": "sha256:ad11f9d3cdac5f4f30f747c23eae7809ccd0fd8785cf413466b24a5da04580c7",
+  "source_fingerprint": "sha256:99566b49618f4007e0bdf0cd92942fbafdca879d154dc8f3ef67344833e7a1ed",
+  "artifact_fingerprint": "sha256:03e392a6d2787be45d73eec638f84de324c4ca99ab70f204437621cccbfed5ee",
+  "base_specs_fingerprint": "sha256:ad11f9d3cdac5f4f30f747c23eae7809ccd0fd8785cf413466b24a5da04580c7",
+  "budget_block_sha256": "sha256:5757aa9f5445c2ff3abcaf748082788421f9dca69d1bda963452955023e09541",
+  "change_footprint_json_sha256": "sha256:719fa3b52231ff84e4bc59a91bffdef6860b84b34aef3821170f5b3b74286002",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "08bc43426506205a12010290957cb80a38880e5b",
+    "head_commit": "08bc43426506205a12010290957cb80a38880e5b",
+    "source_fingerprint": "sha256:99566b49618f4007e0bdf0cd92942fbafdca879d154dc8f3ef67344833e7a1ed",
+    "artifact_fingerprint": "sha256:03e392a6d2787be45d73eec638f84de324c4ca99ab70f204437621cccbfed5ee",
+    "base_specs_fingerprint": "sha256:ad11f9d3cdac5f4f30f747c23eae7809ccd0fd8785cf413466b24a5da04580c7",
+    "layers": {
+      "effective": {
+        "paths": [
+          "server/include/logger.hpp",
+          "server/src/logger.cpp",
+          "server/src/server.cpp"
+        ],
+        "state_fingerprint": "sha256:77ccc62e4cab82cac13abf4b1d45b9e38dc9411d93e9e4f4c9c0417cb7929a8f"
+      },
+      "committed": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [
+          "server/include/logger.hpp",
+          "server/src/logger.cpp",
+          "server/src/server.cpp"
+        ],
+        "state_fingerprint": "sha256:77ccc62e4cab82cac13abf4b1d45b9e38dc9411d93e9e4f4c9c0417cb7929a8f"
+      },
+      "untracked": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [
+      "server/include/logger.hpp",
+      "server/src/logger.cpp",
+      "server/src/server.cpp"
+    ],
+    "git_state_fingerprint": "sha256:70be28d802a3ebe4f8e075e0a50ed06199a935ba47c9e735ca932848bca26e6e",
+    "raw_diff_persisted": false
+  },
+  "change_review": {
+    "schema_version": 1,
+    "git_state_fingerprint": "sha256:70be28d802a3ebe4f8e075e0a50ed06199a935ba47c9e735ca932848bca26e6e",
+    "stages": [
+      {
+        "name": "specification_compliance",
+        "started_at": "2026-08-16T12:53:59.636Z",
+        "completed_at": "2026-08-16T12:55:00Z",
+        "status": "Pass",
+        "requirement_refs": [
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "服务端启动时创建带时间戳的日志文件",
+            "scenarios": [
+              "服务端启动时创建日志文件"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "服务端启动时创建带时间戳的日志文件",
+            "scenarios": [
+              "日志文件命名格式"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "日志文件内容格式",
+            "scenarios": [
+              "INFO 级别日志格式"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "日志文件内容格式",
+            "scenarios": [
+              "ERROR 级别日志格式"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "服务终止时关闭日志文件",
+            "scenarios": [
+              "收到 SIGINT 信号时关闭日志"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "服务终止时关闭日志文件",
+            "scenarios": [
+              "收到 SIGTERM 信号时关闭日志"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "服务终止时关闭日志文件",
+            "scenarios": [
+              "正常退出时关闭日志"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "日志与 glog 同步",
+            "scenarios": [
+              "glog 输出同步到文件"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "日志与 glog 同步",
+            "scenarios": [
+              "glog 文件日志同步"
+            ]
+          }
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "reviewed_paths": [
+          "server/include/logger.hpp",
+          "server/src/logger.cpp",
+          "server/src/server.cpp"
+        ],
+        "dimensions": [
+          "requirements",
+          "scenarios",
+          "scope",
+          "contracts",
+          "traceability"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1786884881463-3308774"
+        ],
+        "finding_ids": [],
+        "blocking_untested_ids": [],
+        "not_run_reason": null
+      },
+      {
+        "name": "code_quality",
+        "started_at": "2026-08-16T12:55:00Z",
+        "completed_at": "2026-08-16T12:55:00Z",
+        "status": "Pass",
+        "requirement_refs": [
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "服务端启动时创建带时间戳的日志文件",
+            "scenarios": [
+              "服务端启动时创建日志文件"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "服务端启动时创建带时间戳的日志文件",
+            "scenarios": [
+              "日志文件命名格式"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "日志文件内容格式",
+            "scenarios": [
+              "INFO 级别日志格式"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "日志文件内容格式",
+            "scenarios": [
+              "ERROR 级别日志格式"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "服务终止时关闭日志文件",
+            "scenarios": [
+              "收到 SIGINT 信号时关闭日志"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "服务终止时关闭日志文件",
+            "scenarios": [
+              "收到 SIGTERM 信号时关闭日志"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "服务终止时关闭日志文件",
+            "scenarios": [
+              "正常退出时关闭日志"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "日志与 glog 同步",
+            "scenarios": [
+              "glog 输出同步到文件"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "日志与 glog 同步",
+            "scenarios": [
+              "glog 文件日志同步"
+            ]
+          }
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "reviewed_paths": [
+          "server/include/logger.hpp",
+          "server/src/logger.cpp",
+          "server/src/server.cpp"
+        ],
+        "dimensions": [
+          "correctness",
+          "safety",
+          "regression_risk",
+          "reuse",
+          "complexity",
+          "test_quality",
+          "repository_impact"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1786884881463-3308774"
+        ],
+        "finding_ids": [],
+        "blocking_untested_ids": [],
+        "not_run_reason": null
+      }
+    ],
+    "findings": []
+  },
+  "implementation_economy": {
+    "footprint_status": "drift_warning",
+    "drift_explanation": {
+      "metric_keys": [
+        "production.added_lines"
+      ],
+      "reason": "drift 指标: production.added_lines 超过 expected 但低于 review_at 阈值，在可接受范围内。",
+      "why_no_replan": "变更范围微小，drift 在审查阈值内，无需重新规划。"
+    },
+    "classification_assessment": {
+      "result": "Pass",
+      "reason": "分类评估：变更文件属于已批准的分类范围。",
+      "evidence_paths": [
+        "server/include/logger.hpp",
+        "server/src/logger.cpp",
+        "server/src/server.cpp"
+      ],
+      "evidence_command_ids": [
+        "eval-cmd-1786884881463-3308774"
+      ]
+    },
+    "repository_impact_assessment": {
+      "result": "Pass",
+      "surfaces": [
+        {
+          "surface": "product_targets",
+          "applicability": "applicable",
+          "result": "Pass",
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [
+            "server/include/logger.hpp",
+            "server/src/logger.cpp",
+            "server/src/server.cpp"
+          ],
+          "evidence_command_ids": [
+            "eval-cmd-1786884881463-3308774"
+          ],
+          "not_applicable_reason": null
+        },
+        {
+          "surface": "install",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        },
+        {
+          "surface": "package",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        },
+        {
+          "surface": "ci",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        }
+      ]
+    },
+    "reuse_assessments": [],
+    "structural_assessments": [
+      {
+        "allowance_id": null,
+        "candidate_ids": [
+          "candidate-a9300ea123e5"
+        ],
+        "result": "Pass",
+        "reason": "server/include/logger.hpp: 结构候选 public-contract-candidate，自动评估为 Pass",
+        "evidence_paths": [
+          "server/include/logger.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1786884881463-3308774"
+        ]
+      }
+    ],
+    "obsolete_item_assessments": [],
+    "exception_assessments": [],
+    "result": "Pass"
+  },
+  "criteria": [
+    {
+      "id": "criterion-001",
+      "description": "验收标准: 变更按要求实现，所有证据命令通过 (1/1)。",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务端启动时创建带时间戳的日志文件",
+          "scenarios": [
+            "服务端启动时创建日志文件"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务端启动时创建带时间戳的日志文件",
+          "scenarios": [
+            "日志文件命名格式"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "日志文件内容格式",
+          "scenarios": [
+            "INFO 级别日志格式"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "日志文件内容格式",
+          "scenarios": [
+            "ERROR 级别日志格式"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务终止时关闭日志文件",
+          "scenarios": [
+            "收到 SIGINT 信号时关闭日志"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务终止时关闭日志文件",
+          "scenarios": [
+            "收到 SIGTERM 信号时关闭日志"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务终止时关闭日志文件",
+          "scenarios": [
+            "正常退出时关闭日志"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "日志与 glog 同步",
+          "scenarios": [
+            "glog 输出同步到文件"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "日志与 glog 同步",
+          "scenarios": [
+            "glog 文件日志同步"
+          ]
+        }
+      ],
+      "task_ids": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+      ],
+      "status": "Pass",
+      "evidence_command_ids": [
+        "eval-cmd-1786884881463-3308774"
+      ],
+      "blocking_untested_ids": []
+    }
+  ],
+  "commands": [
+    {
+      "id": "eval-cmd-1786884881463-3308774",
+      "kind": "build",
+      "argv": [
+        "scripts/project_command.sh",
+        "build-server",
+        "--change",
+        "timestamped-log-file",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"build-server\" \"--change\" \"timestamped-log-file\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-08-16T12:54:28.191Z",
+      "finished_at": "2026-08-16T12:54:40.541Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "exit code in [0]",
+      "observed": "exit code 0; output sha256:4cf2e18cf6e3aa7fee5166d8461b5b4a45f33a2a42adb97ebb0ba23d9587d397",
+      "result": "Pass",
+      "output_sha256": "sha256:4cf2e18cf6e3aa7fee5166d8461b5b4a45f33a2a42adb97ebb0ba23d9587d397",
+      "surface_ids": [],
+      "surface_evidence_roles": [],
+      "surface_probe_bindings": []
+    }
+  ],
+  "blocking_untested": [],
+  "residual_risks": [],
+  "integration_completeness": {
+    "planning_block_sha256": "sha256:ea9efa8d9ecc6fdd7f7eebcbdcd9fd8b44e9d40a9f35c1d8d99d5d28df1b1d5c",
+    "report_sha256": "sha256:f9101a561ec76b1d5b396850e78ba1710293434337c33aecc70d0c74b82bdfe7",
+    "discovery_identity_sha256": "sha256:75b39e121fe16ab5b773df03195795ebd7f19d0e5c95e957b9342b4c4c73eab1",
+    "inventory_assessment": {
+      "evidence_paths": [
+        "server/include/logger.hpp",
+        "server/src/logger.cpp",
+        "server/src/server.cpp"
+      ],
+      "result": "Pass",
+      "reason": "Integration Completeness 计划验证通过。",
+      "evidence_command_ids": [
+        "eval-cmd-1786884881463-3308774"
+      ]
+    },
+    "candidate_assessments": [
+      {
+        "candidate_id": "candidate-a9300ea123e5",
+        "source": "structural",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/include/logger.hpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/include/logger.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/logger.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1786884881463-3308774"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-62311ddfd37dd502",
+        "source": "path",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/src/logger.cpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/src/logger.cpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/logger.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1786884881463-3308774"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-66dcca3458ce08b6",
+        "source": "path",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/src/server.cpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/src/server.cpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/server.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1786884881463-3308774"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-b663c0377169a160",
+        "source": "path",
+        "disposition": "non_semantic_change",
+        "surface_ids": [],
+        "surface_bindings": [],
+        "reason": "server/include/logger.hpp: 自动评估为非语义变更。",
+        "producer_paths": [
+          "server/include/logger.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/logger.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1786884881463-3308774"
+        ],
+        "orphan_ids": []
+      }
+    ],
+    "surface_assessments": [],
+    "orphan_surfaces": [],
+    "result": "Pass"
+  }
+}

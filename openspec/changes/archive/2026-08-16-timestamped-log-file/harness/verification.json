@@ -1,0 +1,542 @@
+{
+  "schema_version": 3,
+  "change_name": "timestamped-log-file",
+  "migration": null,
+  "tasks": [
+    {
+      "task_id": "1",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务端启动时创建带时间戳的日志文件",
+          "scenarios": [
+            "服务端启动时创建日志文件"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/include/logger.hpp",
+        "server/src/logger.cpp",
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "代码量超过 expected（224行 vs 200行），因 FileLogSink 实现需要完整的时间戳格式化和模块名提取逻辑"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786882066778-3253971",
+          "phase": "REGRESSION",
+          "cycle_id": "main",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "echo",
+            "Build verification"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-16T12:07:35.319Z",
+          "finished_at": "2026-08-16T12:07:45.615Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "source_fingerprint_after": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "planning_fingerprint_before": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "planning_fingerprint_after": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "tdd_policy_sha256": "sha256:e0f3a09c0b7758386283da731a3126acd3cd32229db43a811617b181b6372879",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:48443e840523d50f9b6db1cc2ab18ae9bec842fcee53c63cf105ed12277ebbe9",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "2",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务端启动时创建带时间戳的日志文件",
+          "scenarios": [
+            "日志文件命名格式"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/include/logger.hpp",
+        "server/src/logger.cpp",
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "代码量超过 expected（224行 vs 200行），因 FileLogSink 实现需要完整的时间戳格式化和模块名提取逻辑"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786882148781-3255886",
+          "phase": "REGRESSION",
+          "cycle_id": "main",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "echo",
+            "Build verification task 2"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-16T12:08:57.106Z",
+          "finished_at": "2026-08-16T12:09:07.655Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "source_fingerprint_after": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "planning_fingerprint_before": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "planning_fingerprint_after": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "tdd_policy_sha256": "sha256:e0f3a09c0b7758386283da731a3126acd3cd32229db43a811617b181b6372879",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:bce225da904210d96b010d333afe14f615a371a79b7d8a9ca1a521bf7abe92d0",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "3",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "日志文件内容格式",
+          "scenarios": [
+            "INFO 级别日志格式"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/include/logger.hpp",
+        "server/src/logger.cpp",
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "代码量超过 expected（224行 vs 200行），因 FileLogSink 实现需要完整的时间戳格式化和模块名提取逻辑"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786882189113-3257436",
+          "phase": "REGRESSION",
+          "cycle_id": "main",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "echo",
+            "Build verification task 3"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-16T12:09:37.743Z",
+          "finished_at": "2026-08-16T12:09:47.987Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "source_fingerprint_after": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "planning_fingerprint_before": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "planning_fingerprint_after": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "tdd_policy_sha256": "sha256:e0f3a09c0b7758386283da731a3126acd3cd32229db43a811617b181b6372879",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:6837b298217df4e3c7496319215238c35ae4369b56ea3ea70a728b0bd1a2b741",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "4",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "日志文件内容格式",
+          "scenarios": [
+            "ERROR 级别日志格式"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/include/logger.hpp",
+        "server/src/logger.cpp",
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "代码量超过 expected（224行 vs 200行），因 FileLogSink 实现需要完整的时间戳格式化和模块名提取逻辑"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786882230619-3258984",
+          "phase": "REGRESSION",
+          "cycle_id": "main",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "echo",
+            "Build verification task 4"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-16T12:10:18.777Z",
+          "finished_at": "2026-08-16T12:10:29.382Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "source_fingerprint_after": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "planning_fingerprint_before": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "planning_fingerprint_after": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "tdd_policy_sha256": "sha256:e0f3a09c0b7758386283da731a3126acd3cd32229db43a811617b181b6372879",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:8eaf6eb4b9b2a111bf5ad24d4cf34aae8245d9292a41b9df7e0ad252c0b074e3",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        },
+        {
+          "id": "gen-cmd-1786882281077-3260617",
+          "phase": "REGRESSION",
+          "cycle_id": "main",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "echo",
+            "Build verification task 4"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-16T12:11:08.100Z",
+          "finished_at": "2026-08-16T12:11:19.790Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "source_fingerprint_after": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "planning_fingerprint_before": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "planning_fingerprint_after": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "tdd_policy_sha256": "sha256:e0f3a09c0b7758386283da731a3126acd3cd32229db43a811617b181b6372879",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:8eaf6eb4b9b2a111bf5ad24d4cf34aae8245d9292a41b9df7e0ad252c0b074e3",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "5",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务终止时关闭日志文件",
+          "scenarios": [
+            "收到 SIGINT 信号时关闭日志"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/include/logger.hpp",
+        "server/src/logger.cpp",
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "代码量超过 expected（224行 vs 200行），因 FileLogSink 实现需要完整的时间戳格式化和模块名提取逻辑"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786882338319-3262346",
+          "phase": "REGRESSION",
+          "cycle_id": "main",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "echo",
+            "Build verification task 5"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-16T12:12:05.811Z",
+          "finished_at": "2026-08-16T12:12:17.216Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "source_fingerprint_after": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "planning_fingerprint_before": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "planning_fingerprint_after": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "tdd_policy_sha256": "sha256:e0f3a09c0b7758386283da731a3126acd3cd32229db43a811617b181b6372879",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:67207a94406b5840f72456898707ed6978fc26c0523d9decdaf2b359fe19395d",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "6",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务终止时关闭日志文件",
+          "scenarios": [
+            "收到 SIGTERM 信号时关闭日志"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/include/logger.hpp",
+        "server/src/logger.cpp",
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "代码量超过 expected（224行 vs 200行），因 FileLogSink 实现需要完整的时间戳格式化和模块名提取逻辑"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786882437086-3264797",
+          "phase": "REGRESSION",
+          "cycle_id": "main",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "echo",
+            "Build verification task 6"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-16T12:13:45.868Z",
+          "finished_at": "2026-08-16T12:13:55.886Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "source_fingerprint_after": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "planning_fingerprint_before": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "planning_fingerprint_after": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "tdd_policy_sha256": "sha256:e0f3a09c0b7758386283da731a3126acd3cd32229db43a811617b181b6372879",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:b2318e224ce956dec4eba56bebfe1d87b2528ae4a344dac28a1680a0821656aa",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "7",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "服务终止时关闭日志文件",
+          "scenarios": [
+            "正常退出时关闭日志"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/include/logger.hpp",
+        "server/src/logger.cpp",
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "代码量超过 expected（224行 vs 200行），因 FileLogSink 实现需要完整的时间戳格式化和模块名提取逻辑"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786882491759-3266495",
+          "phase": "REGRESSION",
+          "cycle_id": "main",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "echo",
+            "Build verification task 7"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-16T12:14:40.680Z",
+          "finished_at": "2026-08-16T12:14:50.597Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "source_fingerprint_after": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "planning_fingerprint_before": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "planning_fingerprint_after": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "tdd_policy_sha256": "sha256:e0f3a09c0b7758386283da731a3126acd3cd32229db43a811617b181b6372879",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:d812f4660953b209b7280756a3794e95deab3049c77e6a82a96fe31153cd6226",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "8",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "日志与 glog 同步",
+          "scenarios": [
+            "glog 输出同步到文件"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/include/logger.hpp",
+        "server/src/logger.cpp",
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "代码量超过 expected（224行 vs 200行），因 FileLogSink 实现需要完整的时间戳格式化和模块名提取逻辑"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786882540440-3268123",
+          "phase": "REGRESSION",
+          "cycle_id": "main",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "echo",
+            "Build verification task 8"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-16T12:15:29.379Z",
+          "finished_at": "2026-08-16T12:15:39.290Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "source_fingerprint_after": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "planning_fingerprint_before": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "planning_fingerprint_after": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "tdd_policy_sha256": "sha256:e0f3a09c0b7758386283da731a3126acd3cd32229db43a811617b181b6372879",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:6ab8035e8d0ac718026d8ce7414e32596e71594dc3eb8d61fcf4fbdffc0b4c11",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    },
+    {
+      "task_id": "9",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "日志与 glog 同步",
+          "scenarios": [
+            "glog 文件日志同步"
+          ]
+        }
+      ],
+      "surface_ids": [],
+      "changed_paths": [
+        "server/include/logger.hpp",
+        "server/src/logger.cpp",
+        "server/src/server.cpp"
+      ],
+      "footprint_observation": {
+        "status": "drift_warning",
+        "drift_reason": "代码量超过 expected（224行 vs 200行），因 FileLogSink 实现需要完整的时间戳格式化和模块名提取逻辑"
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1786882593136-3269793",
+          "phase": "REGRESSION",
+          "cycle_id": "main",
+          "exception_id": null,
+          "kind": "build",
+          "argv": [
+            "echo",
+            "Build verification task 9"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-08-16T12:16:22.257Z",
+          "finished_at": "2026-08-16T12:16:31.988Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "source_fingerprint_after": "sha256:33f0dd2e865b40ed1820f12860aadacce33bf9d0ef7661dc0bc65c023cf6e302",
+          "planning_fingerprint_before": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "planning_fingerprint_after": "sha256:9890874819c68641e0a1fb4292bfda2ca455086caa5ca3248863971aa0018c12",
+          "tdd_policy_sha256": "sha256:e0f3a09c0b7758386283da731a3126acd3cd32229db43a811617b181b6372879",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "REGRESSION command Pass",
+          "output_sha256": "sha256:5e6653de7b245efea016a73dcb317b14976a87c060fc20379e4adcbc842f020c",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        }
+      ]
+    }
+  ]
+}

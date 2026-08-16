@@ -7,6 +7,9 @@
 #include <cstdio>
 #include <string>
 #include <memory>
+#include <fstream>
+#include <mutex>
+#include <ctime>
 
 namespace weaknet_dbus {
 
@@ -38,29 +41,55 @@ namespace LogModule {
 class Logger {
 public:
     // 初始化日志系统
-    static bool init(const std::string& program_name, 
+    static bool init(const std::string& program_name,
                     const std::string& log_dir = "./logs/server",
                     LogLevel min_level = LogLevel::INFO,
                     bool log_to_stderr = true);
-    
+
     // 清理日志系统
     static void shutdown();
-    
+
     // 设置日志级别
     static void setLogLevel(LogLevel level);
-    
+
     // 设置日志目录
     static void setLogDir(const std::string& dir);
-    
+
     // 检查是否已初始化
     static bool isInitialized() { return initialized_; }
 
     // 清理超过 max_age_days 天的日志文件；目录不存在时安全返回。返回删除文件数。
     static int cleanOldLogs(const std::string& log_dir, int max_age_days);
 
+    // ---- 带时间戳的文件日志 ----
+
+    // 启动文件日志：创建 logDir 目录，打开 server/log/server_YYYYMMDD_HHMMSS.log
+    static void startFileLog(const std::string& logDir = "./server/log");
+
+    // 停止文件日志：刷新缓冲区，关闭文件流
+    static void stopFileLog();
+
+    // 获取当前时间戳字符串（YYYYMMDD_HHMMSS）
+    static std::string getCurrentTimestamp();
+
+    // 信号处理函数（SIGINT/SIGTERM）
+    static void signalHandler(int signum);
+
+    // 写入一行到文件日志
+    static void writeToFileLog(const std::string& line);
+
+    // 检查文件日志是否激活
+    static bool isFileLogActive() { return file_log_active_; }
+
 private:
     static bool initialized_;
     static std::string current_log_dir_;
+
+    // 文件日志相关
+    static std::ofstream file_stream_;
+    static std::string file_log_path_;
+    static std::mutex file_mutex_;
+    static bool file_log_active_;
 };
 
 // 便捷的日志宏定义

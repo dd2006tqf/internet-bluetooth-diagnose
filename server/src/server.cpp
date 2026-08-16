@@ -13,6 +13,7 @@
 #include <atomic>
 #include <algorithm>
 #include <mutex>
+#include <csignal>
 
 #include "common.hpp"
 #include "serializer.hpp"
@@ -609,6 +610,13 @@ int start_server() {
         return 1;
     }
 
+    // 启动带时间戳的文件日志
+    Logger::startFileLog("./server/log");
+
+    // 注册信号处理函数（SIGINT/SIGTERM）
+    std::signal(SIGINT, Logger::signalHandler);
+    std::signal(SIGTERM, Logger::signalHandler);
+
     ServerContext ctx;
     if (!init_dbus(&ctx)) return 1;
 
@@ -701,6 +709,9 @@ int start_server() {
     if (ctx.process_net_profiler_thread.joinable())     ctx.process_net_profiler_thread.join();
 
     LOG_INFO(LogModule::NETWORK, "all monitor threads joined");
+
+    // 停止文件日志（在 glog 关闭之前）
+    Logger::stopFileLog();
 
     // 清理glog。资源（DBus 连接 / service / weak_mgr）由 ~ServerContext 统一释放。
     google::ShutdownGoogleLogging();

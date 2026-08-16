@@ -3,12 +3,12 @@
   "workflow": "openspec",
   "active_change": null,
   "phase": "idle",
-  "current_step": "change-aborted",
+  "current_step": "change-archived",
   "next_step": "Create or select the next change",
-  "updated_at": "2026-08-15T18:39:43.594Z",
+  "updated_at": "2026-08-16T12:59:24.872Z",
   "last_archived_change": {
-    "change_name": "http-request-latency-monitor",
-    "archived_as": "2026-08-03-http-request-latency-monitor",
-    "archived_at": "2026-08-03T16:57:44.857Z"
+    "change_name": "timestamped-log-file",
+    "archived_as": "2026-08-16-timestamped-log-file",
+    "archived_at": "2026-08-16T12:59:24.872Z"
   }
 }

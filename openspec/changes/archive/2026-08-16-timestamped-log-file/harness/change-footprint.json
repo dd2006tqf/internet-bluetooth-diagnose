@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "change_name": "timestamped-log-file",
+  "implementation_base_commit": "08bc43426506205a12010290957cb80a38880e5b",
+  "source_fingerprint": "sha256:99566b49618f4007e0bdf0cd92942fbafdca879d154dc8f3ef67344833e7a1ed",
+  "budget_block_sha256": "sha256:5757aa9f5445c2ff3abcaf748082788421f9dca69d1bda963452955023e09541",
+  "status": "drift_warning",
+  "production": {
+    "added_lines": 219,
+    "deleted_lines": 12,
+    "net_lines": 207,
+    "touched_files": 3,
+    "new_files": 0
+  },
+  "tests": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0
+  },
+  "project_support": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0,
+    "paths_by_class": {
+      "project_docs": [],
+      "project_tooling": [],
+      "examples": []
+    }
+  },
+  "generated": {
+    "files": 0,
+    "bytes": 0
+  },
+  "vendor": {
+    "changed_paths": []
+  },
+  "binary": {
+    "files": 0,
+    "bytes": 0,
+    "paths": []
+  },
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-a9300ea123e5",
+      "path": "server/include/logger.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts"
+    }
+  ],
+  "unclassified_paths": [],
+  "classification_overlaps": []
+}
