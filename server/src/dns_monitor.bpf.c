@@ -62,7 +62,7 @@ struct {
 
 // 聚合统计
 struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1);
     __type(key, __u32); // 固定 key=0
     __type(value, struct dns_stats_record);
