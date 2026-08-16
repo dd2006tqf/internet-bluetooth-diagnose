@@ -181,13 +181,16 @@ int trace_dns_recv(struct pt_regs *ctx)
     // 服务器端 socket：saddr=服务器, daddr=客户端
     // 客户端 socket：saddr=客户端, daddr=服务器
     if (is_server_side) {
-        key.saddr = daddr;  // 客户端 IP
-        key.daddr = saddr;  // DNS 服务器 IP
-        key.sport = sport;  // 服务器端中本机端口，非客户端源端口
+        // 客户端 socket 接收 DNS 响应：skc_rcv_saddr=本机, skc_daddr=DNS服务器
+        // 与发送路径对齐：saddr=本机IP, daddr=DNS服务器IP
+        key.saddr = saddr;
+        key.daddr = daddr;
+        key.sport = bpf_htons(sport);
     } else {
-        key.saddr = daddr;  // DNS 服务器 IP
-        key.daddr = saddr;  // 客户端 IP
-        key.sport = sport;  // 客户端源端口（本机）
+        // DNS 服务器 socket 接收请求：不参与客户端 DNS 请求追踪
+        key.saddr = daddr;
+        key.daddr = saddr;
+        key.sport = bpf_htons(sport);
     }
 
     struct dns_query_record *rec = bpf_map_lookup_elem(&dns_queries, &key);
