@@ -49,6 +49,7 @@ public:
 
     // 初始化并附加到内核（按接口过滤），成功返回 true
     bool initForInterface(const std::string& ifaceName);
+    int getProcessStatsFd() const { return mapProcessStatsFd_; }
 
     // 采样 intervalSec 秒窗口，返回 TopN 流信息
     std::vector<FlowRate> sampleTopFlows(int intervalSec, int topN);
@@ -91,11 +92,13 @@ private:
     void* linkUdp_ = nullptr; // bpf_link*
     int mapCurrFd_ = -1;
     int mapCfgFd_  = -1;
+    int mapProcessStatsFd_ = -1;  // process_stats map fd（供 ProcessNetProfiler 共享）
     bool attached_ = false;
 
     // 新增：异常检测相关
     mutable std::mutex historyMutex_;
     std::map<std::string, TrafficHistory> trafficHistory_;
+    mutable std::mutex mapMutex_;  // 保护 map fd 访问
     uint64_t burstThresholdBps_ = 10*1024*1024;      // 10MB/s
     uint64_t suspiciousThresholdBps_ = 50*1024*1024;  // 50MB/s
     double burstMultiplier_ = 3.0;                   // 突发倍数阈值

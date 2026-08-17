@@ -4,6 +4,7 @@
 
 #include "process_net_profiler.hpp"
 #include "logger.hpp"
+#include "net_traffic.h"
 
 #include <cstring>
 #include <algorithm>
@@ -42,6 +43,7 @@ struct ProcessNetProfiler::Impl {
     struct bpf_link *link_retrans = nullptr;
     struct bpf_link *link_xmit = nullptr;
     struct bpf_link *link_udp = nullptr;
+    bool owns_obj = false;  // true=自己加载 BPF，false=共享 TrafficAnalyzer 的 map fd
 };
 
 ProcessNetProfiler::ProcessNetProfiler()
@@ -58,6 +60,20 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
     initialized_ = true;
     return false;
 #else
+    // 优先从 TrafficAnalyzer 共享 map fd（避免重复加载 flow_rate.bpf.o 导致 kprobe 冲突）
+    // TrafficAnalyzer 已加载 flow_rate.bpf.o 并 attach 了所有 kprobe，
+    // 再次加载会导致 kprobe attach 失败，process_stats map 永远为空。
+    auto analyzer = NetTrafficAnalyzer::getInstance();
+    if (analyzer->initForInterface("") && analyzer->getProcessStatsFd() >= 0) {
+        impl_->process_stats_fd = analyzer->getProcessStatsFd();
+        impl_->owns_obj = false;
+        available_ = true;
+        initialized_ = true;
+        LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: using shared process_stats fd from TrafficAnalyzer");
+        return true;
+    }
+
+    // 回退：独立加载 BPF（TrafficAnalyzer 不可用时）
     LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: loading BPF object from " << bpfObjPath);
 
     LIBBPF_OPTS(bpf_object_open_opts, opts);
@@ -117,6 +133,7 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
     }
 
     impl_->obj = obj;
+    impl_->owns_obj = true;
     available_ = true;
     initialized_ = true;
 
@@ -131,7 +148,8 @@ void ProcessNetProfiler::stop() {
     if (impl_->link_xmit) { bpf_link__destroy(impl_->link_xmit); impl_->link_xmit = nullptr; }
     if (impl_->link_udp) { bpf_link__destroy(impl_->link_udp); impl_->link_udp = nullptr; }
 #endif
-    if (impl_->obj) {
+    // 仅在自己加载了 BPF 对象时才 close（共享 TrafficAnalyzer 的 fd 不关闭）
+    if (impl_->owns_obj && impl_->obj) {
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
         LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: stopped");

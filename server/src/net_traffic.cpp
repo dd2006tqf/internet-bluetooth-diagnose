@@ -63,6 +63,9 @@ bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName) {
     mapCurrFd_ = bpf_object__find_map_fd_by_name(obj, "current_sec");
     if (mapCurrFd_ < 0) { bpf_object__close(obj); return false; }
 
+    // process_stats map（供 ProcessNetProfiler 共享读取）
+    mapProcessStatsFd_ = bpf_object__find_map_fd_by_name(obj, "process_stats");
+
     // 可选：控制 map（按接口过滤，若内核态支持）
     mapCfgFd_ = bpf_object__find_map_fd_by_name(obj, "cfg_iface");
     if (mapCfgFd_ >= 0) {
