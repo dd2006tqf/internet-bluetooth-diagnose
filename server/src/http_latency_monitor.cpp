@@ -178,8 +178,7 @@ std::vector<HttpTxnInfo> HttpLatencyMonitor::getRecentTxns(size_t limit) {
     if (!available_ || impl_->http_txn_stats_fd < 0)
         return result;
 
-    // 限制遍历数量，避免遍历 8192 条目阻塞 D-Bus 主循环
-    static constexpr int MAX_ITER = 256;
+    static constexpr int MAX_ITER = 32;
     int count = 0;
     tcp_conn_key cur_key = {}, next_key = {};
     while (count < MAX_ITER && bpf_map_get_next_key(impl_->http_txn_stats_fd, &cur_key, &next_key) == 0) {
