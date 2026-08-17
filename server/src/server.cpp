@@ -48,7 +48,9 @@ namespace weaknet_dbus {
 // 之后才进入本析构，避免在回收线程访问尚未析构的成员。
 ServerContext::~ServerContext() {
     if (connection) {
-        dbus_connection_close(connection);
+        // 共享连接（dbus_bus_get 获取）不应调用 dbus_connection_close，
+        // 只需 unref 释放引用。close 会导致 d-bus 守护进程报错 "Application
+        // must not close shared connections"。
         dbus_connection_unref(connection);
         connection = nullptr;
     }
