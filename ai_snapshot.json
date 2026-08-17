@@ -4,11 +4,10 @@
   "phase": "idle",
   "current_step": "change-aborted",
   "next_step": "Create or select the next change",
-  "updated_at": "2026-08-17T02:03:32.679Z",
+  "updated_at": "2026-08-17T03:08:03.472Z",
   "last_archived_change": {
     "change_name": "timestamped-log-file",
     "archived_as": "2026-08-16-timestamped-log-file",
     "archived_at": "2026-08-16T12:59:24.872Z"
-  },
-  "active_change": null
+  }
 }
