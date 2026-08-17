@@ -127,7 +127,8 @@ void start_jitter_monitor_thread(ServerContext* ctx,
                 LOG_ERROR(LogModule::NETWORK, "Jitter monitor thread unknown exception");
             }
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
+            for (int i = 0; i < (intervalMs / 100) && ctx->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
         }
         LOG_INFO(LogModule::NETWORK, "Jitter monitor thread exiting");
     });

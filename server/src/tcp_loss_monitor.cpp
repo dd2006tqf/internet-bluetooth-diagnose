@@ -40,7 +40,8 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
             
             if (currentIface.empty()) {
                 LOG_INFO(LogModule::TCP_LOSS, "TCP_LOSS_MONITOR: no active interface found (checking " << current_interfaces.size() << " interfaces)");
-                std::this_thread::sleep_for(5000ms);  // 减少等待时间，更频繁地检查
+                for (int i = 0; i < 50 && ctx->running.load(); ++i)
+                    std::this_thread::sleep_for(100ms);  // 减少等待时间，更频繁地检查
                 continue;
             }
             
@@ -49,7 +50,8 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
             // 采样当前TCP统计信息
             if (!tcpMonitor->sampleForInterface(currentIface, currStats)) {
                 LOG_ERROR(LogModule::TCP_LOSS, "failed to sample TCP stats for interface: " << currentIface);
-                std::this_thread::sleep_for(10000ms);
+                for (int i = 0; i < 100 && ctx->running.load(); ++i)
+                    std::this_thread::sleep_for(100ms);
                 continue;
             }
             
@@ -79,8 +81,9 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
             // 保存当前统计作为下次的前次统计
             prevStats = currStats;
             hasPrevStats = true;
-            
-            std::this_thread::sleep_for(10000ms);
+
+            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
         }
         
         LOG_INFO(LogModule::TCP_LOSS, "monitor thread terminated");

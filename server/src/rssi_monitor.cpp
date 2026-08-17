@@ -49,7 +49,8 @@ void start_rssi_monitor_thread(ServerContext* ctx, const std::string& ctrlDir) {
             } else {
                 LOG_INFO(LogModule::RSSI, "RSSI_MONITOR: no changes detected (interfaces: " << current_interfaces.size() << ")");
             }
-            std::this_thread::sleep_for(10000ms);
+            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
         }
     });
 }

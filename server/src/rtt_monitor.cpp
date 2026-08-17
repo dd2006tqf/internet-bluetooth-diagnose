@@ -52,7 +52,8 @@ void start_rtt_monitor_thread(ServerContext* ctx, const std::string& host, int i
 
                 LOG_INFO(LogModule::RTT, "RTT monitor: reached sleep preparation");
                 LOG_INFO(LogModule::RTT, "RTT monitor: about to sleep for " << intervalMs << "ms");
-                std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
+                for (int i = 0; i < (intervalMs / 100) && ctx->running.load(); ++i)
+                    std::this_thread::sleep_for(100ms);
                 LOG_INFO(LogModule::RTT, "RTT monitor: woke up from sleep");
 
             } catch (const std::exception& e) {

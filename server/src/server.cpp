@@ -224,7 +224,8 @@ void start_iface_monitor_thread(ServerContext* ctx) {
             } else {
                 LOG_INFO(LogModule::INTERFACE, "no changes detected");
             }
-            std::this_thread::sleep_for(10000ms);
+            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
         }
     });
 }
@@ -262,10 +263,9 @@ static void start_traffic_analysis_thread(ServerContext* ctx) {
                 LOG_ERROR(LogModule::WEAK_MGR, "Traffic analysis error: " << e.what());
             }
             
-            std::this_thread::sleep_for(10000ms);
+            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
         }
-        
-        // 停止流量分析器
         ctx->weak_mgr->stopTrafficAnalysis();
         LOG_INFO(LogModule::WEAK_MGR, "traffic analysis thread stopped");
     });
@@ -307,7 +307,8 @@ static void start_using_iface_thread(ServerContext* ctx) {
             } else {
                 LOG_INFO(LogModule::WEAK_MGR, "unchanged (interfaces: " << current_interfaces.size() << ")");
             }
-            std::this_thread::sleep_for(10000ms);
+            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
         }
     });
 }
@@ -470,7 +471,8 @@ static void start_network_quality_thread(ServerContext* ctx) {
                           "Phase 2 audio fusion error: " << e.what());
             }
             
-            std::this_thread::sleep_for(15000ms);  // 15秒检查一次
+            for (int i = 0; i < 150 && ctx->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
         }
         
         LOG_INFO(LogModule::WEAK_MGR, "network quality monitor thread stopped");
@@ -503,7 +505,8 @@ void start_dns_monitor_thread(ServerContext* ctx) {
                     << " avgLatency=" << stats.avgLatencyMs << "ms"
                     << " timeoutRate=" << stats.timeoutRate() << "%");
             }
-            std::this_thread::sleep_for(10000ms);
+            for (int i = 0; i < 100 && ctx_capture->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
         ctx_capture->dns_monitor.store(nullptr);
@@ -531,7 +534,8 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx) {
                         << " txDrops=" << s.txDrops << "/" << s.txPkts);
                 }
             }
-            std::this_thread::sleep_for(10000ms);
+            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
         ctx->wifi_loss_monitor.store(nullptr);
@@ -557,7 +561,8 @@ void start_http_latency_monitor_thread(ServerContext* ctx) {
                     << " p99=" << (globalStats.p99Ns / 1000000) << "ms"
                     << " analysis=" << globalStats.analysis);
             }
-            std::this_thread::sleep_for(10000ms);
+            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
         ctx->http_latency_monitor.store(nullptr);
@@ -594,7 +599,8 @@ void start_process_net_profiler_thread(ServerContext* ctx) {
                         << " txBytes=" << p.txBytes);
                 }
             }
-            std::this_thread::sleep_for(15000ms);
+            for (int i = 0; i < 150 && ctx->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
         }
         profiler->stop();
         ctx->process_net_profiler.store(nullptr);
