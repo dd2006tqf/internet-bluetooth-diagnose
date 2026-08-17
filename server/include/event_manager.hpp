@@ -8,6 +8,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include "net_info.hpp"
 
 namespace weaknet_dbus {
@@ -74,6 +75,7 @@ public:
     void stopEventMonitoring();
 
 private:
+    std::mutex cb_mutex_;  // 保护所有 callback 向量的并发访问
     std::vector<EventCallback> interface_callbacks_;
     std::vector<EventCallback> connection_mode_callbacks_;
     std::vector<EventCallback> network_quality_callbacks_;

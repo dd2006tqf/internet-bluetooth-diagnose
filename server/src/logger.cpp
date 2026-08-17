@@ -279,10 +279,14 @@ void Logger::writeToFileLog(const std::string& line) {
         return;
     }
 
-    std::lock_guard<std::mutex> lock(file_mutex_);
+    // 注意：不再使用 file_mutex_ 加锁。
+    // send() 在 glog 内部锁下调用，若 writeToFileLog 也持 file_mutex_，
+    // 其他线程在 file_mutex_ 内调 LOG() → glog 锁 → 死锁。
+    // glog 保证 Send() 回调的线程安全性，此处直接写入即可。
     if (file_stream_.is_open()) {
         file_stream_ << line << std::endl;
         file_stream_.flush();
+    }
     }
 }
 

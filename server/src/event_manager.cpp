@@ -28,6 +28,7 @@ NetworkEventManager::NetworkEventManager()
 }
 
 void NetworkEventManager::registerCallback(EventType type, EventCallback callback) {
+    std::lock_guard<std::mutex> lock(cb_mutex_);
     switch (type) {
         case EventType::InterfaceChanged:
             interface_callbacks_.push_back(callback);
@@ -55,6 +56,7 @@ void NetworkEventManager::registerCallback(EventType type, EventCallback callbac
 }
 
 void NetworkEventManager::unregisterCallback(EventType type) {
+    std::lock_guard<std::mutex> lock(cb_mutex_);
     switch (type) {
         case EventType::InterfaceChanged:
             interface_callbacks_.clear();
@@ -175,6 +177,7 @@ void NetworkEventManager::stopEventMonitoring() {
 }
 
 void NetworkEventManager::invokeCallbacks(EventType type, const NetworkEvent& event) {
+    std::lock_guard<std::mutex> lock(cb_mutex_);
     switch (type) {
         case EventType::InterfaceChanged:
             for (const auto& callback : interface_callbacks_) {
