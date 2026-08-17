@@ -42,7 +42,7 @@ std::shared_ptr<NetTrafficAnalyzer> NetTrafficAnalyzer::getInstance() {
 
 void NetTrafficAnalyzer::setBpfObjectPath(const std::string& path) { bpfObjPath_ = path; }
 
-static std::string ip_str(uint32_t ip) { struct in_addr a{ip}; return std::string(inet_ntoa(a)); }
+static std::string ip_str(uint32_t ip) { struct in_addr a{ip}; char buf[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &a, buf, sizeof(buf)); return std::string(buf); }
 
 bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName) {
 #if !HAVE_LIBBPF

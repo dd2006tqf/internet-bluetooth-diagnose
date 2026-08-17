@@ -56,10 +56,13 @@ struct tcp_retrans_stats {
 
 std::string connKeyToString(const tcp_conn_key& key) {
     struct in_addr sa{key.saddr}, da{key.daddr};
+    char src_buf[INET_ADDRSTRLEN], dst_buf[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &sa, src_buf, sizeof(src_buf));
+    inet_ntop(AF_INET, &da, dst_buf, sizeof(dst_buf));
     char buf[128];
     std::snprintf(buf, sizeof(buf), "%s:%u -> %s:%u",
-        inet_ntoa(sa), ntohs(key.sport),
-        inet_ntoa(da), ntohs(key.dport));
+        src_buf, ntohs(key.sport),
+        dst_buf, ntohs(key.dport));
     return std::string(buf);
 }
 

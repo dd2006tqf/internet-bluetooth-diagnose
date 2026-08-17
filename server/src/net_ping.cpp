@@ -114,7 +114,7 @@ int NetPing::ping(const std::string& host, const std::string& ifaceName, int tim
     // Build ICMP
     struct icmp icmpPacket{};
     uint16_t id = static_cast<uint16_t>(getpid());
-    static uint16_t seq = 0;
+    static std::atomic<uint16_t> seq{0};
     packIcmp(&icmpPacket, id, ++seq);
 
     // Send and measure send duration

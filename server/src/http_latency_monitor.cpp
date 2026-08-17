@@ -52,6 +52,7 @@ struct HttpLatencyMonitor::Impl {
     int http_txn_stats_fd = -1;
     struct bpf_object *obj = nullptr;
     struct bpf_link *link_send = nullptr;
+    struct bpf_link *link_entry = nullptr;   // entry kprobe link
     struct bpf_link *link_recv = nullptr;
 };
 
@@ -132,7 +133,8 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
         if (l_ret && !err_ret) bpf_link__destroy(l_ret);
         impl_->link_recv = nullptr;
     } else {
-        impl_->link_recv = l_ret;   // retprobe 是主要 link
+        impl_->link_entry = l_entry;
+        impl_->link_recv = l_ret;
         // entry probe 的 link 也需要保存以避免泄漏，但不单独跟踪
         LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: recv probe attached as entry+retprobe(tcp_recvmsg_locked)");
     }
@@ -158,6 +160,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
 void HttpLatencyMonitor::stop() {
 #if HAVE_LIBBPF
     if (impl_->link_send) { bpf_link__destroy(impl_->link_send); impl_->link_send = nullptr; }
+    if (impl_->link_entry) { bpf_link__destroy(impl_->link_entry); impl_->link_entry = nullptr; }
     if (impl_->link_recv) { bpf_link__destroy(impl_->link_recv); impl_->link_recv = nullptr; }
 #endif
     if (impl_->obj) {
@@ -182,9 +185,12 @@ std::vector<HttpTxnInfo> HttpLatencyMonitor::getRecentTxns(size_t limit) {
             // 只取已完成的事务（有响应）
             if (record.recv_ns > 0 && record.send_ns > 0) {
                 HttpTxnInfo info;
+                char src_buf[INET_ADDRSTRLEN], dst_buf[INET_ADDRSTRLEN];
                 struct in_addr sa{next_key.saddr}, da{next_key.daddr};
-                info.srcIp = inet_ntoa(sa);
-                info.dstIp = inet_ntoa(da);
+                inet_ntop(AF_INET, &sa, src_buf, sizeof(src_buf));
+                inet_ntop(AF_INET, &da, dst_buf, sizeof(dst_buf));
+                info.srcIp = src_buf;
+                info.dstIp = dst_buf;
                 info.srcPort = ntohs(next_key.sport);
                 info.dstPort = ntohs(next_key.dport);
                 info.ttfbNs = record.recv_ns - record.send_ns;
