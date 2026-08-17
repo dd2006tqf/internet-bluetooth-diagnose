@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
   "workflow": "openspec",
-  "active_change": null,
-  "phase": "idle",
-  "current_step": "change-archived",
-  "next_step": "Create or select the next change",
-  "updated_at": "2026-08-16T12:59:24.872Z",
+  "active_change": "http-ipv6-conn-key",
+  "phase": "planning",
+  "current_step": "change-created",
+  "next_step": "Write and review planning artifacts",
+  "updated_at": "2026-08-16T17:08:11.143Z",
   "last_archived_change": {
     "change_name": "timestamped-log-file",
     "archived_as": "2026-08-16-timestamped-log-file",
