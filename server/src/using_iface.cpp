@@ -281,7 +281,7 @@ void UsingInterfaceManager::start() {
     if (impl_ == nullptr) impl_ = new Impl();
     if (!impl_->running.load()) {
         impl_->worker = std::thread([this]{ impl_->eventLoop(this); });
-        impl_->worker.detach();
+        // 不 detach：保持 joinable，析构时 join 等待线程安全退出
     }
 #else
     (void)stateMutex_;

@@ -14,6 +14,7 @@ namespace weaknet_dbus {
 // 静态成员初始化
 bool Logger::initialized_ = false;
 std::string Logger::current_log_dir_ = "";
+volatile sig_atomic_t Logger::stop_requested_ = 0;
 
 // 文件日志相关静态成员
 std::ofstream Logger::file_stream_;
@@ -269,8 +270,8 @@ void Logger::stopFileLog() {
 }
 
 void Logger::signalHandler(int signum) {
-    // 仅停止文件日志，不退出进程（由 main 的信号处理逻辑决定是否退出）
-    stopFileLog();
+    // async-signal-safe: 仅设置标志，不调用任何函数（mutex/I/O 均非 async-signal-safe）
+    stop_requested_ = 1;
 }
 
 void Logger::writeToFileLog(const std::string& line) {

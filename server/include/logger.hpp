@@ -81,9 +81,14 @@ public:
     // 检查文件日志是否激活
     static bool isFileLogActive() { return file_log_active_; }
 
+    // async-signal-safe 的停止标志（signal handler 中唯一可安全设置的变量）
+    static volatile bool stopRequested() { return stop_requested_; }
+    static void requestStop() { stop_requested_ = true; }
+
 private:
     static bool initialized_;
     static std::string current_log_dir_;
+    static volatile sig_atomic_t stop_requested_;
 
     // 文件日志相关
     static std::ofstream file_stream_;
