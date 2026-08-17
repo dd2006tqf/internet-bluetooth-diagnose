@@ -287,7 +287,6 @@ void Logger::writeToFileLog(const std::string& line) {
         file_stream_ << line << std::endl;
         file_stream_.flush();
     }
-    }
 }
 
 } // namespace weaknet_dbus

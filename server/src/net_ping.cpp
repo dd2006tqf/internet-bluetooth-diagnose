@@ -8,6 +8,7 @@
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 #include <sys/select.h>
+#include <atomic>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>

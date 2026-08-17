@@ -228,6 +228,11 @@ struct UsingInterfaceManager::Impl {
             publishState(owner, /*printLog=*/true);
             std::vector<char> buf(64 * 1024);
             running.store(true);
+            // 设置 socket 超时，避免 recvmsg 永久阻塞导致无法响应 running=false
+            struct timeval tv{};
+            tv.tv_sec = 1;
+            tv.tv_usec = 0;
+            setsockopt(nlSocket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
             while (running.load()) {
                 sockaddr_nl nladdr{};
                 struct iovec iov{ buf.data(), buf.size() };

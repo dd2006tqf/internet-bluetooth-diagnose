@@ -10,6 +10,7 @@
 #include <fstream>
 #include <mutex>
 #include <ctime>
+#include <csignal>
 
 namespace weaknet_dbus {
 
