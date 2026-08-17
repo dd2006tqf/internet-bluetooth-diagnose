@@ -80,6 +80,7 @@ BtAudioFusionResult BtAudioFusion::evaluate(
     uint64_t bytesDelta = stats->bytes;
     uint64_t packetsDelta = stats->packets;
     uint64_t gapDelta = stats->gapCount;
+    // maxGapNs 是当前窗口观察到的最大包间隔（非累积值），直接使用当前值
     uint64_t maxGapDelta = stats->maxGapNs;
 
     if (prevStats && prevStats->packets > 0) {
@@ -93,7 +94,7 @@ BtAudioFusionResult BtAudioFusion::evaluate(
         if (stats->gapCount >= prevStats->gapCount) {
             gapDelta = stats->gapCount - prevStats->gapCount;
         }
-        maxGapDelta = std::max(stats->maxGapNs, prevStats->maxGapNs);
+        // maxGapNs 是当前窗口的最大值，无需与前次比较
     }
 
     // 2. 判断有效活跃

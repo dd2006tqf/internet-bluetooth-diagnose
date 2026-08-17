@@ -6,6 +6,8 @@ using namespace weaknet_dbus;
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
 #include <cstdio>
@@ -44,10 +46,35 @@ static bool launchWpaSupplicant(const std::string& iface, const std::string& ctr
         LOG_ERROR(LogModule::RSSI, "launchWpaSupplicant: failed to create ctrl dir: " << ctrlDir);
         return false;
     }
-    // -B 后台运行，-C 指定 ctrl 目录
-    std::string cmd = std::string(bin) + " -B -i " + iface + " -c " + conf + " -C " + ctrlDir + " 2>/dev/null";
-    int rc = ::system(cmd.c_str());
-    if (rc != 0) return false;
+
+    // 使用 fork()+execve() 替代 system()，避免命令注入风险
+    pid_t pid = fork();
+    if (pid < 0) {
+        LOG_ERROR(LogModule::RSSI, "launchWpaSupplicant: fork() failed: " << strerror(errno));
+        return false;
+    }
+
+    if (pid == 0) {
+        // 子进程：重定向 stdout/stderr 到 /dev/null
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
+
+        // 构造参数数组（execve 要求以 nullptr 结尾）
+        execl(bin, "wpa_supplicant", "-B", "-i", iface.c_str(),
+              "-c", conf, "-C", ctrlDir.c_str(), (char*)nullptr);
+
+        // exec 失败时退出子进程
+        _exit(127);
+    }
+
+    // 父进程：等待子进程退出（非阻塞）
+    int status;
+    waitpid(pid, &status, WNOHANG);
+
     // 等待 socket 文件出现
     const std::string sockPath = ctrlDir + "/" + iface;
     for (int i = 0; i < 20; ++i) {

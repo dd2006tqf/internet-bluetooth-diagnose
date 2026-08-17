@@ -129,7 +129,7 @@ int trace_dns_send(struct pt_regs *ctx)
     struct dns_query_key key = {0};
     key.saddr = saddr;
     key.daddr = daddr;
-    key.sport = bpf_htons(sport);
+    key.sport = sport;  // skc_num 是主机序（小端），直接赋值
 
     // 记录发送时间
     struct dns_query_record rec = {0};
@@ -185,12 +185,12 @@ int trace_dns_recv(struct pt_regs *ctx)
         // 与发送路径对齐：saddr=本机IP, daddr=DNS服务器IP
         key.saddr = saddr;
         key.daddr = daddr;
-        key.sport = bpf_htons(sport);
+        key.sport = sport;  // skc_num 是主机序，直接赋值
     } else {
         // DNS 服务器 socket 接收请求：不参与客户端 DNS 请求追踪
         key.saddr = daddr;
         key.daddr = saddr;
-        key.sport = bpf_htons(sport);
+        key.sport = sport;  // skc_num 是主机序，直接赋值
     }
 
     struct dns_query_record *rec = bpf_map_lookup_elem(&dns_queries, &key);

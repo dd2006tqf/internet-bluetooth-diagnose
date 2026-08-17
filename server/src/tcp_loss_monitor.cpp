@@ -22,12 +22,11 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
         auto tcpMonitor = TcpLossMonitor::getInstance();
         TcpStats prevStats, currStats;
         bool hasPrevStats = false;
-        
+
         int loop_count = 0;
         while (ctx->running.load()) {
             loop_count++;
-            LOG_INFO(LogModule::TCP_LOSS, "tick: monitoring TCP loss rate... (loop=" << loop_count << ")");
-            
+
             // 获取当前上网网卡信息
             auto current_interfaces = ctx->weak_mgr->getCurrentInterfaces();
             std::string currentIface;
@@ -37,16 +36,13 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
                     break;
                 }
             }
-            
+
             if (currentIface.empty()) {
-                LOG_INFO(LogModule::TCP_LOSS, "TCP_LOSS_MONITOR: no active interface found (checking " << current_interfaces.size() << " interfaces)");
                 for (int i = 0; i < 50 && ctx->running.load(); ++i)
-                    std::this_thread::sleep_for(100ms);  // 减少等待时间，更频繁地检查
+                    std::this_thread::sleep_for(100ms);
                 continue;
             }
-            
-            LOG_INFO(LogModule::TCP_LOSS, "monitoring interface: " << currentIface);
-            
+
             // 采样当前TCP统计信息
             if (!tcpMonitor->sampleForInterface(currentIface, currStats)) {
                 LOG_ERROR(LogModule::TCP_LOSS, "failed to sample TCP stats for interface: " << currentIface);
@@ -54,30 +50,31 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
                     std::this_thread::sleep_for(100ms);
                 continue;
             }
-            
+
             // 计算丢包率（如果有之前的统计数据）
             if (hasPrevStats) {
                 TcpLossResult result = tcpMonitor->compute(prevStats, currStats);
-                
+
                 if (result.sentDelta >= 10) {  // 只有当发送的数据包超过阈值时才计算
-                    LOG_INFO(LogModule::TCP_LOSS, "TCP_LOSS_MONITOR: interface=" << currentIface 
-                        << " rate=" << result.ratePercent << "%" 
-                        << " delta_sent=" << result.sentDelta 
-                        << " delta_retrans=" << result.retransDelta 
-                        << " level=" << result.level);
-                    
+                    // 仅在丢包率变化时输出日志
+                    static std::string lastLevel;
+                    if (result.level != lastLevel) {
+                        LOG_INFO(LogModule::TCP_LOSS, "TCP_LOSS_MONITOR: interface=" << currentIface
+                            << " rate=" << result.ratePercent << "%"
+                            << " level=" << result.level);
+                        lastLevel = result.level;
+                    }
+
                     // 更新到weak_mgr中保存的NetInfo列表
                     bool updated = ctx->weak_mgr->updateTcpLossRateSafe(currentIface, result.ratePercent, result.level);
                     if (updated && ctx->service) {
-                        std::string msg = std::string("TCP loss rate updated for ") + currentIface + 
+                        std::string msg = std::string("TCP loss rate updated for ") + currentIface +
                                          ": " + std::to_string(result.ratePercent) + "% (" + result.level + ")";
-                        LOG_INFO(LogModule::TCP_LOSS, "TCP loss rate updated - emitting signal: " << msg);
-                        // 同步发射（内部有锁），不创建 detached 子线程
                         ctx->service->emitChanged(msg, /*counter*/0);
                     }
                 }
             }
-            
+
             // 保存当前统计作为下次的前次统计
             prevStats = currStats;
             hasPrevStats = true;
@@ -85,7 +82,7 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
             for (int i = 0; i < 100 && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);
         }
-        
+
         LOG_INFO(LogModule::TCP_LOSS, "monitor thread terminated");
     });
 }

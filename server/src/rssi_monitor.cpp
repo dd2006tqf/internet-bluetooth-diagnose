@@ -21,33 +21,25 @@ void start_rssi_monitor_thread(ServerContext* ctx, const std::string& ctrlDir) {
         int loop_count = 0;
         while (ctx->running.load()) {
             loop_count++;
-            LOG_INFO(LogModule::RSSI, "RSSI monitor thread running, loop=" << loop_count << ", ctx->running=" << ctx->running.load());
 
             // 直接调用线程安全的RSSI更新方法
-            LOG_INFO(LogModule::RSSI, "RSSI monitor: calling updateWifiRssiSafe");
             bool changed = ctx->weak_mgr->updateWifiRssiSafe(ctrlDir);
-            LOG_INFO(LogModule::RSSI, "RSSI monitor: updateWifiRssiSafe completed, changed=" << changed);
 
             // 获取当前接口列表用于日志输出
             auto current_interfaces = ctx->weak_mgr->getCurrentInterfaces();
-            LOG_INFO(LogModule::RSSI, "RSSI monitor: current interfaces count=" << current_interfaces.size());
 
-            // 输出RSSI监控信息
-            for (const auto& net : current_interfaces) {
-                if (net.type() == NetType::WiFi) {
-                    LOG_INFO(LogModule::RSSI, "RSSI_MONITOR: " << net.ifName()
-                        << " | RSSI: " << net.rssiDbm() << "dBm"
-                        << " | Quality: " << static_cast<int>(net.quality())
-                        << " | Using: " << (net.usingNow() ? "YES" : "NO"));
+            // 输出RSSI监控信息（仅在变化时输出，减少日志量）
+            if (changed) {
+                for (const auto& net : current_interfaces) {
+                    if (net.type() == NetType::WiFi && net.usingNow()) {
+                        LOG_INFO(LogModule::RSSI, "RSSI_MONITOR: " << net.ifName()
+                            << " | RSSI: " << net.rssiDbm() << "dBm");
+                    }
                 }
             }
 
             if (changed && ctx->service) {
-                LOG_INFO(LogModule::RSSI, "WiFi RSSI updated - emitting signal");
-                // 同步发射（内部有锁），不创建 detached 子线程
                 ctx->service->emitChanged("WiFi RSSI updated", /*counter*/0);
-            } else {
-                LOG_INFO(LogModule::RSSI, "RSSI_MONITOR: no changes detected (interfaces: " << current_interfaces.size() << ")");
             }
             for (int i = 0; i < 100 && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);

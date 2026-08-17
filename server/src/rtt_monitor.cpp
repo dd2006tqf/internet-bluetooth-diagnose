@@ -22,39 +22,31 @@ void start_rtt_monitor_thread(ServerContext* ctx, const std::string& host, int i
         int loop_count = 0;
         while (ctx->running.load()) {
             loop_count++;
-            LOG_INFO(LogModule::RTT, "RTT monitor thread running, loop=" << loop_count << ", ctx->running=" << ctx->running.load());
             try {
                 // 直接调用线程安全的RTT更新方法
-                LOG_INFO(LogModule::RTT, "RTT monitor: calling updateRttAndStateSafe");
                 bool changed = ctx->weak_mgr->updateRttAndStateSafe(host, timeoutMs);
-                LOG_INFO(LogModule::RTT, "RTT monitor: updateRttAndStateSafe completed, changed=" << changed);
 
                 // 获取当前接口列表用于日志输出
                 auto current_interfaces = ctx->weak_mgr->getCurrentInterfaces();
-                LOG_INFO(LogModule::RTT, "RTT monitor: current interfaces count=" << current_interfaces.size());
 
-                // 输出RTT监控信息
-                for (const auto& net : current_interfaces) {
-                    LOG_INFO(LogModule::RTT, "RTT_MONITOR: " << net.ifName()
-                        << " | RTT: " << net.rttMs() << "ms"
-                        << " | Quality: " << static_cast<int>(net.quality())
-                        << " | Using: " << (net.usingNow() ? "YES" : "NO")
-                        << " | Target: " << host);
+                // 输出RTT监控信息（仅在变化时输出，减少日志量）
+                if (changed) {
+                    for (const auto& net : current_interfaces) {
+                        if (net.usingNow()) {
+                            LOG_INFO(LogModule::RTT, "RTT_MONITOR: " << net.ifName()
+                                << " | RTT: " << net.rttMs() << "ms"
+                                << " | Quality: " << static_cast<int>(net.quality())
+                                << " | Target: " << host);
+                        }
+                    }
                 }
 
                 if (changed && ctx->service) {
-                    LOG_INFO(LogModule::RTT, "RTT/Quality updated - emitting signal");
-                    // 同步发射（内部有锁），不创建 detached 子线程
                     ctx->service->emitChanged("RTT/Quality updated", /*counter*/0);
-                } else {
-                    LOG_INFO(LogModule::RTT, "RTT_MONITOR: no changes detected (interfaces: " << current_interfaces.size() << ")");
                 }
 
-                LOG_INFO(LogModule::RTT, "RTT monitor: reached sleep preparation");
-                LOG_INFO(LogModule::RTT, "RTT monitor: about to sleep for " << intervalMs << "ms");
                 for (int i = 0; i < (intervalMs / 100) && ctx->running.load(); ++i)
                     std::this_thread::sleep_for(100ms);
-                LOG_INFO(LogModule::RTT, "RTT monitor: woke up from sleep");
 
             } catch (const std::exception& e) {
                 LOG_ERROR(LogModule::RTT, "RTT monitor thread exception: " << e.what());
@@ -62,7 +54,7 @@ void start_rtt_monitor_thread(ServerContext* ctx, const std::string& host, int i
                 LOG_ERROR(LogModule::RTT, "RTT monitor thread unknown exception");
             }
         }
-        LOG_INFO(LogModule::RTT, "RTT monitor thread exiting, ctx->running=" << ctx->running.load());
+        LOG_INFO(LogModule::RTT, "RTT monitor thread exiting");
     });
 }
 

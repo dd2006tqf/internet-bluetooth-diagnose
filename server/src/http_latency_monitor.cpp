@@ -122,10 +122,27 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
 
     // 响应侧：entry kprobe + retprobe 配对
     // entry probe 保存 sk+msg 到 BPF_MAP，retprobe 读取（kretprobe 的 PT_REGS_PARM1 是返回值不是入口参数）
-    struct bpf_link *l_entry = bpf_program__attach_kprobe(entry_prog, false, "tcp_recvmsg_locked");
-    struct bpf_link *l_ret = bpf_program__attach_kprobe(ret_prog, true, "tcp_recvmsg_locked");
+    // 注意：tcp_recvmsg_locked 在 Linux 5.19+ 内核已重命名为 tcp_recvmsg
+    // 优先尝试 tcp_recvmsg_locked，失败则回退到 tcp_recvmsg
+    struct bpf_link *l_entry = nullptr;
+    struct bpf_link *l_ret = nullptr;
+
+    // 尝试 tcp_recvmsg_locked（旧内核）
+    l_entry = bpf_program__attach_kprobe(entry_prog, false, "tcp_recvmsg_locked");
     long err_entry = libbpf_get_error(l_entry);
+    if (err_entry) {
+        // 回退到 tcp_recvmsg（新内核）
+        l_entry = bpf_program__attach_kprobe(entry_prog, false, "tcp_recvmsg");
+        err_entry = libbpf_get_error(l_entry);
+    }
+
+    l_ret = bpf_program__attach_kprobe(ret_prog, true, "tcp_recvmsg_locked");
     long err_ret = libbpf_get_error(l_ret);
+    if (err_ret) {
+        // 回退到 tcp_recvmsg（新内核）
+        l_ret = bpf_program__attach_kprobe(ret_prog, true, "tcp_recvmsg");
+        err_ret = libbpf_get_error(l_ret);
+    }
     if (err_entry || err_ret) {
         LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: attach entry/retprobe failed"
                   << " entry_err=" << err_entry << " ret_err=" << err_ret);
