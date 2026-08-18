@@ -160,6 +160,13 @@ $(TEST_BIN_DIR)/test_anomaly_detector: $(TEST_DIR)/unit/test_anomaly_detector.cp
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_anomaly_detector.cpp \
 	    src/traffic_anomaly_detector.cpp src/logger.cpp $(TEST_LDFLAGS)
 
+# test_anomaly_detector_gtest（Google Test 版本：流量异常检测器）
+$(TEST_BIN_DIR)/test_anomaly_detector_gtest: $(TEST_DIR)/unit/test_anomaly_detector_gtest.cpp \
+    src/traffic_anomaly_detector.cpp src/logger.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_anomaly_detector_gtest.cpp \
+	    src/traffic_anomaly_detector.cpp src/logger.cpp $(TEST_LDFLAGS) -lgtest -lgtest_main
+
 # test_audio_fusion（蓝牙音频 D-Bus + eBPF 融合评分）
 $(TEST_BIN_DIR)/test_audio_fusion: $(TEST_DIR)/unit/test_audio_fusion.cpp \
     src/bt_audio_fusion.cpp src/logger.cpp \
