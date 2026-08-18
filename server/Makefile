@@ -176,6 +176,13 @@ $(TEST_BIN_DIR)/test_serializer: $(TEST_DIR)/unit/test_serializer.cpp \
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_serializer.cpp \
 	    src/serializer.cpp src/logger.cpp $(TEST_LDFLAGS)
 
+# test_serializer_gtest（Google Test 版本：序列化工具）
+$(TEST_BIN_DIR)/test_serializer_gtest: $(TEST_DIR)/unit/test_serializer_gtest.cpp \
+    src/serializer.cpp src/logger.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_serializer_gtest.cpp \
+	    src/serializer.cpp src/logger.cpp $(TEST_LDFLAGS) -lgtest -lgtest_main
+
 # test_event_manager（事件注册/分发/注销）
 # 注意：event_manager.cpp 引用 DbusService::emitSpecificSignal，使用 mock 桩避免链接整个服务端
 $(TEST_BIN_DIR)/test_event_manager: $(TEST_DIR)/unit/test_event_manager.cpp \
