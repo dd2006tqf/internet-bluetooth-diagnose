@@ -183,6 +183,13 @@ $(TEST_BIN_DIR)/test_band_conflict: $(TEST_DIR)/unit/test_band_conflict.cpp \
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_band_conflict.cpp \
 	    src/band_conflict_detector.cpp src/logger.cpp $(TEST_LDFLAGS)
 
+# test_band_conflict_gtest（Google Test 版本：频段冲突检测器）
+$(TEST_BIN_DIR)/test_band_conflict_gtest: $(TEST_DIR)/unit/test_band_conflict_gtest.cpp \
+    src/band_conflict_detector.cpp src/logger.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_band_conflict_gtest.cpp \
+	    src/band_conflict_detector.cpp src/logger.cpp $(TEST_LDFLAGS) -lgtest -lgtest_main
+
 # test_serializer（序列化工具：字符串/int32/文件）
 $(TEST_BIN_DIR)/test_serializer: $(TEST_DIR)/unit/test_serializer.cpp \
     src/serializer.cpp src/logger.cpp \
