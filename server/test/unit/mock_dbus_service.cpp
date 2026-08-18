@@ -1,14 +1,16 @@
 // mock_dbus_service.cpp
-// DbusService 的最小桩实现，仅供单元测试链接使用。
+// DbusService stub implementation for unit testing only.
 //
-// 设计目的：
-//   event_manager.cpp 在 emitEvent() 中调用 DbusService::emitSpecificSignal /
-//   emitNetworkQualitySignal，并传入递增的 eventCounter。本桩除满足链接器符号
-//   需求外，还提供线程安全的 counter 记录器，供并发场景下的原子性测试使用。
+// Design purpose:
+//   event_manager.cpp calls DbusService::emitSpecificSignal / emitNetworkQualitySignal
+//   in emitEvent(). This stub satisfies linker symbol requirements and provides
+//   thread-safe counter recorder for concurrency atomicity tests.
 //
-// 注意：此文件仅用于测试编译链接，不应包含任何业务逻辑。
+// Note: This file is only for test compilation/linking, should not contain any business logic.
 
 #include "dbus_service.hpp"
+#include "server.hpp"
+#include "net_info.hpp"
 
 #include <cstdint>
 #include <mutex>
@@ -17,9 +19,7 @@
 namespace weaknet_dbus {
 
 // ============================================================================
-// 测试用 counter 记录器（线程安全）
-//   仅供 test_event_manager 的并发原子性测试使用。其它测试不走 emit 路径，
-//   不会写入记录。记录器自身用 mutex 保护，避免成为新的竞态源。
+// Test counter recorder (thread-safe)
 // ============================================================================
 namespace test_recorder {
 static std::mutex g_mtx;
@@ -41,10 +41,15 @@ std::vector<int32_t> snapshotCounters() {
 }
 }  // namespace test_recorder
 
-// 构造函数：仅保存上下文指针（测试中可能为 nullptr 或指向测试构造的 ctx）
+// ServerContext destructor stub (simplified, no resource cleanup needed for tests)
+ServerContext::~ServerContext() {
+    // Intentionally empty - test stub doesn't manage real resources
+}
+
+// Constructor: only saves context pointer
 DbusService::DbusService(ServerContext* ctx) : ctx_(ctx) {}
 
-// 桩实现：记录 counter 后返回 true，不实际发送 D-Bus 信号
+// Stub implementation: record counter then return true
 bool DbusService::emitSpecificSignal(const std::string& /*signalName*/,
                                       const std::string& /*message*/,
                                       int32_t counter) {
@@ -52,7 +57,7 @@ bool DbusService::emitSpecificSignal(const std::string& /*signalName*/,
     return true;
 }
 
-// 桩实现：记录 counter 后返回 true，不实际发送 D-Bus 信号
+// Stub implementation: record counter then return true
 bool DbusService::emitNetworkQualitySignal(const std::string& /*message*/,
                                             const std::string& /*details*/,
                                             int32_t counter) {

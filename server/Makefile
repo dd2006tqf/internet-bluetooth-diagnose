@@ -221,6 +221,14 @@ $(TEST_BIN_DIR)/test_event_manager: $(TEST_DIR)/unit/test_event_manager.cpp \
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_event_manager.cpp \
 	    src/event_manager.cpp $(TEST_DIR)/unit/mock_dbus_service.cpp src/logger.cpp $(TEST_LDFLAGS)
 
+# test_event_manager_gtest（Google Test 版本：事件管理器）
+$(TEST_BIN_DIR)/test_event_manager_gtest: $(TEST_DIR)/unit/test_event_manager_gtest.cpp \
+    src/event_manager.cpp $(TEST_DIR)/unit/mock_dbus_service.cpp src/logger.cpp src/net_info.cpp src/serializer.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_event_manager_gtest.cpp \
+	    src/event_manager.cpp $(TEST_DIR)/unit/mock_dbus_service.cpp src/logger.cpp src/net_info.cpp src/serializer.cpp \
+	    $(TEST_LDFLAGS) -lgtest -lgtest_main
+
 # test_bt_full_link（蓝牙全链路集成测试：频段冲突→EventManager→D-Bus 信号载荷）
 # 链接 BandConflictDetector + NetworkEventManager + DbusService 桩，验证端到端路由
 $(TEST_BIN_DIR)/test_bt_full_link: $(TEST_DIR)/unit/test_bt_full_link.cpp \
@@ -231,6 +239,15 @@ $(TEST_BIN_DIR)/test_bt_full_link: $(TEST_DIR)/unit/test_bt_full_link.cpp \
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_bt_full_link.cpp \
 	    src/band_conflict_detector.cpp src/event_manager.cpp \
 	    $(TEST_DIR)/unit/mock_dbus_service.cpp src/logger.cpp $(TEST_LDFLAGS)
+
+# test_bt_full_link_gtest（Google Test 版本：蓝牙全链路集成测试）
+$(TEST_BIN_DIR)/test_bt_full_link_gtest: $(TEST_DIR)/unit/test_bt_full_link_gtest.cpp \
+    src/band_conflict_detector.cpp src/event_manager.cpp \
+    $(TEST_DIR)/unit/mock_dbus_service.cpp src/logger.cpp src/net_info.cpp src/serializer.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_bt_full_link_gtest.cpp \
+	    src/band_conflict_detector.cpp src/event_manager.cpp \
+	    $(TEST_DIR)/unit/mock_dbus_service.cpp src/logger.cpp src/net_info.cpp src/serializer.cpp $(TEST_LDFLAGS) -lgtest -lgtest_main
 
 # test_bt_monitor（蓝牙监控纯逻辑层 + 降级场景，专项测试）
 # 依赖 event_manager.cpp（bt_monitor.cpp 引用 getEventManager）与 mock 桩
@@ -251,6 +268,13 @@ $(TEST_BIN_DIR)/test_iface_type: $(TEST_DIR)/unit/test_iface_type.cpp \
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_iface_type.cpp \
 	    src/iface_type.cpp $(TEST_LDFLAGS)
 
+# test_iface_type_gtest（Google Test 版本：Wi-Fi 接口类型识别）
+$(TEST_BIN_DIR)/test_iface_type_gtest: $(TEST_DIR)/unit/test_iface_type_gtest.cpp \
+    src/iface_type.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_iface_type_gtest.cpp \
+	    src/iface_type.cpp $(TEST_LDFLAGS) -lgtest -lgtest_main
+
 # test_logger（日志系统：格式化宏、磁盘满保护、日志清理）
 $(TEST_BIN_DIR)/test_logger: $(TEST_DIR)/unit/test_logger.cpp \
     src/logger.cpp include/logger.hpp \
@@ -258,6 +282,13 @@ $(TEST_BIN_DIR)/test_logger: $(TEST_DIR)/unit/test_logger.cpp \
 	@mkdir -p $(TEST_BIN_DIR)
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_logger.cpp \
 	    src/logger.cpp $(TEST_LDFLAGS)
+
+# test_logger_gtest（Google Test 版本：日志系统）
+$(TEST_BIN_DIR)/test_logger_gtest: $(TEST_DIR)/unit/test_logger_gtest.cpp \
+    src/logger.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_logger_gtest.cpp \
+	    src/logger.cpp $(TEST_LDFLAGS) -lgtest -lgtest_main
 
 # test_traffic_analyzer（流量分析器降级模式）
 $(TEST_BIN_DIR)/test_traffic_analyzer: $(TEST_DIR)/unit/test_traffic_analyzer.cpp \
@@ -267,5 +298,12 @@ $(TEST_BIN_DIR)/test_traffic_analyzer: $(TEST_DIR)/unit/test_traffic_analyzer.cp
 	@mkdir -p $(TEST_BIN_DIR)
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_traffic_analyzer.cpp \
 	    src/traffic_analyzer.cpp src/net_traffic.cpp src/logger.cpp $(TEST_LDFLAGS_BPF)
+
+# test_traffic_analyzer_gtest（Google Test 版本：流量分析器降级模式）
+$(TEST_BIN_DIR)/test_traffic_analyzer_gtest: $(TEST_DIR)/unit/test_traffic_analyzer_gtest.cpp \
+    src/traffic_analyzer.cpp src/net_traffic.cpp src/logger.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_traffic_analyzer_gtest.cpp \
+	    src/traffic_analyzer.cpp src/net_traffic.cpp src/logger.cpp $(TEST_LDFLAGS_BPF) -lgtest -lgtest_main
 
 
