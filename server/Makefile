@@ -144,6 +144,14 @@ $(TEST_BIN_DIR)/test_quality_assessor: $(TEST_DIR)/unit/test_quality_assessor.cp
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_quality_assessor.cpp \
 	    src/network_quality_assessor.cpp src/net_info.cpp src/serializer.cpp src/logger.cpp $(TEST_LDFLAGS)
 
+# test_quality_assessor_gtest（Google Test 版本：网络质量评估器）
+$(TEST_BIN_DIR)/test_quality_assessor_gtest: $(TEST_DIR)/unit/test_quality_assessor_gtest.cpp \
+    src/network_quality_assessor.cpp src/net_info.cpp src/serializer.cpp src/logger.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_quality_assessor_gtest.cpp \
+	    src/network_quality_assessor.cpp src/net_info.cpp src/serializer.cpp src/logger.cpp \
+	    $(TEST_LDFLAGS) -lgtest -lgtest_main
+
 # test_anomaly_detector（流量异常检测：数据泄露/可疑连接/时序异常）
 $(TEST_BIN_DIR)/test_anomaly_detector: $(TEST_DIR)/unit/test_anomaly_detector.cpp \
     src/traffic_anomaly_detector.cpp src/logger.cpp \
@@ -159,6 +167,13 @@ $(TEST_BIN_DIR)/test_audio_fusion: $(TEST_DIR)/unit/test_audio_fusion.cpp \
 	@mkdir -p $(TEST_BIN_DIR)
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_audio_fusion.cpp \
 	    src/bt_audio_fusion.cpp src/logger.cpp $(TEST_LDFLAGS)
+
+# test_audio_fusion_gtest（Google Test 版本：蓝牙音频融合评估器）
+$(TEST_BIN_DIR)/test_audio_fusion_gtest: $(TEST_DIR)/unit/test_audio_fusion_gtest.cpp \
+    src/bt_audio_fusion.cpp src/logger.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_audio_fusion_gtest.cpp \
+	    src/bt_audio_fusion.cpp src/logger.cpp $(TEST_LDFLAGS) -lgtest -lgtest_main
 
 # test_band_conflict（2.4GHz 频段冲突检测：Wi-Fi/蓝牙 RSSI 相关性）
 $(TEST_BIN_DIR)/test_band_conflict: $(TEST_DIR)/unit/test_band_conflict.cpp \
