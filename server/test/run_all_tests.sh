@@ -202,21 +202,21 @@ fi
 # ============== 单元测试 ==============
 log_test ""
 log_test "============================================================"
-log_test "  单元测试"
+log_test "  单元测试 (Google Test)"
 log_test "============================================================"
 
-# 单元测试列表（与 Makefile ALL_TESTS 保持一致）
-UNIT_TEST_BINS="test_net_info test_quality_assessor test_anomaly_detector \
-                test_audio_fusion test_band_conflict test_serializer \
-                test_event_manager test_bt_full_link test_bt_monitor \
-                test_logger test_traffic_analyzer"
+# 单元测试列表（Google Test 版本）
+UNIT_TEST_BINS="test_net_info test_quality_assessor_gtest test_anomaly_detector_gtest \
+                test_audio_fusion_gtest test_band_conflict_gtest test_serializer_gtest \
+                test_event_manager_gtest test_bt_full_link_gtest test_bt_monitor \
+                test_iface_type_gtest test_logger_gtest test_traffic_analyzer_gtest"
 
 for unit_test in $UNIT_TEST_BINS; do
     if [ -x "test/bin/$unit_test" ]; then
         log_test "[unit] 运行 $unit_test..."
         UNIT_OUTPUT=$(./test/bin/$unit_test 2>&1)
         UNIT_EXIT=$?
-        echo "$UNIT_OUTPUT" | tail -5 | tee -a "$REPORT_FILE"
+        echo "$UNIT_OUTPUT" | tail -10 | tee -a "$REPORT_FILE"
         if [ "$UNIT_EXIT" = "0" ]; then
             check_result "$unit_test" 0
         else

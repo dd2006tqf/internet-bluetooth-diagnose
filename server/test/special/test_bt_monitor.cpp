@@ -1,216 +1,203 @@
 // test_bt_monitor.cpp
-// 蓝牙监控器专项测试（纯逻辑层 + 降级场景）
-// 被测模块: bt_monitor.cpp（1637行，项目最大模块）
+// Bluetooth monitor special tests (pure logic + degraded scenarios)
+// Module under test: bt_monitor.cpp (1637 lines, project's largest module)
 //
-// 测试策略：bt_monitor 依赖 BlueZ D-Bus + 蓝牙硬件 + eBPF，无法完全脱离硬件。
-// 本测试聚焦"无需硬件"的纯逻辑层与降级场景：
-//   - BtDeviceInfo 内联方法（rssiLevel / averageRssi）
-//   - estimateDistance 路径损耗模型
-//   - calibrateDistance 校准
+// Test strategy: bt_monitor depends on BlueZ D-Bus + Bluetooth hardware + eBPF, cannot be fully
+// detached from hardware. This test focuses on "hardware-free" pure logic and degraded scenarios:
+//   - BtDeviceInfo inline methods (rssiLevel / averageRssi)
+//   - estimateDistance path loss model
+//   - calibrateDistance calibration
 //   - setDefaultTxPower
-//   - 无蓝牙环境降级初始化
-//
-// 编译: g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Itest/unit -o test/bin/test_bt_monitor
-//        test/special/test_bt_monitor.cpp src/bt_monitor.cpp
-//        src/bt_audio_analyzer.cpp src/bt_audio_fusion.cpp
-//        src/logger.cpp -lglog `pkg-config --cflags --libs dbus-1`
+//   - Degraded initialization without Bluetooth environment
 
-#include "test_common.hpp"
+#include <gtest/gtest.h>
 #include "bt_monitor.hpp"
-#include "bt_audio_fusion.hpp"  // BtAudioFusion 完整定义（bt_monitor.hpp 仅前置声明）
+#include "bt_audio_fusion.hpp"
 
 using namespace weaknet_dbus;
 
 // ============================================================================
-// BtDeviceInfo 纯逻辑测试（内联方法，无需 BtMonitor 实例）
+// BtDeviceInfo Pure Logic Tests (inline methods, no BtMonitor instance needed)
 // ============================================================================
 
-// 测试1: RSSI 等级分级
-static void testRssiLevel() {
-    TEST_CASE("RSSI等级分级");
+// Test 1: RSSI level classification
+TEST(BtMonitorTest, RssiLevel) {
     BtDeviceInfo info;
-    info.rssiHistory = {-45}; CHECK_EQ(info.rssiLevel(), "excellent");
-    info.rssiHistory = {-55}; CHECK_EQ(info.rssiLevel(), "good");
-    info.rssiHistory = {-65}; CHECK_EQ(info.rssiLevel(), "fair");
-    info.rssiHistory = {-75}; CHECK_EQ(info.rssiLevel(), "poor");
-    info.rssiHistory = {-85}; CHECK_EQ(info.rssiLevel(), "very_poor");
+    info.rssiHistory = {-45};
+    EXPECT_EQ(info.rssiLevel(), "excellent");
+
+    info.rssiHistory = {-55};
+    EXPECT_EQ(info.rssiLevel(), "good");
+
+    info.rssiHistory = {-65};
+    EXPECT_EQ(info.rssiLevel(), "fair");
+
+    info.rssiHistory = {-75};
+    EXPECT_EQ(info.rssiLevel(), "poor");
+
+    info.rssiHistory = {-85};
+    EXPECT_EQ(info.rssiLevel(), "very_poor");
 }
 
-// 测试2: RSSI 等级 - 空历史返回 unknown
-static void testRssiLevelEmpty() {
-    TEST_CASE("空RSSI历史返回unknown");
+// Test 2: RSSI level - empty history returns unknown
+TEST(BtMonitorTest, RssiLevelEmpty) {
     BtDeviceInfo info;
     info.rssiHistory.clear();
-    CHECK_EQ(info.rssiLevel(), "unknown");
+    EXPECT_EQ(info.rssiLevel(), "unknown");
 }
 
-// 测试3: RSSI 历史平均值
-static void testAverageRssi() {
-    TEST_CASE("RSSI历史平均值");
+// Test 3: RSSI history average
+TEST(BtMonitorTest, AverageRssi) {
     BtDeviceInfo info;
     info.rssiHistory = {-60, -62, -58, -60, -64};
-    CHECK_EQ(info.averageRssi(), -60);  // (-60-62-58-60-64)/5 = -60.8 → -60
+    EXPECT_EQ(info.averageRssi(), -60);  // (-60-62-58-60-64)/5 = -60.8 -> -60
 }
 
-// 测试4: RSSI 历史 - 空返回0
-static void testAverageRssiEmpty() {
-    TEST_CASE("空RSSI历史平均返回0");
+// Test 4: RSSI history - empty returns 0
+TEST(BtMonitorTest, AverageRssiEmpty) {
     BtDeviceInfo info;
     info.rssiHistory.clear();
-    CHECK_EQ(info.averageRssi(), 0);
+    EXPECT_EQ(info.averageRssi(), 0);
 }
 
 // ============================================================================
-// BtMonitor 距离估算测试（纯数学，无需 D-Bus）
+// BtMonitor Distance Estimation Tests (pure math, no D-Bus needed)
 // ============================================================================
 
-// 测试5: 距离估算 - 参考点应≈1m
-static void testDistanceAtReference() {
-    TEST_CASE("距离估算-参考点RSSI应≈1m");
-    BtMonitor monitor;  // 不调用 initialize，仅用纯数学方法
-    // 默认 txPower=-59, n=2.5, ref=1.0
+// Test 5: Distance at reference point should be ~1m
+TEST(BtMonitorTest, DistanceAtReference) {
+    BtMonitor monitor;  // Don't call initialize, only use pure math methods
+    // Default txPower=-59, n=2.5, ref=1.0
     // distance = 10^((txPower - rssi)/(10*n)) * ref
-    // rssi=-59 → distance=1.0m
+    // rssi=-59 -> distance=1.0m
     double d = monitor.estimateDistance(-59);
-    CHECK_NEAR(d, 1.0, 0.15);
+    EXPECT_NEAR(d, 1.0, 0.15);
 }
 
-// 测试6: 距离估算 - 远距离应增大
-static void testDistanceFarAway() {
-    TEST_CASE("距离估算-远距离应增大");
+// Test 6: Distance far away should increase
+TEST(BtMonitorTest, DistanceFarAway) {
     BtMonitor monitor;
     double d0 = monitor.estimateDistance(-59);
     double d1 = monitor.estimateDistance(-80);
-    CHECK_GT(d1, d0);
-    CHECK_GT(d1, 5.0);  // -80dBm 应 >5m
+    EXPECT_GT(d1, d0);
+    EXPECT_GT(d1, 5.0);  // -80dBm should be >5m
 }
 
-// 测试7: 距离估算 - 无效值返回-1
-static void testDistanceInvalid() {
-    TEST_CASE("距离估算-无效值返回-1");
+// Test 7: Invalid value returns -1
+TEST(BtMonitorTest, DistanceInvalid) {
     BtMonitor monitor;
-    // rssi=0 表示未获取，应无效
-    CHECK_EQ(monitor.estimateDistance(0), -1.0);
+    // rssi=0 means not obtained, should be invalid
+    EXPECT_DOUBLE_EQ(monitor.estimateDistance(0), -1.0);
 }
 
-// 测试8: setDefaultTxPower 影响距离估算
-static void testSetDefaultTxPower() {
-    TEST_CASE("setDefaultTxPower影响距离估算");
+// Test 8: setDefaultTxPower affects distance estimation
+TEST(BtMonitorTest, SetDefaultTxPower) {
     BtMonitor monitor;
-    monitor.setDefaultTxPower(-50);  // 改为 -50
-    // 现在 rssi=-50 → 1m
+    monitor.setDefaultTxPower(-50);  // Change to -50
+    // Now rssi=-50 -> 1m
     double d = monitor.estimateDistance(-50);
-    CHECK_NEAR(d, 1.0, 0.15);
-    // rssi=-59 现在距离 >1m（因为 txPower 更高）
+    EXPECT_NEAR(d, 1.0, 0.15);
+    // rssi=-59 now distance >1m (because txPower is higher)
     double d2 = monitor.estimateDistance(-59);
-    CHECK_GT(d2, 1.0);
+    EXPECT_GT(d2, 1.0);
 }
 
-// 测试9: calibrateDistance 校准（无设备时应返回false，不崩溃）
-static void testCalibrateDistanceNoDevice() {
-    TEST_CASE("calibrateDistance-无设备返回false不崩溃");
+// Test 9: calibrateDistance should return false when no device (no crash)
+TEST(BtMonitorTest, CalibrateDistanceNoDevice) {
     BtMonitor monitor;
-    // 未初始化、无设备，校准应失败但不崩溃
+    // Not initialized, no devices, calibration should fail but not crash
     bool ok = monitor.calibrateDistance("AA:BB:CC:DD:EE:FF", 1.0);
-    CHECK(!ok);
+    EXPECT_FALSE(ok);
 }
 
 // ============================================================================
-// 降级场景测试（无蓝牙硬件环境）
+// Degraded Scenario Tests (no Bluetooth hardware environment)
 // ============================================================================
 
-// 测试10: 无蓝牙环境降级初始化
-static void testDegradedInit() {
-    TEST_CASE("无蓝牙环境降级初始化");
+// Test 10: Degraded initialization without Bluetooth
+TEST(BtMonitorTest, DegradedInit) {
     BtMonitor monitor;
-    // 无蓝牙硬件环境，initialize 应返回 false 且不崩溃
+    // No Bluetooth hardware, initialize should return false and not crash
     bool ok = monitor.initialize();
-    CHECK(!ok);
-    CHECK(!monitor.isInitialized());
-    CHECK(!monitor.hasAdapter());
+    EXPECT_FALSE(ok);
+    EXPECT_FALSE(monitor.isInitialized());
+    EXPECT_FALSE(monitor.hasAdapter());
 }
 
-// 测试11: 未初始化时查询设备应安全返回空
-static void testQueryBeforeInit() {
-    TEST_CASE("未初始化时查询设备安全返回空");
+// Test 11: Query before init should safely return empty
+TEST(BtMonitorTest, QueryBeforeInit) {
     BtMonitor monitor;
     auto devices = monitor.getDevices();
-    CHECK(devices.empty());
-    CHECK_EQ(monitor.deviceCount(), 0u);
-    CHECK_EQ(monitor.connectedCount(), 0u);
+    EXPECT_TRUE(devices.empty());
+    EXPECT_EQ(monitor.deviceCount(), 0u);
+    EXPECT_EQ(monitor.connectedCount(), 0u);
 }
 
-// 测试12: 未初始化时获取适配器状态不崩溃
-static void testAdapterStateBeforeInit() {
-    TEST_CASE("未初始化时获取适配器状态不崩溃");
+// Test 12: Get adapter state before init should not crash
+TEST(BtMonitorTest, AdapterStateBeforeInit) {
     BtMonitor monitor;
     auto state = monitor.getAdapterState();
-    // 应返回默认状态，不崩溃
-    CHECK(!state.powered);
-    CHECK(!state.discovering);
+    // Should return default state, not crash
+    EXPECT_FALSE(state.powered);
+    EXPECT_FALSE(state.discovering);
 }
 
-// 测试13: 未初始化时 RSSI 查询返回默认值
-static void testRssiQueryBeforeInit() {
-    TEST_CASE("未初始化时RSSI查询返回默认值");
+// Test 13: RSSI query before init returns default value
+TEST(BtMonitorTest, RssiQueryBeforeInit) {
     BtMonitor monitor;
     int16_t rssi = monitor.getDeviceRssi("AA:BB:CC:DD:EE:FF");
-    // 应返回无效值（-1000 或 0），不崩溃
-    CHECK(rssi <= 0);
+    // Should return invalid value (-1000 or 0), not crash
+    EXPECT_LE(rssi, 0);
 }
 
-// 测试14: cleanup 在未初始化时调用不崩溃
-static void testCleanupBeforeInit() {
-    TEST_CASE("cleanup在未初始化时调用不崩溃");
+// Test 14: cleanup before init should not crash
+TEST(BtMonitorTest, CleanupBeforeInit) {
     BtMonitor monitor;
-    monitor.cleanup();  // 应安全无操作
-    CHECK(!monitor.isInitialized());
+    monitor.cleanup();  // Should be safe no-op
+    EXPECT_FALSE(monitor.isInitialized());
 }
 
-// 测试15: BtEvent 事件类型枚举完整
-static void testBtEventTypes() {
-    TEST_CASE("BtEvent事件类型枚举完整");
-    // 验证所有事件类型可构造且互不相等
+// Test 15: BtEvent type enum completeness
+TEST(BtMonitorTest, BtEventTypes) {
     BtEvent e;
     e.type = BtEvent::Type::AdapterAdded;
-    CHECK_EQ(e.type, BtEvent::Type::AdapterAdded);
+    EXPECT_EQ(e.type, BtEvent::Type::AdapterAdded);
     e.type = BtEvent::Type::AdapterRemoved;
-    CHECK_EQ(e.type, BtEvent::Type::AdapterRemoved);
+    EXPECT_EQ(e.type, BtEvent::Type::AdapterRemoved);
     e.type = BtEvent::Type::AdapterPowered;
-    CHECK_EQ(e.type, BtEvent::Type::AdapterPowered);
+    EXPECT_EQ(e.type, BtEvent::Type::AdapterPowered);
     e.type = BtEvent::Type::DeviceFound;
-    CHECK_EQ(e.type, BtEvent::Type::DeviceFound);
+    EXPECT_EQ(e.type, BtEvent::Type::DeviceFound);
     e.type = BtEvent::Type::DeviceLost;
-    CHECK_EQ(e.type, BtEvent::Type::DeviceLost);
+    EXPECT_EQ(e.type, BtEvent::Type::DeviceLost);
     e.type = BtEvent::Type::DeviceConnected;
-    CHECK_EQ(e.type, BtEvent::Type::DeviceConnected);
+    EXPECT_EQ(e.type, BtEvent::Type::DeviceConnected);
     e.type = BtEvent::Type::DeviceDisconnected;
-    CHECK_EQ(e.type, BtEvent::Type::DeviceDisconnected);
+    EXPECT_EQ(e.type, BtEvent::Type::DeviceDisconnected);
     e.type = BtEvent::Type::DeviceRssiChanged;
-    CHECK_EQ(e.type, BtEvent::Type::DeviceRssiChanged);
+    EXPECT_EQ(e.type, BtEvent::Type::DeviceRssiChanged);
     e.type = BtEvent::Type::DiscoveryStarted;
-    CHECK_EQ(e.type, BtEvent::Type::DiscoveryStarted);
+    EXPECT_EQ(e.type, BtEvent::Type::DiscoveryStarted);
     e.type = BtEvent::Type::DiscoveryStopped;
-    CHECK_EQ(e.type, BtEvent::Type::DiscoveryStopped);
+    EXPECT_EQ(e.type, BtEvent::Type::DiscoveryStopped);
 }
 
-// 测试16: BtDeviceType 枚举
-static void testBtDeviceType() {
-    TEST_CASE("BtDeviceType枚举");
+// Test 16: BtDeviceType enum
+TEST(BtMonitorTest, BtDeviceType) {
     BtDeviceInfo info;
     info.deviceType = BtDeviceType::Classic;
-    CHECK_EQ(info.deviceType, BtDeviceType::Classic);
+    EXPECT_EQ(info.deviceType, BtDeviceType::Classic);
     info.deviceType = BtDeviceType::BLE;
-    CHECK_EQ(info.deviceType, BtDeviceType::BLE);
+    EXPECT_EQ(info.deviceType, BtDeviceType::BLE);
     info.deviceType = BtDeviceType::Dual;
-    CHECK_EQ(info.deviceType, BtDeviceType::Dual);
+    EXPECT_EQ(info.deviceType, BtDeviceType::Dual);
 }
 
 // ============================================================================
-// A2DP 音频质量评分测试（REQ-A2DP-QUALITY，T4）
+// A2DP Audio Quality Score Tests (REQ-A2DP-QUALITY, T4)
 // ============================================================================
 
-// 测试友元：访问 BtMonitor 私有纯函数 calculateAudioScore
+// Test friend: access BtMonitor private pure function calculateAudioScore
 class BtMonitorAudioScoreTest {
 public:
     static double score(const BtMonitor& m, const BtAudioTransport& t) {
@@ -218,7 +205,7 @@ public:
     }
 };
 
-// 构造一个 active + SBC 编解码器的 Transport，仅 delay 可变
+// Construct an active + SBC codec Transport, only delay is variable
 static BtAudioTransport makeActiveTransport(uint16_t delay) {
     BtAudioTransport t;
     t.transportPath = "/org/bluez/hci0/dev_00_11_22_33_44_55/fd1";
@@ -230,103 +217,76 @@ static BtAudioTransport makeActiveTransport(uint16_t delay) {
     return t;
 }
 
-// 测试16: delay=0 应无延迟扣分（仅 SBC 扣 5）
-static void testAudioScoreDelay0() {
-    TEST_CASE("音频评分-delay=0 仅 SBC 扣分");
+// Test 17: delay=0 should have no delay penalty (only SBC -5)
+TEST(BtMonitorTest, AudioScoreDelay0) {
     BtMonitor monitor;
     auto t = makeActiveTransport(0);
     double s = BtMonitorAudioScoreTest::score(monitor, t);
-    CHECK_NEAR(s, 95.0, 0.01);  // 100 - 5(SBC)
+    EXPECT_NEAR(s, 95.0, 0.01);  // 100 - 5(SBC)
 }
 
-// 测试17: delay=100 仍在 500 阈值内
-static void testAudioScoreDelay100() {
-    TEST_CASE("音频评分-delay=100 不触发延迟扣分");
+// Test 18: delay=100 still within 500 threshold
+TEST(BtMonitorTest, AudioScoreDelay100) {
     BtMonitor monitor;
     auto t = makeActiveTransport(100);
     double s = BtMonitorAudioScoreTest::score(monitor, t);
-    CHECK_NEAR(s, 95.0, 0.01);
+    EXPECT_NEAR(s, 95.0, 0.01);
 }
 
-// 测试18: delay=501 触发轻度延迟扣分（-10）
-static void testAudioScoreDelay500Boundary() {
-    TEST_CASE("音频评分-delay>500 触发 -10 扣分");
+// Test 19: delay=501 triggers light delay penalty (-10)
+TEST(BtMonitorTest, AudioScoreDelay500Boundary) {
     BtMonitor monitor;
     auto t = makeActiveTransport(501);
     double s = BtMonitorAudioScoreTest::score(monitor, t);
-    CHECK_NEAR(s, 85.0, 0.01);  // 100 - 10 - 5
+    EXPECT_NEAR(s, 85.0, 0.01);  // 100 - 10 - 5
 }
 
-// 测试19: delay=2001 触发严重延迟扣分（-40）
-static void testAudioScoreDelay2000Boundary() {
-    TEST_CASE("音频评分-delay>2000 触发 -40 严重扣分");
+// Test 20: delay=2001 triggers severe delay penalty (-40)
+TEST(BtMonitorTest, AudioScoreDelay2000Boundary) {
     BtMonitor monitor;
     auto t = makeActiveTransport(2001);
     double s = BtMonitorAudioScoreTest::score(monitor, t);
-    CHECK_NEAR(s, 55.0, 0.01);  // 100 - 40 - 5
+    EXPECT_NEAR(s, 55.0, 0.01);  // 100 - 40 - 5
 }
 
-// 测试20: delay=5000 严重延迟，且非 active 状态额外扣 15
-static void testAudioScoreDelay5000Inactive() {
-    TEST_CASE("音频评分-delay=5000+inactive 综合扣分");
+// Test 21: delay=5000 + inactive state additional penalty
+TEST(BtMonitorTest, AudioScoreDelay5000Inactive) {
     BtMonitor monitor;
     auto t = makeActiveTransport(5000);
     t.state = "idle";
     double s = BtMonitorAudioScoreTest::score(monitor, t);
-    CHECK_NEAR(s, 40.0, 0.01);  // 100 - 40 - 5 - 15
+    EXPECT_NEAR(s, 40.0, 0.01);  // 100 - 40 - 5 - 15
 }
 
 // ============================================================================
-// Phase 2 融合层接入测试（REQ-FUSION + REQ-EVENT-ROUTING，T9）
+// Phase 2 Fusion Layer Tests (REQ-FUSION + REQ-EVENT-ROUTING, T9)
 // ============================================================================
 
-// 测试21: initPhase2 在无 eBPF 环境下降级创建融合层（返回 false 但不崩溃）
-static void testInitPhase2Degraded() {
-    TEST_CASE("initPhase2-无eBPF环境降级返回false不崩溃");
+// Test 22: initPhase2 degrades gracefully without eBPF (returns false, no crash)
+TEST(BtMonitorTest, InitPhase2Degraded) {
     BtMonitor monitor;
-    // 无 eBPF 环境/不存在对象文件，initPhase2 应返回 false（eBPF 未挂载）
+    // No eBPF environment / nonexistent object file, initPhase2 should return false
     bool ok = monitor.initPhase2("nonexistent_bpf.o");
-    CHECK(!ok);
-    // cleanup 应安全清理融合层与分析器
+    EXPECT_FALSE(ok);
+    // cleanup should safely clean fusion layer and analyzer
     monitor.cleanup();
-    CHECK(!monitor.isInitialized());
+    EXPECT_FALSE(monitor.isInitialized());
 }
 
-// 测试22: initPhase2 多次调用幂等不崩溃
-static void testInitPhase2Idempotent() {
-    TEST_CASE("initPhase2-重复调用幂等安全");
+// Test 23: initPhase2 multiple calls are idempotent
+TEST(BtMonitorTest, InitPhase2Idempotent) {
     BtMonitor monitor;
     bool ok1 = monitor.initPhase2("nonexistent_bpf.o");
     bool ok2 = monitor.initPhase2("nonexistent_bpf.o");
-    CHECK(!ok1);
-    CHECK(!ok2);
+    EXPECT_FALSE(ok1);
+    EXPECT_FALSE(ok2);
     monitor.cleanup();
 }
 
-int main(int /*argc*/, char* argv[]) {
-    initTestLogging(argv[0]);
-    testRssiLevel();
-    testRssiLevelEmpty();
-    testAverageRssi();
-    testAverageRssiEmpty();
-    testDistanceAtReference();
-    testDistanceFarAway();
-    testDistanceInvalid();
-    testSetDefaultTxPower();
-    testCalibrateDistanceNoDevice();
-    testDegradedInit();
-    testQueryBeforeInit();
-    testAdapterStateBeforeInit();
-    testRssiQueryBeforeInit();
-    testCleanupBeforeInit();
-    testBtEventTypes();
-    testBtDeviceType();
-    testAudioScoreDelay0();
-    testAudioScoreDelay100();
-    testAudioScoreDelay500Boundary();
-    testAudioScoreDelay2000Boundary();
-    testAudioScoreDelay5000Inactive();
-    testInitPhase2Degraded();
-    testInitPhase2Idempotent();
-    return printTestResult();
+// ============================================================================
+// main function
+// ============================================================================
+int main(int argc, char** argv) {
+    ::testing::InitGoogleTest(&argc, argv);
+    return RUN_ALL_TESTS();
 }
