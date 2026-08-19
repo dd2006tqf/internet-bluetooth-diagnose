@@ -15,7 +15,7 @@
 #   CONTAINER - ARM64 构建容器名（默认: weaknet-arm64-dev）
 #   BOARD     - 开发板 SSH 地址（默认: radxa@192.168.2.77）
 #   BOARD_DIR - 开发板部署目录（默认: /home/radxa/weaknet）
-#   JOBS      - 编译并行度（默认: 2）
+#   JOBS      - 编译并行度（默认: 1, QEMU 下不要超过 1）
 # ============================================================================
 set -euo pipefail
 
@@ -23,7 +23,7 @@ set -euo pipefail
 CONTAINER="${CONTAINER:-weaknet-arm64-dev}"
 BOARD="${BOARD:-radxa@192.168.2.77}"
 BOARD_DIR="${BOARD_DIR:-/home/radxa/weaknet}"
-JOBS="${JOBS:-2}"
+JOBS="${JOBS:-1}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT}/dist-arm64"
 

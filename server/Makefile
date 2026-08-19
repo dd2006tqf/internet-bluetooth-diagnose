@@ -1,10 +1,17 @@
 CC=g++
 CXXFLAGS=-std=c++17 -O2 -Wall -Wextra -Wpedantic
+# ccache 加速增量编译（容器内已安装 ccache）
+ifneq ($(shell command -v ccache 2>/dev/null),)
+    CC := ccache g++
+endif
 INCLUDES=`pkg-config --cflags dbus-1`
 LDFLAGS=`pkg-config --libs dbus-1` -lglog -lbpf -pthread
 
 SRC=src/server.cpp src/dbus_service.cpp src/looper.cpp src/net_iface.cpp src/serializer.cpp src/net_info.cpp src/weak_netmgr.cpp src/iface_type.cpp src/using_iface.cpp src/net_ping.cpp src/rtt_monitor.cpp src/rssi_monitor.cpp src/net_wifiriss.cpp src/net_tcp.cpp src/tcp_loss_monitor.cpp src/event_manager.cpp src/logger.cpp src/traffic_analyzer.cpp src/net_traffic.cpp src/traffic_anomaly_detector.cpp src/network_quality_assessor.cpp src/bt_monitor.cpp src/jitter_monitor.cpp src/band_conflict_detector.cpp src/bt_audio_analyzer.cpp src/bt_audio_fusion.cpp src/tcp_retransmit_monitor.cpp src/dns_monitor.cpp src/wifi_packet_loss_monitor.cpp src/process_net_profiler.cpp src/http_latency_monitor.cpp src/main.cpp
 INC=include/common.hpp include/net_iface.h include/serializer.hpp include/server.hpp include/net_tcp.h include/tcp_loss_monitor.hpp include/weak_netmgr.hpp include/net_info.hpp include/rtt_monitor.hpp include/rssi_monitor.hpp include/dbus_service.hpp include/looper.hpp include/event_manager.hpp include/logger.hpp include/traffic_analyzer.hpp include/network_quality_assessor.hpp include/bt_monitor.hpp include/jitter_monitor.hpp include/bt_audio_analyzer.hpp include/bt_audio_fusion.hpp include/iface_type.hpp include/tcp_retransmit_monitor.hpp include/dns_monitor.hpp include/wifi_packet_loss_monitor.hpp include/process_net_profiler.hpp include/http_latency_monitor.hpp
+
+# 每个 .cpp 独立编译为 .o，让 ccache 能单独缓存
+OBJECTS=$(patsubst src/%.cpp,$(BUILD_DIR)/%.o,$(SRC))
 
 BIN_DIR=bin
 BUILD_DIR=build
@@ -51,8 +58,13 @@ $(BPF_WIFI_LOSS_TARGET): src/wifi_packet_loss.bpf.c $(BUILD_DIR)/vmlinux.h
 $(BPF_HTTP_LATENCY_TARGET): src/http_latency.bpf.c $(BUILD_DIR)/vmlinux.h
 	clang -g -O2 -target bpf -I$(BUILD_DIR) -c $< -o $@
 
-$(TARGET): $(SRC) $(INC) $(BPF_TARGET) $(BPF_BT_TARGET) $(BPF_TCP_RETRANS_TARGET) $(BPF_DNS_TARGET) $(BPF_WIFI_LOSS_TARGET) $(BPF_HTTP_LATENCY_TARGET)
-	$(CC) $(CXXFLAGS) $(INCLUDES) -Iinclude -o $@ $(SRC) $(LDFLAGS)
+# 每个 .cpp 独立编译（ccache 单文件缓存生效）
+$(BUILD_DIR)/%.o: src/%.cpp $(INC) | dirs
+	$(CC) $(CXXFLAGS) $(INCLUDES) -Iinclude -c $< -o $@
+
+# 链接
+$(TARGET): $(OBJECTS)
+	$(CC) -o $@ $^ $(LDFLAGS)
 
 .PHONY: clean run test test-unit test-integration test-ebpf test-all coverage test-clean
 
@@ -219,5 +231,3 @@ $(TEST_BIN_DIR)/test_traffic_analyzer_gtest: $(TEST_DIR)/unit/test_traffic_analy
 	@mkdir -p $(TEST_BIN_DIR)
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_traffic_analyzer_gtest.cpp \
 	    src/traffic_analyzer.cpp src/net_traffic.cpp src/logger.cpp $(TEST_LDFLAGS_BPF) -lgtest -lgtest_main
-
-
