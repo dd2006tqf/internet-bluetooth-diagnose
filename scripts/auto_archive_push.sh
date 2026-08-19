@@ -9,7 +9,7 @@
 #
 # 护栏（不可逆的对外操作，必须严格）：
 #   1. 分支白名单：只允许 dev/* feature/* release/*；命中 main/master 直接拒绝。
-#   2. 测试门禁：默认跑 run_all_tests.sh，必须 exit 0（--skip-test-gate 可跳过）。
+#   2. 测试门禁：默认跑 make test-unit，必须 exit 0（--skip-test-gate 可跳过）。
 #   3. Evaluator 门禁：若 openspec/changes/<change>/harness/evaluation.json 存在，
 #      必须 verdict==Pass；不存在则需 --allow-no-eval（用于模拟/回溯场景）。
 #   4. 显式文件清单：只 git add 指定文件，绝不用 git add -A；提交前校验暂存区
@@ -89,8 +89,8 @@ fi
 
 # ---------- 护栏 2：测试门禁 ----------
 if [[ "$SKIP_TEST_GATE" != true ]]; then
-    ok "测试门禁：bash server/test/run_all_tests.sh --skip-build"
-    if ! bash server/test/run_all_tests.sh --skip-build > /tmp/auto_push_test.log 2>&1; then
+    ok "测试门禁：make test-unit"
+    if ! make -C server test-unit > /tmp/auto_push_test.log 2>&1; then
         err "测试门禁失败（exit!=0）。尾部日志："
         tail -20 /tmp/auto_push_test.log >&2
         exit 5

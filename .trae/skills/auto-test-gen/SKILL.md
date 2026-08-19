@@ -31,7 +31,7 @@ server/
 ├── test/          # 测试代码
 │   ├── test_net_info.cpp        # 已有样例
 │   ├── test_<module>.cpp        # 新测试按模块命名
-│   └── run_all_tests.sh         # 自动化运行脚本
+│   └── weaknet-test-full.sh     # 自动化运行脚本
 └── Makefile
 ```
 
@@ -216,7 +216,7 @@ static void testEBPFLoading() {
 
 ### 4.1 C++ 测试自动化脚本
 
-在 `server/test/` 下维护 `run_all_tests.sh`：
+在 `server/test/` 下维护测试文件（`weaknet-test-full.sh` 为入口脚本）：
 
 ```bash
 #!/bin/bash
@@ -324,7 +324,7 @@ dbus-send --session --print-reply --dest=com.example.WeakNet \
 
 ### 步骤 5：更新自动化脚本
 
-1. 在 `server/test/run_all_tests.sh` 中注册新测试
+1. 在 `tools/weaknet-test-full.sh` 中注册新测试
 2. 验证脚本可一键运行所有测试
 
 ### 步骤 6：提交

@@ -108,13 +108,14 @@ test-unit: test-build
 
 # ---- 集成测试（依赖服务端运行） ----
 test-integration:
-	bash $(TEST_DIR)/integration_test.sh
+	@echo "集成测试请使用: ssh -t radxa@192.168.2.77 'sudo /home/radxa/weaknet/weaknet-test-full.sh'"
+	@echo "或在开发机使用: ./tools/ci.sh --func-only"
 
 # ---- eBPF 专项测试（需 root） ----
 test-ebpf: $(TEST_DIR)/test_ebpf
 	sudo $(TEST_DIR)/test_ebpf
 
-# eBPF 测试编译规则（复用 run_all_tests.sh 中的编译命令）
+# eBPF 测试编译规则
 $(TEST_DIR)/test_ebpf: $(TEST_DIR)/test_ebpf.cpp \
     src/net_traffic.cpp src/traffic_analyzer.cpp src/traffic_anomaly_detector.cpp \
     src/serializer.cpp src/net_info.cpp src/logger.cpp
@@ -123,9 +124,10 @@ $(TEST_DIR)/test_ebpf: $(TEST_DIR)/test_ebpf.cpp \
 	    src/serializer.cpp src/net_info.cpp src/logger.cpp \
 	    $(TEST_LDFLAGS_BPF)
 
-# ---- 全部测试（单元 + 自动化脚本） ----
+# ---- 全部测试（单元 + 功能） ----
 test-all: test-unit
-	bash $(TEST_DIR)/run_all_tests.sh
+	@echo "运行功能测试请使用: ssh -t radxa@192.168.2.77 'sudo /home/radxa/weaknet/weaknet-test-full.sh'"
+	@echo "或在开发机使用: ./tools/ci.sh --func-only"
 
 # ---- 覆盖率报告 ----
 coverage: CXXFLAGS += --coverage -fprofile-arcs -ftest-coverage
