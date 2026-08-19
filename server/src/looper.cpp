@@ -70,7 +70,7 @@ void Looper::run(ServerContext* ctx) {
         fds[1].events = POLLIN;
 
         while (ctx->running.load()) {
-            int ret = poll(fds, 2, 1000);  // 1s 超时
+            int ret = poll(fds, 2, 100);  // 100ms 超时，更快响应方法调用
             if (ret < 0) {
                 if (errno == EINTR) continue;  // 信号中断，重试
                 LOG_ERROR(LogModule::DBUS, "Looper::run: poll() error");
@@ -87,9 +87,11 @@ void Looper::run(ServerContext* ctx) {
                 break;
             }
 
-            // D-Bus fd 可读 → 处理消息
+            // D-Bus fd 可读 → 处理消息（循环 dispatch 直到没有更多消息）
             if (fds[0].revents & POLLIN) {
-                dbus_connection_read_write_dispatch(conn_, 0);  // 非阻塞
+                while (dbus_connection_read_write_dispatch(conn_, 0)) {
+                    // 继续 dispatch 直到没有更多消息
+                }
             }
         }
     } else {

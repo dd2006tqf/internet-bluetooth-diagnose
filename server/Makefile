@@ -87,7 +87,8 @@ TEST_LDFLAGS_BPF = $(TEST_LDFLAGS) -lbpf
 UNIT_TESTS = test_net_info test_quality_assessor_gtest test_anomaly_detector_gtest \
              test_audio_fusion_gtest test_band_conflict_gtest test_serializer_gtest \
              test_event_manager_gtest test_bt_full_link_gtest test_iface_type_gtest \
-             test_logger_gtest test_traffic_analyzer_gtest
+             test_logger_gtest test_traffic_analyzer_gtest \
+             test_weak_netmgr_gtest test_net_iface_gtest test_rtt_monitor_gtest
 # 专项测试（蓝牙监控纯逻辑层，无需硬件）
 SPECIAL_TESTS = test_bt_monitor
 ALL_TESTS = $(UNIT_TESTS) $(SPECIAL_TESTS)
@@ -231,3 +232,26 @@ $(TEST_BIN_DIR)/test_traffic_analyzer_gtest: $(TEST_DIR)/unit/test_traffic_analy
 	@mkdir -p $(TEST_BIN_DIR)
 	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_traffic_analyzer_gtest.cpp \
 	    src/traffic_analyzer.cpp src/net_traffic.cpp src/logger.cpp $(TEST_LDFLAGS_BPF) -lgtest -lgtest_main
+
+# test_weak_netmgr_gtest（网络管理器 - NetInfo 数据结构测试）
+$(TEST_BIN_DIR)/test_weak_netmgr_gtest: $(TEST_DIR)/unit/test_weak_netmgr_gtest.cpp \
+    src/net_info.cpp src/serializer.cpp src/logger.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_weak_netmgr_gtest.cpp \
+	    src/net_info.cpp src/serializer.cpp src/logger.cpp \
+	    $(TEST_LDFLAGS) -lgtest -lgtest_main
+
+# test_net_iface_gtest（网络接口检测）
+$(TEST_BIN_DIR)/test_net_iface_gtest: $(TEST_DIR)/unit/test_net_iface_gtest.cpp \
+    src/net_iface.cpp src/logger.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_net_iface_gtest.cpp \
+	    src/net_iface.cpp src/logger.cpp $(TEST_LDFLAGS) -lgtest -lgtest_main
+
+# test_rtt_monitor_gtest（RTT 监控与质量评估）
+$(TEST_BIN_DIR)/test_rtt_monitor_gtest: $(TEST_DIR)/unit/test_rtt_monitor_gtest.cpp \
+    src/network_quality_assessor.cpp src/net_info.cpp src/serializer.cpp src/logger.cpp
+	@mkdir -p $(TEST_BIN_DIR)
+	$(CC) $(TEST_CXXFLAGS) -o $@ $(TEST_DIR)/unit/test_rtt_monitor_gtest.cpp \
+	    src/network_quality_assessor.cpp src/net_info.cpp src/serializer.cpp src/logger.cpp \
+	    $(TEST_LDFLAGS) -lgtest -lgtest_main
