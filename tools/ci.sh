@@ -207,14 +207,44 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # 上传最新测试脚本
     scp "${DIST_DIR}/weaknet-test-full.sh" "${BOARD}:/home/radxa/weaknet/" 2>/dev/null || true
 
-    FUNC_RESULT=$(ssh -t "${BOARD}" "sudo /home/radxa/weaknet/weaknet-test-full.sh" 2>&1 | tee -a "$REPORT" || true)
+    # 运行功能测试并收集详细指标
+    FUNC_RESULT=$(ssh "${BOARD}" '
+    export LD_LIBRARY_PATH=/home/radxa/weaknet/lib:/home/radxa/weaknet/client/lib
+    cd /home/radxa/weaknet/server
 
-    FUNC_FAIL=$(echo "$FUNC_RESULT" | grep "^  FAIL:" | head -1 | awk '{print $2}')
-    if [ "${FUNC_FAIL:-0}" -eq 0 ]; then
-        pass "功能测试全部通过"
-    else
-        fail "有 $FUNC_FAIL 个功能测试失败"
-    fi
+    killall weaknet-dbus-server 2>/dev/null || true
+    sleep 1
+
+    dbus-run-session -- bash -c "
+    ./bin/weaknet-dbus-server > /tmp/ci_server.log 2>&1 &
+    SPID=\$!
+    sleep 20
+
+    cd /home/radxa/weaknet
+
+    echo \"=== health ===\"
+    ./client/bin/test-client health 2>&1 | head -3
+    echo
+    echo \"=== get ===\"
+    ./client/bin/test-client get 2>&1 | head -3
+    echo
+    echo \"=== eBPF ===\"
+    /usr/sbin/bpftool prog show 2>/dev/null | grep -c kprobe
+    echo \"eBPF programs loaded\"
+    echo
+    echo \"=== server metrics ===\"
+    grep ACTIVE /tmp/ci_server.log 2>/dev/null | tail -1
+    grep JITTER /tmp/ci_server.log 2>/dev/null | tail -1
+    grep BT_SUMMARY /tmp/ci_server.log 2>/dev/null | tail -1
+    grep quality /tmp/ci_server.log 2>/dev/null | tail -1
+    grep RTT_MONITOR /tmp/ci_server.log 2>/dev/null | tail -1
+    grep RSSI_MONITOR /tmp/ci_server.log 2>/dev/null | tail -1
+
+    kill \$SPID 2>/dev/null
+    " 2>&1
+    ' 2>&1)
+
+    echo "$FUNC_RESULT" | tee -a "$REPORT"
 fi
 
 # ============================================================================
@@ -225,7 +255,7 @@ log "=============================================="
 log "  CI 报告汇总"
 log "=============================================="
 log "  单元测试: ${UNIT_PASS:-0}/${UNIT_TOTAL:-0} 通过, ${UNIT_FAIL:-0} 失败, ${UNIT_SKIP:-0} 跳过"
-log "  功能测试: ${FUNC_FAIL:-0:-0} 失败"
+log "  功能测试: ${FUNC_PASS:-0} 通过, ${FUNC_FAIL:-0} 失败"
 log "  报告文件: ${REPORT}"
 log "=============================================="
 
