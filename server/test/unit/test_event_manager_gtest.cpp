@@ -26,10 +26,12 @@ class EventManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         mgr_ = &getEventManager();
+        // 创建 mock DbusService 并挂到 mock_ctx_ 上，使 emitEvent 能调用 mock
+        mock_ctx_.service = new DbusService(&mock_ctx_);
+        mgr_->startEventMonitoring(&mock_ctx_);
     }
 
     void TearDown() override {
-        // Clean up any registered callbacks
         mgr_->unregisterCallback(EventType::InterfaceChanged);
         mgr_->unregisterCallback(EventType::ConnectionModeChanged);
         mgr_->unregisterCallback(EventType::NetworkQualityChanged);
@@ -37,8 +39,11 @@ protected:
         mgr_->unregisterCallback(EventType::RttChanged);
         mgr_->unregisterCallback(EventType::RssiChanged);
         mgr_->unregisterCallback(EventType::BluetoothDeviceChanged);
+        delete mock_ctx_.service;
+        mock_ctx_.service = nullptr;
     }
 
+    ServerContext mock_ctx_{};
     NetworkEventManager* mgr_;
 };
 

@@ -70,7 +70,7 @@ public:
         DBusError err;
         dbus_error_init(&err);
 
-        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 2000, &err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 5000, &err);
         dbus_message_unref(msg);
         
         if (dbus_error_is_set(&err)) {
@@ -128,7 +128,7 @@ public:
         DBusError err;
         dbus_error_init(&err);
 
-        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 2000, &err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 5000, &err);
         dbus_message_unref(msg);
 
         if (dbus_error_is_set(&err)) {
