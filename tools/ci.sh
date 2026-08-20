@@ -22,6 +22,7 @@ set -euo pipefail
 CONTAINER="${CONTAINER:-weaknet-arm64-dev}"
 BOARD="${BOARD:-radxa@192.168.2.77}"
 JOBS="${JOBS:-1}"
+BUILD_SYSTEM="${BUILD_SYSTEM:-make}"  # make 或 cmake
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT}/dist-arm64"
 REPORT_DIR="${ROOT}/ci-reports"
@@ -44,6 +45,12 @@ for arg in "$@"; do
             echo "  --skip-deploy  跳过部署（仅本地测试）"
             echo "  --unit-only    只跑单元测试"
             echo "  --func-only    只跑功能测试"
+            echo ""
+            echo "环境变量:"
+            echo "  BUILD_SYSTEM=make|cmake  构建系统（默认: make）"
+            echo "  CONTAINER=容器名          ARM64 构建容器（默认: weaknet-arm64-dev）"
+            echo "  BOARD=用户名@IP           开发板地址（默认: radxa@192.168.2.77）"
+            echo "  JOBS=N                    编译并行度（默认: 1，QEMU 下不要超过 1）"
             exit 0
             ;;
         *) echo "未知参数: $arg"; exit 1 ;;
@@ -80,24 +87,50 @@ log ""
 # Step 1: 编译
 # ============================================================================
 if [ "$SKIP_BUILD" = false ] && [ "$FUNC_ONLY" = false ]; then
-    log "===== Step 1: ARM64 编译 ====="
+    log "===== Step 1: ARM64 编译 (BUILD_SYSTEM=${BUILD_SYSTEM}) ====="
 
-    docker exec -e JOBS="${JOBS}" "${CONTAINER}" bash -lc '
-    set -euo pipefail
-    cd /src
+    if [ "$BUILD_SYSTEM" = "cmake" ]; then
+        docker exec -e JOBS="${JOBS}" "${CONTAINER}" bash -lc "
+        set -euo pipefail
+        cd /src
 
-    mkdir -p server/build
-    cp board-assets/vmlinux.h server/build/vmlinux.h 2>/dev/null || true
+        echo '--- CMake 配置 ---'
+        cmake -B build-cmake -DCMAKE_BUILD_TYPE=Debug
 
-    echo "--- 编译服务端 + BPF ---"
-    make -C server -j1
+        echo '--- 编译服务端 + eBPF + 客户端 + 测试 ---'
+        cmake --build build-cmake -j1
 
-    echo "--- 编译客户端 ---"
-    make client-lib -j1
+        echo '--- 整理 dist-arm64 ---'
+        rm -rf dist-arm64
+        mkdir -p dist-arm64/server/bin dist-arm64/server/build \
+                 dist-arm64/client/bin dist-arm64/client/lib dist-arm64/lib
 
-    echo "--- 编译单元测试 ---"
-    make -C server test-build -j1
-    ' 2>&1 | tee -a "$REPORT"
+        install -m 0755 build-cmake/server/weaknet-dbus-server dist-arm64/server/bin/
+        for f in build-cmake/server/ebpf/*.bpf.o; do install -m 0644 \"\$f\" dist-arm64/server/build/ 2>/dev/null; done
+        install -m 0755 client/bin/test_client_bin dist-arm64/client/bin/test-client
+        install -m 0644 client/lib/libweaknet.so dist-arm64/client/lib/
+        cp -a /usr/local/lib/libbpf.so* dist-arm64/lib/
+
+        echo \"产物: \$(find dist-arm64 -type f | wc -l) 个文件\"
+        " 2>&1 | tee -a "$REPORT"
+    else
+        docker exec -e JOBS="${JOBS}" "${CONTAINER}" bash -lc '
+        set -euo pipefail
+        cd /src
+
+        mkdir -p server/build
+        cp board-assets/vmlinux.h server/build/vmlinux.h 2>/dev/null || true
+
+        echo "--- 编译服务端 + BPF ---"
+        make -C server -j1
+
+        echo "--- 编译客户端 ---"
+        make client-lib -j1
+
+        echo "--- 编译单元测试 ---"
+        make -C server test-build -j1
+        ' 2>&1 | tee -a "$REPORT"
+    fi
 
     if [ ${PIPESTATUS[0]} -eq 0 ]; then
         pass "编译完成"
@@ -146,8 +179,11 @@ if [ "$SKIP_DEPLOY" = false ] && [ "$UNIT_ONLY" = false ]; then
         warn "开发板不可达，跳过部署和远程测试"
         SKIP_DEPLOY=true
     else
-        ssh "${BOARD}" "sudo rm -rf /home/radxa/weaknet && sudo mkdir -p /home/radxa/weaknet && sudo chown radxa:radxa /home/radxa/weaknet" 2>/dev/null
-        rsync -az -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" 2>/dev/null
+        # 清理板上可能存在的 root 残留目录（避免 rsync --delete 权限报错）
+        info "清理开发板残留目录..."
+        ssh "${BOARD}" "sudo rm -rf /home/radxa/weaknet/logs /home/radxa/weaknet/server/server 2>/dev/null || true" 2>/dev/null || true
+
+        rsync -az --delete --exclude "server/logs/" -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" 2>/dev/null
         pass "部署完成"
     fi
 else
