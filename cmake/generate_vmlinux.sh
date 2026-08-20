@@ -6,7 +6,7 @@
 OUTPUT="$1"
 BOARD_VMLINUX="${2:-board-assets/vmlinux.h}"
 
-if [ -f /sys/kernel/btf/vmlinux ]; then
+if [ -f /sys/kernel/btf/vmlinux ] && command -v bpftool >/dev/null 2>&1; then
     bpftool btf dump file /sys/kernel/btf/vmlinux format c > "$OUTPUT"
     echo "Generated vmlinux.h from running kernel"
 elif [ -f "$BOARD_VMLINUX" ]; then

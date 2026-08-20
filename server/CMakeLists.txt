@@ -8,10 +8,12 @@ target_include_directories(server_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 find_package(PkgConfig REQUIRED)
-find_package(Threads REQUIRED)
+# QEMU ARM64 模拟下 cmake try_compile 会 segfault，手动设置 pthread
+set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 pkg_check_modules(DBUS1 REQUIRED IMPORTED_TARGET dbus-1)
 target_link_libraries(server_lib PUBLIC
-    PkgConfig::DBUS1 glog bpf Threads::Threads)
+    PkgConfig::DBUS1 glog bpf pthread)
 
 # ---- 服务端可执行文件 ----
 add_executable(weaknet-dbus-server src/main.cpp)

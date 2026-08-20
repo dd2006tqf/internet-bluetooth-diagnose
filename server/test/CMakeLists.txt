@@ -1,13 +1,11 @@
 find_package(GTest REQUIRED)
-find_package(Threads REQUIRED)
-
-# ---- 通用测试链接库 ----
+# 复用服务端的 pthread 配置
 set(TEST_COMMON_LIBS
     server_lib
     GTest::GTest
     GTest::Main
     glog
-    Threads::Threads
+    pthread
 )
 
 # ---- 测试目标定义 ----
