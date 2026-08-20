@@ -55,6 +55,9 @@ public:
     bool handleGetHttpLatencyStats(DBusConnection* conn, DBusMessage* msg);
     bool handleGetProcessProfiling(DBusConnection* conn, DBusMessage* msg);
 
+    // 历史数据查询
+    bool handleGetHistory(DBusConnection* conn, DBusMessage* msg);
+
 private:
     // 将字符串数组作为返回
     bool replyStringArray(DBusConnection* conn, DBusMessage* msg, const std::vector<std::string>& arr);

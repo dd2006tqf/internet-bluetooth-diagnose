@@ -23,6 +23,7 @@ class DnsMonitor;                // 前置声明
 class WifiPacketLossMonitor;     // 前置声明
 class HttpLatencyMonitor;        // 前置声明
 class ProcessNetProfiler;        // 前置声明
+class DatabaseManager;           // 前置声明
 
 struct ServerContext {
     // DBus 连接
@@ -79,6 +80,10 @@ struct ServerContext {
     std::thread http_latency_monitor_thread;
     std::thread process_net_profiler_thread;
 
+    // 历史数据持久化
+    DatabaseManager* db_mgr = nullptr;
+    std::thread history_thread;
+
     ~ServerContext();
 };
 
@@ -94,6 +99,9 @@ void start_dns_monitor_thread(ServerContext* ctx);
 void start_wifi_loss_monitor_thread(ServerContext* ctx);
 void start_http_latency_monitor_thread(ServerContext* ctx);
 void start_process_net_profiler_thread(ServerContext* ctx);
+
+// 启动历史数据持久化线程（每 5 分钟写入一次）
+void start_history_persistence_thread(ServerContext* ctx);
 
 // 启动流量分析线程（内部函数）
 // void start_traffic_analysis_thread(ServerContext* ctx);

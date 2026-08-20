@@ -37,6 +37,7 @@
 #include "wifi_packet_loss_monitor.hpp"
 #include "http_latency_monitor.hpp"
 #include "process_net_profiler.hpp"
+#include "database_manager.hpp"
 #include <iomanip>
 
 using namespace std::chrono_literals;
@@ -56,6 +57,7 @@ ServerContext::~ServerContext() {
     }
     if (service) { delete service; service = nullptr; }
     if (weak_mgr) { delete weak_mgr; weak_mgr = nullptr; }
+    if (db_mgr) { delete db_mgr; db_mgr = nullptr; }
 }
 
 // 共享列表迁移至 ServerContext，在 server.hpp 中定义
@@ -610,6 +612,53 @@ void start_process_net_profiler_thread(ServerContext* ctx) {
     });
 }
 
+// 启动历史数据持久化线程（每 5 分钟将当前网络状态写入 SQLite）
+void start_history_persistence_thread(ServerContext* ctx) {
+    ctx->history_thread = std::thread([ctx](){
+        LOG_INFO(LogModule::SYSTEM, "History persistence thread started");
+
+        auto last_cleanup = std::chrono::steady_clock::now();
+        const auto persist_interval = std::chrono::minutes(5);
+        const auto cleanup_interval = std::chrono::hours(24);
+
+        while (ctx->running.load()) {
+            // 等待 5 分钟（每秒检查 running 标志）
+            for (int i = 0; i < 300 && ctx->running.load(); ++i) {
+                std::this_thread::sleep_for(1s);
+            }
+            if (!ctx->running.load()) break;
+
+            if (!ctx->db_mgr || !ctx->db_mgr->isOpen()) continue;
+
+            // 获取当前接口快照
+            auto snapshot = ctx->weak_mgr->getCurrentInterfaces();
+            int written = 0;
+            for (const auto& iface : snapshot) {
+                if (iface.usingNow()) {
+                    if (ctx->db_mgr->insertSnapshot(iface.ifName(), iface)) {
+                        written++;
+                    }
+                }
+            }
+            if (written > 0) {
+                LOG_INFO(LogModule::SYSTEM, "History persistence: wrote " << written << " records");
+            }
+
+            // 每天清理一次过期数据
+            auto now = std::chrono::steady_clock::now();
+            if (now - last_cleanup > cleanup_interval) {
+                int deleted = ctx->db_mgr->cleanup(7);
+                last_cleanup = now;
+                if (deleted > 0) {
+                    LOG_INFO(LogModule::SYSTEM, "History persistence: cleaned " << deleted << " expired records");
+                }
+            }
+        }
+
+        LOG_INFO(LogModule::SYSTEM, "History persistence thread stopped");
+    });
+}
+
 // 启动服务
 int start_server() {
     // 初始化日志系统
@@ -633,6 +682,15 @@ int start_server() {
 
     // 初始化WeakNetMgr（一次性预建，各监控线程不再各自 new）
     if (!ctx.weak_mgr) ctx.weak_mgr = new WeakNetMgr();
+
+    // 初始化历史数据持久化管理器
+    LOG_INFO(LogModule::SYSTEM, "initializing database manager (path=" << kDatabasePath << ")");
+    ctx.db_mgr = new DatabaseManager(kDatabasePath);
+    if (ctx.db_mgr->isOpen()) {
+        LOG_INFO(LogModule::SYSTEM, "database manager opened, records=" << ctx.db_mgr->getRecordCount());
+    } else {
+        LOG_WARNING(LogModule::SYSTEM, "database manager failed to open, history persistence disabled");
+    }
 
     // 初始化接口列表到WeakNetMgr中
     LOG_INFO(LogModule::WEAK_MGR, "initializing interface list...");
@@ -687,6 +745,12 @@ int start_server() {
     // 同探针 tcp_retransmit_skb 双消费者之一（另一个在 TcpLossMonitor），各自独立加载，不合并
     LOG_INFO(LogModule::NETWORK, "starting process net profiler thread (interval=15s)");
     start_process_net_profiler_thread(&ctx);
+
+    // 启动历史数据持久化线程（每 5 分钟写入一次）
+    if (ctx.db_mgr && ctx.db_mgr->isOpen()) {
+        LOG_INFO(LogModule::SYSTEM, "starting history persistence thread (interval=5min)");
+        start_history_persistence_thread(&ctx);
+    }
 
     // 主线程进入阻塞式 looper
     auto* lp = Looper::current();

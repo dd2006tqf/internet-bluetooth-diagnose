@@ -12,12 +12,17 @@ find_package(PkgConfig REQUIRED)
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 pkg_check_modules(DBUS1 REQUIRED IMPORTED_TARGET dbus-1)
+find_library(SQLITE3_LIB sqlite3 REQUIRED)
 target_link_libraries(server_lib PUBLIC
-    PkgConfig::DBUS1 glog bpf pthread)
+    PkgConfig::DBUS1 glog bpf pthread ${SQLITE3_LIB})
 
 # ---- 服务端可执行文件 ----
 add_executable(weaknet-dbus-server src/main.cpp)
 target_link_libraries(weaknet-dbus-server PRIVATE server_lib)
+
+# ---- 历史数据查询工具 ----
+add_executable(history_query_tool src/history_query_tool.cpp)
+target_link_libraries(history_query_tool PRIVATE server_lib)
 
 # ---- eBPF 程序编译（自定义命令） ----
 find_program(CLANG clang REQUIRED)

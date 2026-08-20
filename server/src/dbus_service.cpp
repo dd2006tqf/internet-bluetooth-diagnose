@@ -19,6 +19,7 @@
 #include "wifi_packet_loss_monitor.hpp"
 #include "http_latency_monitor.hpp"
 #include "process_net_profiler.hpp"
+#include "database_manager.hpp"
 #include <sstream>
 
 namespace weaknet_dbus {
@@ -71,6 +72,10 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetProcessProfiling)) {
         self->handleGetProcessProfiling(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetHistory)) {
+        self->handleGetHistory(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -544,6 +549,65 @@ bool DbusService::handleGetProcessProfiling(DBusConnection* conn, DBusMessage* m
     dbus_message_iter_init_append(reply, &args);
     const char* s = result.c_str();
     dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+bool DbusService::handleGetHistory(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetHistory called");
+
+    // 解析参数：interface(JSON string), start(JSON string), end(JSON string), limit(INT32)
+    std::string iface_filter, start_time, end_time;
+    int32_t limit = 100;
+
+    DBusMessageIter args;
+    dbus_message_iter_init_append(msg, &args);
+
+    // 参数 1: interface (string)
+    if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING) {
+        const char* val = nullptr;
+        dbus_message_iter_get_basic(&args, &val);
+        if (val) iface_filter = val;
+    }
+    if (dbus_message_iter_next(&args)) {
+        // 参数 2: start (string)
+        if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING) {
+            const char* val = nullptr;
+            dbus_message_iter_get_basic(&args, &val);
+            if (val) start_time = val;
+        }
+    }
+    if (dbus_message_iter_next(&args)) {
+        // 参数 3: end (string)
+        if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING) {
+            const char* val = nullptr;
+            dbus_message_iter_get_basic(&args, &val);
+            if (val) end_time = val;
+        }
+    }
+    if (dbus_message_iter_next(&args)) {
+        // 参数 4: limit (int32)
+        if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT32) {
+            dbus_message_iter_get_basic(&args, &limit);
+        }
+    }
+
+    std::string result = "[]";
+    if (ctx_ && ctx_->db_mgr && ctx_->db_mgr->isOpen()) {
+        result = ctx_->db_mgr->queryHistory(iface_filter, start_time, end_time, limit);
+    } else {
+        result = "{\"error\":\"database not available\"}";
+    }
+
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    DBusMessageIter reply_args;
+    dbus_message_iter_init_append(reply, &reply_args);
+    const char* s = result.c_str();
+    dbus_message_iter_append_basic(&reply_args, DBUS_TYPE_STRING, &s);
     dbus_connection_send(conn, reply, nullptr);
     dbus_connection_flush(conn);
     dbus_message_unref(reply);

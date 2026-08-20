@@ -36,6 +36,7 @@ namespace LogModule {
     constexpr const char* PING = "ping";
     constexpr const char* INTERFACE = "interface";
     constexpr const char* BLUETOOTH = "bluetooth";
+    constexpr const char* SYSTEM = "system";
 }
 
 // 日志初始化类

@@ -24,6 +24,13 @@ static constexpr const char kMethodGetDnsStats[] = "GetDnsStats";               
 static constexpr const char kMethodGetWifiLossStats[] = "GetWifiLossStats";         // 获取 Wi-Fi 丢包统计
 static constexpr const char kMethodGetHttpLatencyStats[] = "GetHttpLatencyStats";   // 获取 HTTP 请求延迟统计
 static constexpr const char kMethodGetProcessProfiling[] = "GetProcessProfiling";   // 获取进程网络画像
+static constexpr const char kMethodGetHistory[] = "GetHistory";                     // 查询历史监控数据
+
+// 数据库路径（使用 $XDG_RUNTIME_DIR 私有目录）
+static const std::string kDatabasePath = []() {
+    const char* xdg = std::getenv("XDG_RUNTIME_DIR");
+    return std::string(xdg ? xdg : "/tmp") + "/weaknet/history.db";
+}();
 static constexpr const char kSignalChanged[] = "Changed";                  // Changed 信号（通用状态变化）
 static constexpr const char kSignalInterfaceChanged[] = "InterfaceChanged"; // 网卡变化信号
 static constexpr const char kSignalConnectionModeChanged[] = "ConnectionModeChanged"; // 上网方式变化信号
