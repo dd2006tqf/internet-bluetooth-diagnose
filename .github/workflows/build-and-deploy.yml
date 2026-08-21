@@ -65,9 +65,7 @@ jobs:
           docker exec ${{ env.CONTAINER }} bash -c '
           cd /src
           cmake -B build -DCMAKE_BUILD_TYPE=Debug
-          cmake --build build --target \
-            weaknet-dbus-server history_query_tool \
-            weaknet test_client_bin ebpf -j1
+          cmake --build build --target weaknet-dbus-server history_query_tool weaknet test_client_bin ebpf -j1
           '
 
       - name: 运行 ARM64 单元测试

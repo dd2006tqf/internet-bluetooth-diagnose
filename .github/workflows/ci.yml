@@ -24,8 +24,7 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
 
       - name: 编译
-        run: cmake --build build -j$(nproc) \
-          --target weaknet-dbus-server history_query_tool test_database_manager_gtest
+        run: cmake --build build -j$(nproc) --target weaknet-dbus-server history_query_tool test_database_manager_gtest
 
       - name: 运行全部单元测试
         run: |
