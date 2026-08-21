@@ -27,7 +27,8 @@ static constexpr const char kMethodGetProcessProfiling[] = "GetProcessProfiling"
 static constexpr const char kMethodGetHistory[] = "GetHistory";                     // 查询历史监控数据
 
 // 数据库路径（使用 $XDG_RUNTIME_DIR 私有目录）
-static const std::string kDatabasePath = []() {
+// inline const 避免 SIOF（static 在多 TU 中各有一份副本，析构顺序不确定）
+inline const std::string kDatabasePath = []() {
     const char* xdg = std::getenv("XDG_RUNTIME_DIR");
     return std::string(xdg ? xdg : "/tmp") + "/weaknet/history.db";
 }();
@@ -40,11 +41,11 @@ static constexpr const char kSignalBluetoothDeviceChanged[] = "BluetoothDeviceCh
 // 序列化输出文件路径（使用 $XDG_RUNTIME_DIR 私有目录，防符号链接攻击）
 // 详见 project_memory: serializeGetReplyToFile/serializeChangedPayloadToFile 必须使用
 // $XDG_RUNTIME_DIR 私有目录或 O_NOFOLLOW 标志
-static const std::string kSignalSerializedFile = []() {
+inline const std::string kSignalSerializedFile = []() {
     const char* xdg = std::getenv("XDG_RUNTIME_DIR");
     return std::string(xdg ? xdg : "/tmp") + "/weaknet/signal_changed.bin";
 }();
-static const std::string kGetReplySerializedFile = []() {
+inline const std::string kGetReplySerializedFile = []() {
     const char* xdg = std::getenv("XDG_RUNTIME_DIR");
     return std::string(xdg ? xdg : "/tmp") + "/weaknet/get_reply.bin";
 }();

@@ -108,7 +108,12 @@ public:
 
     // 等价比较（所有关键字段）
     bool equals(const NetInfo& other) const {
-        return ifname_ == other.ifname_ && is_default_ == other.is_default_ && type_ == other.type_ && rtt_ms_ == other.rtt_ms_ && state_ == other.state_;
+        return ifname_ == other.ifname_ && is_default_ == other.is_default_ && type_ == other.type_
+            && rtt_ms_ == other.rtt_ms_ && state_ == other.state_
+            && rssi_dbm_ == other.rssi_dbm_ && tcp_loss_rate_ == other.tcp_loss_rate_
+            && traffic_total_bps_ == other.traffic_total_bps_ && traffic_total_pps_ == other.traffic_total_pps_
+            && traffic_active_flows_ == other.traffic_active_flows_
+            && jitter_ms_ == other.jitter_ms_ && using_now_ == other.using_now_;
     }
 
     // 检查是否具备蓝牙距离数据

@@ -22,10 +22,11 @@ sudo apt-get update
 sudo apt-get install -y build-essential clang llvm pkg-config libdbus-1-dev libglog-dev libelf-dev zlib1g-dev libcap-dev linux-headers-$(uname -r) libbpf-dev
 
 # 2. 编译项目
-make all
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
+cmake --build build -j$(nproc)
 
 # 3. 启动服务器
-./start-server.sh
+./build/server/weaknet-dbus-server
 
 # 4. 运行测试 (新终端)
 ./test-client.sh
@@ -84,8 +85,8 @@ AI-powered-Network-Diagnostics/
 # 方式2: 直接启动
 ./server/bin/weaknet-dbus-server
 
-# 方式3: 使用Makefile
-make run-server
+# 方式3: 使用CMake
+cmake --build build --target weaknet-dbus-server && ./build/server/weaknet-dbus-server
 ```
 
 ### 客户端测试
@@ -132,21 +133,20 @@ weaknet_cleanup();
 
 ```bash
 # 编译所有组件
-make all
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
+cmake --build build -j$(nproc)
 
 # 仅编译服务器
-make server
+cmake --build build --target weaknet-dbus-server
 
 # 仅编译客户端
-make client
+cmake --build build --target weaknet test_client_bin
 
 # 清理编译产物
-make clean
+rm -rf build
 
 # 运行测试
-make test-all
-make test-events
-make test-performance
+ctest --test-dir build/server
 ```
 
 ## 📊 监控指标
@@ -180,7 +180,7 @@ make test-performance
    ./install.sh --install-deps
    
    # 清理重新编译
-   make clean && make all
+   rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build -j$(nproc)
    ```
 
 2. **服务器启动失败**

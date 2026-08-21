@@ -24,7 +24,7 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
 
       - name: 编译
-        run: cmake --build build -j$(nproc) --target weaknet-dbus-server history_query_tool test_database_manager_gtest
+        run: cmake --build build -j$(nproc) --target weaknet-dbus-server history_query_tool weaknet test_client_bin
 
       - name: 运行全部单元测试
         run: |
@@ -37,9 +37,16 @@ jobs:
                      build/server/test/test_serializer_gtest \
                      build/server/test/test_event_manager_gtest \
                      build/server/test/test_bt_full_link_gtest \
+                     build/server/test/test_bt_monitor \
                      build/server/test/test_iface_type_gtest \
                      build/server/test/test_logger_gtest \
                      build/server/test/test_traffic_analyzer_gtest \
+                     build/server/test/test_weak_netmgr_gtest \
+                     build/server/test/test_net_iface_gtest \
+                     build/server/test/test_rtt_monitor_gtest \
+                     build/server/test/test_bt_monitor_extra_gtest \
+                     build/server/test/test_jitter_monitor_gtest \
+                     build/server/test/test_dns_monitor_gtest \
                      build/server/test/test_database_manager_gtest; do
             if [ -f "$bin" ]; then
               name=$(basename "$bin")
