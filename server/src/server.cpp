@@ -48,6 +48,10 @@ namespace weaknet_dbus {
 // 调用前提：所有捕获 ctx* 的监控线程已在 start_server() 退出路径完成 join，
 // 之后才进入本析构，避免在回收线程访问尚未析构的成员。
 ServerContext::~ServerContext() {
+    // 注意：所有捕获 ctx* 的监控线程必须在调用此析构函数前已完成 join。
+    // start_server() 通过 join_all → ctx 离开作用域的顺序保证这一点。
+    // 之后才安全删除这些指针，避免悬垂指针访问。
+
     if (connection) {
         // 共享连接（dbus_bus_get 获取）不应调用 dbus_connection_close，
         // 只需 unref 释放引用。close 会导致 d-bus 守护进程报错 "Application
@@ -58,6 +62,12 @@ ServerContext::~ServerContext() {
     if (service) { delete service; service = nullptr; }
     if (weak_mgr) { delete weak_mgr; weak_mgr = nullptr; }
     if (db_mgr) { delete db_mgr; db_mgr = nullptr; }
+
+    // eBPF 监控器：线程已 join 后安全删除
+    delete dns_monitor; dns_monitor = nullptr;
+    delete wifi_loss_monitor; wifi_loss_monitor = nullptr;
+    delete http_latency_monitor; http_latency_monitor = nullptr;
+    delete process_net_profiler; process_net_profiler = nullptr;
 }
 
 // 共享列表迁移至 ServerContext，在 server.hpp 中定义
@@ -492,7 +502,7 @@ void start_dns_monitor_thread(ServerContext* ctx) {
     // 监控器由 ServerContext 持有 ownership（unique_ptr），线程仅通过 .get() 使用。
     // 这消除了旧方案中「线程销毁 unique_ptr 后、store(nullptr) 前」的悬垂指针窗口。
     ctx->dns_monitor_thread = std::thread([ctx]() {
-        auto* monitor = ctx->dns_monitor.get();
+        auto* monitor = ctx->dns_monitor;
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "DNS monitor thread started");
         if (!monitor->init("build/dns_monitor.bpf.o")) {
@@ -516,7 +526,7 @@ void start_dns_monitor_thread(ServerContext* ctx) {
 
 void start_wifi_loss_monitor_thread(ServerContext* ctx) {
     ctx->wifi_loss_monitor_thread = std::thread([ctx]() {
-        auto* monitor = ctx->wifi_loss_monitor.get();
+        auto* monitor = ctx->wifi_loss_monitor;
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor thread started");
         if (!monitor->init("build/wifi_packet_loss.bpf.o")) {
@@ -543,7 +553,7 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx) {
 
 void start_http_latency_monitor_thread(ServerContext* ctx) {
     ctx->http_latency_monitor_thread = std::thread([ctx]() {
-        auto* monitor = ctx->http_latency_monitor.get();
+        auto* monitor = ctx->http_latency_monitor;
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "HTTP latency monitor thread started");
         if (!monitor->init("build/http_latency.bpf.o")) {
@@ -568,7 +578,7 @@ void start_http_latency_monitor_thread(ServerContext* ctx) {
 
 void start_process_net_profiler_thread(ServerContext* ctx) {
     ctx->process_net_profiler_thread = std::thread([ctx]() {
-        auto* profiler = ctx->process_net_profiler.get();
+        auto* profiler = ctx->process_net_profiler;
         if (!profiler) return;
         LOG_INFO(LogModule::NETWORK, "Process net profiler thread started");
         if (!profiler->init("build/flow_rate.bpf.o")) {
@@ -718,19 +728,20 @@ int start_server() {
     start_bt_monitor_thread(&ctx, nullptr);
 
     // ================================================================
-    // eBPF 监控器统一启动（由 ServerContext 持有 unique_ptr ownership）
+    // eBPF 监控器统一启动（由 ServerContext 持有 ownership）
     // 任务：消除孤儿数据路径，确保每个加载的 BPF 程序有消费者
     //
-    // ownership 模型：ServerContext 创建 unique_ptr 并在 ~ServerContext() 中自动析构。
-    // 线程通过 .get() 获取原始指针使用，不持有 ownership。
-    // 安全保证：start_server() 在 ctx 离开作用域前 join 所有线程，之后 unique_ptr 析构。
+    // ownership 模型：ServerContext 通过裸指针持有，~ServerContext() 中 delete。
+    // 线程通过裸指针使用，不持有 ownership。
+    // 安全保证：start_server() 在 ctx 离开作用域前 join 所有线程，之后 ~ServerContext() 删除。
+    // 这消除了旧 atomic<Monitor*> 方案中「线程销毁 unique_ptr 后、store(nullptr) 前」的悬垂指针窗口。
     // ================================================================
 
     // 创建 eBPF 监控器实例（必须在线程启动前完成）
-    ctx.dns_monitor = std::make_unique<DnsMonitor>();
-    ctx.wifi_loss_monitor = std::make_unique<WifiPacketLossMonitor>();
-    ctx.http_latency_monitor = std::make_unique<HttpLatencyMonitor>();
-    ctx.process_net_profiler = std::make_unique<ProcessNetProfiler>();
+    ctx.dns_monitor = new DnsMonitor();
+    ctx.wifi_loss_monitor = new WifiPacketLossMonitor();
+    ctx.http_latency_monitor = new HttpLatencyMonitor();
+    ctx.process_net_profiler = new ProcessNetProfiler();
 
     // DNS 监控器：挂载 kprobe/udp_sendmsg + kprobe/udp_recvmsg
     LOG_INFO(LogModule::NETWORK, "starting DNS monitor thread (interval=10s)");

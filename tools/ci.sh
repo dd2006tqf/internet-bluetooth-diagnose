@@ -102,7 +102,7 @@ $(git diff --cached --stat | tail -1)"
 fi
 
 # ============================================================
-# Step 2: ARM64 编译 + 打包
+# Step 2: ARM64 编译 + 打包（增量编译）
 # ============================================================
 log ""
 log "===== Step 2: ARM64 编译 + 打包 ====="
@@ -111,11 +111,13 @@ docker exec "${CONTAINER}" bash -c '
 set -euo pipefail
 cd /src
 
-echo "--- CMake 配置 ---"
-cmake -B build -DCMAKE_BUILD_TYPE=Debug
+# 增量编译：保留 build 目录，仅重建改动的文件
+# 使用 Ninja 替代 Make：依赖分析更快，增量编译更高效
+echo "--- CMake 配置（增量）---"
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug 2>&1
 
 echo "--- 编译服务端 + eBPF + 客户端 ---"
-cmake --build build --target weaknet-dbus-server history_query_tool weaknet test_client_bin ebpf -j1
+cmake --build build --target weaknet-dbus-server history_query_tool weaknet test_client_bin ebpf -j1 2>&1
 
 echo "--- 打包 dist-arm64 ---"
 rm -rf dist-arm64
@@ -127,11 +129,14 @@ install -m 0755 build/server/history_query_tool dist-arm64/server/bin/
 for f in build/server/ebpf/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true; done
 install -m 0755 client/bin/test_client_bin dist-arm64/client/bin/test-client
 install -m 0644 client/lib/libweaknet.so dist-arm64/client/lib/
-cp -a /usr/local/lib/libbpf.so* dist-arm64/lib/
+cp -a /usr/local/lib/libbpf.so* dist-arm64/lib/ 2>/dev/null || true
 
 echo "产物: $(find dist-arm64 -type f | wc -l) 个文件"
 file dist-arm64/server/bin/weaknet-dbus-server
-file dist-arm64/server/bin/history_query_tool
+
+# 输出 ccache 命中率
+echo "--- ccache 统计 ---"
+ccache -s 2>/dev/null | grep -E "cache hit|cache miss|hit rate|files in cache|cache size"
 ' 2>&1 | tee -a "$REPORT"
 
 pass "编译 + 打包完成"

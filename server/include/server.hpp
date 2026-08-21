@@ -8,8 +8,6 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
-#include <memory>
-#include <memory>
 
 // 前置声明，避免强依赖 dbus 头
 struct DBusConnection;
@@ -70,13 +68,14 @@ struct ServerContext {
     // 故改为 atomic，读写必须用 load()/store()。
     std::atomic<BtMonitor*> bt_monitor{nullptr};
 
-    // eBPF 监控器（由 ServerContext 统一持有 ownership，线程仅通过 .get() 使用）
-    // 生命周期：创建于 start_server() 线程启动前，销毁于所有线程 join 后、~ServerContext() 自动析构。
+    // eBPF 监控器（由 ServerContext 统一持有 ownership，线程仅通过裸指针使用）
+    // 生命周期：创建于 start_server() 线程启动前，销毁于 ~ServerContext()（定义在 server.cpp）。
+    // 安全保证：start_server() 在 ctx 离开作用域前 join 所有线程，之后析构函数删除这些指针。
     // 这消除了旧 atomic<Monitor*> 方案中「线程销毁 unique_ptr 后、store(nullptr) 前」的悬垂指针窗口。
-    std::unique_ptr<DnsMonitor> dns_monitor;
-    std::unique_ptr<WifiPacketLossMonitor> wifi_loss_monitor;
-    std::unique_ptr<HttpLatencyMonitor> http_latency_monitor;
-    std::unique_ptr<ProcessNetProfiler> process_net_profiler;
+    DnsMonitor* dns_monitor = nullptr;
+    WifiPacketLossMonitor* wifi_loss_monitor = nullptr;
+    HttpLatencyMonitor* http_latency_monitor = nullptr;
+    ProcessNetProfiler* process_net_profiler = nullptr;
     // eBPF 监控器线程
     std::thread dns_monitor_thread;
     std::thread wifi_loss_monitor_thread;

@@ -429,7 +429,7 @@ bool DbusService::handleGetDnsStats(DBusConnection* conn, DBusMessage* msg) {
     if (!reply) return false;
 
     std::string result;
-    DnsMonitor* monitor = ctx_ ? ctx_->dns_monitor.get() : nullptr;
+    DnsMonitor* monitor = ctx_ ? ctx_->dns_monitor : nullptr;
     if (monitor && monitor->isAvailable()) {
         auto stats = monitor->getStats();
         result = "totalQueries:" + std::to_string(stats.totalQueries)
@@ -459,7 +459,7 @@ bool DbusService::handleGetWifiLossStats(DBusConnection* conn, DBusMessage* msg)
     if (!reply) return false;
 
     std::string result;
-    WifiPacketLossMonitor* monitor = ctx_ ? ctx_->wifi_loss_monitor.get() : nullptr;
+    WifiPacketLossMonitor* monitor = ctx_ ? ctx_->wifi_loss_monitor : nullptr;
     if (monitor && monitor->isAvailable()) {
         auto stats = monitor->getStats();
         for (auto& [ifindex, s] : stats) {
@@ -491,7 +491,7 @@ bool DbusService::handleGetHttpLatencyStats(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    HttpLatencyMonitor* monitor = ctx_ ? ctx_->http_latency_monitor.get() : nullptr;
+    HttpLatencyMonitor* monitor = ctx_ ? ctx_->http_latency_monitor : nullptr;
     if (monitor && monitor->isAvailable()) {
         auto stats = monitor->getGlobalStats();
         result = "totalTxns:" + std::to_string(stats.totalTxns)
@@ -520,7 +520,7 @@ bool DbusService::handleGetProcessProfiling(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    ProcessNetProfiler* monitor = ctx_ ? ctx_->process_net_profiler.get() : nullptr;
+    ProcessNetProfiler* monitor = ctx_ ? ctx_->process_net_profiler : nullptr;
     if (monitor && monitor->isAvailable()) {
         result += "=== Top Bandwidth ===|";
         auto topBw = monitor->getTopBandwidth(5);
