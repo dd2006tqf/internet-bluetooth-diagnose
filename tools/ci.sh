@@ -114,7 +114,7 @@ cd /src
 # 增量编译：保留 build 目录，仅重建改动的文件
 # 使用 Ninja 替代 Make：依赖分析更快，增量编译更高效
 echo "--- CMake 配置（增量）---"
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug 2>&1
+cmake -B build -DCMAKE_BUILD_TYPE=Debug 2>&1
 
 echo "--- 编译服务端 + eBPF + 客户端 ---"
 cmake --build build --target weaknet-dbus-server history_query_tool weaknet test_client_bin ebpf -j1 2>&1

@@ -285,6 +285,8 @@ void UsingInterfaceManager::start() {
     std::lock_guard<std::mutex> lk(stateMutex_);
     if (impl_ == nullptr) impl_ = new Impl();
     if (!impl_->running.load()) {
+        // 先 join 旧线程（如果线程退出但未 join，worker 仍 joinable）
+        if (impl_->worker.joinable()) impl_->worker.join();
         impl_->worker = std::thread([this]{ impl_->eventLoop(this); });
         // 不 detach：保持 joinable，析构时 join 等待线程安全退出
     }
