@@ -14,6 +14,7 @@ RUN printf '%s\n' \
         build-essential \
         g++ \
         make \
+        cmake \
         pkg-config \
         clang \
         llvm \
@@ -28,7 +29,8 @@ RUN printf '%s\n' \
         zlib1g-dev \
         libcap-dev \
         libnl-3-dev \
-        libnl-genl-3-dev && \
+        libnl-genl-3-dev \
+        libsqlite3-dev && \
     rm -rf /var/lib/apt/lists/*
 
 RUN git clone \

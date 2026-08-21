@@ -630,12 +630,15 @@ void start_history_persistence_thread(ServerContext* ctx) {
 
             if (!ctx->db_mgr || !ctx->db_mgr->isOpen()) continue;
 
-            // 获取当前接口快照
+            // 获取当前接口快照并计算质量评分
             auto snapshot = ctx->weak_mgr->getCurrentInterfaces();
+            NetworkQualityAssessor assessor;
+            NetworkQualityResult qualityResult = assessor.assessQuality(snapshot);
+
             int written = 0;
             for (const auto& iface : snapshot) {
                 if (iface.usingNow()) {
-                    if (ctx->db_mgr->insertSnapshot(iface.ifName(), iface)) {
+                    if (ctx->db_mgr->insertSnapshot(iface.ifName(), iface, qualityResult.score)) {
                         written++;
                     }
                 }

@@ -156,6 +156,18 @@ TEST_F(DatabaseManagerTest, Cleanup) {
     EXPECT_EQ(db.getRecordCount(), 1);
 }
 
+TEST_F(DatabaseManagerTest, InsertWithScore) {
+    DatabaseManager db(dbPath_);
+    ASSERT_TRUE(db.isOpen());
+
+    auto info = makeTestIface("wlan0", 50, 10.5, -55);
+    EXPECT_TRUE(db.insertSnapshot("wlan0", info, 72.5));
+    EXPECT_EQ(db.getRecordCount(), 1);
+
+    std::string result = db.queryHistory("wlan0", "", "", 10);
+    EXPECT_NE(result.find("72.5"), std::string::npos);  // score
+}
+
 // ============================================================================
 // Test Cases: 数据库信息
 // ============================================================================

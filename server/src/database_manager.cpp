@@ -184,7 +184,7 @@ bool DatabaseManager::ensureSchema() {
     return exec(schema);
 }
 
-bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& info) {
+bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& info, double score) {
     if (!db_) return false;
 
     std::lock_guard<std::mutex> lock(write_mutex_);
@@ -199,7 +199,7 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
         << info.rssiDbm() << ", "
         << info.tcpLossRate() << ", "
         << "'" << qualityToString(info.quality()) << "', "
-        << "0, "  // score 由查询时计算，此处暂存 0
+        << score << ", "
         << info.trafficTotalBps() << ", "
         << info.trafficTotalPps() << ", "
         << info.trafficActiveFlows() << ")";

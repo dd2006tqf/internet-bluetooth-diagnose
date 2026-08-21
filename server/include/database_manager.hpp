@@ -25,7 +25,7 @@ public:
     bool isOpen() const;
 
     // 写入一条快照记录
-    bool insertSnapshot(const std::string& iface, const NetInfo& info);
+    bool insertSnapshot(const std::string& iface, const NetInfo& info, double score = 0.0);
 
     // 查询历史数据，返回 JSON 数组字符串
     // interface: "" 表示所有网卡
