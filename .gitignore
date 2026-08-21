@@ -39,6 +39,7 @@ CMakeFiles/
 cmake-build-*/
 CMakeCache.txt
 build-cmake/
+build-cmake2/
 Testing/
 
 # eBPF 内核头文件（由 bpftool 自动生成）
