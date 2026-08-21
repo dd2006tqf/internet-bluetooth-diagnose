@@ -82,7 +82,7 @@
 - **eBPF/服务端编译必须用 ARM64 Docker 容器**：本项目目标是 ARM64 开发板（Radxa Cubie A7A），eBPF 程序和 C++ 服务端的编译验证必须通过常驻 ARM64 容器 `weaknet-arm64-dev`（基于 `weaknet-builder:bullseye-arm64` 镜像）执行，并预置开发板的 `board-assets/vmlinux.h`。**禁止在 x86 开发机上直接编译**（会因 `user_pt_regs` 报错且产物架构错误）。详见 `docs/交叉编译与开发板部署.md`。容器内编译命令：
   ```bash
   docker exec weaknet-arm64-dev bash -c \
-    'cd /src && cmake -B build-cmake -DCMAKE_BUILD_TYPE=Debug && cmake --build build-cmake -j1'
+    'cd /src && cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j1'
   ```
 
 ### surface 与 evidence 契约
@@ -158,8 +158,8 @@
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
-| "容器内编译" / "ARM64 编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build-cmake -DCMAKE_BUILD_TYPE=Debug && cmake --build build-cmake -j1'` | 需要 ~10 分钟（QEMU 模拟） |
-| "编译 eBPF" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake --build build-cmake --target ebpf -j1'` | 单独编译 eBPF 程序 |
+| "容器内编译" / "ARM64 编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j1'` | 需要 ~10 分钟（QEMU 模拟） |
+| "编译 eBPF" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake --build build --target ebpf -j1'` | 单独编译 eBPF 程序 |
 
 ### 历史数据查询
 
@@ -198,7 +198,7 @@
 ```
 1. 改代码
 2. 本地编译验证（x86: cmake 编译 + 单元测试）
-3. ARM64 编译（容器内 cmake -B build-cmake）
+3. ARM64 编译（容器内 cmake -B build）
 4. 部署到开发板（rsync + 服务端启动 + eBPF 加载）
 5. 开发板测试通过 ✅
 6. git commit + git push → GitHub CI 作为最终安全网
