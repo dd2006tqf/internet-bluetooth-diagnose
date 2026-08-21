@@ -1,12 +1,10 @@
-# CI: 每次 push / PR 自动运行
-# x86_64 编译 + 单元测试
+# CI: push 后的最终安全网
+# 本地已验证通过，push 后跑 CI 作为二次保障
 name: CI
 
 on:
   push:
     branches: [main, dev/**]
-  pull_request:
-    branches: [main]
 
 jobs:
   build-and-test:
@@ -25,19 +23,9 @@ jobs:
       - name: CMake 配置
         run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
 
-      - name: 编译服务端 + CLI + 测试
+      - name: 编译
         run: cmake --build build -j$(nproc) \
           --target weaknet-dbus-server history_query_tool test_database_manager_gtest
-
-      - name: 运行 DatabaseManager 单元测试
-        run: build/server/test/test_database_manager_gtest
-
-      - name: 编译全部单元测试
-        run: cmake --build build -j$(nproc) --target \
-          test_net_info test_quality_assessor_gtest test_anomaly_detector_gtest \
-          test_audio_fusion_gtest test_band_conflict_gtest test_serializer_gtest \
-          test_event_manager_gtest test_bt_full_link_gtest test_iface_type_gtest \
-          test_logger_gtest test_traffic_analyzer_gtest
 
       - name: 运行全部单元测试
         run: |

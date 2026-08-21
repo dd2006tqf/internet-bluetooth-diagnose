@@ -192,6 +192,21 @@
 - **开发板测试需要 sudo**，脚本已内置 `dbus-run-session`
 - **部署前需清理残留目录**，脚本已自动处理
 
+### 正确的工作流程
+
+**本地先行，验证通过后再 push：**
+
+```
+1. 改代码
+2. 本地编译验证（x86: cmake 编译 + 单元测试）
+3. ARM64 编译（容器内 cmake -B build-cmake）
+4. 部署到开发板（rsync + 服务端启动 + eBPF 加载）
+5. 开发板测试通过 ✅
+6. git commit + git push → GitHub CI 作为最终安全网
+```
+
+**禁止跳过本地验证直接 push。**
+
 ## 关键操作规则
 
 ### Footprint 与 drift_reason
