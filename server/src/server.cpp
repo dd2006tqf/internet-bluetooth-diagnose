@@ -489,43 +489,38 @@ static void start_network_quality_thread(ServerContext* ctx) {
 // ====================================================================
 
 void start_dns_monitor_thread(ServerContext* ctx) {
-    // 指针成员改为 atomic，读写用 load()/store()（TSan 证实 dbus_service 读 vs
-    // 此处写是数据竞争根因）。捕获 ctx 的副本并判空属额外防御。
-    ServerContext* const ctx_capture = ctx;
-    ctx_capture->dns_monitor_thread = std::thread([ctx_capture]() {
-        if (!ctx_capture) return;
+    // 监控器由 ServerContext 持有 ownership（unique_ptr），线程仅通过 .get() 使用。
+    // 这消除了旧方案中「线程销毁 unique_ptr 后、store(nullptr) 前」的悬垂指针窗口。
+    ctx->dns_monitor_thread = std::thread([ctx]() {
+        auto* monitor = ctx->dns_monitor.get();
+        if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "DNS monitor thread started");
-        auto monitor = std::make_unique<DnsMonitor>();
-        ctx_capture->dns_monitor.store(monitor.get());
         if (!monitor->init("build/dns_monitor.bpf.o")) {
             LOG_INFO(LogModule::NETWORK, "DNS monitor: BPF init failed, thread exiting");
-            ctx_capture->dns_monitor.store(nullptr);
             return;
         }
-        while (ctx_capture->running.load()) {
+        while (ctx->running.load()) {
             auto stats = monitor->getStats();
             if (stats.totalQueries > 0) {
                 LOG_INFO(LogModule::NETWORK, "DNS tick: queries=" << stats.totalQueries
                     << " avgLatency=" << stats.avgLatencyMs << "ms"
                     << " timeoutRate=" << stats.timeoutRate() << "%");
             }
-            for (int i = 0; i < 100 && ctx_capture->running.load(); ++i)
+            for (int i = 0; i < 100 && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
-        ctx_capture->dns_monitor.store(nullptr);
         LOG_INFO(LogModule::NETWORK, "DNS monitor thread stopped");
     });
 }
 
 void start_wifi_loss_monitor_thread(ServerContext* ctx) {
     ctx->wifi_loss_monitor_thread = std::thread([ctx]() {
+        auto* monitor = ctx->wifi_loss_monitor.get();
+        if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor thread started");
-        auto monitor = std::make_unique<WifiPacketLossMonitor>();
-        ctx->wifi_loss_monitor.store(monitor.get());
         if (!monitor->init("build/wifi_packet_loss.bpf.o")) {
             LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor: BPF init failed, thread exiting");
-            ctx->wifi_loss_monitor.store(nullptr);
             return;
         }
         while (ctx->running.load()) {
@@ -542,19 +537,17 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx) {
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
-        ctx->wifi_loss_monitor.store(nullptr);
         LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor thread stopped");
     });
 }
 
 void start_http_latency_monitor_thread(ServerContext* ctx) {
     ctx->http_latency_monitor_thread = std::thread([ctx]() {
+        auto* monitor = ctx->http_latency_monitor.get();
+        if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "HTTP latency monitor thread started");
-        auto monitor = std::make_unique<HttpLatencyMonitor>();
-        ctx->http_latency_monitor.store(monitor.get());
         if (!monitor->init("build/http_latency.bpf.o")) {
             LOG_INFO(LogModule::NETWORK, "HTTP latency monitor: BPF init failed, thread exiting");
-            ctx->http_latency_monitor.store(nullptr);
             return;
         }
         while (ctx->running.load()) {
@@ -569,19 +562,17 @@ void start_http_latency_monitor_thread(ServerContext* ctx) {
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
-        ctx->http_latency_monitor.store(nullptr);
         LOG_INFO(LogModule::NETWORK, "HTTP latency monitor thread stopped");
     });
 }
 
 void start_process_net_profiler_thread(ServerContext* ctx) {
     ctx->process_net_profiler_thread = std::thread([ctx]() {
+        auto* profiler = ctx->process_net_profiler.get();
+        if (!profiler) return;
         LOG_INFO(LogModule::NETWORK, "Process net profiler thread started");
-        auto profiler = std::make_unique<ProcessNetProfiler>();
-        ctx->process_net_profiler.store(profiler.get());
         if (!profiler->init("build/flow_rate.bpf.o")) {
             LOG_INFO(LogModule::NETWORK, "Process net profiler: BPF init failed, thread exiting");
-            ctx->process_net_profiler.store(nullptr);
             return;
         }
         while (ctx->running.load()) {
@@ -607,7 +598,6 @@ void start_process_net_profiler_thread(ServerContext* ctx) {
                 std::this_thread::sleep_for(100ms);
         }
         profiler->stop();
-        ctx->process_net_profiler.store(nullptr);
         LOG_INFO(LogModule::NETWORK, "Process net profiler thread stopped");
     });
 }
@@ -728,9 +718,19 @@ int start_server() {
     start_bt_monitor_thread(&ctx, nullptr);
 
     // ================================================================
-    // eBPF 监控器统一启动（由 ServerContext 持有实例，退出时统一 stop）
+    // eBPF 监控器统一启动（由 ServerContext 持有 unique_ptr ownership）
     // 任务：消除孤儿数据路径，确保每个加载的 BPF 程序有消费者
+    //
+    // ownership 模型：ServerContext 创建 unique_ptr 并在 ~ServerContext() 中自动析构。
+    // 线程通过 .get() 获取原始指针使用，不持有 ownership。
+    // 安全保证：start_server() 在 ctx 离开作用域前 join 所有线程，之后 unique_ptr 析构。
     // ================================================================
+
+    // 创建 eBPF 监控器实例（必须在线程启动前完成）
+    ctx.dns_monitor = std::make_unique<DnsMonitor>();
+    ctx.wifi_loss_monitor = std::make_unique<WifiPacketLossMonitor>();
+    ctx.http_latency_monitor = std::make_unique<HttpLatencyMonitor>();
+    ctx.process_net_profiler = std::make_unique<ProcessNetProfiler>();
 
     // DNS 监控器：挂载 kprobe/udp_sendmsg + kprobe/udp_recvmsg
     LOG_INFO(LogModule::NETWORK, "starting DNS monitor thread (interval=10s)");
