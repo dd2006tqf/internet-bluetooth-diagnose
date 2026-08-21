@@ -33,8 +33,7 @@ jobs:
         run: build/server/test/test_database_manager_gtest
 
       - name: 编译全部单元测试
-        run: cmake --build build -j$(nproc) --target test-build 2>/dev/null || \
-          cmake --build build -j$(nproc) --target \
+        run: cmake --build build -j$(nproc) --target \
           test_net_info test_quality_assessor_gtest test_anomaly_detector_gtest \
           test_audio_fusion_gtest test_band_conflict_gtest test_serializer_gtest \
           test_event_manager_gtest test_bt_full_link_gtest test_iface_type_gtest \

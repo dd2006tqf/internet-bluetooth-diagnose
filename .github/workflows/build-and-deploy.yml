@@ -1,8 +1,10 @@
 # ARM64 构建 + 可选部署
-# 手动触发 / release tag 时运行
+# push 到 main 自动触发 / 手动触发 / release tag
 name: ARM64 Build & Deploy
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       deploy:
@@ -18,6 +20,9 @@ env:
   BOARD: radxa@192.168.2.77
 
 jobs:
+  # ============================================================
+  # Job 1: ARM64 编译 + 打包
+  # ============================================================
   build:
     runs-on: ubuntu-latest
     steps:
@@ -30,9 +35,6 @@ jobs:
 
       - name: 启动 ARM64 构建容器
         run: |
-          # 检查本地是否有现成的构建容器
-          docker pull --platform linux/arm64 debian:11-slim 2>/dev/null || true
-
           docker run -d \
             --name ${{ env.CONTAINER }} \
             --platform linux/arm64 \
@@ -51,9 +53,8 @@ jobs:
             clang llvm git ca-certificates \
             libdbus-1-dev libgoogle-glog-dev libelf-dev \
             zlib1g-dev libcap-dev libnl-3-dev libnl-genl-3-dev \
-            libsqlite3-dev
+            libsqlite3-dev libgtest-dev
 
-          # 编译安装 libbpf
           git clone --depth 1 --branch v1.3.0 https://github.com/libbpf/libbpf.git /tmp/libbpf
           make -C /tmp/libbpf/src -j1
           make -C /tmp/libbpf/src install PREFIX=/usr/local LIBDIR=/usr/local/lib
@@ -61,7 +62,7 @@ jobs:
           ldconfig
           '
 
-      - name: CMake 编译（服务端 + eBPF + 客户端 + 测试）
+      - name: CMake 编译
         run: |
           docker exec ${{ env.CONTAINER }} bash -c '
           cd /src
@@ -69,6 +70,28 @@ jobs:
           cmake --build build-cmake --target \
             weaknet-dbus-server history_query_tool \
             weaknet test_client_bin ebpf -j1
+          '
+
+      - name: 运行 ARM64 单元测试
+        run: |
+          docker exec ${{ env.CONTAINER }} bash -c '
+          cd /src
+          for bin in build-cmake/server/test/test_database_manager_gtest \
+                     build-cmake/server/test/test_net_info \
+                     build-cmake/server/test/test_quality_assessor_gtest \
+                     build-cmake/server/test/test_serializer_gtest \
+                     build-cmake/server/test/test_event_manager_gtest \
+                     build-cmake/server/test/test_iface_type_gtest \
+                     build-cmake/server/test/test_logger_gtest; do
+            if [ -f "$bin" ]; then
+              name=$(basename "$bin")
+              if timeout 30 "$bin" >/dev/null 2>&1; then
+                echo "✅ $name"
+              else
+                echo "❌ $name"
+              fi
+            fi
+          done
           '
 
       - name: 打包 dist-arm64
@@ -91,7 +114,6 @@ jobs:
           echo "=== 产物 ==="
           find dist-arm64 -type f | wc -l
           echo "个文件"
-          echo "=== 架构验证 ==="
           file dist-arm64/server/bin/weaknet-dbus-server
           file dist-arm64/server/bin/history_query_tool
           '
@@ -103,9 +125,14 @@ jobs:
           path: dist-arm64/
           retention-days: 7
 
+  # ============================================================
+  # Job 2: 部署到开发板（手动触发 / release）
+  # ============================================================
   deploy:
     needs: build
-    if: ${{ github.event.inputs.deploy == 'true' || github.event_name == 'release' }}
+    if: >
+      github.event_name == 'workflow_dispatch' && github.event.inputs.deploy == 'true'
+      || github.event_name == 'release'
     runs-on: self-hosted
     steps:
       - name: 下载构建产物
@@ -114,18 +141,21 @@ jobs:
           name: dist-arm64
           path: dist-arm64/
 
-      - name: 部署到开发板
+      - name: 检查开发板连通性
         run: |
-          # 清理板上残留目录
-          ssh ${{ env.BOARD }} 'sudo rm -rf /home/radxa/weaknet/logs /home/radxa/weaknet/server/server 2>/dev/null || true'
+          if ! ping -c 1 -W 3 ${{ env.BOARD#*@ }} >/dev/null 2>&1; then
+            echo "❌ 开发板不可达，跳过部署"
+            exit 1
+          fi
 
-          # rsync 部署
+      - name: 清理 + 部署
+        run: |
+          ssh ${{ env.BOARD }} 'sudo rm -rf /home/radxa/weaknet/logs /home/radxa/weaknet/server/server 2>/dev/null || true'
           rsync -az --delete --exclude 'server/logs/' -e ssh \
             dist-arm64/ ${{ env.BOARD }}:/home/radxa/weaknet/
-
           echo "✅ 部署完成"
 
-      - name: 运行开发板测试
+      - name: 开发板测试
         timeout-minutes: 5
         run: |
           ssh -t ${{ env.BOARD }} 'sudo /home/radxa/weaknet-test-full.sh' || true
