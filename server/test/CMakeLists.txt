@@ -83,6 +83,10 @@ add_executable(test_dns_monitor_gtest
     unit/test_dns_monitor_gtest.cpp)
 target_link_libraries(test_dns_monitor_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_database_manager_gtest
+    unit/test_database_manager_gtest.cpp)
+target_link_libraries(test_database_manager_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # ---- CTest 集成 ----
 # enable_testing() 已在根 CMakeLists.txt 中调用
 foreach(test_target
@@ -103,6 +107,7 @@ foreach(test_target
     test_rtt_monitor_gtest
     test_bt_monitor_extra_gtest
     test_jitter_monitor_gtest
-    test_dns_monitor_gtest)
+    test_dns_monitor_gtest
+    test_database_manager_gtest)
     add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()

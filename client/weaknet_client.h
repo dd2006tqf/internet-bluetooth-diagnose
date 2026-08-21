@@ -308,6 +308,25 @@ bool weaknet_get_http_latency_stats(char* buffer, size_t buffer_size, char* erro
  */
 bool weaknet_get_process_profiling(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
 
+/* ============================== 历史数据 API ============================== */
+
+/**
+ * 查询历史监控数据
+ *
+ * @param interface 网卡名，空字符串表示所有网卡
+ * @param start 起始时间 (ISO 8601)，空字符串表示不限
+ * @param end 结束时间 (ISO 8601)，空字符串表示不限
+ * @param limit 最大返回行数
+ * @param buffer 结果缓冲区，存储 JSON 数组
+ * @param buffer_size 缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size 错误信息缓冲区大小
+ * @return true-成功, false-失败
+ */
+bool weaknet_get_history(const char* interface, const char* start, const char* end,
+                         int32_t limit, char* buffer, size_t buffer_size,
+                         char* error_buffer, size_t error_size);
+
 #ifdef __cplusplus
 }
 #endif

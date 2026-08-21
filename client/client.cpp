@@ -587,6 +587,57 @@ public:
         return requestStringData(kMethodGetProcessProfiling, "进程网络画像", result, errorMsg);
     }
 
+    // 查询历史监控数据（带参数）
+    bool getHistory(const std::string& iface, const std::string& start,
+                    const std::string& end, int32_t limit,
+                    std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+
+        DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodGetHistory);
+        if (!msg) {
+            errorMsg = "创建历史查询消息失败";
+            return false;
+        }
+
+        // 添加参数：interface(string), start(string), end(string), limit(int32)
+        DBusMessageIter args;
+        dbus_message_iter_init_append(msg, &args);
+
+        const char* iface_cstr = iface.c_str();
+        const char* start_cstr = start.c_str();
+        const char* end_cstr = end.c_str();
+
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &iface_cstr);
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &start_cstr);
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &end_cstr);
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &limit);
+
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 5000, &err);
+        dbus_message_unref(msg);
+
+        if (dbus_error_is_set(&err)) {
+            errorMsg = "历史查询失败: " + std::string(err.message);
+            dbus_error_free(&err);
+            return false;
+        }
+        if (!reply) {
+            errorMsg = "未收到历史查询应答";
+            return false;
+        }
+
+        const char* data = nullptr;
+        if (!dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &data, DBUS_TYPE_INVALID)) {
+            errorMsg = "解析历史查询结果失败";
+            dbus_message_unref(reply);
+            return false;
+        }
+        result = data ? data : "";
+        dbus_message_unref(reply);
+        return true;
+    }
+
 private:
     // 统一失败的辅助函数
     bool fail(const char* msg, std::string& errorMsg) {
@@ -1052,4 +1103,24 @@ extern "C" bool weaknet_get_process_profiling(char* buffer, size_t buffer_size, 
 }
 
 // 注意: 此文件现在作为动态库使用，不包含main函数
+
+extern "C" bool weaknet_get_history(const char* interface, const char* start, const char* end,
+                                    int32_t limit, char* buffer, size_t buffer_size,
+                                    char* error_buffer, size_t error_size) {
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    std::string iface_str = interface ? interface : "";
+    std::string start_str = start ? start : "";
+    std::string end_str = end ? end : "";
+    if (weaknet_dbus::g_client->getHistory(iface_str, start_str, end_str, limit, result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    } else {
+        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+        return false;
+    }
+}
 // 所有的API通过C接口函数提供，供其他应用程序调用

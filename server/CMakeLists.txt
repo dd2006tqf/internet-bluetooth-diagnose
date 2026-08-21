@@ -1,6 +1,8 @@
 # ---- 服务端源文件（自动发现） ----
 file(GLOB SERVER_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*\\.bpf\\.c$")
+list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*history_query_tool\\.cpp$")
+list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*main\\.cpp$")
 
 # ---- 服务端静态库（供测试链接） ----
 add_library(server_lib STATIC ${SERVER_SOURCES})
@@ -17,7 +19,7 @@ target_link_libraries(server_lib PUBLIC
     PkgConfig::DBUS1 glog bpf pthread ${SQLITE3_LIB})
 
 # ---- 服务端可执行文件 ----
-add_executable(weaknet-dbus-server src/main.cpp)
+add_executable(weaknet-dbus-server src/main.cpp src/server.cpp)
 target_link_libraries(weaknet-dbus-server PRIVATE server_lib)
 
 # ---- 历史数据查询工具 ----
