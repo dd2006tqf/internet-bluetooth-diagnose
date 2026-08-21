@@ -89,8 +89,14 @@ fi
 
 # ---------- 护栏 2：测试门禁 ----------
 if [[ "$SKIP_TEST_GATE" != true ]]; then
-    ok "测试门禁：make test-unit"
-    if ! make -C server test-unit > /tmp/auto_push_test.log 2>&1; then
+    ok "测试门禁：cmake 单元测试"
+    # 优先 cmake，fallback 到 make
+    if [ -d build ] && [ -f build/Makefile ]; then
+        TEST_CMD="cmake --build build -j\$(nproc) && ctest --test-dir build/server -R 'test_net_info|test_quality|test_anomaly|test_audio|test_band|test_serializer|test_event|test_bt_full|test_bt_monitor$|test_iface|test_logger|test_traffic|test_database' --output-on-failure"
+    else
+        TEST_CMD="make -C server test-unit"
+    fi
+    if ! eval "$TEST_CMD" > /tmp/auto_push_test.log 2>&1; then
         err "测试门禁失败（exit!=0）。尾部日志："
         tail -20 /tmp/auto_push_test.log >&2
         exit 5

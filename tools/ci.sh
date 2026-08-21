@@ -22,7 +22,7 @@ set -euo pipefail
 CONTAINER="${CONTAINER:-weaknet-arm64-dev}"
 BOARD="${BOARD:-radxa@192.168.2.77}"
 JOBS="${JOBS:-1}"
-BUILD_SYSTEM="${BUILD_SYSTEM:-make}"  # make 或 cmake
+BUILD_SYSTEM="${BUILD_SYSTEM:-cmake}"  # cmake 或 make
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT}/dist-arm64"
 REPORT_DIR="${ROOT}/ci-reports"
@@ -47,7 +47,7 @@ for arg in "$@"; do
             echo "  --func-only    只跑功能测试"
             echo ""
             echo "环境变量:"
-            echo "  BUILD_SYSTEM=make|cmake  构建系统（默认: make）"
+            echo "  BUILD_SYSTEM=cmake|make  构建系统（默认: cmake）"
             echo "  CONTAINER=容器名          ARM64 构建容器（默认: weaknet-arm64-dev）"
             echo "  BOARD=用户名@IP           开发板地址（默认: radxa@192.168.2.77）"
             echo "  JOBS=N                    编译并行度（默认: 1，QEMU 下不要超过 1）"

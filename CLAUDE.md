@@ -79,12 +79,11 @@
 
 ### eBPF 与编译环境
 
-- **eBPF/服务端编译必须用 ARM64 Docker 容器**：本项目目标是 ARM64 开发板（Radxa Cubie A7A），eBPF 程序和 C++ 服务端的编译验证必须通过常驻 ARM64 容器 `weaknet-arm64-dev`（基于 `weaknet-builder:bullseye-arm64` 镜像）执行，并预置开发板的 `board-assets/vmlinux.h`。**禁止在 x86 开发机上直接 `make` 编译**（会因 `user_pt_regs` 报错且产物架构错误）。详见 `docs/交叉编译与开发板部署.md`。容器内编译命令：
+- **eBPF/服务端编译必须用 ARM64 Docker 容器**：本项目目标是 ARM64 开发板（Radxa Cubie A7A），eBPF 程序和 C++ 服务端的编译验证必须通过常驻 ARM64 容器 `weaknet-arm64-dev`（基于 `weaknet-builder:bullseye-arm64` 镜像）执行，并预置开发板的 `board-assets/vmlinux.h`。**禁止在 x86 开发机上直接编译**（会因 `user_pt_regs` 报错且产物架构错误）。详见 `docs/交叉编译与开发板部署.md`。容器内编译命令：
   ```bash
   docker exec weaknet-arm64-dev bash -c \
-    'cd /src/server && make -C server -j1'
+    'cd /src && cmake -B build-cmake -DCMAKE_BUILD_TYPE=Debug && cmake --build build-cmake -j1'
   ```
-  编译前若 `build/vmlinux.h` 缺失/错误，先 `cp board-assets/vmlinux.h server/build/vmlinux.h`。
 
 ### surface 与 evidence 契约
 
@@ -152,8 +151,7 @@
 | "部署到板子" / "deploy" | `./tools/harness_deploy.sh` | 一键：编译 + 打包 + 部署 + 测试 |
 | "只编译不部署" | `./tools/harness_deploy.sh --local-only` | ARM64 编译 + 打包，不 rsync |
 | "部署但不测试" | `./tools/harness_deploy.sh --skip-test` | 跳过开发板测试 |
-| "用旧 Makefile 部署" | `./tools/ci.sh` | 基于旧 Makefile 的完整流程 |
-| "CMake 部署" | `BUILD_SYSTEM=cmake ./tools/ci.sh` | 基于 CMake 的完整流程 |
+| "用旧 Makefile 部署" | `BUILD_SYSTEM=make ./tools/ci.sh` | 兼容旧 Makefile 流程 |
 
 ### ARM64 编译
 
