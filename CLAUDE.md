@@ -133,6 +133,65 @@
 19. change_archive.sh <name>
 ```
 
+## 快速操作指南（Agent 自动识别意图）
+
+当用户提到以下意图时，Agent 应直接运行对应脚本：
+
+### 编译与测试
+
+| 用户意图 | 执行命令 | 说明 |
+|---------|---------|------|
+| "编译一下" / "build" | `cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build -j$(nproc)` | x86 本地快速编译 |
+| "跑测试" / "test" | `build/server/test/test_database_manager_gtest` | 运行指定测试 |
+| "跑全部测试" | `cmake --build build -j$(nproc) && ctest --test-dir build/server -R "test_net_info\|test_quality\|test_anomaly\|test_audio\|test_band\|test_serializer\|test_event\|test_bt_full\|test_bt_monitor$\|test_iface\|test_logger\|test_traffic\|test_database"` | x86 单元测试（排除需要 D-Bus 的集成测试） |
+
+### 部署到开发板
+
+| 用户意图 | 执行命令 | 说明 |
+|---------|---------|------|
+| "部署到板子" / "deploy" | `./tools/harness_deploy.sh` | 一键：编译 + 打包 + 部署 + 测试 |
+| "只编译不部署" | `./tools/harness_deploy.sh --local-only` | ARM64 编译 + 打包，不 rsync |
+| "部署但不测试" | `./tools/harness_deploy.sh --skip-test` | 跳过开发板测试 |
+| "用旧 Makefile 部署" | `./tools/ci.sh` | 基于旧 Makefile 的完整流程 |
+| "CMake 部署" | `BUILD_SYSTEM=cmake ./tools/ci.sh` | 基于 CMake 的完整流程 |
+
+### ARM64 编译
+
+| 用户意图 | 执行命令 | 说明 |
+|---------|---------|------|
+| "容器内编译" / "ARM64 编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build-cmake -DCMAKE_BUILD_TYPE=Debug && cmake --build build-cmake -j1'` | 需要 ~10 分钟（QEMU 模拟） |
+| "编译 eBPF" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake --build build-cmake --target ebpf -j1'` | 单独编译 eBPF 程序 |
+
+### 历史数据查询
+
+| 用户意图 | 执行命令 | 说明 |
+|---------|---------|------|
+| "查历史数据" / "查数据库" | `ssh radxa@192.168.2.77 'sudo /home/radxa/weaknet/server/bin/history_query_tool --info'` | 查看数据库信息 |
+| "查 wlan0 最近 1 小时" | `ssh radxa@192.168.2.77 'sudo /home/radxa/weaknet/server/bin/history_query_tool --iface wlan0 --last 1h'` | 按网卡 + 时间查询 |
+
+### Harness 工作流
+
+| 用户意图 | 执行命令 | 说明 |
+|---------|---------|------|
+| "开始新 change" | `scripts/change_new.sh <name> --switch` | 创建新 change |
+| "归档" / "archive" | `scripts/change_archive.sh <name>` | 归档 change |
+| "归档后部署" | `./tools/harness_deploy.sh` | 归档 → commit → push → 编译 → 部署 |
+
+### 环境检查
+
+| 用户意图 | 执行命令 | 说明 |
+|---------|---------|------|
+| "板子在线吗" / "检查开发板" | `ping -c 1 -W 2 192.168.2.77 && ssh radxa@192.168.2.77 'uname -m'` | 检查连通性 + 架构 |
+| "容器状态" | `docker ps --filter name=weaknet-arm64-dev` | 检查 ARM64 容器 |
+| "CI 状态" | `gh run list --limit 5` | 查看 GitHub Actions 运行记录 |
+
+### 注意事项
+
+- **eBPF 必须在 ARM64 容器内编译**，x86 上会报 `user_pt_regs` 错误
+- **容器内编译必须用 `-j1`**，QEMU 模拟下高并行度会 segfault
+- **开发板测试需要 sudo**，脚本已内置 `dbus-run-session`
+- **部署前需清理残留目录**，脚本已自动处理
+
 ## 关键操作规则
 
 ### Footprint 与 drift_reason
