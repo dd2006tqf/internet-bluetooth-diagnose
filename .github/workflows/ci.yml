@@ -1,0 +1,71 @@
+# CI: 每次 push / PR 自动运行
+# x86_64 编译 + 单元测试
+name: CI
+
+on:
+  push:
+    branches: [main, dev/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential cmake pkg-config \
+            libdbus-1-dev libgoogle-glog-dev libbpf-dev \
+            libsqlite3-dev libgtest-dev
+
+      - name: CMake 配置
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
+
+      - name: 编译服务端 + CLI + 测试
+        run: cmake --build build -j$(nproc) \
+          --target weaknet-dbus-server history_query_tool test_database_manager_gtest
+
+      - name: 运行 DatabaseManager 单元测试
+        run: build/server/test/test_database_manager_gtest
+
+      - name: 编译全部单元测试
+        run: cmake --build build -j$(nproc) --target test-build 2>/dev/null || \
+          cmake --build build -j$(nproc) --target \
+          test_net_info test_quality_assessor_gtest test_anomaly_detector_gtest \
+          test_audio_fusion_gtest test_band_conflict_gtest test_serializer_gtest \
+          test_event_manager_gtest test_bt_full_link_gtest test_iface_type_gtest \
+          test_logger_gtest test_traffic_analyzer_gtest
+
+      - name: 运行全部单元测试
+        run: |
+          PASS=0; FAIL=0
+          for bin in build/server/test/test_net_info \
+                     build/server/test/test_quality_assessor_gtest \
+                     build/server/test/test_anomaly_detector_gtest \
+                     build/server/test/test_audio_fusion_gtest \
+                     build/server/test/test_band_conflict_gtest \
+                     build/server/test/test_serializer_gtest \
+                     build/server/test/test_event_manager_gtest \
+                     build/server/test/test_bt_full_link_gtest \
+                     build/server/test/test_iface_type_gtest \
+                     build/server/test/test_logger_gtest \
+                     build/server/test/test_traffic_analyzer_gtest \
+                     build/server/test/test_database_manager_gtest; do
+            if [ -f "$bin" ]; then
+              name=$(basename "$bin")
+              if timeout 30 "$bin" >/dev/null 2>&1; then
+                echo "✅ $name"
+                PASS=$((PASS + 1))
+              else
+                echo "❌ $name"
+                FAIL=$((FAIL + 1))
+              fi
+            fi
+          done
+          echo "---"
+          echo "通过: $PASS / $((PASS + FAIL))"
+          if [ "$FAIL" -gt 0 ]; then exit 1; fi

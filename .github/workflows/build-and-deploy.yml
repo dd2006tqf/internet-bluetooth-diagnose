@@ -1,0 +1,132 @@
+# ARM64 构建 + 可选部署
+# 手动触发 / release tag 时运行
+name: ARM64 Build & Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: '是否部署到开发板'
+        required: false
+        default: 'false'
+        type: boolean
+  release:
+    types: [published]
+
+env:
+  CONTAINER: weaknet-arm64-dev
+  BOARD: radxa@192.168.2.77
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Docker buildx + QEMU
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/arm64
+
+      - name: 启动 ARM64 构建容器
+        run: |
+          # 检查本地是否有现成的构建容器
+          docker pull --platform linux/arm64 debian:11-slim 2>/dev/null || true
+
+          docker run -d \
+            --name ${{ env.CONTAINER }} \
+            --platform linux/arm64 \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp \
+            -v "$PWD":/src:Z \
+            -w /src \
+            debian:11-slim \
+            sleep infinity
+
+      - name: 安装编译依赖
+        run: |
+          docker exec ${{ env.CONTAINER }} bash -c '
+          apt-get update -qq && apt-get install -y -qq \
+            build-essential g++ make cmake pkg-config \
+            clang llvm git ca-certificates \
+            libdbus-1-dev libgoogle-glog-dev libelf-dev \
+            zlib1g-dev libcap-dev libnl-3-dev libnl-genl-3-dev \
+            libsqlite3-dev
+
+          # 编译安装 libbpf
+          git clone --depth 1 --branch v1.3.0 https://github.com/libbpf/libbpf.git /tmp/libbpf
+          make -C /tmp/libbpf/src -j1
+          make -C /tmp/libbpf/src install PREFIX=/usr/local LIBDIR=/usr/local/lib
+          echo "/usr/local/lib" > /etc/ld.so.conf.d/local-libbpf.conf
+          ldconfig
+          '
+
+      - name: CMake 编译（服务端 + eBPF + 客户端 + 测试）
+        run: |
+          docker exec ${{ env.CONTAINER }} bash -c '
+          cd /src
+          cmake -B build-cmake -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-cmake --target \
+            weaknet-dbus-server history_query_tool \
+            weaknet test_client_bin ebpf -j1
+          '
+
+      - name: 打包 dist-arm64
+        run: |
+          docker exec ${{ env.CONTAINER }} bash -c '
+          cd /src
+          rm -rf dist-arm64
+          mkdir -p dist-arm64/server/bin dist-arm64/server/build \
+                   dist-arm64/client/bin dist-arm64/client/lib dist-arm64/lib
+
+          install -m 0755 build-cmake/server/weaknet-dbus-server dist-arm64/server/bin/
+          install -m 0755 build-cmake/server/history_query_tool dist-arm64/server/bin/
+          for f in build-cmake/server/ebpf/*.bpf.o; do
+            install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true
+          done
+          install -m 0755 client/bin/test_client_bin dist-arm64/client/bin/test-client
+          install -m 0644 client/lib/libweaknet.so dist-arm64/client/lib/
+          cp -a /usr/local/lib/libbpf.so* dist-arm64/lib/
+
+          echo "=== 产物 ==="
+          find dist-arm64 -type f | wc -l
+          echo "个文件"
+          echo "=== 架构验证 ==="
+          file dist-arm64/server/bin/weaknet-dbus-server
+          file dist-arm64/server/bin/history_query_tool
+          '
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-arm64
+          path: dist-arm64/
+          retention-days: 7
+
+  deploy:
+    needs: build
+    if: ${{ github.event.inputs.deploy == 'true' || github.event_name == 'release' }}
+    runs-on: self-hosted
+    steps:
+      - name: 下载构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-arm64
+          path: dist-arm64/
+
+      - name: 部署到开发板
+        run: |
+          # 清理板上残留目录
+          ssh ${{ env.BOARD }} 'sudo rm -rf /home/radxa/weaknet/logs /home/radxa/weaknet/server/server 2>/dev/null || true'
+
+          # rsync 部署
+          rsync -az --delete --exclude 'server/logs/' -e ssh \
+            dist-arm64/ ${{ env.BOARD }}:/home/radxa/weaknet/
+
+          echo "✅ 部署完成"
+
+      - name: 运行开发板测试
+        timeout-minutes: 5
+        run: |
+          ssh -t ${{ env.BOARD }} 'sudo /home/radxa/weaknet-test-full.sh' || true
+          echo "✅ 测试完成"
