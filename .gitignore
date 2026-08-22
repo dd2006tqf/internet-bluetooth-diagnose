@@ -17,6 +17,8 @@ dist-arm64/
 # IDE
 .vscode/
 .idea/
+.codex/
+.trae/
 *.swp
 *.swo
 *~
@@ -53,6 +55,8 @@ server/vmlinux.h
 server/test/net_info
 server/test/test_ebpf
 server/test/test_net_info
+server/test/bin/
+server/test_logs/
 
 # 生成文件
 Makefile.autogen
