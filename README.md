@@ -37,21 +37,22 @@ cmake --build build -j$(nproc)
 ```
 AI-powered-Network-Diagnostics/
 ├── server/                 # 服务器端
-│   ├── bin/               # 编译产物
-│   ├── build/             # eBPF对象文件
 │   ├── include/           # 头文件
 │   ├── src/               # 源代码
-│   └── Makefile           # 服务器Makefile
+│   ├── test/              # 单元测试
+│   └── CMakeLists.txt     # 服务器构建配置
 ├── client/                # 客户端
-│   ├── bin/               # 编译产物
 │   ├── lib/               # 动态库
-│   ├── *.cpp              # 客户端源码
-│   └── *.h                # 头文件
-├── config.mk              # 项目配置
-├── Makefile               # 主Makefile
-├── install.sh             # 安装脚本
-├── start-server.sh        # 服务器启动脚本
-├── test-client.sh         # 客户端测试脚本
+│   ├── bin/               # 测试程序
+│   ├── client.cpp         # 客户端源码
+│   ├── weaknet_client.h   # C API 接口
+│   └── CMakeLists.txt     # 客户端构建配置
+├── CMakeLists.txt         # 根构建配置
+├── tools/                 # 工具脚本
+│   ├── ci.sh              # CI/部署脚本
+│   └── weaknet-test-full.sh  # 开发板测试脚本
+├── docs/                  # 项目文档
+├── openspec/              # OpenSpec 变更管理
 └── README.md              # 项目说明
 ```
 
