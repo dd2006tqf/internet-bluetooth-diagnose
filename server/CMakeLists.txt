@@ -4,6 +4,12 @@ list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*\\.bpf\\.c$")
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*history_query_tool\\.cpp$")
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*main\\.cpp$")
 
+# ---- 公共代码库（客户端和服务端共享 serializer + logger） ----
+add_library(weaknet_common STATIC src/serializer.cpp src/logger.cpp)
+target_include_directories(weaknet_common PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+set_target_properties(weaknet_common PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # ---- 服务端静态库（供测试链接） ----
 add_library(server_lib STATIC ${SERVER_SOURCES})
 target_include_directories(server_lib PUBLIC

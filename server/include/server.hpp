@@ -61,12 +61,9 @@ struct ServerContext {
     WeakNetMgr* weak_mgr = nullptr;
 
     // 蓝牙监测器
-    // 注意：这些监控器指针被「D-Bus handler 主线程读取」(dbus_service.cpp 的
-    // handleGetDnsStats 等) 和「各自监控线程写入」(start_*_monitor_thread 里
-    // = monitor.get() / = nullptr) 并发无锁访问，是数据竞争根因（TSan 已证实：
-    // dbus_service.cpp:428 read vs server.cpp:495 write）。
-    // 故改为 atomic，读写必须用 load()/store()。
-    std::atomic<BtMonitor*> bt_monitor{nullptr};
+    // 蓝牙监测器（由 ServerContext 持有 ownership，线程仅通过裸指针使用）
+    // 同 eBPF 监控器模式：start_bt_monitor_thread 创建，~ServerContext() 删除
+    BtMonitor* bt_monitor = nullptr;
 
     // eBPF 监控器（由 ServerContext 统一持有 ownership，线程仅通过裸指针使用）
     // 生命周期：创建于 start_server() 线程启动前，销毁于 ~ServerContext()（定义在 server.cpp）。

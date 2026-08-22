@@ -36,8 +36,8 @@ std::vector<NetInfo> WeakNetMgr::collectCurrentInterfaces() {
         result.push_back(info);
     }
     // 标记当前上网网卡（using 标志）
+    // 唯一事实源 = UsingInterfaceManager（启动后不重复调 start()）
     auto usingMgr = UsingInterfaceManager::getInstance();
-    usingMgr->start();
     std::string usingIf = usingMgr->getCurrentInterface();
     for (auto& x : result) x.setUsingNow(!usingIf.empty() && x.ifName() == usingIf);
     LOG_INFO(LogModule::WEAK_MGR, "collectCurrentInterfaces end: " << result.size() << " ifaces, using=" << (usingIf.empty() ? "(none)" : usingIf));
@@ -111,7 +111,6 @@ bool WeakNetMgr::updateWifiRssi(std::vector<NetInfo>& list, const std::string& c
 
 bool WeakNetMgr::updateCurrentUsing(std::vector<NetInfo>& list, bool printLog, std::string* outIfName, uint32_t* outFlags) {
     auto usingMgr = UsingInterfaceManager::getInstance();
-    usingMgr->start();
     std::string usingIf = usingMgr->getCurrentInterface();
     uint32_t flags = usingMgr->getMethodFlags();
 

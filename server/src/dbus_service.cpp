@@ -354,7 +354,7 @@ bool DbusService::handlePing(DBusConnection* conn, DBusMessage* msg) {
 bool DbusService::handleGetBluetoothDevices(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleGetBluetoothDevices called");
 
-    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor.load() : nullptr;
+    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
     if (!monitor) {
         // 无蓝牙监测器 → 返回空数组
         DBusMessage* reply = dbus_message_new_method_return(msg);
@@ -396,7 +396,7 @@ bool DbusService::handleGetBluetoothAdapter(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor.load() : nullptr;
+    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
     if (monitor && monitor->isInitialized()) {
         auto state = monitor->getAdapterState();
         result = std::string("Powered:") + (state.powered ? "1" : "0")

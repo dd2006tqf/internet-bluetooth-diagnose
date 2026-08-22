@@ -1060,16 +1060,16 @@ std::vector<std::string> BtMonitor::getStringArrayProperty(DBusConnection* conn,
 // ============================================================================
 
 void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** /*outMonitor*/) {
-    // BtMonitor* 已改为 atomic 成员，写回由本线程序直接 ctx->bt_monitor.store()；
-    // outMonitor 参数保留以兼容调用签名，但不再直接取值。
-    // 线程加入可 join 句柄，由主线程退出路径 join，避免 detached 线程在 ctx 析构后野访问。
+    // BtMonitor 由 ServerContext 持有 ownership（裸指针），同 eBPF 监控器模式。
+    // start_server() 在线程启动前创建实例，线程通过 ctx->bt_monitor 使用。
     ctx->bt_thread = std::thread([ctx]() {
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread started");
 
-        // 创建独立的 BtMonitor 实例
-        auto monitor = std::make_unique<BtMonitor>();
-        // 将原始指针写回 ServerContext(atomic)，供 DbusService 查询读取
-        ctx->bt_monitor.store(monitor.get());
+        auto* monitor = ctx->bt_monitor;
+        if (!monitor) {
+            LOG_ERROR(LogModule::BLUETOOTH, "BT monitor: ctx->bt_monitor is null");
+            return;
+        }
 
         if (!monitor->initialize()) {
             LOG_INFO(LogModule::BLUETOOTH, "BT monitor: no Bluetooth adapter available, "
@@ -1190,7 +1190,7 @@ void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** /*outMonitor*/) {
 
         monitor->cleanup();
         monitor->stopPhase2();  // Phase 2: 释放 eBPF 内核资源
-        ctx->bt_monitor.store(nullptr);
+        // bt_monitor 由 ServerContext 析构时删除，线程不负责 delete
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread stopped");
     });
 }

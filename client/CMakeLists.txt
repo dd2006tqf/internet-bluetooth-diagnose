@@ -5,14 +5,11 @@ target_include_directories(weaknet PUBLIC
     ${CMAKE_SOURCE_DIR}/server/include)
 
 find_package(PkgConfig REQUIRED)
-# 复用服务端的 pthread 配置
 pkg_check_modules(DBUS1 REQUIRED IMPORTED_TARGET dbus-1)
 
-# 客户端库依赖服务端源码（serializer、logger）
-target_sources(weaknet PRIVATE
-    ${CMAKE_SOURCE_DIR}/server/src/serializer.cpp
-    ${CMAKE_SOURCE_DIR}/server/src/logger.cpp)
+# 客户端链接弱网公共代码库（serializer + logger）
 target_link_libraries(weaknet PRIVATE
+    weaknet_common
     PkgConfig::DBUS1 glog pthread)
 set_target_properties(weaknet PROPERTIES
     OUTPUT_NAME weaknet

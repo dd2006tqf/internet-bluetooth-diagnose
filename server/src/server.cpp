@@ -38,6 +38,7 @@
 #include "http_latency_monitor.hpp"
 #include "process_net_profiler.hpp"
 #include "database_manager.hpp"
+#include "using_iface.h"
 #include <iomanip>
 
 using namespace std::chrono_literals;
@@ -63,11 +64,12 @@ ServerContext::~ServerContext() {
     if (weak_mgr) { delete weak_mgr; weak_mgr = nullptr; }
     if (db_mgr) { delete db_mgr; db_mgr = nullptr; }
 
-    // eBPF 监控器：线程已 join 后安全删除
+    // eBPF 监控器 + bt_monitor：线程已 join 后安全删除
     delete dns_monitor; dns_monitor = nullptr;
     delete wifi_loss_monitor; wifi_loss_monitor = nullptr;
     delete http_latency_monitor; http_latency_monitor = nullptr;
     delete process_net_profiler; process_net_profiler = nullptr;
+    delete bt_monitor; bt_monitor = nullptr;
 }
 
 // 共享列表迁移至 ServerContext，在 server.hpp 中定义
@@ -403,7 +405,7 @@ static void start_network_quality_thread(ServerContext* ctx) {
 
                 // 获取蓝牙 RSSI（取所有已连接设备的平均 RSSI）
                 int btRssi = -1000;
-                if (auto* mon = ctx->bt_monitor.load(); mon && mon->isInitialized()) {
+                if (auto* mon = ctx->bt_monitor; mon && mon->isInitialized()) {
                     auto rssiSnapshot = mon->getRssiSnapshot();
                     int sum = 0, count = 0;
                     for (const auto& [mac, rssi] : rssiSnapshot) {
@@ -448,7 +450,7 @@ static void start_network_quality_thread(ServerContext* ctx) {
             // 可检测 "active 但卡顿" 状态，eBPF 不可用时自动降级
             // ================================================================
             try {
-                BtMonitor* mon = ctx->bt_monitor.load();
+                BtMonitor* mon = ctx->bt_monitor;
                 if (mon && mon->isInitialized()) {
                     auto connected = mon->getConnectedDevices();
                     for (const auto& dev : connected) {
@@ -686,6 +688,9 @@ int start_server() {
     // 初始化WeakNetMgr（一次性预建，各监控线程不再各自 new）
     if (!ctx.weak_mgr) ctx.weak_mgr = new WeakNetMgr();
 
+    // 启动 UsingInterfaceManager（一次性启动，不重复调用 start()）
+    UsingInterfaceManager::getInstance()->start();
+
     // 初始化历史数据持久化管理器
     LOG_INFO(LogModule::SYSTEM, "initializing database manager (path=" << kDatabasePath << ")");
     ctx.db_mgr = new DatabaseManager(kDatabasePath);
@@ -723,8 +728,8 @@ int start_server() {
     start_network_quality_thread(&ctx);
     // 启动蓝牙监测线程 (通过 BlueZ D-Bus API)
     LOG_INFO(LogModule::BLUETOOTH, "starting bluetooth monitor thread");
-    // ctx.bt_monitor 是 atomic<BtMonitor*>，不能取地址作 BtMonitor**；改传 nullptr 并在
-    // start_bt_monitor_thread 内部已直接写 ctx->bt_monitor.store()（见其实现）。
+    // 蓝牙监测器（同 eBPF 监控器模式，由 ServerContext 持有 ownership）
+    ctx.bt_monitor = new BtMonitor();
     start_bt_monitor_thread(&ctx, nullptr);
 
     // ================================================================

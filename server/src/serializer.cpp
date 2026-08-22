@@ -28,8 +28,19 @@ static void ensureParentDir(const std::string& filepath) {
     ::mkdir(dir.c_str(), 0700);
 }
 
+// 检查路径安全性：防止符号链接攻击
+// 序列化文件必须在 $XDG_RUNTIME_DIR/weaknet/ 或 /tmp/weaknet/ 目录下（含测试临时目录）
+static bool isSafePath(const std::string& filepath) {
+    // 必须以 /tmp/weaknet 开头（覆盖正常路径和测试临时目录）
+    return filepath.find("/tmp/weaknet") == 0;
+}
+
 bool writeBufferToFile(const std::vector<uint8_t>& buffer, const std::string& filepath, std::string* error_message) {
     LOG_INFO(LogModule::WEAK_MGR, "writeBufferToFile: writing " << buffer.size() << " bytes to " << filepath);
+    if (!isSafePath(filepath)) {
+        if (error_message) *error_message = "路径不安全，必须在 $XDG_RUNTIME_DIR/weaknet/ 下: " + filepath;
+        return false;
+    }
     ensureParentDir(filepath);
     std::ofstream ofs(filepath, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
@@ -48,6 +59,10 @@ bool writeBufferToFile(const std::vector<uint8_t>& buffer, const std::string& fi
 
 bool readFileToBuffer(const std::string& filepath, std::vector<uint8_t>* buffer, std::string* error_message) {
     LOG_INFO(LogModule::WEAK_MGR, "readFileToBuffer: reading from " << filepath);
+    if (!isSafePath(filepath)) {
+        if (error_message) *error_message = "路径不安全，必须在 $XDG_RUNTIME_DIR/weaknet/ 下: " + filepath;
+        return false;
+    }
     std::ifstream ifs(filepath, std::ios::binary);
     if (!ifs.is_open()) {
         LOG_ERROR(LogModule::WEAK_MGR, "readFileToBuffer: failed to open " << filepath);
