@@ -620,12 +620,12 @@ void start_history_persistence_thread(ServerContext* ctx) {
         LOG_INFO(LogModule::SYSTEM, "History persistence thread started");
 
         auto last_cleanup = std::chrono::steady_clock::now();
-        const auto persist_interval = std::chrono::minutes(5);
+        const auto persist_interval = std::chrono::minutes(1);
         const auto cleanup_interval = std::chrono::hours(24);
 
         while (ctx->running.load()) {
-            // 等待 5 分钟（每秒检查 running 标志）
-            for (int i = 0; i < 300 && ctx->running.load(); ++i) {
+            // 等待 1 分钟（每秒检查 running 标志）
+            for (int i = 0; i < 60 && ctx->running.load(); ++i) {
                 std::this_thread::sleep_for(1s);
             }
             if (!ctx->running.load()) break;
