@@ -208,6 +208,25 @@
 
 **禁止跳过本地验证直接 push。**
 
+### 开发板服务管理
+
+- **只用 systemd 管理服务，不要用 tmux/nohup 手动启动**
+- 服务文件：`tools/weaknet-server.service`
+- 启动服务前必须杀掉所有旧进程，避免数据库锁冲突
+- 数据库路径：`/tmp/weaknet/history.db`
+- 数据采集间隔：10 秒
+
+**部署命令（记住）：**
+```bash
+sudo killall weaknet-dbus-server 2>/dev/null
+sudo chown -R radxa:radxa /tmp/weaknet/
+sudo systemctl restart weaknet-server
+```
+
+**禁止操作：**
+- 禁止用 tmux/nohup 手动启动服务器
+- 禁止两个进程同时访问同一个数据库
+
 ## 关键操作规则
 
 ### Footprint 与 drift_reason
