@@ -54,6 +54,9 @@ AI-powered-Network-Diagnostics/
 │   └── weaknet-test-full.sh   # 开发板端测试脚本
 ├── cmake/                     # CMake 工具链
 ├── docs/                      # 项目文档
+│   ├── ai/                    # 工作流相关文档（openspec、workflow 等）
+│   ├── ideas/                 # 功能设想与技术草案（孵化区）
+│   └── ...                    # 架构设计、部署指南等
 ├── scripts/                   # harness 工作流脚本
 ├── openspec/                  # OpenSpec 变更管理
 ├── .github/workflows/         # GitHub Actions CI/CD
@@ -209,6 +212,7 @@ ctest --test-dir build/server
 - [交叉编译与开发板部署](docs/交叉编译与开发板部署.md) - ARM64 部署指南
 - [蓝牙监控优化方案](docs/蓝牙监控优化实现方案.md) - 蓝牙功能优化
 - [蓝牙修复方案](docs/蓝牙修复方案.md) - 蓝牙事件路由修复
+- [功能设想与技术草案](docs/ideas/) - 新功能孵化区，记录灵感与方案
 - [客户端API文档](client/README_CLIENT.md)
 - [动态库使用指南](client/README_LIBRARY.md)
 

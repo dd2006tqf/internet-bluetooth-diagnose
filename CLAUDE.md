@@ -25,6 +25,7 @@
     - `docs/ai/` 下所有文档：`openspec.md`、`workflow.md`、`golden-principles.md`、`quick-brief.md`、`testing.md`、`rca.md`、`evaluation.md`、`implementation-economy.md`、`check-rules.md`、`build.md`、`cpp.md`、`tooling.md`、`工作流使用指南.md`
     - `prompts/` 下所有角色提示词：`planner.md`、`generator.md`、`evaluator.md`、`resume.md`、`handoff.md`、`rca.md`、`full-code-review.md`、`debt-fix.md`、`debt-scan.md`、`archive.md`
   - `docs/` 下项目领域文档（架构、交叉编译与开发板部署、项目评估等）
+  - `docs/ideas/` 下的功能设想文档（注意：这些是孵化中的想法，不受 OpenSpec 工作流约束）
 - 这是硬性前置要求，不是可选项。跳过通读直接开始任务会导致规划/实现/评审违反铁律而返工。
 - 涉及具体 change 时，还必须阅读该 change 的 `proposal.md`、`design.md`、`specs/`、`tasks.md` 及 `harness/` 下证据。
 
