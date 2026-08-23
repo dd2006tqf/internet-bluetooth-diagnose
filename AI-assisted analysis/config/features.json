@@ -1,0 +1,48 @@
+{
+  "version": "1.0",
+  "description": "网络指标特征配置",
+  "window_size": 6,
+  "features": [
+    {
+      "name": "rtt",
+      "source": "rtt_monitor",
+      "column": "rtt_ms",
+      "unit": "ms",
+      "normal": {"min": 20, "max": 80},
+      "anomaly": {"min": 200, "max": 500}
+    },
+    {
+      "name": "jitter",
+      "source": "jitter_monitor",
+      "column": "jitter_ms",
+      "unit": "ms",
+      "normal": {"min": 5, "max": 20},
+      "anomaly": {"min": 50, "max": 100}
+    },
+    {
+      "name": "rssi",
+      "source": "rssi_monitor",
+      "column": "rssi_dbm",
+      "unit": "dBm",
+      "normal": {"min": -60, "max": -40},
+      "anomaly": {"min": -90, "max": -75}
+    },
+    {
+      "name": "tcp_loss",
+      "source": "tcp_loss_monitor",
+      "column": "tcp_loss_rate",
+      "unit": "%",
+      "normal": {"min": 0, "max": 0.5},
+      "anomaly": {"min": 3, "max": 10}
+    },
+    {
+      "name": "traffic",
+      "source": "traffic_analyzer",
+      "column": "traffic_mbps",
+      "unit": "MB/s",
+      "normal": {"min": 0.1, "max": 5},
+      "anomaly_high": {"min": 50, "max": 100},
+      "anomaly_low": {"min": 0.001, "max": 0.01}
+    }
+  ]
+}
