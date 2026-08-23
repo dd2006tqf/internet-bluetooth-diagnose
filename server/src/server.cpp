@@ -620,12 +620,12 @@ void start_history_persistence_thread(ServerContext* ctx) {
         LOG_INFO(LogModule::SYSTEM, "History persistence thread started");
 
         auto last_cleanup = std::chrono::steady_clock::now();
-        const auto persist_interval = std::chrono::minutes(1);
+        const auto persist_interval = std::chrono::seconds(10);
         const auto cleanup_interval = std::chrono::hours(24);
 
         while (ctx->running.load()) {
-            // 等待 1 分钟（每秒检查 running 标志）
-            for (int i = 0; i < 60 && ctx->running.load(); ++i) {
+            // 等待 10 秒（每秒检查 running 标志）
+            for (int i = 0; i < 10 && ctx->running.load(); ++i) {
                 std::this_thread::sleep_for(1s);
             }
             if (!ctx->running.load()) break;
@@ -767,7 +767,7 @@ int start_server() {
 
     // 启动历史数据持久化线程（每 5 分钟写入一次）
     if (ctx.db_mgr && ctx.db_mgr->isOpen()) {
-        LOG_INFO(LogModule::SYSTEM, "starting history persistence thread (interval=5min)");
+        LOG_INFO(LogModule::SYSTEM, "starting history persistence thread (interval=10s)");
         start_history_persistence_thread(&ctx);
     }
 
