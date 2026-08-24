@@ -9,6 +9,7 @@ ExecStart=/bin/bash -c 'export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000
 Restart=on-failure
 RestartSec=5
 Environment=LD_LIBRARY_PATH=/usr/local/lib
+LimitNOFILE=65536
 User=radxa
 
 [Install]
