@@ -22,6 +22,7 @@ dist-arm64/
 *.swp
 *.swo
 *~
+.cursorrules
 
 # 日志
 logs/

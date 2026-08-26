@@ -38,3 +38,78 @@ Use fresh context selectively for high-risk work or independent review. In one w
 Do not call global `openspec`, `/opsx` commands, `@latest`, sync, bulk archive, `--skip-specs` or `--no-validate`. Use the repository wrappers.
 
 An existing OpenSpec change without AutoAI evidence must be attached through `scripts/change_adopt.sh`; never create or overwrite its `harness/` directory by hand. A partial archive failure blocks all managed work until `scripts/archive_recover.sh` verifies an unambiguous state, strictly validates main specs and records an explicit acknowledgment.
+
+## Superpowers Skills
+
+This project integrates skills from the [superpowers](https://github.com/obra/superpowers) framework, located in `skills/`.
+
+### Layering Model
+
+```
+┌─────────────────────────────────────────────────┐
+│  Workflow (OpenSpec)                             │
+│  Defines: WHAT process to follow, WHO does what │
+│  Planner → Generator → Evaluator lifecycle      │
+├─────────────────────────────────────────────────┤
+│  Skills (superpowers)                           │
+│  Define: HOW to do specific tasks well          │
+│  Techniques, patterns, checklists, anti-patterns│
+├─────────────────────────────────────────────────┤
+│  Project Rules (AGENTS.md, CLAUDE.md)            │
+│  Define: Project-specific constraints & commands │
+│  Evidence wrappers, OpenSpec CLI, tool paths    │
+└─────────────────────────────────────────────────┘
+```
+
+- **Workflow** = the process engine (OpenSpec change lifecycle, role responsibilities)
+- **Skills** = technique guides that agents invoke when doing specific tasks within the workflow
+- **Project rules** = constraints and commands specific to this project
+
+Workflow rules and project constraints ALWAYS take precedence over skill guidance. Skills supplement the workflow — they never override it.
+
+### Available Skills
+
+**Design & Planning:**
+- `brainstorming` — Classify request (spike/bounded/architectural), explore approaches, present designs. Complements the Planner role's design phase.
+- `writing-plans` — Write detailed implementation plans with bite-sized TDD steps. Use after design approval.
+
+**Execution:**
+- `executing-plans` — Execute a written plan task-by-task with verification checkpoints.
+- `subagent-driven-development` — Dispatch fresh subagent per task with review between tasks.
+- `using-git-worktrees` — Ensure isolated workspace. Always get explicit user consent before creating worktrees.
+- `finishing-a-development-branch` — Verify tests, present integration options, clean up. For OpenSpec changes, use `scripts/change_archive.sh`.
+
+**Testing:**
+- `test-driven-development` — RED-GREEN-REFACTOR cycle. Mandatory for all behavior changes unless an explicit exception is approved.
+
+**Debugging:**
+- `systematic-debugging` — 4-phase root cause investigation. Use whenever encountering bugs, test failures, or unexpected behavior.
+- `verification-before-completion` — Evidence before claims. Run verification commands before stating any completion or success.
+
+**Collaboration:**
+- `requesting-code-review` — Dispatch a reviewer subagent after completing tasks or before merging.
+- `receiving-code-review` — Technical evaluation of review feedback, not performative agreement.
+
+**Meta:**
+- `using-superpowers` — How to discover and invoke skills.
+- `writing-skills` — Create or modify skills following TDD principles.
+
+### How to Use Them Together
+
+1. **Starting a new task:** Use `brainstorming` to classify the work and explore design options. For OpenSpec changes, feed results into the Planner's proposal/design phase.
+
+2. **After design approval:** Use `writing-plans` to create detailed implementation plans. For OpenSpec changes, align with the change's `tasks.md`.
+
+3. **During implementation:** Skills like `test-driven-development`, `systematic-debugging`, and `verification-before-completion` are invoked automatically by the agent when relevant situations arise (e.g., when writing tests, when debugging, when about to claim completion).
+
+4. **Completing work:** Use `requesting-code-review` for final review, then `finishing-a-development-branch` (or `scripts/change_archive.sh` for OpenSpec changes).
+
+5. **Working outside OpenSpec:** For quick fixes, spikes, or exploratory work, the full skill set is available. Just remember: project rules (no auto-commit, no auto-worktree) still apply.
+
+### Key Integration Points
+
+- The Planner role's TDD applicability review is informed by `test-driven-development` skill's anti-patterns checklist.
+- The Generator role's RED-GREEN-REFACTOR execution uses `test-driven-development` skill's C++/gtest examples.
+- The Evaluator role's evidence-based verification uses `verification-before-completion` skill's verification patterns.
+- Bug fixing (whether inside or outside OpenSpec) follows `systematic-debugging` skill's 4-phase investigation process.
+- All skill guidance is subordinate to AGENTS.md rules (e.g., no automatic worktree creation, explicit user consent required for Git operations).

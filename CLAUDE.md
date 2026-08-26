@@ -45,6 +45,77 @@
   - Evaluator 发现未规划的表面、错误的需求/任务/分类/范围时，标记为 `Blocked` 返回 Planner。
   - 归档 `archive_failure` 通过 `scripts/archive_recover.sh` 处理，不得编辑快照绕过。
 
+## Superpowers Skills
+
+本项目集成了来自 [superpowers](https://github.com/obra/superpowers) 框架的技能，存放在 `skills/` 目录下。
+
+### 分层模型
+
+```
+┌─────────────────────────────────────────────────┐
+│  工作流 (OpenSpec)                              │
+│  定义：做什么流程，谁来做                        │
+│  Planner → Generator → Evaluator 生命周期       │
+├─────────────────────────────────────────────────┤
+│  技能 (superpowers)                            │
+│  定义：怎么把具体事情做好                        │
+│  技术、模式、检查清单、反模式                    │
+├─────────────────────────────────────────────────┤
+│  项目规则 (AGENTS.md, CLAUDE.md)                 │
+│  定义：项目特定约束和命令                        │
+│  证据包装器、OpenSpec CLI、工具路径              │
+└─────────────────────────────────────────────────┘
+```
+
+- **工作流** = 流程引擎（OpenSpec change 生命周期、角色职责）
+- **技能** = 技术指南，Agent 在工作流中执行具体任务时调用
+- **项目规则** = 本项目特定的约束和命令
+
+工作流规则和项目约束**始终优先于**技能指导。技能补充工作流，永不替代。
+
+### 可用技能
+
+**设计与规划：**
+- `brainstorming` — 分类请求（spike/bounded/architectural），探索方案，呈现设计。补充 Planner 角色的设计阶段。
+- `writing-plans` — 编写详细实现计划，包含 TDD 小步骤。设计批准后使用。
+
+**执行：**
+- `executing-plans` — 逐任务执行已写好的计划。
+- `subagent-driven-development` — 每个任务调度新子代理，任务间评审。
+- `using-git-worktrees` — 确保隔离工作区。创建 worktree 前必须获得用户明确同意。
+- `finishing-a-development-branch` — 验证测试，提供集成选项，清理。OpenSpec change 使用 `scripts/change_archive.sh`。
+
+**测试：**
+- `test-driven-development` — RED-GREEN-REFACTOR 循环。所有行为变更必须遵循，除非有明确批准的例外。
+
+**调试：**
+- `systematic-debugging` — 4阶段根因调查。遇到 bug、测试失败或意外行为时使用。
+- `verification-before-completion` — 证据先于声明。在声明完成/通过前必须运行验证命令。
+
+**协作：**
+- `requesting-code-review` — 完成任务后或合并前调度评审子代理。
+- `receiving-code-review` — 技术评估评审反馈，而非表演性赞同。
+
+**元技能：**
+- `using-superpowers` — 如何发现和调用技能。
+- `writing-skills` — 遵循 TDD 原则创建或修改技能。
+
+### 如何配合使用
+
+1. **开始新任务**：使用 `brainstorming` 分类工作、探索设计方案。OpenSpec change 的结果输入 Planner 的 proposal/design 阶段。
+2. **设计批准后**：使用 `writing-plans` 创建详细实现计划。OpenSpec change 与 `tasks.md` 对齐。
+3. **实现过程中**：`test-driven-development`、`systematic-debugging`、`verification-before-completion` 等技能在 Agent 遇到相关场景时自动调用。
+4. **完成工作**：使用 `requesting-code-review` 最终评审，然后 `finishing-a-development-branch`（或 OpenSpec change 使用 `scripts/change_archive.sh`）。
+5. **OpenSpec 外工作**：快速修复、spike、探索性工作可使用完整技能集。但项目规则（禁止自动 commit/worktree）仍然适用。
+
+### 关键集成点
+
+- Planner 角色的 TDD 适用性评审参考 `test-driven-development` 技能的反模式清单。
+- Generator 角色的 RED-GREEN-REFACTOR 执行使用 `test-driven-development` 技能的 C++/gtest 示例。
+- Evaluator 角色的基于证据的验证使用 `verification-before-completion` 技能的验证模式。
+- Bug 修复（无论 OpenSpec 内外）遵循 `systematic-debugging` 技能的 4 阶段调查流程。
+- 所有技能指导从属于 AGENTS.md 规则（如：禁止自动 worktree 创建，Git 操作需用户同意）。
+
 ## Hard rules
 
 > 铁律集中于此。违反以下任何一条导致的后果（fingerprint 失效、evidence 损坏、归档失败），Agent 不得自行修补，必须废弃当前 change 重来。
