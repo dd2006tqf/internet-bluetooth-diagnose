@@ -62,6 +62,11 @@ private:
     // 将字符串数组作为返回
     bool replyStringArray(DBusConnection* conn, DBusMessage* msg, const std::vector<std::string>& arr);
 
+    // 内部辅助方法：发送 D-Bus 信号（带重试）
+    bool sendSignalInternal(const std::string& signalName,
+                           const std::vector<std::pair<int, const void*>>& args,
+                           int32_t counter);
+
 private:
     ServerContext* ctx_;
     // 保护对同一个 DBusConnection 的并发信号发射写

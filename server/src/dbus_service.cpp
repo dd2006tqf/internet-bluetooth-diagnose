@@ -87,43 +87,44 @@ bool DbusService::register_on_connection(DBusConnection* conn) {
     return dbus_connection_register_object_path(conn, kObjectPath, &vtable, this);
 }
 
-bool DbusService::emitChanged(const std::string& message, int32_t counter) {
-    std::lock_guard<std::mutex> lock(send_mutex_);
+// 内部辅助方法：发送 D-Bus 信号（带重试）
+bool DbusService::sendSignalInternal(const std::string& signalName,
+                                    const std::vector<std::pair<int, const void*>>& args,
+                                    int32_t counter) {
+    if (!ctx_ || !ctx_->connection) return false;
 
     const int max_retries = 3;
     const int retry_delay_ms = 100;
 
     for (int attempt = 0; attempt < max_retries; ++attempt) {
-        DBusMessage* sig = dbus_message_new_signal(kObjectPath, kInterface, kSignalChanged);
-        if (!sig) {
-            LOG_ERROR(LogModule::DBUS, "emitChanged: failed to create signal");
-            return false;
-        }
-        DBusMessageIter args;
-        dbus_message_iter_init_append(sig, &args);
-        const char* s = message.c_str();
-        if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s)) {
-            dbus_message_unref(sig);
-            return false;
-        }
-        if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &counter)) {
-            dbus_message_unref(sig);
+        DBusMessage* signal = dbus_message_new_signal(kObjectPath, kInterface, signalName.c_str());
+        if (!signal) {
+            LOG_ERROR(LogModule::DBUS, "sendSignalInternal: failed to create signal " << signalName);
             return false;
         }
 
-        bool ok = dbus_connection_send(ctx_->connection, sig, nullptr);
+        DBusMessageIter iter;
+        dbus_message_iter_init_append(signal, &iter);
+
+        // 添加所有参数
+        for (const auto& [type, value] : args) {
+            if (!dbus_message_iter_append_basic(&iter, type, value)) {
+                LOG_ERROR(LogModule::DBUS, "sendSignalInternal: failed to append argument for " << signalName);
+                dbus_message_unref(signal);
+                return false;
+            }
+        }
+
+        bool ok = dbus_connection_send(ctx_->connection, signal, nullptr);
         dbus_connection_flush(ctx_->connection);
-        dbus_message_unref(sig);
+        dbus_message_unref(signal);
 
         if (ok) {
-            // 序列化到文件（保持原有逻辑）
-            ChangedPayload payload{message, counter};
-            std::string err;
-            serializeChangedPayloadToFile(payload, kSignalSerializedFile, &err);
+            LOG_INFO(LogModule::DBUS, "sendSignalInternal: emitted " << signalName << " counter=" << counter);
             return true;
         }
 
-        LOG_WARNING(LogModule::DBUS, "emitChanged: attempt " << attempt + 1
+        LOG_WARNING(LogModule::DBUS, "sendSignalInternal(" << signalName << "): attempt " << attempt + 1
                     << " failed, retrying in " << retry_delay_ms << "ms");
 
         if (attempt < max_retries - 1) {
@@ -131,8 +132,30 @@ bool DbusService::emitChanged(const std::string& message, int32_t counter) {
         }
     }
 
-    LOG_ERROR(LogModule::DBUS, "emitChanged: all " << max_retries << " attempts failed");
+    LOG_ERROR(LogModule::DBUS, "sendSignalInternal(" << signalName << "): all " << max_retries << " attempts failed");
     return false;
+}
+
+bool DbusService::emitChanged(const std::string& message, int32_t counter) {
+    std::lock_guard<std::mutex> lock(send_mutex_);
+
+    // 构造参数列表
+    const char* s = message.c_str();
+    std::vector<std::pair<int, const void*>> args = {
+        {DBUS_TYPE_STRING, &s},
+        {DBUS_TYPE_INT32, &counter}
+    };
+
+    bool ok = sendSignalInternal(kSignalChanged, args, counter);
+
+    // 序列化到文件（保持原有逻辑）
+    if (ok) {
+        ChangedPayload payload{message, counter};
+        std::string err;
+        serializeChangedPayloadToFile(payload, kSignalSerializedFile, &err);
+    }
+
+    return ok;
 }
 
 // MessageHandler 实现已移动到静态自由函数
@@ -148,8 +171,23 @@ bool DbusService::handleGet(DBusConnection* conn, DBusMessage* msg) {
     DBusMessageIter args;
     dbus_message_iter_init_append(reply, &args);
     const char* s = reply_text;
-    if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s)) { dbus_message_unref(reply); return false; }
-    if (!dbus_connection_send(conn, reply, nullptr)) { dbus_message_unref(reply); return false; }
+    if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s)) {
+        LOG_ERROR(LogModule::DBUS, "handleGet: failed to append message");
+        dbus_message_unref(reply);
+        // 发送错误回复
+        DBusMessage* error_reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", "Failed to append message");
+        if (error_reply) {
+            dbus_connection_send(conn, error_reply, nullptr);
+            dbus_connection_flush(conn);
+            dbus_message_unref(error_reply);
+        }
+        return false;
+    }
+    if (!dbus_connection_send(conn, reply, nullptr)) {
+        LOG_ERROR(LogModule::DBUS, "handleGet: failed to send reply");
+        dbus_message_unref(reply);
+        return false;
+    }
     dbus_connection_flush(conn);
     dbus_message_unref(reply);
     std::string err;
@@ -166,12 +204,25 @@ bool DbusService::replyStringArray(DBusConnection* conn, DBusMessage* msg, const
     DBusMessageIter iter;
     dbus_message_iter_init_append(reply, &iter);
     DBusMessageIter array_iter;
-    if (!dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &array_iter)) { dbus_message_unref(reply); return false; }
+    if (!dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &array_iter)) {
+        LOG_ERROR(LogModule::DBUS, "replyStringArray: failed to open array container");
+        dbus_message_unref(reply);
+        return false;
+    }
     for (const auto& s : arr) {
         const char* cs = s.c_str();
-        if (!dbus_message_iter_append_basic(&array_iter, DBUS_TYPE_STRING, &cs)) { dbus_message_iter_close_container(&iter, &array_iter); dbus_message_unref(reply); return false; }
+        if (!dbus_message_iter_append_basic(&array_iter, DBUS_TYPE_STRING, &cs)) {
+            LOG_ERROR(LogModule::DBUS, "replyStringArray: failed to append string");
+            dbus_message_iter_close_container(&iter, &array_iter);
+            dbus_message_unref(reply);
+            return false;
+        }
     }
-    if (!dbus_message_iter_close_container(&iter, &array_iter)) { dbus_message_unref(reply); return false; }
+    if (!dbus_message_iter_close_container(&iter, &array_iter)) {
+        LOG_ERROR(LogModule::DBUS, "replyStringArray: failed to close array container");
+        dbus_message_unref(reply);
+        return false;
+    }
     bool ok = dbus_connection_send(conn, reply, nullptr);
     dbus_connection_flush(conn);
     dbus_message_unref(reply);
@@ -207,87 +258,31 @@ bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
 }
 
 bool DbusService::emitSpecificSignal(const std::string& signalName, const std::string& message, int32_t counter) {
-    if (!ctx_ || !ctx_->connection) return false;
     std::lock_guard<std::mutex> lock(send_mutex_);
 
-    const int max_retries = 3;
-    const int retry_delay_ms = 100;
+    // 构造参数列表
+    const char* msg = message.c_str();
+    std::vector<std::pair<int, const void*>> args = {
+        {DBUS_TYPE_STRING, &msg},
+        {DBUS_TYPE_INT32, &counter}
+    };
 
-    for (int attempt = 0; attempt < max_retries; ++attempt) {
-        DBusMessage* signal = dbus_message_new_signal(kObjectPath, kInterface, signalName.c_str());
-        if (!signal) return false;
-
-        DBusMessageIter iter;
-        dbus_message_iter_init_append(signal, &iter);
-
-        const char* msg = message.c_str();
-        if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &msg)) {
-            dbus_message_unref(signal);
-            return false;
-        }
-
-        if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &counter)) {
-            dbus_message_unref(signal);
-            return false;
-        }
-
-        bool ok = dbus_connection_send(ctx_->connection, signal, nullptr);
-        dbus_connection_flush(ctx_->connection);
-        dbus_message_unref(signal);
-
-        if (ok) {
-            LOG_INFO(LogModule::DBUS, "emitted signal: " << signalName << ", message='" << message << "', counter=" << counter);
-            return true;
-        }
-
-        LOG_WARNING(LogModule::DBUS, "emitSpecificSignal(" << signalName << "): attempt " << attempt + 1
-                    << " failed, retrying in " << retry_delay_ms << "ms");
-
-        if (attempt < max_retries - 1) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(retry_delay_ms));
-        }
-    }
-
-    LOG_ERROR(LogModule::DBUS, "emitSpecificSignal(" << signalName << "): all " << max_retries << " attempts failed");
-    return false;
+    return sendSignalInternal(signalName, args, counter);
 }
 
 bool DbusService::emitNetworkQualitySignal(const std::string& message, const std::string& details, int32_t counter) {
-    if (!ctx_ || !ctx_->connection) return false;
     std::lock_guard<std::mutex> lock(send_mutex_);
 
-    DBusMessage* signal = dbus_message_new_signal(kObjectPath, kInterface, kSignalNetworkQualityChanged);
-    if (!signal) return false;
-
-    DBusMessageIter iter;
-    dbus_message_iter_init_append(signal, &iter);
-
-    // 添加质量等级参数
+    // 构造参数列表
     const char* quality = message.c_str();
-    if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &quality)) {
-        dbus_message_unref(signal);
-        return false;
-    }
-
-    // 添加详细信息参数
     const char* details_str = details.c_str();
-    if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &details_str)) {
-        dbus_message_unref(signal);
-        return false;
-    }
+    std::vector<std::pair<int, const void*>> args = {
+        {DBUS_TYPE_STRING, &quality},
+        {DBUS_TYPE_STRING, &details_str},
+        {DBUS_TYPE_INT32, &counter}
+    };
 
-    // 添加计数器参数
-    if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &counter)) {
-        dbus_message_unref(signal);
-        return false;
-    }
-
-    bool ok = dbus_connection_send(ctx_->connection, signal, nullptr);
-    dbus_connection_flush(ctx_->connection);
-    dbus_message_unref(signal);
-    
-    LOG_INFO(LogModule::DBUS, "emitted network quality signal: quality='" << message << "', details='" << details << "', counter=" << counter);
-    return ok;
+    return sendSignalInternal(kSignalNetworkQualityChanged, args, counter);
 }
 
 bool DbusService::handlePing(DBusConnection* conn, DBusMessage* msg) {

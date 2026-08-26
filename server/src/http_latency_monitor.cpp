@@ -146,13 +146,20 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
     if (err_entry || err_ret) {
         LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: attach entry/retprobe failed"
                   << " entry_err=" << err_entry << " ret_err=" << err_ret);
-        if (l_entry && !err_entry) bpf_link__destroy(l_entry);
-        if (l_ret && !err_ret) bpf_link__destroy(l_ret);
+        // 修复：如果成功 attach 了其中一个，需要销毁它
+        if (l_entry && !err_entry) {
+            LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: destroying successful entry probe");
+            bpf_link__destroy(l_entry);
+        }
+        if (l_ret && !err_ret) {
+            LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: destroying successful ret probe");
+            bpf_link__destroy(l_ret);
+        }
+        impl_->link_entry = nullptr;
         impl_->link_recv = nullptr;
     } else {
         impl_->link_entry = l_entry;
         impl_->link_recv = l_ret;
-        // entry probe 的 link 也需要保存以避免泄漏，但不单独跟踪
         LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: recv probe attached as entry+retprobe(tcp_recvmsg_locked)");
     }
 
