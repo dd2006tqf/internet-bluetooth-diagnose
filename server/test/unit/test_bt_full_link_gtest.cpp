@@ -14,6 +14,13 @@
 #include "event_manager.hpp"
 #include "server.hpp"
 #include "dbus_service.hpp"
+#include "database_manager.hpp"
+#include "dns_monitor.hpp"
+#include "wifi_packet_loss_monitor.hpp"
+#include "http_latency_monitor.hpp"
+#include "process_net_profiler.hpp"
+#include "bt_monitor.hpp"
+#include "weak_netmgr.hpp"
 
 #include <atomic>
 #include <string>
@@ -37,14 +44,14 @@ protected:
         mgr_ = &getEventManager();
         ctx_ = std::make_unique<ServerContext>();
         svc_ = std::make_unique<DbusService>(ctx_.get());
-        ctx_->service = svc_.get();
+        ctx_->service = std::make_unique<DbusService>(ctx_.get());
         mgr_->startEventMonitoring(ctx_.get());
         test_recorder::resetCounters();
     }
 
     void TearDown() override {
         mgr_->unregisterCallback(EventType::NetworkQualityChanged);
-        ctx_->service = nullptr;
+        ctx_->service.reset();
         svc_.reset();
         ctx_.reset();
     }

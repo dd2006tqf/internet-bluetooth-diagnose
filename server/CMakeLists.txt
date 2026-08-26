@@ -1,11 +1,11 @@
 # ---- 服务端源文件（自动发现） ----
-file(GLOB SERVER_SOURCES CONFIGURE_DEPENDS src/*.cpp)
+file(GLOB SERVER_SOURCES CONFIGURE_DEPENDS src/*.cpp src/utils/*.cpp)
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*\\.bpf\\.c$")
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*history_query_tool\\.cpp$")
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*main\\.cpp$")
 
-# ---- 公共代码库（客户端和服务端共享 serializer + logger） ----
-add_library(weaknet_common STATIC src/serializer.cpp src/logger.cpp)
+# ---- 公共代码库（客户端和服务端共享 serializer + logger + json_escape） ----
+add_library(weaknet_common STATIC src/serializer.cpp src/logger.cpp src/utils/json_escape.cpp)
 target_include_directories(weaknet_common PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set_target_properties(weaknet_common PROPERTIES POSITION_INDEPENDENT_CODE ON)

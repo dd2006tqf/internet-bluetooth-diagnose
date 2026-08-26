@@ -7,6 +7,7 @@
 #include <string>
 #include <map>
 #include <vector>
+#include <cstdlib>
 #include "net_info.hpp"
 
 namespace weaknet_dbus {
@@ -31,23 +32,50 @@ struct NetworkQualityResult {
 
 class NetworkQualityAssessor {
 private:
-    // 质量评估阈值配置
+    // 质量评估阈值配置（可通过环境变量覆盖）
     struct QualityThresholds {
-        // RTT阈值（毫秒）
-        int rtt_excellent = 50;
-        int rtt_good = 100;
-        int rtt_fair = 200;
-        
-        // TCP丢包率阈值（百分比）
-        double tcp_loss_excellent = 0.1;
-        double tcp_loss_good = 0.5;
-        double tcp_loss_fair = 2.0;
-        
-        // RSSI阈值（dBm）
-        int rssi_excellent = -50;
-        int rssi_good = -60;
-        int rssi_fair = -70;
-        
+        // RTT阈值（毫秒）- 可通过 WEAKNET_RTT_EXCELLENT 等环境变量覆盖
+        int rtt_excellent = []() {
+            const char* env = std::getenv("WEAKNET_RTT_EXCELLENT");
+            return env ? std::atoi(env) : 50;
+        }();
+        int rtt_good = []() {
+            const char* env = std::getenv("WEAKNET_RTT_GOOD");
+            return env ? std::atoi(env) : 100;
+        }();
+        int rtt_fair = []() {
+            const char* env = std::getenv("WEAKNET_RTT_FAIR");
+            return env ? std::atoi(env) : 200;
+        }();
+
+        // TCP丢包率阈值（百分比）- 可通过 WEAKNET_TCP_LOSS_EXCELLENT 等环境变量覆盖
+        double tcp_loss_excellent = []() {
+            const char* env = std::getenv("WEAKNET_TCP_LOSS_EXCELLENT");
+            return env ? std::atof(env) : 0.1;
+        }();
+        double tcp_loss_good = []() {
+            const char* env = std::getenv("WEAKNET_TCP_LOSS_GOOD");
+            return env ? std::atof(env) : 0.5;
+        }();
+        double tcp_loss_fair = []() {
+            const char* env = std::getenv("WEAKNET_TCP_LOSS_FAIR");
+            return env ? std::atof(env) : 2.0;
+        }();
+
+        // RSSI阈值（dBm）- 可通过 WEAKNET_RSSI_EXCELLENT 等环境变量覆盖
+        int rssi_excellent = []() {
+            const char* env = std::getenv("WEAKNET_RSSI_EXCELLENT");
+            return env ? std::atoi(env) : -50;
+        }();
+        int rssi_good = []() {
+            const char* env = std::getenv("WEAKNET_RSSI_GOOD");
+            return env ? std::atoi(env) : -60;
+        }();
+        int rssi_fair = []() {
+            const char* env = std::getenv("WEAKNET_RSSI_FAIR");
+            return env ? std::atoi(env) : -70;
+        }();
+
         // 流量异常阈值
         double traffic_anomaly_threshold = 0.8;  // 异常流量比例阈值
         int min_flows_for_analysis = 5;          // 最小流数量用于分析

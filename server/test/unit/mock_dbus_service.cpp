@@ -11,6 +11,13 @@
 #include "dbus_service.hpp"
 #include "server.hpp"
 #include "net_info.hpp"
+#include "database_manager.hpp"
+#include "dns_monitor.hpp"
+#include "wifi_packet_loss_monitor.hpp"
+#include "http_latency_monitor.hpp"
+#include "process_net_profiler.hpp"
+#include "bt_monitor.hpp"
+#include "weak_netmgr.hpp"
 
 #include <cstdint>
 #include <mutex>

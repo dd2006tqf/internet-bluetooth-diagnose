@@ -4,6 +4,7 @@
 #include "net_info.hpp"
 #include "serializer.hpp"
 #include "logger.hpp"
+#include "utils/json_escape.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -44,34 +45,6 @@ bool readBytes(const std::vector<uint8_t>& buffer, size_t& offset, T& out) {
 // ---------------------------------------------------------------------------
 // JSON 工具函数
 // ---------------------------------------------------------------------------
-
-// 对字符串进行 JSON 转义，避免接口名/等级文本中含有特殊字符破坏 JSON 结构
-std::string escapeJsonString(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 2);
-    for (char c : s) {
-        switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b";  break;
-            case '\f': out += "\\f";  break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:
-                // 控制字符（< 0x20）使用 \uXXXX 形式转义
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
-                    out += buf;
-                } else {
-                    out += c;
-                }
-                break;
-        }
-    }
-    return out;
-}
 
 // 跳过 JSON 中的空白字符，返回首个非空白字符位置，越界返回 npos
 size_t skipWhitespace(const std::string& s, size_t pos) {
@@ -262,7 +235,7 @@ bool NetInfo::needsUpdate(const NetInfo& other) const {
 std::string NetInfo::toJson() const {
     std::ostringstream json;
     json << "{";
-    json << "\"ifname\":\"" << escapeJsonString(ifname_) << "\",";
+    json << "\"ifname\":\"" << weaknet_utils::escapeJsonString(ifname_) << "\",";
     json << "\"is_default\":" << (is_default_ ? "true" : "false") << ",";
     json << "\"type\":" << static_cast<int>(type_) << ",";
     json << "\"state\":" << static_cast<int>(state_) << ",";
@@ -272,12 +245,12 @@ std::string NetInfo::toJson() const {
     json << "\"prev_rtt_ms\":" << prev_rtt_ms_ << ",";
     json << "\"rssi_dbm\":" << rssi_dbm_ << ",";
     json << "\"tcp_loss_rate\":" << std::fixed << std::setprecision(2) << tcp_loss_rate_ << ",";
-    json << "\"tcp_loss_level\":\"" << escapeJsonString(tcp_loss_level_) << "\",";
+    json << "\"tcp_loss_level\":\"" << weaknet_utils::escapeJsonString(tcp_loss_level_) << "\",";
     json << "\"traffic_bps\":" << traffic_total_bps_ << ",";
     json << "\"traffic_pps\":" << traffic_total_pps_ << ",";
     json << "\"active_flows\":" << traffic_active_flows_ << ",";
     json << "\"jitter_ms\":" << std::fixed << std::setprecision(1) << jitter_ms_ << ",";
-    json << "\"jitter_level\":\"" << escapeJsonString(jitter_level_) << "\",";
+    json << "\"jitter_level\":\"" << weaknet_utils::escapeJsonString(jitter_level_) << "\",";
     json << "\"band_conflict\":" << (band_conflict_ ? "true" : "false") << ",";
     json << "\"band_conflict_confidence\":" << std::fixed << std::setprecision(1) << band_conflict_confidence_;
     json << "}";

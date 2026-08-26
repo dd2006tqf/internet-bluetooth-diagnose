@@ -8,6 +8,7 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
+#include <memory>
 
 // 前置声明，避免强依赖 dbus 头
 struct DBusConnection;
@@ -25,7 +26,7 @@ class ProcessNetProfiler;        // 前置声明
 class DatabaseManager;           // 前置声明
 
 struct ServerContext {
-    // DBus 连接
+    // DBus 连接（保持原始指针，DBus 库管理）
     ::DBusConnection* connection = nullptr;
 
     // 运行标志
@@ -54,33 +55,29 @@ struct ServerContext {
     std::mutex iface_mutex;
     std::vector<NetInfo> iface_list;
 
-    // 服务对象（方法处理与信号发送），统一所有权由 ~ServerContext 释放
-    DbusService* service = nullptr;
+    // 服务对象（方法处理与信号发送），智能指针管理生命周期
+    std::unique_ptr<DbusService> service;
 
-    // 弱网管理器，统一所有权由 ~ServerContext 释放
-    WeakNetMgr* weak_mgr = nullptr;
+    // 弱网管理器，智能指针管理生命周期
+    std::unique_ptr<WeakNetMgr> weak_mgr;
 
-    // 蓝牙监测器
-    // 蓝牙监测器（由 ServerContext 持有 ownership，线程仅通过裸指针使用）
-    // 同 eBPF 监控器模式：start_bt_monitor_thread 创建，~ServerContext() 删除
-    BtMonitor* bt_monitor = nullptr;
+    // 蓝牙监测器，智能指针管理生命周期
+    std::unique_ptr<BtMonitor> bt_monitor;
 
-    // eBPF 监控器（由 ServerContext 统一持有 ownership，线程仅通过裸指针使用）
-    // 生命周期：创建于 start_server() 线程启动前，销毁于 ~ServerContext()（定义在 server.cpp）。
-    // 安全保证：start_server() 在 ctx 离开作用域前 join 所有线程，之后析构函数删除这些指针。
-    // 这消除了旧 atomic<Monitor*> 方案中「线程销毁 unique_ptr 后、store(nullptr) 前」的悬垂指针窗口。
-    DnsMonitor* dns_monitor = nullptr;
-    WifiPacketLossMonitor* wifi_loss_monitor = nullptr;
-    HttpLatencyMonitor* http_latency_monitor = nullptr;
-    ProcessNetProfiler* process_net_profiler = nullptr;
+    // eBPF 监控器，智能指针管理生命周期
+    std::unique_ptr<DnsMonitor> dns_monitor;
+    std::unique_ptr<WifiPacketLossMonitor> wifi_loss_monitor;
+    std::unique_ptr<HttpLatencyMonitor> http_latency_monitor;
+    std::unique_ptr<ProcessNetProfiler> process_net_profiler;
+
     // eBPF 监控器线程
     std::thread dns_monitor_thread;
     std::thread wifi_loss_monitor_thread;
     std::thread http_latency_monitor_thread;
     std::thread process_net_profiler_thread;
 
-    // 历史数据持久化
-    DatabaseManager* db_mgr = nullptr;
+    // 历史数据持久化，智能指针管理生命周期
+    std::unique_ptr<DatabaseManager> db_mgr;
     std::thread history_thread;
 
     ~ServerContext();

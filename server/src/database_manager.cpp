@@ -4,6 +4,7 @@
 #include "database_manager.hpp"
 #include "net_info.hpp"
 #include "logger.hpp"
+#include "utils/json_escape.hpp"
 #include <sqlite3.h>
 #include <sstream>
 #include <iomanip>
@@ -14,33 +15,6 @@
 namespace weaknet_dbus {
 
 // ---- 辅助函数 ----
-
-// JSON 字符串转义（与 net_info.cpp 中的 escapeJsonString 逻辑一致）
-static std::string escapeJsonString(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 2);
-    for (char c : s) {
-        switch (c) {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b";  break;
-            case '\f': out += "\\f";  break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    char buf[8];
-                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
-                    out += buf;
-                } else {
-                    out += c;
-                }
-                break;
-        }
-    }
-    return out;
-}
 
 static std::string currentTimestamp() {
     auto now = std::chrono::system_clock::now();
@@ -82,7 +56,7 @@ static int queryCallback(void* data, int argc, char** argv, char** /*colNames*/)
     for (int i = 0; i < argc; ++i) {
         if (i > 0) ctx->result += ",";
         ctx->result += "\"";
-        ctx->result += escapeJsonString(argv[i] ? argv[i] : "null");
+        ctx->result += weaknet_utils::escapeJsonString(argv[i] ? argv[i] : "null");
     }
     ctx->result += "}";
 

@@ -1060,12 +1060,11 @@ std::vector<std::string> BtMonitor::getStringArrayProperty(DBusConnection* conn,
 // ============================================================================
 
 void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** /*outMonitor*/) {
-    // BtMonitor 由 ServerContext 持有 ownership（裸指针），同 eBPF 监控器模式。
-    // start_server() 在线程启动前创建实例，线程通过 ctx->bt_monitor 使用。
+    // BtMonitor 由 ServerContext 持有 ownership（智能指针），线程通过 .get() 使用。
     ctx->bt_thread = std::thread([ctx]() {
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread started");
 
-        auto* monitor = ctx->bt_monitor;
+        auto* monitor = ctx->bt_monitor.get();
         if (!monitor) {
             LOG_ERROR(LogModule::BLUETOOTH, "BT monitor: ctx->bt_monitor is null");
             return;

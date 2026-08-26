@@ -6,6 +6,13 @@
 #include "event_manager.hpp"
 #include "server.hpp"
 #include "dbus_service.hpp"
+#include "database_manager.hpp"
+#include "dns_monitor.hpp"
+#include "wifi_packet_loss_monitor.hpp"
+#include "http_latency_monitor.hpp"
+#include "process_net_profiler.hpp"
+#include "bt_monitor.hpp"
+#include "weak_netmgr.hpp"
 
 #include <atomic>
 #include <thread>
@@ -27,7 +34,7 @@ protected:
     void SetUp() override {
         mgr_ = &getEventManager();
         // 创建 mock DbusService 并挂到 mock_ctx_ 上，使 emitEvent 能调用 mock
-        mock_ctx_.service = new DbusService(&mock_ctx_);
+        mock_ctx_.service = std::make_unique<DbusService>(&mock_ctx_);
         mgr_->startEventMonitoring(&mock_ctx_);
     }
 
@@ -39,8 +46,7 @@ protected:
         mgr_->unregisterCallback(EventType::RttChanged);
         mgr_->unregisterCallback(EventType::RssiChanged);
         mgr_->unregisterCallback(EventType::BluetoothDeviceChanged);
-        delete mock_ctx_.service;
-        mock_ctx_.service = nullptr;
+        mock_ctx_.service.reset();
     }
 
     ServerContext mock_ctx_{};

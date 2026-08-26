@@ -89,29 +89,50 @@ bool DbusService::register_on_connection(DBusConnection* conn) {
 
 bool DbusService::emitChanged(const std::string& message, int32_t counter) {
     std::lock_guard<std::mutex> lock(send_mutex_);
-    DBusMessage* sig = dbus_message_new_signal(kObjectPath, kInterface, kSignalChanged);
-    if (!sig) {
-        LOG_ERROR(LogModule::DBUS, "emitChanged: failed to create signal");
-        return false;
+
+    const int max_retries = 3;
+    const int retry_delay_ms = 100;
+
+    for (int attempt = 0; attempt < max_retries; ++attempt) {
+        DBusMessage* sig = dbus_message_new_signal(kObjectPath, kInterface, kSignalChanged);
+        if (!sig) {
+            LOG_ERROR(LogModule::DBUS, "emitChanged: failed to create signal");
+            return false;
+        }
+        DBusMessageIter args;
+        dbus_message_iter_init_append(sig, &args);
+        const char* s = message.c_str();
+        if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s)) {
+            dbus_message_unref(sig);
+            return false;
+        }
+        if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &counter)) {
+            dbus_message_unref(sig);
+            return false;
+        }
+
+        bool ok = dbus_connection_send(ctx_->connection, sig, nullptr);
+        dbus_connection_flush(ctx_->connection);
+        dbus_message_unref(sig);
+
+        if (ok) {
+            // 序列化到文件（保持原有逻辑）
+            ChangedPayload payload{message, counter};
+            std::string err;
+            serializeChangedPayloadToFile(payload, kSignalSerializedFile, &err);
+            return true;
+        }
+
+        LOG_WARNING(LogModule::DBUS, "emitChanged: attempt " << attempt + 1
+                    << " failed, retrying in " << retry_delay_ms << "ms");
+
+        if (attempt < max_retries - 1) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(retry_delay_ms));
+        }
     }
-    DBusMessageIter args;
-    dbus_message_iter_init_append(sig, &args);
-    const char* s = message.c_str();
-    if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s)) {
-        LOG_ERROR(LogModule::DBUS, "emitChanged: failed to append message");
-        dbus_message_unref(sig); return false;
-    }
-    if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &counter)) {
-        LOG_ERROR(LogModule::DBUS, "emitChanged: failed to append counter");
-        dbus_message_unref(sig); return false;
-    }
-    bool ok = dbus_connection_send(ctx_->connection, sig, nullptr);
-    dbus_connection_flush(ctx_->connection);
-    dbus_message_unref(sig);
-    ChangedPayload payload{message, counter};
-    std::string err;
-    serializeChangedPayloadToFile(payload, kSignalSerializedFile, &err);
-    return ok;
+
+    LOG_ERROR(LogModule::DBUS, "emitChanged: all " << max_retries << " attempts failed");
+    return false;
 }
 
 // MessageHandler 实现已移动到静态自由函数
@@ -189,29 +210,46 @@ bool DbusService::emitSpecificSignal(const std::string& signalName, const std::s
     if (!ctx_ || !ctx_->connection) return false;
     std::lock_guard<std::mutex> lock(send_mutex_);
 
-    DBusMessage* signal = dbus_message_new_signal(kObjectPath, kInterface, signalName.c_str());
-    if (!signal) return false;
+    const int max_retries = 3;
+    const int retry_delay_ms = 100;
 
-    DBusMessageIter iter;
-    dbus_message_iter_init_append(signal, &iter);
+    for (int attempt = 0; attempt < max_retries; ++attempt) {
+        DBusMessage* signal = dbus_message_new_signal(kObjectPath, kInterface, signalName.c_str());
+        if (!signal) return false;
 
-    const char* msg = message.c_str();
-    if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &msg)) {
+        DBusMessageIter iter;
+        dbus_message_iter_init_append(signal, &iter);
+
+        const char* msg = message.c_str();
+        if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &msg)) {
+            dbus_message_unref(signal);
+            return false;
+        }
+
+        if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &counter)) {
+            dbus_message_unref(signal);
+            return false;
+        }
+
+        bool ok = dbus_connection_send(ctx_->connection, signal, nullptr);
+        dbus_connection_flush(ctx_->connection);
         dbus_message_unref(signal);
-        return false;
+
+        if (ok) {
+            LOG_INFO(LogModule::DBUS, "emitted signal: " << signalName << ", message='" << message << "', counter=" << counter);
+            return true;
+        }
+
+        LOG_WARNING(LogModule::DBUS, "emitSpecificSignal(" << signalName << "): attempt " << attempt + 1
+                    << " failed, retrying in " << retry_delay_ms << "ms");
+
+        if (attempt < max_retries - 1) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(retry_delay_ms));
+        }
     }
 
-    if (!dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &counter)) {
-        dbus_message_unref(signal);
-        return false;
-    }
-
-    bool ok = dbus_connection_send(ctx_->connection, signal, nullptr);
-    dbus_connection_flush(ctx_->connection);
-    dbus_message_unref(signal);
-    
-    LOG_INFO(LogModule::DBUS, "emitted signal: " << signalName << ", message='" << message << "', counter=" << counter);
-    return ok;
+    LOG_ERROR(LogModule::DBUS, "emitSpecificSignal(" << signalName << "): all " << max_retries << " attempts failed");
+    return false;
 }
 
 bool DbusService::emitNetworkQualitySignal(const std::string& message, const std::string& details, int32_t counter) {
@@ -354,7 +392,7 @@ bool DbusService::handlePing(DBusConnection* conn, DBusMessage* msg) {
 bool DbusService::handleGetBluetoothDevices(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleGetBluetoothDevices called");
 
-    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
+    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor.get() : nullptr;
     if (!monitor) {
         // 无蓝牙监测器 → 返回空数组
         DBusMessage* reply = dbus_message_new_method_return(msg);
@@ -396,7 +434,7 @@ bool DbusService::handleGetBluetoothAdapter(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
+    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor.get() : nullptr;
     if (monitor && monitor->isInitialized()) {
         auto state = monitor->getAdapterState();
         result = std::string("Powered:") + (state.powered ? "1" : "0")
@@ -429,7 +467,7 @@ bool DbusService::handleGetDnsStats(DBusConnection* conn, DBusMessage* msg) {
     if (!reply) return false;
 
     std::string result;
-    DnsMonitor* monitor = ctx_ ? ctx_->dns_monitor : nullptr;
+    DnsMonitor* monitor = ctx_ ? ctx_->dns_monitor.get() : nullptr;
     if (monitor && monitor->isAvailable()) {
         auto stats = monitor->getStats();
         result = "totalQueries:" + std::to_string(stats.totalQueries)
@@ -459,7 +497,7 @@ bool DbusService::handleGetWifiLossStats(DBusConnection* conn, DBusMessage* msg)
     if (!reply) return false;
 
     std::string result;
-    WifiPacketLossMonitor* monitor = ctx_ ? ctx_->wifi_loss_monitor : nullptr;
+    WifiPacketLossMonitor* monitor = ctx_ ? ctx_->wifi_loss_monitor.get() : nullptr;
     if (monitor && monitor->isAvailable()) {
         auto stats = monitor->getStats();
         for (auto& [ifindex, s] : stats) {
@@ -491,7 +529,7 @@ bool DbusService::handleGetHttpLatencyStats(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    HttpLatencyMonitor* monitor = ctx_ ? ctx_->http_latency_monitor : nullptr;
+    HttpLatencyMonitor* monitor = ctx_ ? ctx_->http_latency_monitor.get() : nullptr;
     if (monitor && monitor->isAvailable()) {
         auto stats = monitor->getGlobalStats();
         result = "totalTxns:" + std::to_string(stats.totalTxns)
@@ -520,7 +558,7 @@ bool DbusService::handleGetProcessProfiling(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    ProcessNetProfiler* monitor = ctx_ ? ctx_->process_net_profiler : nullptr;
+    ProcessNetProfiler* monitor = ctx_ ? ctx_->process_net_profiler.get() : nullptr;
     if (monitor && monitor->isAvailable()) {
         result += "=== Top Bandwidth ===|";
         auto topBw = monitor->getTopBandwidth(5);

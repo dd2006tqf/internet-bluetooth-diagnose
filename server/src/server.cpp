@@ -51,7 +51,6 @@ namespace weaknet_dbus {
 ServerContext::~ServerContext() {
     // 注意：所有捕获 ctx* 的监控线程必须在调用此析构函数前已完成 join。
     // start_server() 通过 join_all → ctx 离开作用域的顺序保证这一点。
-    // 之后才安全删除这些指针，避免悬垂指针访问。
 
     if (connection) {
         // 共享连接（dbus_bus_get 获取）不应调用 dbus_connection_close，
@@ -60,16 +59,7 @@ ServerContext::~ServerContext() {
         dbus_connection_unref(connection);
         connection = nullptr;
     }
-    if (service) { delete service; service = nullptr; }
-    if (weak_mgr) { delete weak_mgr; weak_mgr = nullptr; }
-    if (db_mgr) { delete db_mgr; db_mgr = nullptr; }
-
-    // eBPF 监控器 + bt_monitor：线程已 join 后安全删除
-    delete dns_monitor; dns_monitor = nullptr;
-    delete wifi_loss_monitor; wifi_loss_monitor = nullptr;
-    delete http_latency_monitor; http_latency_monitor = nullptr;
-    delete process_net_profiler; process_net_profiler = nullptr;
-    delete bt_monitor; bt_monitor = nullptr;
+    // 智能指针自动释放，无需手动 delete
 }
 
 // 共享列表迁移至 ServerContext，在 server.hpp 中定义
@@ -168,11 +158,10 @@ DBusConnection* init_dbus(ServerContext* ctx) {
 
     // 使用服务类进行对象注册（保存到上下文，统一管理生命周期）
     LOG_INFO(LogModule::DBUS, "registering object path: " << kObjectPath << " (interface=" << kInterface << ")");
-    ctx->service = new DbusService(ctx);
+    ctx->service = std::make_unique<DbusService>(ctx);
     if (!ctx->service->register_on_connection(conn)) {
         LOG_ERROR(LogModule::DBUS, "注册对象路径失败");
-        delete ctx->service;
-        ctx->service = nullptr;
+        ctx->service.reset();
         return nullptr;
     }
     // 指针已保存至 ctx
@@ -421,7 +410,7 @@ static void start_network_quality_thread(ServerContext* ctx) {
 
                 // 获取蓝牙 RSSI（取所有已连接设备的平均 RSSI）
                 int btRssi = -1000;
-                if (auto* mon = ctx->bt_monitor; mon && mon->isInitialized()) {
+                if (auto* mon = ctx->bt_monitor.get(); mon && mon->isInitialized()) {
                     auto rssiSnapshot = mon->getRssiSnapshot();
                     int sum = 0, count = 0;
                     for (const auto& [mac, rssi] : rssiSnapshot) {
@@ -466,7 +455,7 @@ static void start_network_quality_thread(ServerContext* ctx) {
             // 可检测 "active 但卡顿" 状态，eBPF 不可用时自动降级
             // ================================================================
             try {
-                BtMonitor* mon = ctx->bt_monitor;
+                BtMonitor* mon = ctx->bt_monitor.get();
                 if (mon && mon->isInitialized()) {
                     auto connected = mon->getConnectedDevices();
                     for (const auto& dev : connected) {
@@ -520,7 +509,7 @@ void start_dns_monitor_thread(ServerContext* ctx) {
     // 监控器由 ServerContext 持有 ownership（unique_ptr），线程仅通过 .get() 使用。
     // 这消除了旧方案中「线程销毁 unique_ptr 后、store(nullptr) 前」的悬垂指针窗口。
     ctx->dns_monitor_thread = std::thread([ctx]() {
-        auto* monitor = ctx->dns_monitor;
+        auto* monitor = ctx->dns_monitor.get();
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "DNS monitor thread started");
         if (!monitor->init("build/dns_monitor.bpf.o")) {
@@ -544,7 +533,7 @@ void start_dns_monitor_thread(ServerContext* ctx) {
 
 void start_wifi_loss_monitor_thread(ServerContext* ctx) {
     ctx->wifi_loss_monitor_thread = std::thread([ctx]() {
-        auto* monitor = ctx->wifi_loss_monitor;
+        auto* monitor = ctx->wifi_loss_monitor.get();
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor thread started");
         if (!monitor->init("build/wifi_packet_loss.bpf.o")) {
@@ -571,7 +560,7 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx) {
 
 void start_http_latency_monitor_thread(ServerContext* ctx) {
     ctx->http_latency_monitor_thread = std::thread([ctx]() {
-        auto* monitor = ctx->http_latency_monitor;
+        auto* monitor = ctx->http_latency_monitor.get();
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "HTTP latency monitor thread started");
         if (!monitor->init("build/http_latency.bpf.o")) {
@@ -596,7 +585,7 @@ void start_http_latency_monitor_thread(ServerContext* ctx) {
 
 void start_process_net_profiler_thread(ServerContext* ctx) {
     ctx->process_net_profiler_thread = std::thread([ctx]() {
-        auto* profiler = ctx->process_net_profiler;
+        auto* profiler = ctx->process_net_profiler.get();
         if (!profiler) return;
         LOG_INFO(LogModule::NETWORK, "Process net profiler thread started");
         if (!profiler->init("build/flow_rate.bpf.o")) {
@@ -717,15 +706,15 @@ int start_server() {
     // 启动事件监控
     getEventManager().startEventMonitoring(&ctx);
 
-    // 初始化WeakNetMgr（一次性预建，各监控线程不再各自 new）
-    if (!ctx.weak_mgr) ctx.weak_mgr = new WeakNetMgr();
+    // 初始化WeakNetMgr（智能指针）
+    ctx.weak_mgr = std::make_unique<WeakNetMgr>();
 
     // 启动 UsingInterfaceManager（一次性启动，不重复调用 start()）
     UsingInterfaceManager::getInstance()->start();
 
-    // 初始化历史数据持久化管理器
+    // 初始化历史数据持久化管理器（智能指针）
     LOG_INFO(LogModule::SYSTEM, "initializing database manager (path=" << kDatabasePath << ")");
-    ctx.db_mgr = new DatabaseManager(kDatabasePath);
+    ctx.db_mgr = std::make_unique<DatabaseManager>(kDatabasePath);
     if (ctx.db_mgr->isOpen()) {
         LOG_INFO(LogModule::SYSTEM, "database manager opened, records=" << ctx.db_mgr->getRecordCount());
     } else {
@@ -760,25 +749,19 @@ int start_server() {
     start_network_quality_thread(&ctx);
     // 启动蓝牙监测线程 (通过 BlueZ D-Bus API)
     LOG_INFO(LogModule::BLUETOOTH, "starting bluetooth monitor thread");
-    // 蓝牙监测器（同 eBPF 监控器模式，由 ServerContext 持有 ownership）
-    ctx.bt_monitor = new BtMonitor();
+    // 蓝牙监测器（智能指针）
+    ctx.bt_monitor = std::make_unique<BtMonitor>();
     start_bt_monitor_thread(&ctx, nullptr);
 
     // ================================================================
-    // eBPF 监控器统一启动（由 ServerContext 持有 ownership）
-    // 任务：消除孤儿数据路径，确保每个加载的 BPF 程序有消费者
-    //
-    // ownership 模型：ServerContext 通过裸指针持有，~ServerContext() 中 delete。
-    // 线程通过裸指针使用，不持有 ownership。
-    // 安全保证：start_server() 在 ctx 离开作用域前 join 所有线程，之后 ~ServerContext() 删除。
-    // 这消除了旧 atomic<Monitor*> 方案中「线程销毁 unique_ptr 后、store(nullptr) 前」的悬垂指针窗口。
+    // eBPF 监控器统一启动（智能指针管理生命周期）
     // ================================================================
 
-    // 创建 eBPF 监控器实例（必须在线程启动前完成）
-    ctx.dns_monitor = new DnsMonitor();
-    ctx.wifi_loss_monitor = new WifiPacketLossMonitor();
-    ctx.http_latency_monitor = new HttpLatencyMonitor();
-    ctx.process_net_profiler = new ProcessNetProfiler();
+    // 创建 eBPF 监控器实例（智能指针，必须在线程启动前完成）
+    ctx.dns_monitor = std::make_unique<DnsMonitor>();
+    ctx.wifi_loss_monitor = std::make_unique<WifiPacketLossMonitor>();
+    ctx.http_latency_monitor = std::make_unique<HttpLatencyMonitor>();
+    ctx.process_net_profiler = std::make_unique<ProcessNetProfiler>();
 
     // DNS 监控器：挂载 kprobe/udp_sendmsg + kprobe/udp_recvmsg
     LOG_INFO(LogModule::NETWORK, "starting DNS monitor thread (interval=10s)");
