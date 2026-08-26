@@ -32,6 +32,13 @@ inline const std::string kDatabasePath = []() {
     const char* xdg = std::getenv("XDG_RUNTIME_DIR");
     return std::string(xdg ? xdg : "/tmp") + "/weaknet/history.db";
 }();
+
+// 默认流量分析接口（可通过环境变量覆盖）
+// 空字符串表示自动选择当前活动接口
+inline const std::string kDefaultTrafficInterface = []() {
+    const char* env = std::getenv("WEAKNET_TRAFFIC_IFACE");
+    return env ? env : "";
+}();
 static constexpr const char kSignalChanged[] = "Changed";                  // Changed 信号（通用状态变化）
 static constexpr const char kSignalInterfaceChanged[] = "InterfaceChanged"; // 网卡变化信号
 static constexpr const char kSignalConnectionModeChanged[] = "ConnectionModeChanged"; // 上网方式变化信号

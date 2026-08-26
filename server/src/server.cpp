@@ -251,8 +251,24 @@ static void start_traffic_analysis_thread(ServerContext* ctx) {
     ctx->traffic_analysis_thread = std::thread([ctx](){
         LOG_INFO(LogModule::WEAK_MGR, "traffic analysis thread started");
 
-        // 启动流量分析器（使用当前接口；原实现硬编码 wlan0，保持既有行为）
-        ctx->weak_mgr->startTrafficAnalysis("wlan0", 10);
+        // 动态选择接口：优先使用配置，否则取当前活动接口
+        std::string targetIface = kDefaultTrafficInterface;
+        if (targetIface.empty()) {
+            // 从 WeakNetMgr 获取当前活动接口
+            auto interfaces = ctx->weak_mgr->getCurrentInterfaces();
+            for (const auto& iface : interfaces) {
+                if (iface.usingNow()) {
+                    targetIface = iface.ifName();
+                    break;
+                }
+            }
+            if (targetIface.empty()) {
+                targetIface = "wlan0";  // 兜底默认值
+            }
+        }
+
+        LOG_INFO(LogModule::WEAK_MGR, "traffic analysis: using interface " << targetIface);
+        ctx->weak_mgr->startTrafficAnalysis(targetIface, 10);
         
         int loop_count = 0;
         while (ctx->running.load()) {
@@ -658,6 +674,16 @@ void start_history_persistence_thread(ServerContext* ctx) {
                     LOG_INFO(LogModule::SYSTEM, "History persistence: cleaned " << deleted << " expired records");
                 }
             }
+
+            // 每天清理一次过期日志文件（与数据库清理同步）
+            static auto last_log_cleanup = std::chrono::steady_clock::now();
+            if (now - last_log_cleanup > std::chrono::hours(24)) {
+                int log_deleted = Logger::cleanOldLogs("./logs/server", 7);
+                last_log_cleanup = now;
+                if (log_deleted > 0) {
+                    LOG_INFO(LogModule::SYSTEM, "History persistence: cleaned " << log_deleted << " old log files");
+                }
+            }
         }
 
         LOG_INFO(LogModule::SYSTEM, "History persistence thread stopped");
@@ -674,6 +700,12 @@ int start_server() {
 
     // 启动带时间戳的文件日志
     Logger::startFileLog("./server/log");
+
+    // 启动时清理 7 天前的日志文件
+    int cleaned = Logger::cleanOldLogs("./logs/server", 7);
+    if (cleaned > 0) {
+        LOG_INFO(LogModule::SYSTEM, "Cleaned " << cleaned << " old log files on startup");
+    }
 
     // 注册信号处理函数（SIGINT/SIGTERM）
     std::signal(SIGINT, Logger::signalHandler);

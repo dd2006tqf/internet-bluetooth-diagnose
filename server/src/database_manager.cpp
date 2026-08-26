@@ -154,6 +154,8 @@ DatabaseManager::DatabaseManager(const std::string& db_path) {
     exec("PRAGMA cache_size=-2048");
     // 同步模式：NORMAL 在 WAL 下安全性足够
     exec("PRAGMA synchronous=NORMAL");
+    // 设置忙超时 5 秒，防止高频写入时死锁
+    exec("PRAGMA busy_timeout = 5000");
 
     if (!ensureSchema()) {
         LOG_ERROR(LogModule::SYSTEM, "DatabaseManager: schema creation failed");
