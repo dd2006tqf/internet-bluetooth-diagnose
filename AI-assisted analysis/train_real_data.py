@@ -52,21 +52,14 @@ class RealDataTrainer:
         print(f"特征矩阵: {X_windowed.shape}")
         return X_windowed
 
-    def detect_anomalies(self, X):
-        """基于统计方法检测异常"""
-        labels = np.zeros(len(X), dtype=np.int32)
-
-        for i in range(len(X)):
-            for t in range(X.shape[1]):
-                for d in range(X.shape[2]):
-                    mean = np.mean(X[:, t, d])
-                    std = np.std(X[:, t, d])
-                    if std > 0 and abs(X[i, t, d] - mean) > 3 * std:
-                        labels[i] = 1
-                        break
-                if labels[i] == 1:
-                    break
-
+    def detect_anomalies(self, df):
+        """使用数据库中的 quality 字段作为异常标签"""
+        # BAD/POOR = 异常(1)，GOOD/FAIR = 正常(0)
+        # 注意：需要与滑动窗口后的样本数量匹配
+        quality_map = {'GOOD': 0, 'FAIR': 0, 'POOR': 1, 'BAD': 1}
+        # 对于滑动窗口，使用窗口最后一个时间点的 quality 作为标签
+        labels = df['quality'].values[self.extractor.get_window_size()-1:]
+        labels = np.array([quality_map.get(q, 0) for q in labels])
         print(f"异常样本: {np.sum(labels == 1)} / {len(labels)}")
         return labels
 
@@ -79,16 +72,18 @@ class RealDataTrainer:
         X = self.prepare_features(df)
 
         # 3. 检测异常标签
-        labels = self.detect_anomalies(X)
+        labels = self.detect_anomalies(df)
 
-        # 4. 归一化
-        X_flat = X.reshape(X.shape[0], -1)
-        X_norm = self.scaler.fit_transform(X_flat)
-        X_norm = X_norm.reshape(X.shape)
+        # 4. 归一化（用子集加速）
+        sample_size = min(10000, len(X_flat))
+        indices = np.random.choice(len(X_flat), sample_size, replace=False)
+        X_sample = X_flat[indices]
+        X_norm = self.scaler.fit_transform(X_sample)
+        X_norm = X_norm.reshape(X_sample.shape[0], self.extractor.get_window_size(), self.extractor.get_feature_dim())
 
         # 5. 划分数据集
         X_train, X_test, y_train, y_test = train_test_split(
-            X_norm, labels, test_size=0.2, random_state=42
+            X_norm, labels[indices], test_size=0.2, random_state=42
         )
 
         # 6. 训练 AutoEncoder（只用正常数据）
@@ -101,7 +96,7 @@ class RealDataTrainer:
         trainer.model = AutoEncoder(input_size=self.extractor.get_input_size())
 
         print("\n开始训练...")
-        history = trainer.train(X_train_normal, X_train_normal, epochs=100, batch_size=32)
+        history = trainer.train(X_train_normal, X_train_normal, epochs=20, batch_size=64)
 
         # 7. 评估
         print("\n评估模型...")
