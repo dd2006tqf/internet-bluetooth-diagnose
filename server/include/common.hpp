@@ -26,11 +26,11 @@ static constexpr const char kMethodGetHttpLatencyStats[] = "GetHttpLatencyStats"
 static constexpr const char kMethodGetProcessProfiling[] = "GetProcessProfiling";   // 获取进程网络画像
 static constexpr const char kMethodGetHistory[] = "GetHistory";                     // 查询历史监控数据
 
-// 数据库路径（使用 $XDG_RUNTIME_DIR 私有目录）
-// inline const 避免 SIOF（static 在多 TU 中各有一份副本，析构顺序不确定）
+// 数据库路径（持久化到应用目录，避免开发板重启后 /tmp 数据丢失）
+// 可通过 WEAKNET_DATA_DIR 覆盖，便于测试和部署
 inline const std::string kDatabasePath = []() {
-    const char* xdg = std::getenv("XDG_RUNTIME_DIR");
-    return std::string(xdg ? xdg : "/tmp") + "/weaknet/history.db";
+    const char* data_dir = std::getenv("WEAKNET_DATA_DIR");
+    return std::string(data_dir ? data_dir : "/home/radxa/weaknet/data") + "/history.db";
 }();
 
 // 默认流量分析接口（可通过环境变量覆盖）

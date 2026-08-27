@@ -1,16 +1,19 @@
 [Unit]
 Description=WeakNet Network Monitor Server
-After=network.target dbus.service
+After=network-online.target dbus.service
+Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/home/radxa/weaknet/server
-ExecStart=/bin/bash -c 'export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus && ./bin/weaknet-dbus-server'
+ExecStart=/home/radxa/weaknet/server/bin/weaknet-dbus-server
 Restart=on-failure
 RestartSec=5
 Environment=LD_LIBRARY_PATH=/usr/local/lib
-LimitNOFILE=65536
+Environment=WEAKNET_DATA_DIR=/home/radxa/weaknet/data
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 User=radxa
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target

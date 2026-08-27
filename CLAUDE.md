@@ -284,7 +284,9 @@
 - **只用 systemd 管理服务，不要用 tmux/nohup 手动启动**
 - 服务文件：`tools/weaknet-server.service`
 - 启动服务前必须杀掉所有旧进程，避免数据库锁冲突
-- 数据库路径：`/tmp/weaknet/history.db`
+- **开发板只保留 `dist-arm64/` 产物，不复制源码、头文件或构建中间文件**
+- **部署统一使用 `tools/ci.sh`，禁止手工 scp 源码或直接在开发板编译**
+- 数据库路径：`/home/radxa/weaknet/data/history.db`（持久化，禁止使用 `/tmp` 存储历史数据）
 - 数据采集间隔：10 秒
 
 **部署命令（记住）：**

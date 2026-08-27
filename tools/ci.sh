@@ -158,10 +158,15 @@ if [ "$SKIP_DEPLOY" = false ]; then
         fail "开发板不可达"
     fi
 
-    # 清理板上 root 残留目录
-    ssh "${BOARD}" "sudo rm -rf /home/radxa/weaknet/logs /home/radxa/weaknet/server/server 2>/dev/null || true" 2>/dev/null || true
+    # 清理板上源码、构建中间文件和旧部署残留；保留持久化 data/ 数据
+    ssh "${BOARD}" "sudo systemctl stop weaknet-server 2>/dev/null || true; sudo killall weaknet-dbus-server 2>/dev/null || true; sudo rm -rf /home/radxa/weaknet/server/src /home/radxa/weaknet/server/include /home/radxa/weaknet/build /home/radxa/weaknet/server/build /home/radxa/weaknet/client/src /home/radxa/weaknet/CMakeFiles /home/radxa/weaknet/logs /home/radxa/weaknet/server/server 2>/dev/null || true"
 
-    rsync -az --delete --exclude "server/logs/" -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" 2>/dev/null
+    # 只同步 dist-arm64 编译产物，不同步源码和构建目录
+    rsync -az --delete --exclude "data/" --exclude "server/logs/" -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" 2>/dev/null
+
+    # 部署 systemd 单元并启动唯一服务实例
+    scp "${ROOT}/tools/weaknet-server.service" "${BOARD}:/tmp/weaknet-server.service" 2>/dev/null
+    ssh "${BOARD}" "sudo cp /tmp/weaknet-server.service /etc/systemd/system/weaknet-server.service && sudo systemctl daemon-reload && sudo systemctl enable weaknet-server && sudo systemctl restart weaknet-server"
     pass "部署完成"
 else
     info "跳过部署"
