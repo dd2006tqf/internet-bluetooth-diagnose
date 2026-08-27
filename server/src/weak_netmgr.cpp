@@ -331,11 +331,56 @@ bool WeakNetMgr::updateJitterSafe(const std::string& iface_name, double jitter_m
 
 bool WeakNetMgr::updateTrafficAnalysisSafe() {
     LOG_DEBUG(LogModule::WEAK_MGR, "updateTrafficAnalysisSafe: acquiring lock");
+
+    // 先在锁外获取流量统计（避免长时间阻塞）
+    NetTrafficAnalyzer::RealTimeStats stats;
+    std::vector<FlowRate> topFlows;
+    std::vector<TrafficAnomaly> anomalies;
+    bool hasStats = false;
+
+    if (traffic_analyzer_ && traffic_analyzer_->isRunning()) {
+        try {
+            stats = traffic_analyzer_->getCurrentStats();
+            hasStats = true;
+            // 注意：getTopFlows 和 detectAnomalies 会阻塞，但在锁外执行
+            topFlows = traffic_analyzer_->getTopFlows(5, 10);
+            anomalies = traffic_analyzer_->detectAnomalies(5);
+        } catch (const std::exception& e) {
+            LOG_ERROR(LogModule::WEAK_MGR, "Traffic analysis data fetch error: " << e.what());
+        }
+    }
+
+    // 然后在锁内更新接口列表（快速操作）
     std::lock_guard<std::mutex> lock(iface_mutex_);
-    LOG_DEBUG(LogModule::WEAK_MGR, "updateTrafficAnalysisSafe: lock acquired, calling updateTrafficAnalysis");
-    bool result = updateTrafficAnalysis(current_interfaces_);
-    LOG_DEBUG(LogModule::WEAK_MGR, "updateTrafficAnalysisSafe: updateTrafficAnalysis completed, releasing lock");
-    return result;
+    LOG_DEBUG(LogModule::WEAK_MGR, "updateTrafficAnalysisSafe: lock acquired, updating interfaces");
+
+    bool changed = false;
+    if (hasStats) {
+        for (auto& net : current_interfaces_) {
+            if (net.usingNow()) {
+                net.setTrafficStats(stats.totalBps, stats.totalPps, stats.activeFlows);
+
+                if (!anomalies.empty()) {
+                    LOG_INFO(LogModule::WEAK_MGR, "Traffic anomalies detected on " << net.ifName()
+                        << ": " << anomalies.size() << " anomalies");
+                    for (const auto& anomaly : anomalies) {
+                        LOG_INFO(LogModule::WEAK_MGR, "Anomaly: " << anomaly.anomalyType
+                            << " severity: " << (anomaly.severity * 100) << "%");
+                    }
+                }
+
+                LOG_INFO(LogModule::WEAK_MGR, "Updated traffic stats for " << net.ifName()
+                    << ": " << (stats.totalBps / (1024*1024)) << " MB/s, "
+                    << stats.activeFlows << " flows, " << stats.totalPps << " pps");
+
+                changed = true;
+                break;
+            }
+        }
+    }
+
+    LOG_DEBUG(LogModule::WEAK_MGR, "updateTrafficAnalysisSafe: completed, releasing lock");
+    return changed;
 }
 
 bool WeakNetMgr::updateCurrentUsingSafe() {

@@ -5,6 +5,7 @@
 #include <poll.h>
 #include <unistd.h>
 #include <signal.h>
+#include <memory>
 
 #include "server.hpp"
 #include "looper.hpp"
@@ -12,7 +13,7 @@
 
 namespace weaknet_dbus {
 
-static thread_local Looper* t_looper = nullptr;
+static thread_local std::unique_ptr<Looper> t_looper;
 
 // signal handler 通过写 pipe 通知 Looper，比设置 volatile flag 更可靠
 // （dbus_connection_read_write_dispatch 可能阻塞，不返回，flag 检查不到）
@@ -27,8 +28,8 @@ static void looper_signal_handler(int signum) {
 }
 
 Looper* Looper::current() {
-    if (!t_looper) t_looper = new Looper();
-    return t_looper;
+    if (!t_looper) t_looper = Looper::create();
+    return t_looper.get();
 }
 
 void Looper::attach(DBusConnection* conn) {

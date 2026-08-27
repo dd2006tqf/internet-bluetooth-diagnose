@@ -1608,12 +1608,15 @@ bool BtMonitor::getAudioFusionResult(const std::string& mac, BtAudioFusionResult
         }
     }
 
-    // 获取前次统计快照用于增量计算
-    const BtTrafficStats* prevPtr = nullptr;
+    // 获取前次统计快照用于增量计算（线程安全访问 mutable 成员）
+    BtTrafficStats prevStats;
+    bool hasPrevStats = false;
     {
+        std::lock_guard<std::mutex> lock(audioMutex_);
         auto it = btPrevStats_.find(mac);
         if (it != btPrevStats_.end()) {
-            prevPtr = &it->second;
+            prevStats = it->second;
+            hasPrevStats = true;
         }
     }
 
@@ -1621,11 +1624,12 @@ bool BtMonitor::getAudioFusionResult(const std::string& mac, BtAudioFusionResult
     *out = btAudioFusion_->evaluate(
         transport,
         hasStats ? &stats : nullptr,
-        prevPtr,
+        hasPrevStats ? &prevStats : nullptr,
         ebpfAvailable && hasStats);
 
-    // 更新前次快照
+    // 更新前次快照（线程安全写入 mutable 成员）
     if (hasStats) {
+        std::lock_guard<std::mutex> lock(audioMutex_);
         btPrevStats_[mac] = stats;
     }
 

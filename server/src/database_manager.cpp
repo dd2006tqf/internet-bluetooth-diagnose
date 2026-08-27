@@ -191,22 +191,42 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
 
     std::lock_guard<std::mutex> lock(write_mutex_);
 
-    std::ostringstream sql;
-    sql << "INSERT INTO network_history (ts, iface, rtt_ms, jitter_ms, rssi_dbm, "
-           "tcp_loss, quality, score, traffic_bps, traffic_pps, flows) VALUES ("
-        << "'" << currentTimestamp() << "', "
-        << "'" << iface << "', "
-        << info.rttMs() << ", "
-        << info.jitterMs() << ", "
-        << info.rssiDbm() << ", "
-        << info.tcpLossRate() << ", "
-        << "'" << qualityToString(info.quality()) << "', "
-        << score << ", "
-        << info.trafficTotalBps() << ", "
-        << info.trafficTotalPps() << ", "
-        << info.trafficActiveFlows() << ")";
+    // 使用参数绑定防止 SQL 注入
+    const char* sql = "INSERT INTO network_history (ts, iface, rtt_ms, jitter_ms, rssi_dbm, "
+                      "tcp_loss, quality, score, traffic_bps, traffic_pps, flows) VALUES ("
+                      "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
-    return exec(sql.str());
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::insertSnapshot prepare failed: " << sqlite3_errmsg(db_));
+        return false;
+    }
+
+    std::string timestamp = currentTimestamp();
+    std::string quality = qualityToString(info.quality());
+
+    sqlite3_bind_text(stmt, 1, timestamp.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, iface.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, info.rttMs());
+    sqlite3_bind_double(stmt, 4, info.jitterMs());
+    sqlite3_bind_int(stmt, 5, info.rssiDbm());
+    sqlite3_bind_double(stmt, 6, info.tcpLossRate());
+    sqlite3_bind_text(stmt, 7, quality.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 8, score);
+    sqlite3_bind_int64(stmt, 9, info.trafficTotalBps());
+    sqlite3_bind_int64(stmt, 10, info.trafficTotalPps());
+    sqlite3_bind_int(stmt, 11, info.trafficActiveFlows());
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::insertSnapshot step failed: " << sqlite3_errmsg(db_));
+        return false;
+    }
+
+    return true;
 }
 
 std::string DatabaseManager::queryHistory(const std::string& interface,
@@ -215,31 +235,64 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
                                            int limit) {
     if (!db_) return "[]";
 
-    std::ostringstream sql;
-    sql << "SELECT ts, iface, rtt_ms, jitter_ms, rssi_dbm, tcp_loss, quality, "
-           "score, traffic_bps, traffic_pps, flows "
-           "FROM network_history WHERE 1=1";
+    // 使用参数绑定防止 SQL 注入
+    std::string sql = "SELECT ts, iface, rtt_ms, jitter_ms, rssi_dbm, tcp_loss, quality, "
+                      "score, traffic_bps, traffic_pps, flows "
+                      "FROM network_history WHERE 1=1";
 
+    std::vector<std::string> conditions;
     if (!interface.empty()) {
-        sql << " AND iface='" << interface << "'";
+        sql += " AND iface=?";
+        conditions.push_back(interface);
     }
     if (!start.empty()) {
-        sql << " AND ts>='" << start << "'";
+        sql += " AND ts>=?";
+        conditions.push_back(start);
     }
     if (!end.empty()) {
-        sql << " AND ts<='" << end << "'";
+        sql += " AND ts<=?";
+        conditions.push_back(end);
     }
 
-    sql << " ORDER BY ts DESC LIMIT " << limit;
+    sql += " ORDER BY ts DESC LIMIT ?";
 
-    HistoryCallbackCtx ctx;
-    char* err = nullptr;
-    int rc = sqlite3_exec(db_, sql.str().c_str(), historyQueryCallback, &ctx, &err);
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
-        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::queryHistory error: " << (err ? err : "unknown"));
-        sqlite3_free(err);
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::queryHistory prepare failed: " << sqlite3_errmsg(db_));
         return "[]";
     }
+
+    // 绑定参数
+    int paramIndex = 1;
+    for (const auto& cond : conditions) {
+        sqlite3_bind_text(stmt, paramIndex++, cond.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    sqlite3_bind_int(stmt, paramIndex, limit);
+
+    HistoryCallbackCtx ctx;
+    rc = sqlite3_step(stmt);
+    while (rc == SQLITE_ROW) {
+        HistoryRow row;
+        const char* ts = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        const char* iface = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        if (ts) row.ts = ts;
+        if (iface) row.iface = iface;
+        row.rtt_ms = sqlite3_column_int(stmt, 2);
+        row.jitter_ms = sqlite3_column_double(stmt, 3);
+        row.rssi_dbm = sqlite3_column_int(stmt, 4);
+        row.tcp_loss = sqlite3_column_double(stmt, 5);
+        const char* quality = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
+        if (quality) row.quality = quality;
+        row.score = sqlite3_column_double(stmt, 7);
+        row.traffic_bps = sqlite3_column_int64(stmt, 8);
+        row.traffic_pps = sqlite3_column_int(stmt, 9);
+        row.flows = sqlite3_column_int(stmt, 10);
+        ctx.rows.push_back(std::move(row));
+        rc = sqlite3_step(stmt);
+    }
+
+    sqlite3_finalize(stmt);
 
     // 构建 JSON 数组
     std::ostringstream json;
@@ -248,13 +301,13 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
         const auto& row = ctx.rows[i];
         if (i > 0) json << ",";
         json << "{"
-             << "\"ts\":\"" << row.ts << "\","
-             << "\"iface\":\"" << row.iface << "\","
+             << "\"ts\":\"" << weaknet_utils::escapeJsonString(row.ts) << "\","
+             << "\"iface\":\"" << weaknet_utils::escapeJsonString(row.iface) << "\","
              << "\"rtt_ms\":" << row.rtt_ms << ","
              << "\"jitter_ms\":" << row.jitter_ms << ","
              << "\"rssi_dbm\":" << row.rssi_dbm << ","
              << "\"tcp_loss\":" << row.tcp_loss << ","
-             << "\"quality\":\"" << row.quality << "\","
+             << "\"quality\":\"" << weaknet_utils::escapeJsonString(row.quality) << "\","
              << "\"score\":" << row.score << ","
              << "\"traffic_bps\":" << row.traffic_bps << ","
              << "\"traffic_pps\":" << row.traffic_pps << ","

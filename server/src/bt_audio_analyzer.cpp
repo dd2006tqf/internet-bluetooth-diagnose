@@ -356,8 +356,8 @@ bpf_link* BtAudioAnalyzer::tryAttachKprobe(const std::string& funcName, const st
 
     // 尝试挂载
     bpf_link* link = bpf_program__attach(prog);
-    if (!link) {
-        long err = libbpf_get_error(link);
+    long err = libbpf_get_error(link);
+    if (err) {
         LOG_WARNING(LogModule::BLUETOOTH, "BtAudioAnalyzer: attach " << progName
                     << " → kprobe/" << funcName << " failed: " << err
                     << " (errno=" << errno << " " << strerror(errno) << ")");

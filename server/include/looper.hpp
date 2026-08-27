@@ -21,6 +21,11 @@ public:
     // 阻塞运行，直到 ctx->running 变为 false
     void run(ServerContext* ctx);
 
+    // 允许 unique_ptr 创建实例
+    static std::unique_ptr<Looper> create() {
+        return std::unique_ptr<Looper>(new Looper());
+    }
+
 private:
     Looper() = default;
     DBusConnection* conn_ = nullptr;
