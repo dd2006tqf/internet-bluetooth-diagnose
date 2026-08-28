@@ -134,10 +134,13 @@ cp -a /usr/local/lib/libbpf.so* dist-arm64/lib/ 2>/dev/null || true
 echo "产物: $(find dist-arm64 -type f | wc -l) 个文件"
 file dist-arm64/server/bin/weaknet-dbus-server
 
-# 输出 ccache 命中率
+# 输出 ccache 命中率（统计命令失败不应影响编译/打包成功）
 echo "--- ccache 统计 ---"
-ccache -s 2>/dev/null | grep -E "cache hit|cache miss|hit rate|files in cache|cache size"
-' 2>&1 | tee -a "$REPORT"
+if command -v ccache >/dev/null 2>&1; then
+    ccache -s 2>/dev/null | grep -E "cache hit|cache miss|hit rate|files in cache|cache size" || true
+else
+    echo "ccache 未安装，跳过统计"
+fi' 2>&1 | tee -a "$REPORT"
 
 pass "编译 + 打包完成"
 
