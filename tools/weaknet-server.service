@@ -12,7 +12,11 @@ RestartSec=5
 Environment=LD_LIBRARY_PATH=/usr/local/lib
 Environment=WEAKNET_DATA_DIR=/home/radxa/weaknet/data
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
-User=radxa
+User=root
+Group=root
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=false
 LimitNOFILE=65536
 
 [Install]
