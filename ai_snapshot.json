@@ -1,11 +1,10 @@
 {
   "schema_version": 2,
   "workflow": "openspec",
-  "phase": "planning",
-  "current_step": "change-created",
-  "next_step": "Write and review planning artifacts",
-  "active_change": "ebpf-monitor-observability",
-  "updated_at": "2026-08-29T04:47:14.039Z",
+  "phase": "idle",
+  "current_step": "change-aborted",
+  "next_step": "Create or select the next change",
+  "updated_at": "2026-08-29T14:49:38.599Z",
   "last_archived_change": {
     "change_name": "timestamped-log-file",
     "archived_as": "2026-08-16-timestamped-log-file",
