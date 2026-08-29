@@ -54,6 +54,7 @@ public:
     bool handleGetWifiLossStats(DBusConnection* conn, DBusMessage* msg);
     bool handleGetHttpLatencyStats(DBusConnection* conn, DBusMessage* msg);
     bool handleGetProcessProfiling(DBusConnection* conn, DBusMessage* msg);
+    bool handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* msg);
 
     // 历史数据查询
     bool handleGetHistory(DBusConnection* conn, DBusMessage* msg);

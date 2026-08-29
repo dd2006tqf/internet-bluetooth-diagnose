@@ -16,6 +16,8 @@
 #include <mutex>
 #include <cstdint>
 #include <cstddef>
+#include "ebpf_monitor_interface.hpp"
+#include "ebpf_monitor_metrics.hpp"
 
 // 前置声明 libbpf 类型
 struct bpf_object;
@@ -48,7 +50,7 @@ enum class BtAudioAnalyzerState {
 // ============================================================================
 // 蓝牙音频 eBPF 分析器
 // ============================================================================
-class BtAudioAnalyzer {
+class BtAudioAnalyzer : public IEbpfMonitor {
 public:
     BtAudioAnalyzer();
     ~BtAudioAnalyzer();
@@ -71,7 +73,13 @@ public:
     BtAudioAnalyzerState state() const;
 
     // 是否可用（即 eBPF 程序已成功挂载）
-    bool isAvailable() const;
+    bool isAvailable() const override;
+
+    const char* monitorName() const override { return "BtAudioAnalyzer"; }
+    EbpfMonitorState commonState() const override;
+    EbpfMonitorHealth health() const override { return stateSupport_.health(); }
+    EbpfMonitorMetrics metrics() const override { return stateSupport_.metrics(); }
+    void resetMetrics() override { stateSupport_.resetMetrics(); }
 
     // 获取挂载成功的钩子名称（用于日志报告）
     std::string attachedHookName() const;
@@ -142,6 +150,7 @@ private:
     std::string attachedHookName_;       // 成功挂载的钩子名称
     std::string lastError_;              // 最近的错误信息，用于诊断
     std::string bpfObjectPath_;          // 当前 BPF 对象路径
+    EbpfMonitorStateSupport stateSupport_{"BtAudioAnalyzer"};
 };
 
 }  // namespace weaknet_dbus

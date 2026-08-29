@@ -37,6 +37,8 @@
 #include "wifi_packet_loss_monitor.hpp"
 #include "http_latency_monitor.hpp"
 #include "process_net_profiler.hpp"
+#include "tcp_retransmit_monitor.hpp"
+#include "bt_audio_analyzer.hpp"
 #include "database_manager.hpp"
 #include "using_iface.h"
 #include <iomanip>
@@ -619,7 +621,30 @@ void start_process_net_profiler_thread(ServerContext* ctx) {
     });
 }
 
-// 启动历史数据持久化线程（每 5 分钟将当前网络状态写入 SQLite）
+void start_tcp_retrans_monitor_thread(ServerContext* ctx) {
+    ctx->tcp_retrans_monitor_thread = std::thread([ctx]() {
+        auto* monitor = ctx->tcp_retrans_monitor.get();
+        if (!monitor) return;
+        LOG_INFO(LogModule::NETWORK, "TCP retransmit eBPF monitor thread started");
+        if (!monitor->init("build/tcp_retransmit.bpf.o")) {
+            LOG_INFO(LogModule::NETWORK, "TCP retransmit eBPF monitor unavailable");
+            return;
+        }
+        while (ctx->running.load()) {
+            const auto stats = monitor->getStats();
+            if (!stats.empty()) {
+                LOG_INFO(LogModule::NETWORK, "TCP retransmit tick: connections=" << stats.size()
+                    << " lossRate=" << monitor->computeLossRate() << "%");
+            }
+            for (int i = 0; i < 150 && ctx->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
+        }
+        monitor->stop();
+    LOG_INFO(LogModule::NETWORK, "TCP retransmit eBPF monitor thread stopped");
+    });
+}
+
+// 启动历史数据持久化线程
 void start_history_persistence_thread(ServerContext* ctx) {
     ctx->history_thread = std::thread([ctx](){
         LOG_INFO(LogModule::SYSTEM, "History persistence thread started");
@@ -762,6 +787,7 @@ int start_server() {
     ctx.wifi_loss_monitor = std::make_unique<WifiPacketLossMonitor>();
     ctx.http_latency_monitor = std::make_unique<HttpLatencyMonitor>();
     ctx.process_net_profiler = std::make_unique<ProcessNetProfiler>();
+    ctx.tcp_retrans_monitor = std::make_unique<TcpRetransMonitor>();
 
     // DNS 监控器：挂载 kprobe/udp_sendmsg + kprobe/udp_recvmsg
     LOG_INFO(LogModule::NETWORK, "starting DNS monitor thread (interval=10s)");
@@ -779,6 +805,10 @@ int start_server() {
     // 同探针 tcp_retransmit_skb 双消费者之一（另一个在 TcpLossMonitor），各自独立加载，不合并
     LOG_INFO(LogModule::NETWORK, "starting process net profiler thread (interval=15s)");
     start_process_net_profiler_thread(&ctx);
+
+    // 启动 TCP 重传 eBPF 监控线程
+    LOG_INFO(LogModule::NETWORK, "starting TCP retransmit eBPF monitor thread (interval=15s)");
+    start_tcp_retrans_monitor_thread(&ctx);
 
     // 启动历史数据持久化线程（每 5 分钟写入一次）
     if (ctx.db_mgr && ctx.db_mgr->isOpen()) {
@@ -813,6 +843,7 @@ int start_server() {
     if (ctx.wifi_loss_monitor_thread.joinable())        ctx.wifi_loss_monitor_thread.join();
     if (ctx.http_latency_monitor_thread.joinable())     ctx.http_latency_monitor_thread.join();
     if (ctx.process_net_profiler_thread.joinable())     ctx.process_net_profiler_thread.join();
+    if (ctx.tcp_retrans_monitor_thread.joinable())      ctx.tcp_retrans_monitor_thread.join();
 
     LOG_INFO(LogModule::NETWORK, "all monitor threads joined");
 

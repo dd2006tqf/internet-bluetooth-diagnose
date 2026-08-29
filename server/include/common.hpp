@@ -24,6 +24,7 @@ static constexpr const char kMethodGetDnsStats[] = "GetDnsStats";               
 static constexpr const char kMethodGetWifiLossStats[] = "GetWifiLossStats";         // 获取 Wi-Fi 丢包统计
 static constexpr const char kMethodGetHttpLatencyStats[] = "GetHttpLatencyStats";   // 获取 HTTP 请求延迟统计
 static constexpr const char kMethodGetProcessProfiling[] = "GetProcessProfiling";   // 获取进程网络画像
+static constexpr const char kMethodGetEbpfMonitorHealth[] = "GetEbpfMonitorHealth"; // 获取 eBPF 监控器健康状态
 static constexpr const char kMethodGetHistory[] = "GetHistory";                     // 查询历史监控数据
 
 // 数据库路径（持久化到应用目录，避免开发板重启后 /tmp 数据丢失）

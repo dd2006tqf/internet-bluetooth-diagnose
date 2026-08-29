@@ -587,6 +587,12 @@ public:
         return requestStringData(kMethodGetProcessProfiling, "进程网络画像", result, errorMsg);
     }
 
+    // 获取六个 eBPF 监控器健康与性能快照
+    bool getEbpfMonitorHealth(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        return requestStringData(kMethodGetEbpfMonitorHealth, "eBPF 监控器健康状态", result, errorMsg);
+    }
+
     // 查询历史监控数据（带参数）
     bool getHistory(const std::string& iface, const std::string& start,
                     const std::string& end, int32_t limit,
@@ -1100,6 +1106,20 @@ extern "C" bool weaknet_get_process_profiling(char* buffer, size_t buffer_size, 
         snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
         return false;
     }
+}
+
+extern "C" bool weaknet_get_ebpf_monitor_health(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getEbpfMonitorHealth(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    }
+    snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+    return false;
 }
 
 // 注意: 此文件现在作为动态库使用，不包含main函数

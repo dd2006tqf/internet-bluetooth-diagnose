@@ -41,6 +41,7 @@ bool BtAudioAnalyzer::init(const std::string& bpfObjectPath) {
 
     bpfObjectPath_ = bpfObjectPath;
     state_ = BtAudioAnalyzerState::Uninitialized;
+    stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
     lastError_.clear();
 
     // 1. 打开 BPF 对象文件
@@ -49,6 +50,7 @@ bool BtAudioAnalyzer::init(const std::string& bpfObjectPath) {
         lastError_ = "bpf_object__open failed for " + bpfObjectPath + ": " + std::string(strerror(errno));
         LOG_ERROR(LogModule::BLUETOOTH, "BtAudioAnalyzer: " << lastError_);
         state_ = BtAudioAnalyzerState::Error;
+        stateSupport_.setState(EbpfMonitorState::Error, false, lastError_);
         return false;
     }
 
@@ -59,6 +61,7 @@ bool BtAudioAnalyzer::init(const std::string& bpfObjectPath) {
         bpf_object__close(bpfObj_);
         bpfObj_ = nullptr;
         state_ = BtAudioAnalyzerState::Error;
+        stateSupport_.setState(EbpfMonitorState::Error, false, lastError_);
         return false;
     }
 
@@ -74,6 +77,7 @@ bool BtAudioAnalyzer::init(const std::string& bpfObjectPath) {
         bpf_object__close(bpfObj_);
         bpfObj_ = nullptr;
         state_ = BtAudioAnalyzerState::Error;
+        stateSupport_.setState(EbpfMonitorState::Error, false, lastError_);
         return false;
     }
 
@@ -102,6 +106,7 @@ bool BtAudioAnalyzer::init(const std::string& bpfObjectPath) {
         sessionsMapFd_ = -1;
         cfgMapFd_ = -1;
         state_ = BtAudioAnalyzerState::Fallback;
+        stateSupport_.setState(EbpfMonitorState::Fallback, false, lastError_);
         return false;
     }
 
@@ -109,6 +114,8 @@ bool BtAudioAnalyzer::init(const std::string& bpfObjectPath) {
     setGlobalEnabled(true);
 
     state_ = BtAudioAnalyzerState::Attached;
+    stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF hook attached");
+    stateSupport_.recordProbeAttached();
     LOG_INFO(LogModule::BLUETOOTH, "BtAudioAnalyzer: initialization complete, hook=" << attachedHookName_);
     return true;
 }
@@ -139,13 +146,19 @@ void BtAudioAnalyzer::stop() {
     sessionsMapFd_ = -1;
     cfgMapFd_ = -1;
     state_ = BtAudioAnalyzerState::Uninitialized;
+    stateSupport_.setState(EbpfMonitorState::Stopped, false, "stopped");
     attachedHookName_.clear();
     LOG_INFO(LogModule::BLUETOOTH, "BtAudioAnalyzer: stopped");
 }
 
-BtAudioAnalyzerState BtAudioAnalyzer::state() const {
+EbpfMonitorState BtAudioAnalyzer::commonState() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return state_;
+    switch (state_) {
+        case BtAudioAnalyzerState::Attached: return EbpfMonitorState::Attached;
+        case BtAudioAnalyzerState::Fallback: return EbpfMonitorState::Fallback;
+        case BtAudioAnalyzerState::Error: return EbpfMonitorState::Error;
+        case BtAudioAnalyzerState::Uninitialized: default: return EbpfMonitorState::Uninitialized;
+    }
 }
 
 bool BtAudioAnalyzer::isAvailable() const {
@@ -244,7 +257,16 @@ bool BtAudioAnalyzer::getStats(const std::string& mac, uint8_t direction, BtTraf
         return false;
     }
 
-    return readStatsFromMap(bdaddr, direction, out);
+    auto started = std::chrono::steady_clock::now();
+    bool ok = readStatsFromMap(bdaddr, direction, out);
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    if (ok) {
+        stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed));
+    } else {
+        stateSupport_.recordReadFailure("bt_traffic map lookup failed");
+    }
+    return ok;
 }
 
 std::vector<std::pair<std::string, BtTrafficStats>> BtAudioAnalyzer::getAllStats() const {

@@ -275,6 +275,9 @@ public:
     // @return true 若找到该设备的音频数据
     bool getAudioFusionResult(const std::string& mac, BtAudioFusionResult* out) const;
 
+    // 获取音频 eBPF 分析器，供统一监控健康查询使用
+    BtAudioAnalyzer* audioAnalyzer() const { return btAudioAnalyzer_.get(); }
+
     // eBPF 融合层是否可用
     bool isPhase2Available() const;
 

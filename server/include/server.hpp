@@ -23,6 +23,7 @@ class DnsMonitor;                // 前置声明
 class WifiPacketLossMonitor;     // 前置声明
 class HttpLatencyMonitor;        // 前置声明
 class ProcessNetProfiler;        // 前置声明
+class TcpRetransMonitor;         // 前置声明
 class DatabaseManager;           // 前置声明
 
 struct ServerContext {
@@ -69,12 +70,14 @@ struct ServerContext {
     std::unique_ptr<WifiPacketLossMonitor> wifi_loss_monitor;
     std::unique_ptr<HttpLatencyMonitor> http_latency_monitor;
     std::unique_ptr<ProcessNetProfiler> process_net_profiler;
+    std::unique_ptr<TcpRetransMonitor> tcp_retrans_monitor;
 
     // eBPF 监控器线程
     std::thread dns_monitor_thread;
     std::thread wifi_loss_monitor_thread;
     std::thread http_latency_monitor_thread;
     std::thread process_net_profiler_thread;
+    std::thread tcp_retrans_monitor_thread;
 
     // 历史数据持久化，智能指针管理生命周期
     std::unique_ptr<DatabaseManager> db_mgr;
@@ -95,6 +98,7 @@ void start_dns_monitor_thread(ServerContext* ctx);
 void start_wifi_loss_monitor_thread(ServerContext* ctx);
 void start_http_latency_monitor_thread(ServerContext* ctx);
 void start_process_net_profiler_thread(ServerContext* ctx);
+void start_tcp_retrans_monitor_thread(ServerContext* ctx);
 
 // 启动历史数据持久化线程（每 5 分钟写入一次）
 void start_history_persistence_thread(ServerContext* ctx);

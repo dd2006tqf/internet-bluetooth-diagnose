@@ -7,6 +7,8 @@
 #include <string>
 #include <map>
 #include <memory>
+#include "ebpf_monitor_interface.hpp"
+#include "ebpf_monitor_metrics.hpp"
 
 namespace weaknet_dbus {
 
@@ -28,7 +30,7 @@ struct IfacePacketStats {
 };
 
 // Wi-Fi/网卡丢包归因监控器
-class WifiPacketLossMonitor {
+class WifiPacketLossMonitor : public IEbpfMonitor {
 public:
     WifiPacketLossMonitor();
     ~WifiPacketLossMonitor();
@@ -43,7 +45,13 @@ public:
     bool isInitialized() const { return initialized_; }
 
     // 是否可用（BPF 加载成功）
-    bool isAvailable() const { return available_; }
+    bool isAvailable() const override { return available_; }
+
+    const char* monitorName() const override { return "WifiPacketLossMonitor"; }
+    EbpfMonitorState commonState() const override { return stateSupport_.state(); }
+    EbpfMonitorHealth health() const override { return stateSupport_.health(); }
+    EbpfMonitorMetrics metrics() const override { return stateSupport_.metrics(); }
+    void resetMetrics() override { stateSupport_.resetMetrics(); }
 
     // 获取所有接口的收发统计
     std::map<uint32_t, IfacePacketStats> getStats();
@@ -67,6 +75,7 @@ private:
 
     bool initialized_ = false;
     bool available_ = false;
+    EbpfMonitorStateSupport stateSupport_{"WifiPacketLossMonitor"};
 };
 
 }  // namespace weaknet_dbus

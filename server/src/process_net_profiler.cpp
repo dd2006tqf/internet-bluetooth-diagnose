@@ -54,6 +54,7 @@ ProcessNetProfiler::~ProcessNetProfiler() {
 }
 
 bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
+    stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
     LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: BPF not available (no libbpf)");
     available_ = false;
@@ -138,11 +139,16 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
     initialized_ = true;
 
     LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: initialized successfully");
+    stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached");
+    stateSupport_.recordProbeAttached();
+    stateSupport_.recordProbeAttached();
+    stateSupport_.recordProbeAttached();
     return true;
 #endif
 }
 
 void ProcessNetProfiler::stop() {
+    stateSupport_.setState(EbpfMonitorState::Stopped, false, "stopped");
 #if HAVE_LIBBPF
     if (impl_->link_retrans) { bpf_link__destroy(impl_->link_retrans); impl_->link_retrans = nullptr; }
     if (impl_->link_xmit) { bpf_link__destroy(impl_->link_xmit); impl_->link_xmit = nullptr; }
@@ -161,9 +167,12 @@ void ProcessNetProfiler::stop() {
 std::vector<ProcessNetInfo> ProcessNetProfiler::getProcesses() {
     std::vector<ProcessNetInfo> result;
 #if HAVE_LIBBPF
-    if (!available_ || impl_->process_stats_fd < 0)
+    if (impl_->process_stats_fd < 0) {
+        stateSupport_.recordReadFailure("process_stats map unavailable");
         return result;
+    }
 
+    auto started = std::chrono::steady_clock::now();
     __u32 cur_key = 0, next_key = 0;
     while (bpf_map_get_next_key(impl_->process_stats_fd, &cur_key, &next_key) == 0) {
         process_net_stats stats = {};
@@ -178,6 +187,9 @@ std::vector<ProcessNetInfo> ProcessNetProfiler::getProcesses() {
         }
         cur_key = next_key;
     }
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed), !result.empty());
 #endif
     return result;
 }

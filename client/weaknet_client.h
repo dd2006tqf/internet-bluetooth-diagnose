@@ -308,6 +308,11 @@ bool weaknet_get_http_latency_stats(char* buffer, size_t buffer_size, char* erro
  */
 bool weaknet_get_process_profiling(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
 
+/**
+ * 获取六个 eBPF 监控器的健康与性能快照
+ */
+bool weaknet_get_ebpf_monitor_health(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
 /* ============================== 历史数据 API ============================== */
 
 /**

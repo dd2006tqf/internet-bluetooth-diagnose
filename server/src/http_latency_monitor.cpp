@@ -64,6 +64,7 @@ HttpLatencyMonitor::~HttpLatencyMonitor() {
 }
 
 bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
+    stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
     LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: BPF not available (no libbpf)");
     available_ = false;
@@ -177,11 +178,16 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
     initialized_ = true;
 
     LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: initialized successfully");
+    stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached");
+    stateSupport_.recordProbeAttached();
+    stateSupport_.recordProbeAttached();
+    stateSupport_.recordProbeAttached();
     return true;
 #endif
 }
 
 void HttpLatencyMonitor::stop() {
+    stateSupport_.setState(EbpfMonitorState::Stopped, false, "stopped");
 #if HAVE_LIBBPF
     if (impl_->link_send) { bpf_link__destroy(impl_->link_send); impl_->link_send = nullptr; }
     if (impl_->link_entry) { bpf_link__destroy(impl_->link_entry); impl_->link_entry = nullptr; }
@@ -199,9 +205,12 @@ void HttpLatencyMonitor::stop() {
 std::vector<HttpTxnInfo> HttpLatencyMonitor::getRecentTxns(size_t limit) {
     std::vector<HttpTxnInfo> result;
 #if HAVE_LIBBPF
-    if (!available_ || impl_->http_txn_stats_fd < 0)
+    if (impl_->http_txn_stats_fd < 0) {
+        stateSupport_.recordReadFailure("http_txn_stats map unavailable");
         return result;
+    }
 
+    auto started = std::chrono::steady_clock::now();
     static constexpr int MAX_ITER = 32;
     int count = 0;
     tcp_conn_key cur_key = {}, next_key = {};
@@ -229,7 +238,9 @@ std::vector<HttpTxnInfo> HttpLatencyMonitor::getRecentTxns(size_t limit) {
         cur_key = next_key;
         count++;
     }
-#endif
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed), !result.empty());
     // 按 TTFB 降序排列，取前 limit 个
     std::sort(result.begin(), result.end(),
         [](const HttpTxnInfo& a, const HttpTxnInfo& b) {
@@ -237,6 +248,10 @@ std::vector<HttpTxnInfo> HttpLatencyMonitor::getRecentTxns(size_t limit) {
         });
     if (result.size() > limit) result.resize(limit);
     return result;
+#else
+    (void)limit;
+    return result;
+#endif
 }
 
 uint64_t HttpLatencyMonitor::percentile(const std::vector<uint64_t>& values, double p) {

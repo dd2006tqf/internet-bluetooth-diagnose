@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include "ebpf_monitor_interface.hpp"
+#include "ebpf_monitor_metrics.hpp"
 
 namespace weaknet_dbus {
 
@@ -35,7 +37,7 @@ struct DnsAggStats {
 };
 
 // DNS 监控器
-class DnsMonitor {
+class DnsMonitor : public IEbpfMonitor {
 public:
     DnsMonitor();
     ~DnsMonitor();
@@ -50,7 +52,13 @@ public:
     bool isInitialized() const { return initialized_; }
 
     // 是否可用
-    bool isAvailable() const { return available_; }
+    bool isAvailable() const override { return available_; }
+
+    const char* monitorName() const override { return "DnsMonitor"; }
+    EbpfMonitorState commonState() const override { return stateSupport_.state(); }
+    EbpfMonitorHealth health() const override { return stateSupport_.health(); }
+    EbpfMonitorMetrics metrics() const override { return stateSupport_.metrics(); }
+    void resetMetrics() override { stateSupport_.resetMetrics(); }
 
     // 获取聚合统计
     DnsAggStats getStats();
@@ -67,6 +75,7 @@ private:
 
     bool initialized_ = false;
     bool available_ = false;
+    EbpfMonitorStateSupport stateSupport_{"DnsMonitor"};
 };
 
 }  // namespace weaknet_dbus

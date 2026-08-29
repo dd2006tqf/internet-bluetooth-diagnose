@@ -5,7 +5,7 @@
 #include "dns_monitor.hpp"
 #include "logger.hpp"
 
-#include <cstring>
+#include <chrono>
 #include <cstdio>
 #include <arpa/inet.h>
 
@@ -69,10 +69,12 @@ DnsMonitor::~DnsMonitor() {
 }
 
 bool DnsMonitor::init(const std::string& bpfObjPath) {
+    stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
     LOG_INFO(LogModule::NETWORK, "DnsMonitor: BPF not available (no libbpf)");
     available_ = false;
     initialized_ = true;
+    stateSupport_.setState(EbpfMonitorState::Fallback, false, "libbpf unavailable");
     return false;
 #else
     LOG_INFO(LogModule::NETWORK, "DnsMonitor: loading BPF object from " << bpfObjPath);
@@ -151,11 +153,15 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
     initialized_ = true;
 
     LOG_INFO(LogModule::NETWORK, "DnsMonitor: initialized successfully");
+    stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached");
+    stateSupport_.recordProbeAttached();
+    stateSupport_.recordProbeAttached();
     return true;
 #endif
 }
 
 void DnsMonitor::stop() {
+    stateSupport_.setState(EbpfMonitorState::Stopped, false, "stopped");
 #if HAVE_LIBBPF
     if (impl_->link_send) { bpf_link__destroy(impl_->link_send); impl_->link_send = nullptr; }
     if (impl_->link_recv) { bpf_link__destroy(impl_->link_recv); impl_->link_recv = nullptr; }
@@ -176,10 +182,13 @@ DnsAggStats DnsMonitor::getStats() {
     if (!available_ || impl_->dns_stats_fd < 0)
         return result;
 
-    // 读取 PERCPU 统计
+    auto started = std::chrono::steady_clock::now();
     __u32 key = 0;
     dns_stats_record percpu_stats = {};
     if (bpf_map_lookup_elem(impl_->dns_stats_fd, &key, &percpu_stats) == 0) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed));
         result.totalQueries = percpu_stats.total_queries;
         result.totalResponses = percpu_stats.total_responses;
         result.totalTimeouts = percpu_stats.total_timeouts;
@@ -188,6 +197,8 @@ DnsAggStats DnsMonitor::getStats() {
             ? (percpu_stats.total_latency_ns / percpu_stats.total_responses / 1000000)
             : 0;
         result.maxLatencyMs = percpu_stats.max_latency_ns / 1000000;
+    } else {
+        stateSupport_.recordReadFailure("dns_stats map lookup failed");
     }
 #endif
     return result;

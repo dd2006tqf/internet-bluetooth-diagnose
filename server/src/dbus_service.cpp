@@ -15,10 +15,13 @@
 #include "network_quality_assessor.hpp"
 #include "net_ping.h"
 #include "bt_monitor.hpp"
+#include "bt_audio_analyzer.hpp"
 #include "dns_monitor.hpp"
 #include "wifi_packet_loss_monitor.hpp"
 #include "http_latency_monitor.hpp"
 #include "process_net_profiler.hpp"
+#include "tcp_retransmit_monitor.hpp"
+#include "utils/json_escape.hpp"
 #include "database_manager.hpp"
 #include <sstream>
 
@@ -72,6 +75,10 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetProcessProfiling)) {
         self->handleGetProcessProfiling(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetEbpfMonitorHealth)) {
+        self->handleGetEbpfMonitorHealth(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetHistory)) {
@@ -586,6 +593,65 @@ bool DbusService::handleGetProcessProfiling(DBusConnection* conn, DBusMessage* m
     dbus_connection_flush(conn);
     dbus_message_unref(reply);
     return true;
+}
+
+bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetEbpfMonitorHealth called");
+    if (!ctx_ || !ctx_->dns_monitor || !ctx_->wifi_loss_monitor ||
+        !ctx_->http_latency_monitor || !ctx_->process_net_profiler ||
+        !ctx_->tcp_retrans_monitor || !ctx_->bt_monitor) {
+        DBusMessage* error = dbus_message_new_error(msg, "com.example.WeakNet.Error", "eBPF monitor context unavailable");
+        if (error) {
+            dbus_connection_send(conn, error, nullptr);
+            dbus_connection_flush(conn);
+            dbus_message_unref(error);
+        }
+        return false;
+    }
+
+    BtAudioAnalyzer fallbackAudioAnalyzer;
+    const IEbpfMonitor* audioMonitor = ctx_->bt_monitor->audioAnalyzer();
+    if (!audioMonitor) audioMonitor = &fallbackAudioAnalyzer;
+
+    const std::vector<const IEbpfMonitor*> monitors = {
+        static_cast<const IEbpfMonitor*>(ctx_->dns_monitor.get()),
+        static_cast<const IEbpfMonitor*>(ctx_->wifi_loss_monitor.get()),
+        static_cast<const IEbpfMonitor*>(ctx_->http_latency_monitor.get()),
+        static_cast<const IEbpfMonitor*>(ctx_->process_net_profiler.get()),
+        static_cast<const IEbpfMonitor*>(ctx_->tcp_retrans_monitor.get()),
+        audioMonitor
+    };
+
+    std::ostringstream json;
+    json << "{\"monitors\":[";
+    for (size_t i = 0; i < monitors.size(); ++i) {
+        if (i > 0) json << ",";
+        const auto health = monitors[i]->health();
+        const auto metrics = monitors[i]->metrics();
+        json << "{\"name\":\"" << health.name
+             << "\",\"state\":\"" << ebpfMonitorStateName(health.state)
+             << "\",\"available\":" << (health.available ? "true" : "false")
+             << ",\"healthy\":" << (health.healthy ? "true" : "false")
+             << ",\"map_reads\":" << metrics.mapReads
+             << ",\"map_read_errors\":" << metrics.mapReadErrors
+             << ",\"samples\":" << metrics.samples
+             << ",\"average_read_time_us\":" << metrics.averageReadTimeUs
+             << ",\"status\":\"" << weaknet_utils::escapeJsonString(health.status)
+             << "\"}";
+    }
+    json << "]}";
+
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const std::string result = json.str();
+    const char* value = result.c_str();
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &value);
+    bool ok = dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return ok;
 }
 
 bool DbusService::handleGetHistory(DBusConnection* conn, DBusMessage* msg) {

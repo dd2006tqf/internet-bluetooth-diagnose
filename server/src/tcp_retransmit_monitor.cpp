@@ -10,6 +10,7 @@
 #include <sstream>
 #include <algorithm>
 #include <arpa/inet.h>
+#include <chrono>
 
 #if defined(__has_include)
 #  if __has_include(<linux/bpf.h>) && __has_include(<bpf/libbpf.h>) && __has_include(<bpf/bpf.h>)
@@ -96,6 +97,7 @@ TcpRetransMonitor::~TcpRetransMonitor() {
 }
 
 bool TcpRetransMonitor::init(const std::string& bpfObjPath) {
+    stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
     LOG_INFO(LogModule::TCP_LOSS, "TcpRetransMonitor: BPF not available (no libbpf)");
     available_ = false;
@@ -178,11 +180,15 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath) {
     initialized_ = true;
 
     LOG_INFO(LogModule::TCP_LOSS, "TcpRetransMonitor: initialized successfully");
+    stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached");
+    stateSupport_.recordProbeAttached();
+    stateSupport_.recordProbeAttached();
     return true;
 #endif
 }
 
 void TcpRetransMonitor::stop() {
+    stateSupport_.setState(EbpfMonitorState::Stopped, false, "stopped");
 #if HAVE_LIBBPF
     if (impl_->link_retrans) { bpf_link__destroy(impl_->link_retrans); impl_->link_retrans = nullptr; }
     if (impl_->link_send) { bpf_link__destroy(impl_->link_send); impl_->link_send = nullptr; }
@@ -200,9 +206,12 @@ void TcpRetransMonitor::stop() {
 std::map<TcpConnKey, TcpRetransStats> TcpRetransMonitor::getStats() {
     std::map<TcpConnKey, TcpRetransStats> result;
 #if HAVE_LIBBPF
-    if (!available_ || impl_->retrans_stats_fd < 0)
+    if (impl_->retrans_stats_fd < 0) {
+        stateSupport_.recordReadFailure("retrans_stats map unavailable");
         return result;
+    }
 
+    auto started = std::chrono::steady_clock::now();
     // 遍历 retrans_stats Map
     tcp_conn_key cur_key = {}, next_key = {};
     while (bpf_map_get_next_key(impl_->retrans_stats_fd, &cur_key, &next_key) == 0) {
@@ -214,6 +223,9 @@ std::map<TcpConnKey, TcpRetransStats> TcpRetransMonitor::getStats() {
         }
         cur_key = next_key;
     }
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed), !result.empty());
 #endif
     return result;
 }

@@ -7,6 +7,7 @@
 
 #include <cstring>
 #include <cstdio>
+#include <chrono>
 
 #if defined(__has_include)
 #  if __has_include(<linux/bpf.h>) && __has_include(<bpf/libbpf.h>) && __has_include(<bpf/bpf.h>)
@@ -72,6 +73,8 @@ WifiPacketLossMonitor::~WifiPacketLossMonitor() {
 }
 
 bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
+    stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
+    stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
     LOG_INFO(LogModule::NETWORK, "WifiPacketLossMonitor: BPF not available (no libbpf)");
     available_ = false;
@@ -125,11 +128,16 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
     initialized_ = true;
 
     LOG_INFO(LogModule::NETWORK, "WifiPacketLossMonitor: initialized successfully");
+    stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached");
+    stateSupport_.recordProbeAttached();
+    stateSupport_.recordProbeAttached();
+    stateSupport_.recordProbeAttached();
     return true;
 #endif
 }
 
 void WifiPacketLossMonitor::stop() {
+    stateSupport_.setState(EbpfMonitorState::Stopped, false, "stopped");
 #if HAVE_LIBBPF
     if (impl_->link_rx) { bpf_link__destroy(impl_->link_rx); impl_->link_rx = nullptr; }
     if (impl_->link_tx_queue) { bpf_link__destroy(impl_->link_tx_queue); impl_->link_tx_queue = nullptr; }
@@ -147,9 +155,12 @@ void WifiPacketLossMonitor::stop() {
 std::map<uint32_t, IfacePacketStats> WifiPacketLossMonitor::getStats() {
     std::map<uint32_t, IfacePacketStats> result;
 #if HAVE_LIBBPF
-    if (!available_ || impl_->packet_stats_fd < 0)
+    if (impl_->packet_stats_fd < 0) {
+        stateSupport_.recordReadFailure("packet_stats map unavailable");
         return result;
+    }
 
+    auto started = std::chrono::steady_clock::now();
     __u32 cur_key = 0, next_key = 0;
     while (bpf_map_get_next_key(impl_->packet_stats_fd, &cur_key, &next_key) == 0) {
         iface_packet_stats stats = {};
@@ -166,6 +177,9 @@ std::map<uint32_t, IfacePacketStats> WifiPacketLossMonitor::getStats() {
         }
         cur_key = next_key;
     }
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed), !result.empty());
 #endif
     return result;
 }

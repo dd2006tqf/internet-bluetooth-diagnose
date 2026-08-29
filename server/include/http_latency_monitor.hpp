@@ -8,6 +8,8 @@
 #include <vector>
 #include <map>
 #include <memory>
+#include "ebpf_monitor_interface.hpp"
+#include "ebpf_monitor_metrics.hpp"
 
 namespace weaknet_dbus {
 
@@ -34,7 +36,7 @@ struct HttpLatencyStats {
 };
 
 // HTTP 请求级延迟监控器
-class HttpLatencyMonitor {
+class HttpLatencyMonitor : public IEbpfMonitor {
 public:
     HttpLatencyMonitor();
     ~HttpLatencyMonitor();
@@ -49,7 +51,13 @@ public:
     bool isInitialized() const { return initialized_; }
 
     // 是否可用（BPF 加载成功）
-    bool isAvailable() const { return available_; }
+    bool isAvailable() const override { return available_; }
+
+    const char* monitorName() const override { return "HttpLatencyMonitor"; }
+    EbpfMonitorState commonState() const override { return stateSupport_.state(); }
+    EbpfMonitorHealth health() const override { return stateSupport_.health(); }
+    EbpfMonitorMetrics metrics() const override { return stateSupport_.metrics(); }
+    void resetMetrics() override { stateSupport_.resetMetrics(); }
 
     // 获取最近完成的 HTTP 事务
     std::vector<HttpTxnInfo> getRecentTxns(size_t limit);
@@ -69,6 +77,7 @@ private:
 
     bool initialized_ = false;
     bool available_ = false;
+    EbpfMonitorStateSupport stateSupport_{"HttpLatencyMonitor"};
 };
 
 }  // namespace weaknet_dbus

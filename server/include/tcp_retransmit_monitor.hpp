@@ -8,6 +8,8 @@
 #include <vector>
 #include <map>
 #include <memory>
+#include "ebpf_monitor_interface.hpp"
+#include "ebpf_monitor_metrics.hpp"
 
 namespace weaknet_dbus {
 
@@ -46,7 +48,7 @@ struct TcpRetransStats {
 };
 
 // TCP 重传监控器
-class TcpRetransMonitor {
+class TcpRetransMonitor : public IEbpfMonitor {
 public:
     TcpRetransMonitor();
     ~TcpRetransMonitor();
@@ -61,7 +63,13 @@ public:
     bool isInitialized() const { return initialized_; }
 
     // 是否可用（BPF 加载成功）
-    bool isAvailable() const { return available_; }
+    bool isAvailable() const override { return available_; }
+
+    const char* monitorName() const override { return "TcpRetransMonitor"; }
+    EbpfMonitorState commonState() const override { return stateSupport_.state(); }
+    EbpfMonitorHealth health() const override { return stateSupport_.health(); }
+    EbpfMonitorMetrics metrics() const override { return stateSupport_.metrics(); }
+    void resetMetrics() override { stateSupport_.resetMetrics(); }
 
     // 获取所有连接的重传统计
     std::map<TcpConnKey, TcpRetransStats> getStats();
@@ -78,6 +86,7 @@ private:
 
     bool initialized_ = false;
     bool available_ = false;
+    EbpfMonitorStateSupport stateSupport_{"TcpRetransMonitor"};
 };
 
 }  // namespace weaknet_dbus

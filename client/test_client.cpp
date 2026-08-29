@@ -470,6 +470,14 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
             return false;
         }
     }
+    else if (command == "ebpf-health") {
+        if (weaknet_get_ebpf_monitor_health(buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ eBPF 监控器健康状态: %s\n", buffer);
+        } else {
+            printf("❌ eBPF 监控器健康查询失败: %s\n", error);
+            return false;
+        }
+    }
     else if (command == "file") {
         if (weaknet_get_from_file(buffer, sizeof(buffer), error, sizeof(error))) {
             printf("✅ 文件中的状态: %s\n", buffer);
@@ -647,6 +655,7 @@ int main(int argc, char* argv[]) {
         printf("  %s all                    - 运行所有接口验证测试\n", argv[0]);
         printf("  %s get                    - 获取当前网络接口\n", argv[0]);
         printf("  %s health                 - 网络健康检查\n", argv[0]);
+    printf("  %s ebpf-health            - eBPF 监控器健康与性能状态\n", argv[0]);
         printf("  %s file                   - 从文件读取最新状态\n", argv[0]);
         printf("  %s ping HOSTNAME          - Ping指定主机\n", argv[0]);
         printf("  %s check                  - 单次检查变化\n", argv[0]);
