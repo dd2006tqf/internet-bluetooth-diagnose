@@ -5,7 +5,7 @@
   "current_step": "change-aborted",
   "next_step": "Create or select the next change",
   "active_change": null,
-  "updated_at": "2026-08-29T14:49:38.599Z",
+  "updated_at": "2026-08-29T16:19:01.022Z",
   "last_archived_change": {
     "change_name": "timestamped-log-file",
     "archived_as": "2026-08-16-timestamped-log-file",
