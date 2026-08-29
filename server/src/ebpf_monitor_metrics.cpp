@@ -74,12 +74,13 @@ void EbpfMonitorStateSupport::setState(EbpfMonitorState state, bool available, c
 }
 
 void EbpfMonitorStateSupport::setStateFromRead(bool success, const std::string& error) {
-    std::lock_guard<std::mutex> lock(mutex_);
     if (success) {
         tracker_.recordReadSuccess(0);
+        std::lock_guard<std::mutex> lock(mutex_);
         status_.clear();
     } else {
         tracker_.recordReadFailure(error);
+        std::lock_guard<std::mutex> lock(mutex_);
         status_ = error;
     }
 }

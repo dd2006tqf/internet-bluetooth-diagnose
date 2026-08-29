@@ -145,7 +145,7 @@ void BtAudioAnalyzer::stop() {
     statsMapFd_ = -1;
     sessionsMapFd_ = -1;
     cfgMapFd_ = -1;
-    state_ = BtAudioAnalyzerState::Uninitialized;
+    state_ = BtAudioAnalyzerState::Stopped;
     stateSupport_.setState(EbpfMonitorState::Stopped, false, "stopped");
     attachedHookName_.clear();
     LOG_INFO(LogModule::BLUETOOTH, "BtAudioAnalyzer: stopped");
@@ -157,6 +157,7 @@ EbpfMonitorState BtAudioAnalyzer::commonState() const {
         case BtAudioAnalyzerState::Attached: return EbpfMonitorState::Attached;
         case BtAudioAnalyzerState::Fallback: return EbpfMonitorState::Fallback;
         case BtAudioAnalyzerState::Error: return EbpfMonitorState::Error;
+        case BtAudioAnalyzerState::Stopped: return EbpfMonitorState::Stopped;
         case BtAudioAnalyzerState::Uninitialized: default: return EbpfMonitorState::Uninitialized;
     }
 }
