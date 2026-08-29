@@ -279,7 +279,109 @@ label_source
 
 结合用户感知、业务请求结果、DNS/HTTP 结果和人工确认，形成更可靠的生产标签。
 
-## 6. 模型路线
+## 6. 各阶段数据需求
+
+不同阶段需要的数据类型不同，不能只用总记录数判断是否达标。
+
+| 阶段 | 目标 | 必需数据 | 标签要求 | 建议规模 |
+|---|---|---|---|---:|
+| 阶段 1 | 异常检测 | RTT、Jitter、RSSI、TCP Loss、流量、PPS、Flows | 正常基线；规则标签仅作基线 | 1 万条以上，完整率 99%+ |
+| 阶段 2 | 异常分类与根因分析 | 阶段 1 + DNS、HTTP、Wi-Fi 上下文、系统资源 | 每类受控故障事件 | 每类 50～100 个独立事件 |
+| 阶段 3 | 趋势预测 | 连续长时间序列、周期、业务负载、故障生命周期 | 故障前/中/恢复标签 | 7～14 天，多周期 |
+| 阶段 4 | 多模态融合 | 网络 + 系统 + 蓝牙 + 摄像头/视觉特征 | 同时间窗口场景标签 | 每类 100 个以上配对片段 |
+| 阶段 5 | RAG 与持续学习 | 结构化异常案例、知识、处置结果、人工反馈 | 根因、动作、结果 | 数百个以上案例并持续积累 |
+| GNN 扩展 | 拓扑定位 | 设备/AP/网关/DNS/服务节点和连接边 | 根因节点、影响范围 | 多设备、多拓扑 |
+
+这里的“独立事件”是一次从正常到异常再恢复的完整实验，不是 5 秒采样产生的一行记录。相邻采样点高度相关，不能当成独立故障样本。
+
+### 阶段 1：当前网络异常检测
+
+当前 `network_history` 已基本覆盖第一版模型所需指标。正式模型建议输入：
+
+```text
+rtt_ms, jitter_ms, rssi_dbm, tcp_loss,
+traffic_bps, traffic_pps, flows
+```
+
+`score` 和 `quality` 应保留作为规则基线；不应把 `score` 作为正式模型主要输入，因为它是规则派生结果。无效哨兵值（如 RTT=-1、RSSI=-1000、Jitter=-1）必须删除或标记 `sample_valid=false`。
+
+### 阶段 2：异常分类和根因分析
+
+需要新增并历史化：
+
+```text
+DNS：query_count、avg/p50/p95_latency、timeout_count、error_count、dns_server
+HTTP：request_count、p50/p95/p99_latency、timeout_count、error_count、http_target
+Wi-Fi：ssid、bssid、channel、frequency、bitrate、tx_retries、rx_rate、tx_rate
+系统：cpu_usage、memory_usage、load_average、temperature、open_fd_count
+```
+
+这些字段用于区分 DNS、链路、拥塞、Wi-Fi 干扰、本机资源等原因。`GOOD/FAIR/POOR/BAD` 只能作为初期规则标签，不能代替人工故障标签。
+
+建议受控实验标签：
+
+```text
+normal, latency_spike, wifi_signal_degradation,
+wifi_interference, congestion, tcp_loss, dns_slow,
+http_slow, link_down, link_recovery, device_overload
+```
+
+每次实验需要记录：
+
+```text
+experiment_id, scenario, start_ts, end_ts,
+recovery_ts, operation, label_source, notes
+```
+
+### 阶段 3：预测性维护
+
+保留完整生命周期：
+
+```text
+故障前基线 → 指标漂移 → 故障峰值 → 恢复 → 稳态
+```
+
+并补充：
+
+```text
+hour_sin、hour_cos、day_of_week、is_weekend、business_activity
+```
+
+测试集必须位于训练时间之后，避免相邻窗口泄露。
+
+### 阶段 4：多模态融合
+
+第一版优先使用网络、系统和蓝牙状态；摄像头只有在存在明确业务关联时加入。所有模态必须记录：
+
+```text
+network_ts, system_ts, bluetooth_ts, camera_ts, scene_id
+```
+
+并保证同一时间窗口、同一场景和同一标签。原始视频不必全部放入 SQLite，可保存文件路径或视觉 embedding。
+
+### 阶段 5：RAG 与持续学习
+
+RAG 的基本对象应是“异常事件案例”，不是每一条 5 秒快照。案例应保存：
+
+```text
+event_id、异常类型、证据指标、可能根因、处置动作、处置结果、label_source
+```
+
+模型上线后继续记录：
+
+```text
+model_version、predicted_type、confidence、human_label、feedback、action_result
+```
+
+这些字段支撑历史案例检索、诊断建议评估和后续重训。
+
+### GNN 与多模态的额外数据
+
+GNN 需要将设备、AP、网关、DNS 和远端服务建成节点，并记录连接、路由、流量和依赖边。当前单设备单接口数据不能直接支撑有意义的 GNN。
+
+多模态模型需要同一时刻的网络指标、系统状态、蓝牙快照、摄像头帧和场景标签，不能将未对齐的数据事后拼接。
+
+## 7. 模型路线
 
 ### 路线 A：异常检测基线
 
