@@ -4,6 +4,7 @@
   "phase": "idle",
   "current_step": "change-aborted",
   "next_step": "Create or select the next change",
+  "active_change": null,
   "updated_at": "2026-08-29T02:16:40.917Z",
   "last_archived_change": {
     "change_name": "timestamped-log-file",
