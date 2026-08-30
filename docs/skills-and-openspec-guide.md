@@ -137,7 +137,7 @@ scripts/task_verify.sh <id> --phase regression ...
 **示例**：
 ```bash
 # 在预期范围内
-scripts/task_verify.sh 1 --phase regression --command "build/server/test/test_quality_assessor_gtest"
+scripts/task_verify.sh 1 --phase regression --command "build-x86/server/test/test_quality_assessor_gtest"
 
 # 有偏差时
 scripts/task_verify.sh 2 --phase regression --command "..." --drift-reason "新增接口需要额外测试"
@@ -523,16 +523,16 @@ Skills 是来自 [superpowers](https://github.com/obra/superpowers) 框架的技
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
-| "编译一下" / "build" | `cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build -j$(nproc)` | x86 本地快速编译 |
-| "容器内编译" / "ARM64 编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j1'` | 需要 ~10 分钟（QEMU 模拟） |
-| "编译 eBPF" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake --build build --target ebpf -j1'` | 单独编译 eBPF 程序 |
+| "编译一下" / "build" | `cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build-x86 -j$(nproc)` | x86 本地快速编译 |
+| "容器内编译" / "ARM64 编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-x86 -j1'` | 需要 ~10 分钟（QEMU 模拟） |
+| "编译 eBPF" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake --build build-x86 --target ebpf -j1'` | 单独编译 eBPF 程序 |
 
 ### 4.2 测试
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
-| "跑测试" / "test" | `build/server/test/test_database_manager_gtest` | 运行指定测试 |
-| "跑全部测试" | `cmake --build build -j$(nproc) && ctest --test-dir build/server -R "test_net_info\|test_quality\|test_anomaly\|test_audio\|test_band\|test_serializer\|test_event\|test_bt_full\|test_bt_monitor$\|test_iface\|test_logger\|test_traffic\|test_database"` | x86 单元测试 |
+| "跑测试" / "test" | `build-x86/server/test/test_database_manager_gtest` | 运行指定测试 |
+| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server -R "test_net_info\|test_quality\|test_anomaly\|test_audio\|test_band\|test_serializer\|test_event\|test_bt_full\|test_bt_monitor$\|test_iface\|test_logger\|test_traffic\|test_database"` | x86 单元测试 |
 
 ### 4.3 部署
 
@@ -627,7 +627,7 @@ Skills 是来自 [superpowers](https://github.com/obra/superpowers) 框架的技
 | 代码审查 | Skill | `/full-code-review` |
 | 数据可视化 | Skill | `/dataviz` |
 | 配置 Claude | Skill | `/update-config` |
-| 运行测试 | 直接命令 | `ctest --test-dir build/server` |
+| 运行测试 | 直接命令 | `ctest --test-dir build-x86/server` |
 | 部署 | 直接命令 | `./tools/ci.sh` |
 
 **记住**：

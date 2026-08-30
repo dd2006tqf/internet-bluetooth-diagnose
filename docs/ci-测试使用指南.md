@@ -22,13 +22,9 @@
 5. 远程运行功能测试（health/get/eBPF/指标）
 6. 生成报告到 `ci-reports/`
 
-### 跳过编译
+### 使用已有 ARM64 构建结果
 
-```bash
-./tools/ci.sh --skip-build
-```
-
-使用上次编译结果，只做部署+测试。适合只改了配置或没改代码时。
+当前 `ci.sh` 每次执行都会在 `build-arm64/` 中进行 CMake 增量配置/构建；未修改的目标会由 CMake/ccache 复用。部署包始终从该目录重新整理到 `dist-arm64/`。
 
 ### 跳过部署
 

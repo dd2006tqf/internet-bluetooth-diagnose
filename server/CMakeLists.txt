@@ -35,8 +35,8 @@ target_link_libraries(history_query_tool PRIVATE server_lib)
 # ---- eBPF 程序编译（自定义命令） ----
 find_program(CLANG clang REQUIRED)
 
-# eBPF 产物输出到 CMake 构建目录（避免与旧 Makefile 的 server/build/ 冲突）
-set(BPF_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/ebpf")
+# eBPF 产物输出到当前架构的 CMake 构建目录；部署时映射到 server/build/
+set(BPF_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/build")
 file(MAKE_DIRECTORY ${BPF_BUILD_DIR})
 
 set(VMLINUX_H "${BPF_BUILD_DIR}/vmlinux.h")

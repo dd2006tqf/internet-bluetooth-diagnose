@@ -114,23 +114,23 @@ cd /src
 # 增量编译：保留 build 目录，仅重建改动的文件
 # 使用 ccache 缓存编译结果，减少重复编译
  echo "--- CMake 配置（增量 + ccache）---"
-cmake -B build -DCMAKE_BUILD_TYPE=Debug \
+cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_C_COMPILER_LAUNCHER=ccache \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1
 
 echo "--- 编译服务端 + eBPF + 客户端 ---"
-cmake --build build --target weaknet-dbus-server history_query_tool weaknet test_client_bin ebpf -j1 2>&1
+cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet test_client_bin ebpf -j1 2>&1
 
 echo "--- 打包 dist-arm64 ---"
 rm -rf dist-arm64
 mkdir -p dist-arm64/server/bin dist-arm64/server/build \
          dist-arm64/client/bin dist-arm64/client/lib dist-arm64/lib
 
-install -m 0755 build/server/weaknet-dbus-server dist-arm64/server/bin/
-install -m 0755 build/server/history_query_tool dist-arm64/server/bin/
-for f in build/server/ebpf/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true; done
-install -m 0755 client/bin/test_client_bin dist-arm64/client/bin/test-client
-install -m 0644 client/lib/libweaknet.so dist-arm64/client/lib/
+install -m 0755 build-arm64/server/weaknet-dbus-server dist-arm64/server/bin/
+install -m 0755 build-arm64/server/history_query_tool dist-arm64/server/bin/
+for f in build-arm64/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true; done
+install -m 0755 build-arm64/client/bin/test_client_bin dist-arm64/client/bin/test-client
+install -m 0644 build-arm64/client/lib/libweaknet.so dist-arm64/client/lib/
 cp -a /usr/local/lib/libbpf.so* dist-arm64/lib/ 2>/dev/null || true
 
 echo "产物: $(find dist-arm64 -type f | wc -l) 个文件"

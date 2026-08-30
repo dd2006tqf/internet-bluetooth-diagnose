@@ -13,10 +13,10 @@ target_link_libraries(weaknet PRIVATE
     PkgConfig::DBUS1 glog pthread)
 set_target_properties(weaknet PROPERTIES
     OUTPUT_NAME weaknet
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/lib)
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/lib)
 
 # 客户端测试程序
 add_executable(test_client_bin test_client.cpp)
 target_link_libraries(test_client_bin PRIVATE weaknet PkgConfig::DBUS1 glog pthread)
 set_target_properties(test_client_bin PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/bin)
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin)

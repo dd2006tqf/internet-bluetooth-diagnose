@@ -64,21 +64,21 @@ jobs:
         run: |
           docker exec ${{ env.CONTAINER }} bash -c '
           cd /src
-          cmake -B build -DCMAKE_BUILD_TYPE=Debug
-          cmake --build build --target weaknet-dbus-server history_query_tool weaknet test_client_bin ebpf -j1
+          cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet test_client_bin ebpf -j1
           '
 
       - name: 运行 ARM64 单元测试
         run: |
           docker exec ${{ env.CONTAINER }} bash -c '
           cd /src
-          for bin in build/server/test/test_database_manager_gtest \
-                     build/server/test/test_net_info \
-                     build/server/test/test_quality_assessor_gtest \
-                     build/server/test/test_serializer_gtest \
-                     build/server/test/test_event_manager_gtest \
-                     build/server/test/test_iface_type_gtest \
-                     build/server/test/test_logger_gtest; do
+          for bin in build-arm64/server/test/test_database_manager_gtest \
+                     build-arm64/server/test/test_net_info \
+                     build-arm64/server/test/test_quality_assessor_gtest \
+                     build-arm64/server/test/test_serializer_gtest \
+                     build-arm64/server/test/test_event_manager_gtest \
+                     build-arm64/server/test/test_iface_type_gtest \
+                     build-arm64/server/test/test_logger_gtest; do
             if [ -f "$bin" ]; then
               name=$(basename "$bin")
               if timeout 30 "$bin" >/dev/null 2>&1; then
@@ -98,13 +98,13 @@ jobs:
           mkdir -p dist-arm64/server/bin dist-arm64/server/build \
                    dist-arm64/client/bin dist-arm64/client/lib dist-arm64/lib
 
-          install -m 0755 build/server/weaknet-dbus-server dist-arm64/server/bin/
-          install -m 0755 build/server/history_query_tool dist-arm64/server/bin/
-          for f in build/server/ebpf/*.bpf.o; do
+          install -m 0755 build-arm64/server/weaknet-dbus-server dist-arm64/server/bin/
+          install -m 0755 build-arm64/server/history_query_tool dist-arm64/server/bin/
+          for f in build-arm64/server/build/*.bpf.o; do
             install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true
           done
-          install -m 0755 client/bin/test_client_bin dist-arm64/client/bin/test-client
-          install -m 0644 client/lib/libweaknet.so dist-arm64/client/lib/
+          install -m 0755 build-arm64/client/bin/test_client_bin dist-arm64/client/bin/test-client
+          install -m 0644 build-arm64/client/lib/libweaknet.so dist-arm64/client/lib/
           cp -a /usr/local/lib/libbpf.so* dist-arm64/lib/
 
           echo "=== 产物 ==="

@@ -17,20 +17,20 @@ sudo apt-get install -y build-essential cmake pkg-config clang llvm \
 ### 编译项目
 
 ```bash
-# x86 开发机（跳过 eBPF）
-cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
-cmake --build build -j$(nproc)
+# x86 虚拟机本地构建（跳过 eBPF，产物位于 build-x86/）
+cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
+cmake --build build-x86 -j$(nproc)
 
-# ARM64 容器内（含 eBPF）
+# ARM64 容器内构建（增量构建，产物位于 build-arm64/）
 docker exec weaknet-arm64-dev bash -c \
-    'cd /src && cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j1'
+    'cd /src && cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-arm64 -j1'
 ```
 
 ### 启动服务器
 
 ```bash
 # 直接启动
-./build/server/weaknet-dbus-server
+./build-x86/server/weaknet-dbus-server
 
 # 或使用 CI 脚本一键部署到开发板
 ./tools/ci.sh
@@ -96,7 +96,7 @@ AI-powered-Network-Diagnostics/
 
 ```bash
 # 直接启动
-./build/server/weaknet-dbus-server
+./build-x86/server/weaknet-dbus-server
 
 # 部署到开发板（ARM64）
 ./tools/ci.sh
@@ -106,13 +106,13 @@ AI-powered-Network-Diagnostics/
 
 ```bash
 # 获取网络接口信息
-./client/bin/test-client get
+./build-x86/client/bin/test_client_bin get
 
 # 网络健康检查
-./client/bin/test-client health
+./build-x86/client/bin/test_client_bin health
 
 # 历史数据查询
-./build/server/history_query_tool --iface wlan0 --last 1h
+./build-x86/server/history_query_tool --iface wlan0 --last 1h
 ```
 
 ### C/C++ 编程接口
@@ -140,20 +140,20 @@ weaknet_cleanup();
 
 ```bash
 # 编译所有组件
-cmake -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build -j$(nproc)
+cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-x86 -j$(nproc)
 
 # 仅编译服务器
-cmake --build build --target weaknet-dbus-server
+cmake --build build-x86 --target weaknet-dbus-server
 
 # 仅编译客户端
-cmake --build build --target weaknet test_client_bin
+cmake --build build-x86 --target weaknet test_client_bin
 
-# 清理编译产物
-rm -rf build
+# 清理本机 x86 编译产物（ARM64 缓存和部署包独立保留）
+rm -rf build-x86
 
 # 运行测试
-ctest --test-dir build/server
+ctest --test-dir build-x86/server
 ```
 
 ## 📊 监控指标
@@ -184,7 +184,7 @@ ctest --test-dir build/server
 1. **编译失败**
    ```bash
    # 清理重新编译
-   rm -rf build && cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j$(nproc)
+   rm -rf build-x86 && cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-x86 -j$(nproc)
    ```
 
 2. **服务器启动失败**

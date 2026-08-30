@@ -21,33 +21,33 @@ jobs:
             libsqlite3-dev libgtest-dev
 
       - name: CMake 配置
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
+        run: cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
 
       - name: 编译
-        run: cmake --build build -j$(nproc) --target weaknet-dbus-server history_query_tool weaknet test_client_bin
+        run: cmake --build build-x86 -j$(nproc) --target weaknet-dbus-server history_query_tool weaknet test_client_bin
 
       - name: 运行全部单元测试
         run: |
           PASS=0; FAIL=0
-          for bin in build/server/test/test_net_info \
-                     build/server/test/test_quality_assessor_gtest \
-                     build/server/test/test_anomaly_detector_gtest \
-                     build/server/test/test_audio_fusion_gtest \
-                     build/server/test/test_band_conflict_gtest \
-                     build/server/test/test_serializer_gtest \
-                     build/server/test/test_event_manager_gtest \
-                     build/server/test/test_bt_full_link_gtest \
-                     build/server/test/test_bt_monitor \
-                     build/server/test/test_iface_type_gtest \
-                     build/server/test/test_logger_gtest \
-                     build/server/test/test_traffic_analyzer_gtest \
-                     build/server/test/test_weak_netmgr_gtest \
-                     build/server/test/test_net_iface_gtest \
-                     build/server/test/test_rtt_monitor_gtest \
-                     build/server/test/test_bt_monitor_extra_gtest \
-                     build/server/test/test_jitter_monitor_gtest \
-                     build/server/test/test_dns_monitor_gtest \
-                     build/server/test/test_database_manager_gtest; do
+          for bin in build-x86/server/test/test_net_info \
+                     build-x86/server/test/test_quality_assessor_gtest \
+                     build-x86/server/test/test_anomaly_detector_gtest \
+                     build-x86/server/test/test_audio_fusion_gtest \
+                     build-x86/server/test/test_band_conflict_gtest \
+                     build-x86/server/test/test_serializer_gtest \
+                     build-x86/server/test/test_event_manager_gtest \
+                     build-x86/server/test/test_bt_full_link_gtest \
+                     build-x86/server/test/test_bt_monitor \
+                     build-x86/server/test/test_iface_type_gtest \
+                     build-x86/server/test/test_logger_gtest \
+                     build-x86/server/test/test_traffic_analyzer_gtest \
+                     build-x86/server/test/test_weak_netmgr_gtest \
+                     build-x86/server/test/test_net_iface_gtest \
+                     build-x86/server/test/test_rtt_monitor_gtest \
+                     build-x86/server/test/test_bt_monitor_extra_gtest \
+                     build-x86/server/test/test_jitter_monitor_gtest \
+                     build-x86/server/test/test_dns_monitor_gtest \
+                     build-x86/server/test/test_database_manager_gtest; do
             if [ -f "$bin" ]; then
               name=$(basename "$bin")
               if timeout 30 "$bin" >/dev/null 2>&1; then

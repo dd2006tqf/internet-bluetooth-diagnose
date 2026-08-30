@@ -14,10 +14,11 @@
 
 ```bash
 cd /WEAK_NET
-make all
+cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
+cmake --build build-x86 -j$(nproc)
 ```
 
-这会编译服务器和客户端。客户端可执行文件位于 `client/bin/test-client`。
+这会编译服务器和客户端。客户端测试程序位于 `build-x86/client/bin/test_client_bin`；ARM64 部署包中的对应程序位于 `dist-arm64/client/bin/test-client`。
 
 ## 使用方法
 
@@ -25,19 +26,19 @@ make all
 
 ```bash
 # 获取当前网络接口信息
-make test-client COMMAND=get
+./build-x86/client/bin/test_client_bin get
 
 # 网络健康检查
-make test-client COMMAND=health
+./build-x86/client/bin/test_client_bin health
 
 # 单次检查网络状态变化
-make test-client COMMAND=check
+./build-x86/client/bin/test_client_bin check
 
 # 持续监听网络变化
-make test-client COMMAND=subscribe
+./build-x86/client/bin/test_client_bin subscribe
 
 # 从文件读取最新状态
-make test-client COMMAND=file
+./build-x86/client/bin/test_client_bin file
 ```
 
 ### C/C++ 库接口

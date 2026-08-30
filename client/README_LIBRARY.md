@@ -4,10 +4,10 @@ WeakNet客户端动态库 (`libweaknet.so`) 提供了一个C接口，供其他�
 
 ## 📦 库文件
 
-- **动态库**: `client/lib/libweaknet.so`
+- **动态库**: `build-x86/client/lib/libweaknet.so`（ARM64 部署包对应 `dist-arm64/client/lib/libweaknet.so`）
 - **头文件**: `client/weaknet_client.h`
-- **测试程序**: `client/bin/test-client`
-- **示例程序**: `client/bin/example-client` (编译后)
+- **测试程序**: `build-x86/client/bin/test_client_bin`（ARM64 部署包对应 `dist-arm64/client/bin/test-client`）
+- **示例程序**: `client/example_usage.cpp`（源码示例，暂不作为默认构建目标）
 
 ## 🚀 快速开始
 
@@ -15,7 +15,7 @@ WeakNet客户端动态库 (`libweaknet.so`) 提供了一个C接口，供其他�
 
 ```bash
 cd /WEAK_NET
-make server-client-lib
+cmake --build build-x86 --target weaknet test_client_bin
 ```
 
 ### 2. 基本用法
@@ -85,11 +85,11 @@ int main() {
 ```bash
 # 使用动态库编译用户程序
 g++ -std=c++17 -I/path/to/client \
-    -L/path/to/client/lib -lweaknet \
+    -L/path/to/build-x86/client/lib -lweaknet \
     user_program.cpp -o user_program
 
 # 运行时设置库路径
-LD_LIBRARY_PATH=/path/to/client/lib:$LD_LIBRARY_PATH \
+LD_LIBRARY_PATH=/path/to/build-x86/client/lib:$LD_LIBRARY_PATH \
 DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS \
 ./user_program
 ```
@@ -136,17 +136,17 @@ bool weaknet_check_changes(char* message_buffer, size_t message_size, int32_t* c
 ## 🧪 测试
 
 ```bash
-# 测试基本功能
-make test-lib
+# 测试基本功能（先完成 build-x86 构建）
+ctest --test-dir build-x86/server -R 'test_net_info|test_quality|test_serializer'
 
 # 测试事件监听
-make test-events
+./build-x86/client/bin/test_client_bin test-events
 
 # 测试特定功能
-make test-client COMMAND=get
-make test-client COMMAND=ping google.com
-make test-client COMMAND=lib-test
-make test-client COMMAND=lib-events
+./build-x86/client/bin/test_client_bin get
+./build-x86/client/bin/test_client_bin ping google.com
+./build-x86/client/bin/test_client_bin test-basic
+./build-x86/client/bin/test_client_bin test-events
 ```
 
 ## 🔧 支持的事件类型

@@ -8,8 +8,8 @@
 *.elf
 bin/
 build/
-build-cmake/
-build-cmake2/
+build-x86/
+build-arm64/
 
 # 交叉编译部署产物（tools/deploy_and_test.sh 每次重建）
 dist-arm64/
