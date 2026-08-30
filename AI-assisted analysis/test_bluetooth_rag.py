@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# 模块职责：本文件实现文件名所对应的日志、数据处理或网络诊断功能。
+# 维护提示：扩展公共函数或命令行入口时，应说明输入、输出、异常、外部依赖和降级路径，
+# 并保持既有 CLI/API 行为不变。
+
 """
 蓝牙 RAG 诊断查询测试
 
@@ -18,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from network_knowledge_base import query_bluetooth_diagnosis  # noqa: E402
 
 
+# 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
 def test_band_conflict_query_returns_wifi_channel_suggestion():
     """Scenario: 频段冲突查询
 
@@ -33,6 +39,7 @@ def test_band_conflict_query_returns_wifi_channel_suggestion():
     )
 
 
+# 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
 def test_audio_latency_query_returns_codec_distance_suggestion():
     """Scenario: 音频延迟查询
 
@@ -48,6 +55,7 @@ def test_audio_latency_query_returns_codec_distance_suggestion():
     )
 
 
+# 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
 def test_band_conflict_diagnosis_entry_exists_in_knowledge_base():
     """知识库必须包含蓝牙诊断条目（频段冲突/音频卡顿/距离估算）。"""
     from network_knowledge_base import get_network_knowledge

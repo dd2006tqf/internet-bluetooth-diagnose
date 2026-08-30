@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# 模块职责：本文件实现文件名所对应的日志、数据处理或网络诊断功能。
+# 维护提示：扩展公共函数或命令行入口时，应说明输入、输出、异常、外部依赖和降级路径，
+# 并保持既有 CLI/API 行为不变。
+
 """
 真实数据训练脚本
 从 CSV 加载网络指标，训练 AutoEncoder 异常检测模型
@@ -16,15 +21,19 @@ sys.path.insert(0, os.path.dirname(__file__))
 from feature_extractor import ConfigurableFeatureExtractor
 from train_autoencoder import AutoEncoder, AutoEncoderTrainer
 
+# 类说明：组织相关状态和操作，实例成员的生命周期与线程安全由调用方遵守。
 class RealDataTrainer:
     """真实数据训练器"""
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def __init__(self, config_path=None):
+        # 条件判断：根据当前输入或运行状态选择处理分支。
         if config_path is None:
             config_path = os.path.join(os.path.dirname(__file__), 'config', 'features.json')
         self.extractor = ConfigurableFeatureExtractor(config_path)
         self.scaler = StandardScaler()
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def load_csv(self, csv_path):
         """加载 CSV 数据"""
         df = pd.read_csv(csv_path)
@@ -32,6 +41,7 @@ class RealDataTrainer:
         print(f"时间范围: {df['timestamp'].min()} ~ {df['timestamp'].max()}")
         return df
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def prepare_features(self, df):
         """准备特征矩阵"""
         feature_cols = ['rtt', 'jitter', 'rssi', 'tcp_loss', 'score']
@@ -44,6 +54,7 @@ class RealDataTrainer:
         # 创建滑动窗口
         window_size = self.extractor.get_window_size()
         features = []
+        # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
         for i in range(len(X) - window_size + 1):
             window = X[i:i+window_size]
             features.append(window)
@@ -52,6 +63,7 @@ class RealDataTrainer:
         print(f"特征矩阵: {X_windowed.shape}")
         return X_windowed
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def detect_anomalies(self, df):
         """使用数据库中的 quality 字段作为异常标签"""
         # BAD/POOR = 异常(1)，GOOD/FAIR = 正常(0)
@@ -63,6 +75,7 @@ class RealDataTrainer:
         print(f"异常样本: {np.sum(labels == 1)} / {len(labels)}")
         return labels
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def train(self, csv_path):
         """完整训练流程"""
         # 1. 加载数据
@@ -116,6 +129,7 @@ class RealDataTrainer:
         return metrics
 
 
+# 条件判断：根据当前输入或运行状态选择处理分支。
 if __name__ == '__main__':
     csv_path = sys.argv[1] if len(sys.argv) > 1 else '../data/real/network_data.csv'
     trainer = RealDataTrainer()

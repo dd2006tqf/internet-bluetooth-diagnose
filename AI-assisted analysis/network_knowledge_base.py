@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# 模块职责：本文件实现文件名所对应的日志、数据处理或网络诊断功能。
+# 维护提示：扩展公共函数或命令行入口时，应说明输入、输出、异常、外部依赖和降级路径，
+# 并保持既有 CLI/API 行为不变。
+
 """
 网络分析知识库
 包含网络监控指标的含义、正常范围、异常情况分析等知识
@@ -180,14 +185,17 @@ NETWORK_KNOWLEDGE_BASE = {
     }
 }
 
+# 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
 def get_network_knowledge():
     """获取网络分析知识库"""
     return NETWORK_KNOWLEDGE_BASE
 
+# 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
 def analyze_metric(metric_type, value, context=""):
     """分析特定网络指标"""
     knowledge = NETWORK_KNOWLEDGE_BASE.get(metric_type, {})
 
+    # 条件判断：根据当前输入或运行状态选择处理分支。
     if not knowledge:
         return f"未知指标类型: {metric_type}"
 
@@ -201,6 +209,7 @@ def analyze_metric(metric_type, value, context=""):
     return analysis
 
 
+# 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
 def query_bluetooth_diagnosis(query: str) -> str:
     """基于自然语言关键词查询蓝牙诊断建议。
 
@@ -212,10 +221,12 @@ def query_bluetooth_diagnosis(query: str) -> str:
     若无精确命中，返回全部子条目建议作为兜底（避免空响应）。
     """
     bt = NETWORK_KNOWLEDGE_BASE.get("bluetooth_analysis", {})
+    # 条件判断：根据当前输入或运行状态选择处理分支。
     if not bt:
         return ""
 
     matched_entries = []
+    # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
     for key in ("band_conflict", "audio_stall", "distance_estimation"):
         entry = bt.get(key, {})
         symptoms = entry.get("symptoms", [])
@@ -223,6 +234,7 @@ def query_bluetooth_diagnosis(query: str) -> str:
         if any(sym in query for sym in symptoms):
             matched_entries.append(entry)
 
+    # 条件判断：根据当前输入或运行状态选择处理分支。
     if not matched_entries:
         # 兜底：无精确命中时返回全部子条目建议
         matched_entries = [
@@ -230,9 +242,11 @@ def query_bluetooth_diagnosis(query: str) -> str:
         ]
 
     parts = []
+    # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
     for entry in matched_entries:
         desc = entry.get("description", "")
         suggestions = entry.get("suggestions", [])
+        # 条件判断：根据当前输入或运行状态选择处理分支。
         if suggestions:
             parts.append(f"{desc}：{', '.join(suggestions)}")
 

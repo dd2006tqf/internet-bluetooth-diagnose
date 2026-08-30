@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# 模块职责：本文件实现文件名所对应的日志、数据处理或网络诊断功能。
+# 维护提示：扩展公共函数或命令行入口时，应说明输入、输出、异常、外部依赖和降级路径，
+# 并保持既有 CLI/API 行为不变。
+
 """
 WEAK_NET 日志截取器
 专门截取weaknet-dbus-server的网络指标日志，不做分析功能
@@ -9,10 +14,12 @@ import subprocess
 import time
 from datetime import datetime
 
+# 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
 def capture_network_logs():
     """截取网络指标日志"""
     print("🚀 启动WEAK_NET服务器...")
     
+    # 异常边界：隔离可能失败的解析、I/O 或外部服务调用。
     try:
         # 启动服务器进程，设置工作目录为server/bin目录
         process = subprocess.Popen(
@@ -94,8 +101,10 @@ def capture_network_logs():
         
         # 读取输出
         line_count = 0
+        # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
         while True:
             line = process.stdout.readline()
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if line:
                 line_count += 1
                 timestamp = datetime.now().strftime("%H:%M:%S")
@@ -117,6 +126,7 @@ def capture_network_logs():
                 ]):
                     # 解析并显示RTT信息
                     rtt_match = patterns['rtt'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if rtt_match:
                         interface, rtt, quality, state = rtt_match.groups()
                         print(f"🔗 [{timestamp}] RTT: {interface} = {rtt}ms (质量:{quality}, 状态:{state})")
@@ -124,6 +134,7 @@ def capture_network_logs():
                     
                     # 解析并显示RTT监控
                     rtt_monitor_match = patterns['rtt_monitor'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if rtt_monitor_match:
                         interface, rtt, quality, using, target = rtt_monitor_match.groups()
                         print(f"🎯 [{timestamp}] RTT监控: {interface} = {rtt}ms (质量:{quality}, 使用:{using}, 目标:{target})")
@@ -131,6 +142,7 @@ def capture_network_logs():
                     
                     # 解析并显示TCP丢包率
                     tcp_match = patterns['tcp_loss'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if tcp_match:
                         interface, rate, level = tcp_match.groups()
                         print(f"📊 [{timestamp}] TCP丢包: {interface} = {rate}% ({level})")
@@ -138,6 +150,7 @@ def capture_network_logs():
                     
                     # 解析并显示TCP丢包详细
                     tcp_detailed_match = patterns['tcp_loss_detailed'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if tcp_detailed_match:
                         interface, rate, delta_sent, delta_retrans, level = tcp_detailed_match.groups()
                         print(f"📈 [{timestamp}] TCP详细: {interface} = {rate}% (发送:{delta_sent}, 重传:{delta_retrans}, 等级:{level})")
@@ -145,6 +158,7 @@ def capture_network_logs():
                     
                     # 解析并显示流量监控
                     traffic_match = patterns['traffic'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if traffic_match:
                         total_mbps, flows, pps, interface = traffic_match.groups()
                         print(f"🌊 [{timestamp}] 流量监控: {interface} = {total_mbps}MB/s (连接:{flows}, 包/秒:{pps})")
@@ -152,6 +166,7 @@ def capture_network_logs():
                     
                     # 解析并显示网络质量
                     quality_match = patterns['network_quality'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if quality_match:
                         quality, score, interface = quality_match.groups()
                         print(f"⭐ [{timestamp}] 网络质量: {interface} = {quality} (分数:{score})")
@@ -159,6 +174,7 @@ def capture_network_logs():
                     
                     # 解析并显示网络质量稳定
                     quality_stable_match = patterns['network_quality_stable'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if quality_stable_match:
                         quality, score = quality_stable_match.groups()
                         print(f"🔒 [{timestamp}] 网络质量稳定: {quality} (分数:{score})")
@@ -166,6 +182,7 @@ def capture_network_logs():
                     
                     # 解析并显示接口状态
                     status_match = patterns['interface_status'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if status_match:
                         interface, flags = status_match.groups()
                         print(f"🔌 [{timestamp}] 接口状态: {interface} = flags:{flags}")
@@ -173,6 +190,7 @@ def capture_network_logs():
                     
                     # 解析并显示接口汇总
                     interface_summary_match = patterns['interface_summary'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if interface_summary_match:
                         interface, rtt, quality, rssi, tcp_loss, tcp_loss_desc, traffic, flows, pps = interface_summary_match.groups()
                         print(f"📋 [{timestamp}] 接口汇总: {interface} = RTT:{rtt}ms, 质量:{quality}, RSSI:{rssi}dBm, TCP丢包:{tcp_loss}%, 流量:{traffic}MB/s")
@@ -180,6 +198,7 @@ def capture_network_logs():
                     
                     # 解析并显示接口不活跃状态
                     interface_inactive_match = patterns['interface_inactive'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if interface_inactive_match:
                         interface, rtt, quality, rssi, tcp_loss, tcp_loss_desc = interface_inactive_match.groups()
                         print(f"🔴 [{timestamp}] 接口不活跃: {interface} = RTT:{rtt}ms, 质量:{quality}, RSSI:{rssi}dBm, TCP丢包:{tcp_loss}%")
@@ -187,6 +206,7 @@ def capture_network_logs():
                     
                     # 解析并显示接口收集信息
                     interface_collected_match = patterns['interface_collected'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if interface_collected_match:
                         count = interface_collected_match.group(1)
                         print(f"📊 [{timestamp}] 接口收集: 发现{count}个接口")
@@ -194,6 +214,7 @@ def capture_network_logs():
                     
                     # 解析并显示接口变化
                     interface_changed_match = patterns['interface_changed'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if interface_changed_match:
                         changes = interface_changed_match.group(1)
                         print(f"🔄 [{timestamp}] 接口变化: {changes}")
@@ -201,6 +222,7 @@ def capture_network_logs():
                     
                     # 解析并显示监控线程启动
                     monitor_started_match = patterns['monitor_started'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if monitor_started_match:
                         monitor_type = monitor_started_match.group(1)
                         print(f"🚀 [{timestamp}] 监控线程: {monitor_type} 已启动")
@@ -208,12 +230,14 @@ def capture_network_logs():
                     
                     # 解析并显示接口tick
                     interface_tick_match = patterns['interface_tick'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if interface_tick_match:
                         print(f"⏰ [{timestamp}] 接口检查: 正在收集接口信息...")
                         continue
                     
                     # 解析并显示RTT无变化
                     no_changes_rtt_match = patterns['no_changes_rtt'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if no_changes_rtt_match:
                         count = no_changes_rtt_match.group(1)
                         print(f"🔍 [{timestamp}] RTT监控: 无变化检测 (接口数:{count})")
@@ -221,6 +245,7 @@ def capture_network_logs():
                     
                     # 解析并显示RSSI无变化
                     no_changes_rssi_match = patterns['no_changes_rssi'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if no_changes_rssi_match:
                         count = no_changes_rssi_match.group(1)
                         print(f"📶 [{timestamp}] RSSI监控: 无变化检测 (接口数:{count})")
@@ -228,12 +253,14 @@ def capture_network_logs():
                     
                     # 解析并显示无活跃接口
                     no_active_interface_match = patterns['no_active_interface'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if no_active_interface_match:
                         print(f"⚠️  [{timestamp}] TCP丢包监控: 无活跃接口")
                         continue
                     
                     # 解析并显示RSSI tick
                     rssi_tick_match = patterns['rssi_tick'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if rssi_tick_match:
                         count = rssi_tick_match.group(1)
                         print(f"📶 [{timestamp}] RSSI检查: 更新{count}个接口")
@@ -241,30 +268,35 @@ def capture_network_logs():
                     
                     # 解析并显示eBPF相关日志
                     ebpf_loading_match = patterns['ebpf_loading'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if ebpf_loading_match:
                         bpf_file = ebpf_loading_match.group(1)
                         print(f"🔧 [{timestamp}] eBPF加载: {bpf_file}")
                         continue
 
                     ebpf_program_match = patterns['ebpf_program'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if ebpf_program_match:
                         prog_name, func_name, offset = ebpf_program_match.groups()
                         print(f"⚙️  [{timestamp}] eBPF程序: {prog_name} -> {func_name} (偏移:{offset})")
                         continue
 
                     ebpf_map_match = patterns['ebpf_map'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if ebpf_map_match:
                         map_name, fd = ebpf_map_match.groups()
                         print(f"🗺️  [{timestamp}] eBPF映射: {map_name} (fd:{fd})")
                         continue
 
                     traffic_analyzer_match = patterns['traffic_analyzer_start'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if traffic_analyzer_match:
                         interface, interval = traffic_analyzer_match.groups()
                         print(f"🚀 [{timestamp}] 流量分析器启动: {interface} (间隔:{interval}s)")
                         continue
 
                     traffic_analysis_match = patterns['traffic_analysis_start'].search(line)
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if traffic_analysis_match:
                         print(f"🔄 [{timestamp}] 流量分析循环启动")
                         continue
@@ -279,14 +311,19 @@ def capture_network_logs():
 
             time.sleep(0.1)
 
+    # 异常收尾：将错误转换为可观察结果，并确保资源得到释放。
     except KeyboardInterrupt:
         print("\n⏹️ 日志截取已停止")
+    # 异常收尾：将错误转换为可观察结果，并确保资源得到释放。
     except Exception as e:
         print(f"❌ 错误: {e}")
+    # 异常收尾：将错误转换为可观察结果，并确保资源得到释放。
     finally:
+        # 条件判断：根据当前输入或运行状态选择处理分支。
         if 'process' in locals():
             process.terminate()
             process.wait()
 
+# 条件判断：根据当前输入或运行状态选择处理分支。
 if __name__ == "__main__":
     capture_network_logs()

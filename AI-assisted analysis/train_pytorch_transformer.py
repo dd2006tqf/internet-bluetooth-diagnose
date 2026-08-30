@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# 模块职责：本文件实现文件名所对应的日志、数据处理或网络诊断功能。
+# 维护提示：扩展公共函数或命令行入口时，应说明输入、输出、异常、外部依赖和降级路径，
+# 并保持既有 CLI/API 行为不变。
+
 """
 Temporal Transformer 异常检测模型（PyTorch 实现）
 使用真正的深度学习框架，自动处理类别不平衡
@@ -21,9 +26,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
+# 类说明：组织相关状态和操作，实例成员的生命周期与线程安全由调用方遵守。
 class TemporalTransformer(nn.Module):
     """时序 Transformer 异常检测模型"""
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def __init__(self, feature_dim=5, seq_len=6, d_model=16, n_heads=2, n_layers=2, dropout=0.1):
         super().__init__()
         self.feature_dim = feature_dim
@@ -49,6 +56,7 @@ class TemporalTransformer(nn.Module):
         # 输出投影（输出 2 个类别：正常/异常）
         self.output_proj = nn.Linear(d_model, 2)
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def forward(self, x):
         """
         x: (batch, seq_len, feature_dim)
@@ -72,9 +80,11 @@ class TemporalTransformer(nn.Module):
         return output
 
 
+# 类说明：组织相关状态和操作，实例成员的生命周期与线程安全由调用方遵守。
 class AnomalyDetector:
     """异常检测器"""
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def __init__(self, feature_dim=5, seq_len=6, d_model=16, n_heads=2, n_layers=2):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model = TemporalTransformer(
@@ -87,6 +97,7 @@ class AnomalyDetector:
         self.scaler = StandardScaler()
         self.threshold = None
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def prepare_data(self, X, labels):
         """准备训练数据"""
         # 归一化
@@ -101,6 +112,7 @@ class AnomalyDetector:
 
         return X_train, X_test, y_train, y_test
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def create_balanced_sampler(self, labels):
         """创建平衡采样器，处理类别不平衡"""
         class_counts = np.bincount(labels)
@@ -113,6 +125,7 @@ class AnomalyDetector:
         )
         return sampler
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def train(self, X_train, y_train, epochs=50, batch_size=64, lr=0.001):
         """训练模型"""
         # 转换为 tensor
@@ -133,8 +146,10 @@ class AnomalyDetector:
 
         # 训练循环
         self.model.train()
+        # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
         for epoch in range(epochs):
             total_loss = 0
+            # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
             for batch_x, batch_y in dataloader:
                 optimizer.zero_grad()
                 output = self.model(batch_x)
@@ -143,15 +158,18 @@ class AnomalyDetector:
                 optimizer.step()
                 total_loss += loss.item()
 
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if (epoch + 1) % 10 == 0:
                 avg_loss = total_loss / len(dataloader)
                 print(f"   Epoch [{epoch+1}/{epochs}] Loss: {avg_loss:.6f}")
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def fit_threshold(self, X_normal, percentile=95):
         """拟合异常阈值"""
         self.model.eval()
         X_tensor = torch.FloatTensor(X_normal).to(self.device)
 
+        # 资源上下文：利用上下文管理器保证文件、锁或连接按作用域释放。
         with torch.no_grad():
             output = self.model(X_tensor)
             # 使用 softmax 获取异常概率
@@ -162,11 +180,13 @@ class AnomalyDetector:
         print(f"异常阈值 ({percentile}th percentile): {self.threshold:.6f}")
         return self.threshold
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def predict(self, X):
         """预测异常"""
         self.model.eval()
         X_tensor = torch.FloatTensor(X).to(self.device)
 
+        # 资源上下文：利用上下文管理器保证文件、锁或连接按作用域释放。
         with torch.no_grad():
             output = self.model(X_tensor)
             # 使用 softmax 获取概率
@@ -177,6 +197,7 @@ class AnomalyDetector:
         predictions = (anomaly_probs > self.threshold).astype(int)
         return predictions, anomaly_probs
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def evaluate(self, X_test, y_test):
         """评估模型"""
         predictions, scores = self.predict(X_test)
@@ -203,6 +224,7 @@ class AnomalyDetector:
             'f1': f1
         }
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def save(self, path):
         """保存模型"""
         checkpoint = {
@@ -214,6 +236,7 @@ class AnomalyDetector:
         torch.save(checkpoint, path)
         print(f"模型已保存到: {path}")
 
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def load(self, path):
         """加载模型"""
         checkpoint = torch.load(path, map_location=self.device)
@@ -228,6 +251,7 @@ class AnomalyDetector:
 # 训练流程
 # ============================================================
 
+# 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
 def train_pytorch_transformer():
     """训练 PyTorch Transformer 异常检测模型"""
     print("=" * 60)
@@ -253,6 +277,7 @@ def train_pytorch_transformer():
     print("\n3. 创建滑动窗口...")
     window_size = 6
     features = []
+    # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
     for i in range(len(X) - window_size + 1):
         window = X[i:i+window_size]
         features.append(window)
@@ -297,6 +322,7 @@ def train_pytorch_transformer():
     best_f1 = 0
     best_metrics = {}
 
+    # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
     for threshold in np.arange(0.01, 0.99, 0.01):
         detector.threshold = threshold
         predictions, _ = detector.predict(X_val)
@@ -310,6 +336,7 @@ def train_pytorch_transformer():
         recall = tp / (tp + fn) if (tp + fn) > 0 else 0
         f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
 
+        # 条件判断：根据当前输入或运行状态选择处理分支。
         if f1 > best_f1:
             best_f1 = f1
             best_threshold = threshold
@@ -351,6 +378,7 @@ def train_pytorch_transformer():
     return metrics
 
 
+# 条件判断：根据当前输入或运行状态选择处理分支。
 if __name__ == '__main__':
     metrics = train_pytorch_transformer()
     print("\n" + "=" * 60)

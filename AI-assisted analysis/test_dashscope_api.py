@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# 模块职责：本文件实现文件名所对应的日志、数据处理或网络诊断功能。
+# 维护提示：扩展公共函数或命令行入口时，应说明输入、输出、异常、外部依赖和降级路径，
+# 并保持既有 CLI/API 行为不变。
+
 """
 阿里百炼API测试脚本
 测试API调用是否正常工作
@@ -7,8 +12,10 @@
 import os
 from openai import OpenAI
 
+# 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
 def test_dashscope_api():
     """测试阿里百炼API"""
+    # 异常边界：隔离可能失败的解析、I/O 或外部服务调用。
     try:
         # 设置API密钥
         api_key = "YOUR_DASHSCOPE_API_KEY_HERE"  # 请替换为您的阿里百炼API密钥
@@ -39,16 +46,19 @@ def test_dashscope_api():
         
         return True
         
+    # 异常收尾：将错误转换为可观察结果，并确保资源得到释放。
     except Exception as e:
         print(f"❌ API调用失败: {e}")
         return False
 
+# 条件判断：根据当前输入或运行状态选择处理分支。
 if __name__ == "__main__":
     print("🧪 阿里百炼API测试")
     print("=" * 40)
     
     success = test_dashscope_api()
     
+    # 条件判断：根据当前输入或运行状态选择处理分支。
     if success:
         print("\n🎉 API测试成功，可以正常使用!")
     else:

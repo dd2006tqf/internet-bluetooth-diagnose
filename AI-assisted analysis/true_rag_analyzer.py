@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# 模块职责：本文件实现文件名所对应的日志、数据处理或网络诊断功能。
+# 维护提示：扩展公共函数或命令行入口时，应说明输入、输出、异常、外部依赖和降级路径，
+# 并保持既有 CLI/API 行为不变。
+
 """
 真正的RAG网络分析系统
 使用向量库存储和检索网络知识库，实现检索增强生成
@@ -12,6 +17,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
+# 异常边界：隔离可能失败的解析、I/O 或外部服务调用。
 try:
     from openai import OpenAI
     from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -21,6 +27,7 @@ try:
     from langchain.prompts import PromptTemplate
     from langchain.schema import Document
     RAG_AVAILABLE = True
+# 异常收尾：将错误转换为可观察结果，并确保资源得到释放。
 except ImportError as e:
     print(f"⚠️ RAG依赖不可用: {e}")
     print("将使用简化模式")
@@ -29,6 +36,7 @@ except ImportError as e:
 from network_knowledge_base import get_network_knowledge
 
 @dataclass
+# 类说明：组织相关状态和操作，实例成员的生命周期与线程安全由调用方遵守。
 class NetworkMetric:
     """网络指标数据结构"""
     timestamp: str
@@ -43,9 +51,11 @@ class NetworkMetric:
     pps: Optional[int] = None
     level: Optional[str] = None
 
+# 类说明：组织相关状态和操作，实例成员的生命周期与线程安全由调用方遵守。
 class LogCaptureParser:
     """专门解析log_capture.py输出的解析器"""
     
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def __init__(self):
         # log_capture.py输出的正则表达式模式
         self.patterns = {
@@ -68,17 +78,21 @@ class LogCaptureParser:
             'network_quality': re.compile(r'⭐ \[(\d{2}:\d{2}:\d{2})\] 网络质量: (\w+) = (\w+) \(分数:([\d.]+)\)'),
         }
     
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def parse_log_capture_output(self, log_data: str) -> List[NetworkMetric]:
         """解析log_capture.py的输出"""
         metrics = []
         lines = log_data.strip().split('\n')
         
+        # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
         for line in lines:
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if not line.strip():
                 continue
                 
             # 解析RTT监控
             rtt_match = self.patterns['rtt_monitor'].search(line)
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if rtt_match:
                 time_str, interface, rtt, quality, using, target = rtt_match.groups()
                 metrics.append(NetworkMetric(
@@ -92,6 +106,7 @@ class LogCaptureParser:
             
             # 解析TCP丢包
             tcp_match = self.patterns['tcp_loss'].search(line)
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if tcp_match:
                 time_str, interface, rate, sent, retrans, level = tcp_match.groups()
                 metrics.append(NetworkMetric(
@@ -104,6 +119,7 @@ class LogCaptureParser:
             
             # 解析流量监控
             traffic_match = self.patterns['traffic'].search(line)
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if traffic_match:
                 time_str, interface, mbps, flows, pps = traffic_match.groups()
                 metrics.append(NetworkMetric(
@@ -117,6 +133,7 @@ class LogCaptureParser:
             
             # 解析RSSI监控
             rssi_match = self.patterns['rssi'].search(line)
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if rssi_match:
                 time_str, interface, rssi, quality, using = rssi_match.groups()
                 metrics.append(NetworkMetric(
@@ -130,6 +147,7 @@ class LogCaptureParser:
             
             # 解析接口汇总
             summary_match = self.patterns['interface_summary'].search(line)
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if summary_match:
                 time_str, interface, rtt, quality, rssi, tcp_loss, traffic = summary_match.groups()
                 metrics.append(NetworkMetric(
@@ -145,6 +163,7 @@ class LogCaptureParser:
             
             # 解析网络质量
             quality_match = self.patterns['network_quality'].search(line)
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if quality_match:
                 time_str, interface, quality_level, score = quality_match.groups()
                 metrics.append(NetworkMetric(
@@ -156,9 +175,11 @@ class LogCaptureParser:
         
         return metrics
 
+# 类说明：组织相关状态和操作，实例成员的生命周期与线程安全由调用方遵守。
 class TrueRAGNetworkAnalyzer:
     """真正的RAG网络分析系统"""
     
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.client = None
@@ -175,17 +196,20 @@ class TrueRAGNetworkAnalyzer:
                 base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             )
             print("✅ 阿里百炼API初始化成功")
+        # 异常收尾：将错误转换为可观察结果，并确保资源得到释放。
         except Exception as e:
             print(f"⚠️ 阿里百炼API初始化失败: {e}")
             return
         
         # 初始化RAG系统
         if RAG_AVAILABLE:
+            # 异常边界：隔离可能失败的解析、I/O 或外部服务调用。
             try:
                 self._build_vector_store()
                 self._create_qa_chain()
                 self.use_rag = True
                 print("✅ RAG系统初始化成功")
+            # 异常收尾：将错误转换为可观察结果，并确保资源得到释放。
             except Exception as e:
                 print(f"⚠️ RAG系统初始化失败: {e}")
                 print("将使用简化模式")
@@ -193,6 +217,7 @@ class TrueRAGNetworkAnalyzer:
         else:
             print("⚠️ RAG依赖不可用，使用简化模式")
     
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def _build_vector_store(self):
         """构建向量存储"""
         print("🔨 构建网络知识库向量存储...")
@@ -202,14 +227,19 @@ class TrueRAGNetworkAnalyzer:
         
         # 将知识库转换为文档
         documents = []
+        # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
         for category, content in knowledge_base.items():
             # 创建文档内容
             doc_content = f"网络分析知识 - {category}\n\n"
             
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if isinstance(content, dict):
+                # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
                 for key, value in content.items():
+                    # 条件判断：根据当前输入或运行状态选择处理分支。
                     if isinstance(value, dict):
                         doc_content += f"{key}:\n"
+                        # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
                         for sub_key, sub_value in value.items():
                             doc_content += f"  {sub_key}: {sub_value}\n"
                     else:
@@ -236,6 +266,7 @@ class TrueRAGNetworkAnalyzer:
                 openai_api_base="https://dashscope.aliyuncs.com/compatible-mode/v1",
                 model="text-embedding-v1"
             )
+        # 异常收尾：将错误转换为可观察结果，并确保资源得到释放。
         except Exception as e:
             print(f"⚠️ 嵌入模型初始化失败: {e}")
             print("使用简化的文本匹配模式")
@@ -245,6 +276,7 @@ class TrueRAGNetworkAnalyzer:
         self.vector_store = FAISS.from_documents(splits, embeddings)
         print("✅ 向量存储构建完成")
     
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def _create_qa_chain(self):
         """创建问答链"""
         print("🔗 创建RAG问答链...")
@@ -284,6 +316,7 @@ class TrueRAGNetworkAnalyzer:
         
         print("✅ RAG问答链创建完成")
     
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def analyze_time_point(self, log_data: str, time_point: str) -> str:
         """使用RAG分析特定时间点的网络情况"""
         print(f"🔍 RAG分析时间点: {time_point}")
@@ -294,6 +327,7 @@ class TrueRAGNetworkAnalyzer:
         # 获取该时间点的指标
         time_metrics = [m for m in metrics if m.timestamp == time_point]
         
+        # 条件判断：根据当前输入或运行状态选择处理分支。
         if not time_metrics:
             return f"❌ 未找到时间点 {time_point} 的网络数据"
         
@@ -304,6 +338,7 @@ class TrueRAGNetworkAnalyzer:
         
         # 使用RAG进行分析
         if self.use_rag and self.qa_chain:
+            # 异常边界：隔离可能失败的解析、I/O 或外部服务调用。
             try:
                 print("🤖 使用RAG系统分析...")
                 result = self.qa_chain({"query": question})
@@ -313,18 +348,21 @@ class TrueRAGNetworkAnalyzer:
                 
                 # 添加来源信息
                 analysis += "\n\n📚 分析依据：\n"
+                # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
                 for i, doc in enumerate(sources, 1):
                     category = doc.metadata.get("category", "未知")
                     analysis += f"{i}. {category}\n"
                 
                 return analysis
                 
+            # 异常收尾：将错误转换为可观察结果，并确保资源得到释放。
             except Exception as e:
                 print(f"⚠️ RAG分析失败: {e}")
                 return self._fallback_analysis(time_point, time_metrics)
         else:
             return self._fallback_analysis(time_point, time_metrics)
     
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def _build_analysis_question(self, time_point: str, metrics: List[NetworkMetric]) -> str:
         """构建分析问题"""
         question = f"请分析在 {time_point} 时间点的网络情况。\n\n"
@@ -332,36 +370,49 @@ class TrueRAGNetworkAnalyzer:
         
         # 按接口分组指标
         interface_metrics = {}
+        # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
         for metric in metrics:
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if metric.interface not in interface_metrics:
                 interface_metrics[metric.interface] = []
             interface_metrics[metric.interface].append(metric)
         
+        # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
         for interface, iface_metrics in interface_metrics.items():
             question += f"\n接口 {interface}:\n"
             
+            # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
             for metric in iface_metrics:
                 question += f"- 时间: {metric.timestamp}\n"
+                # 条件判断：根据当前输入或运行状态选择处理分支。
                 if metric.rtt is not None:
                     question += f"  RTT延迟: {metric.rtt}ms\n"
+                # 条件判断：根据当前输入或运行状态选择处理分支。
                 if metric.tcp_loss_rate is not None:
                     question += f"  TCP丢包率: {metric.tcp_loss_rate}%\n"
+                # 条件判断：根据当前输入或运行状态选择处理分支。
                 if metric.traffic_mbps is not None:
                     question += f"  网络流量: {metric.traffic_mbps}MB/s\n"
+                # 条件判断：根据当前输入或运行状态选择处理分支。
                 if metric.rssi is not None:
                     question += f"  WiFi信号: {metric.rssi}dBm\n"
+                # 条件判断：根据当前输入或运行状态选择处理分支。
                 if metric.quality is not None:
                     question += f"  质量评分: {metric.quality}\n"
+                # 条件判断：根据当前输入或运行状态选择处理分支。
                 if metric.flows is not None:
                     question += f"  活跃连接: {metric.flows}\n"
+                # 条件判断：根据当前输入或运行状态选择处理分支。
                 if metric.pps is not None:
                     question += f"  包速率: {metric.pps} pps\n"
+                # 条件判断：根据当前输入或运行状态选择处理分支。
                 if metric.level is not None:
                     question += f"  丢包等级: {metric.level}\n"
                 question += "\n"
         
         return question
     
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def _fallback_analysis(self, time_point: str, metrics: List[NetworkMetric]) -> str:
         """备用分析（当RAG不可用时）"""
         print("📊 使用备用分析模式...")
@@ -372,11 +423,14 @@ class TrueRAGNetworkAnalyzer:
         
         # 按接口分组
         interface_metrics = {}
+        # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
         for metric in metrics:
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if metric.interface not in interface_metrics:
                 interface_metrics[metric.interface] = []
             interface_metrics[metric.interface].append(metric)
         
+        # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
         for interface, iface_metrics in interface_metrics.items():
             analysis += f"\n📡 接口 {interface} 分析:\n"
             
@@ -386,21 +440,25 @@ class TrueRAGNetworkAnalyzer:
             traffic_values = [m.traffic_mbps for m in iface_metrics if m.traffic_mbps is not None]
             rssi_values = [m.rssi for m in iface_metrics if m.rssi is not None]
             
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if rtt_values:
                 avg_rtt = sum(rtt_values) / len(rtt_values)
                 status = "🟢 优秀" if avg_rtt <= 10 else "🟡 良好" if avg_rtt <= 30 else "🟠 一般" if avg_rtt <= 50 else "🔴 较差"
                 analysis += f"  • RTT延迟: {avg_rtt:.1f}ms {status}\n"
             
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if tcp_loss_values:
                 avg_loss = sum(tcp_loss_values) / len(tcp_loss_values)
                 status = "🟢 优秀" if avg_loss <= 0.5 else "🟡 良好" if avg_loss <= 1 else "🟠 一般" if avg_loss <= 3 else "🔴 较差"
                 analysis += f"  • TCP丢包率: {avg_loss:.2f}% {status}\n"
             
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if traffic_values:
                 avg_traffic = sum(traffic_values) / len(traffic_values)
                 status = "🟢 正常" if avg_traffic > 0 else "🔴 异常"
                 analysis += f"  • 网络流量: {avg_traffic:.1f}MB/s {status}\n"
             
+            # 条件判断：根据当前输入或运行状态选择处理分支。
             if rssi_values:
                 avg_rssi = sum(rssi_values) / len(rssi_values)
                 status = "🟢 优秀" if avg_rssi >= -50 else "🟡 良好" if avg_rssi >= -60 else "🟠 一般" if avg_rssi >= -70 else "🔴 较差"
@@ -410,6 +468,7 @@ class TrueRAGNetworkAnalyzer:
         
         return analysis
     
+    # 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
     def get_available_times(self, log_data: str) -> str:
         """获取可用的时间点"""
         metrics = self.parser.parse_log_capture_output(log_data)
@@ -421,12 +480,14 @@ class TrueRAGNetworkAnalyzer:
         summary.append("📅 可用时间点:")
         summary.append("=" * 30)
         
+        # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
         for time_str in times:
             count = len([m for m in metrics if m.timestamp == time_str])
             summary.append(f"• {time_str}: {count} 个指标")
         
         return "\n".join(summary)
 
+# 函数说明：封装一个可复用的处理步骤；请以函数签名和调用方确定输入、输出及异常语义。
 def main():
     """主函数 - 示例用法"""
     # 初始化真正的RAG系统
@@ -455,6 +516,7 @@ def main():
     # 分析特定时间点
     time_points = ["00:13:24", "00:13:30", "00:13:50"]
     
+    # 循环处理：逐项处理数据，并在循环条件变化时及时结束。
     for time_point in time_points:
         print(f"\n{'='*60}")
         print(f"🔍 RAG分析时间点: {time_point}")
@@ -463,5 +525,6 @@ def main():
         result = rag_analyzer.analyze_time_point(sample_log_data, time_point)
         print(result)
 
+# 条件判断：根据当前输入或运行状态选择处理分支。
 if __name__ == "__main__":
     main()
