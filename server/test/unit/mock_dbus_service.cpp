@@ -60,7 +60,7 @@ DbusService::DbusService(ServerContext* ctx) : ctx_(ctx) {}
 // Stub implementation: record counter then return true
 bool DbusService::emitSpecificSignal(const std::string& /*signalName*/,
                                       const std::string& /*message*/,
-                                      int32_t counter) {
+                                       int32_t counter) {
     test_recorder::recordCounter(counter);
     return true;
 }
@@ -68,7 +68,7 @@ bool DbusService::emitSpecificSignal(const std::string& /*signalName*/,
 // Stub implementation: record counter then return true
 bool DbusService::emitNetworkQualitySignal(const std::string& /*message*/,
                                             const std::string& /*details*/,
-                                            int32_t counter) {
+                                                   int32_t counter) {
     test_recorder::recordCounter(counter);
     return true;
 }

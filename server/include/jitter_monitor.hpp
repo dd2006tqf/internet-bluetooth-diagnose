@@ -1,7 +1,15 @@
-// jitter_monitor.hpp
-// 启动网络抖动(Jitter)监控线程
-// 通过周期性 ICMP ping 采集 RTT 样本，计算标准差作为抖动值，
-// 评估网络延迟的稳定性（对 VoIP/视频会议等实时业务尤为重要）
+/**
+ * @file jitter_monitor.hpp
+ * @brief 网络抖动（Jitter）监控线程启动接口
+ *
+ * 抖动 = RTT 样本标准差，反映延迟稳定性。对 VoIP/视频会议等实时业务，
+ * 抖动比平均延迟更能代表体验质量。
+ *
+ * 算法：滑动窗口（默认 30 样本）→ 计算均值 → 平方差均值 → sqrt
+ * 结果写入 ServerContext::NetInfo::jitter_ms_（哨兵值 -1.0 表示无效）。
+ *
+ * @note 依赖与 rtt_monitor 相同的原始 socket 权限。
+ */
 
 #pragma once
 
@@ -11,11 +19,15 @@ namespace weaknet_dbus {
 
 class ServerContext;
 
-// 创建并启动网络抖动监控线程
-// host: 目标主机（如 223.5.5.5）
-// intervalMs: 采样间隔（毫秒），默认 2000ms 以快速积累样本
-// timeoutMs: 单次 ping 超时（毫秒）
-// windowSize: 滑动窗口大小（样本数），默认 30
+/**
+ * @brief 创建并启动网络抖动监控线程
+ *
+ * @param ctx         ServerContext 生命周期句柄
+ * @param host        目标主机（如 "223.5.5.5"）
+ * @param intervalMs  采样间隔，默认 2000ms
+ * @param timeoutMs   单次 ping 超时，默认 800ms
+ * @param windowSize  滑动窗口样本数，默认 30；值越大抖动计算越平滑但响应越慢
+ */
 void start_jitter_monitor_thread(ServerContext* ctx,
                                  const std::string& host,
                                  int intervalMs = 2000,

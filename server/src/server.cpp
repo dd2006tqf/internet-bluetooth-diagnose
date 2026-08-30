@@ -1,5 +1,20 @@
-// server.cpp
-// 使用 libdbus-1 提供服务端：导出 Get 方法与 Changed 信号；并提供 start_server 作为入口
+/**
+ * @file server.cpp
+ * @brief weaknet-dbus 服务端主逻辑 — 初始化、线程编排、优雅退出
+ *
+ * 本文件是整个服务端的核心编排层。start_server() 完成以下工作：
+ *   1. Logger 初始化 → D-Bus 总线连接 + 请求服务名 → 注册对象路径
+ *   2. 依次创建并启动所有监控线程（网卡、RTT、Jitter、RSSI、TCP丢包、
+ *      流量分析、网络质量、蓝牙、以及 6 个 eBPF 监控器）
+ *   3. 进入 Looper 事件循环（poll 模式监听 D-Bus fd + signal pipe）
+ *   4. 收到 SIGINT/SIGTERM 后按依赖顺序 join 所有线程 → 释放资源 → 退出
+ *
+ * 线程安全注意：
+ *   - ServerContext 是所有共享资源的生命周期容器，所有捕获 ctx* 的线程
+ *     必须在 ctx 析构前 join 完成（start_server 的 join 序列保证这一点）
+ *   - D-Bus 连接通过 dbus_threads_init_default() 支持多线程并发调用
+ *   - eBPF 监控器实例由 ServerContext 持有 unique_ptr，线程仅 .get() 使用
+ */
 
 #include <dbus/dbus.h>
 #include <cstdio>

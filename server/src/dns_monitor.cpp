@@ -1,6 +1,28 @@
-// dns_monitor.cpp
-// DNS 监控器 - 用户态实现
-// 从 BPF Map 读取 DNS 查询记录，计算解析延迟
+/**
+ * @file dns_monitor.cpp
+ * @brief DNS 查询延迟监控器 - 用户态实现
+ *
+ * 监控指标：
+ *   - DNS 平均解析延迟（avgLatencyMs）
+ *   - DNS 最大解析延迟（maxLatencyMs）
+ *   - DNS 超时次数（totalTimeouts）
+ *   - DNS 总查询数 / 总响应数
+ *   - DNS 超时率：timeouts / (queries + responses)
+ *
+ * 数据源（eBPF）：
+ *   - BPF 对象文件名：dns_monitor.bpf.o
+ *   - 探针类型：kprobe（内核函数入口探针）
+ *     - kprobe/udp_sendmsg  → trace_dns_send（捕获 DNS 查询包发送时间戳）
+ *     - kprobe/udp_recvmsg  → trace_dns_recv（捕获 DNS 响应包接收时间戳）
+ *   - 数据通道：BPF Map（数组类型 / Per-CPU）
+ *     - dns_queries：查询记录 Map（键 = 四元组 saddr/daddr/sport，值 = send_time_ns 等）
+ *     - dns_stats ：聚合统计 Map（键 = 0，值 = total_queries/latency_ns 等）
+ *   - 用户态通过 bpf_map_lookup_elem 从 dns_stats Map 读取聚合统计
+ *
+ * 线程模型：
+ *   - 本类本身不创建独立线程，由外部（如 NetworkQualityAssessor）周期性调用 getStats()
+ *   - 无锁：eBPF Map 的读取本身对并发安全，内部状态通过 EbpfMonitorStateSupport 封装
+ */
 
 #include "dns_monitor.hpp"
 #include "logger.hpp"
@@ -26,39 +48,58 @@ extern "C" {
 
 namespace weaknet_dbus {
 
-// ---- 数据结构映射（与 BPF 端一致） ----
+// ---- 数据结构映射（与 BPF 端 C 结构体一一对应，必须保持字段和 __packed 一致） ----
 
+/**
+ * @brief DNS 查询记录的键结构（与 BPF 端 dns_queries Map 的 key 一致）
+ *
+ * 用源 IP + 目的 IP + 源端口（DNS 查询的唯一标识）作为键，
+ * 目的端口固定为 53（DNS 服务端口），因此不纳入键
+ */
 struct dns_query_key {
-    __u32 saddr;
-    __u32 daddr;
-    __u16 sport;
+    __u32 saddr;       // 源 IP（网络字节序）
+    __u32 daddr;       // 目的 IP（网络字节序）
+    __u16 sport;       // 源端口（DNS 查询的临时端口）
 } __attribute__((packed));
 
+/**
+ * @brief DNS 查询/响应记录（与 BPF 端 dns_queries Map 的 value 一致）
+ */
 struct dns_query_record {
-    __u64 send_time_ns;
-    __u64 recv_time_ns;
-    __u32 reply_len;
-    __u8  rcode;
-    __u8  is_response;
+    __u64 send_time_ns;   // DNS 查询发送时间戳（纳秒，CLOCK_MONOTONIC）
+    __u64 recv_time_ns;   // DNS 响应接收时间戳（纳秒，0 表示超时未收到）
+    __u32 reply_len;      // DNS 响应报文长度
+    __u8  rcode;          // DNS 响应码（0=NOERROR, 2=SERVFAIL, 3=NXDOMAIN 等）
+    __u8  is_response;    // 0=查询记录，1=响应记录（用于区分 send/recv 两个探针写入）
 };
 
+/**
+ * @brief DNS 聚合统计记录（与 BPF 端 dns_stats Map 的 value 一致）
+ *
+ * BPF 程序在每次 DNS 事务完成时（收到响应或超时）更新此 Map
+ */
 struct dns_stats_record {
-    __u64 total_queries;
-    __u64 total_responses;
-    __u64 total_timeouts;
-    __u64 total_errors;
-    __u64 total_latency_ns;
-    __u64 max_latency_ns;
+    __u64 total_queries;      // 总查询数
+    __u64 total_responses;   // 总响应数（有回复的查询）
+    __u64 total_timeouts;     // 总超时数（未收到响应的查询）
+    __u64 total_errors;       // 总错误数（rcode != 0 的响应）
+    __u64 total_latency_ns;   // 累计解析延迟（纳秒），用于计算平均延迟
+    __u64 max_latency_ns;    // 历史最大解析延迟（纳秒）
 };
 
 // ---- 实现 ----
 
+/**
+ * @brief Pimpl 实现结构体，持有 libbpf 句柄
+ *
+ * 采用 Pimpl 模式隔离 libbpf 依赖，避免在没有 libbpf 的编译环境中暴露 BPF 类型
+ */
 struct DnsMonitor::Impl {
-    int dns_queries_fd = -1;
-    int dns_stats_fd = -1;
-    struct bpf_object *obj = nullptr;
-    struct bpf_link *link_send = nullptr;
-    struct bpf_link *link_recv = nullptr;
+    int dns_queries_fd = -1;       ///< dns_queries Map fd（查询记录）
+    int dns_stats_fd = -1;         ///< dns_stats Map fd（聚合统计）
+    struct bpf_object *obj = nullptr;  ///< BPF 对象实例
+    struct bpf_link *link_send = nullptr;  ///< kprobe/udp_sendmsg 的 BPF link
+    struct bpf_link *link_recv = nullptr;  ///< kprobe/udp_recvmsg 的 BPF link
 };
 
 DnsMonitor::DnsMonitor()
@@ -68,6 +109,19 @@ DnsMonitor::~DnsMonitor() {
     stop();
 }
 
+/**
+ * @brief 初始化 DNS 监控器：加载 BPF 对象并挂载探针
+ *
+ * 初始化流程：
+ *   1. 打开并加载 BPF 对象文件（dns_monitor.bpf.o）
+ *   2. 查找 dns_queries 和 dns_stats 两个 Map 的 fd
+ *   3. 找到 trace_dns_send 和 trace_dns_recv 两个 BPF 程序
+ *   4. attach 到内核 kprobe：udp_sendmsg 和 udp_recvmsg
+ *
+ * @param bpfObjPath BPF 对象文件路径（通常为 "build/dns_monitor.bpf.o"）
+ * @return true  初始化成功，探针已挂载
+ *         false 初始化失败（libbpf 不可用、文件不存在、attach 失败等）
+ */
 bool DnsMonitor::init(const std::string& bpfObjPath) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
@@ -115,6 +169,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
     }
 
     // attach 探针到 kprobe/udp_sendmsg 和 kprobe/udp_recvmsg
+    // 内核探针类型：kprobe（函数入口）
     struct bpf_program *send_prog = bpf_object__find_program_by_name(obj, "trace_dns_send");
     struct bpf_program *recv_prog = bpf_object__find_program_by_name(obj, "trace_dns_recv");
     if (!send_prog || !recv_prog) {
@@ -160,6 +215,11 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
 #endif
 }
 
+/**
+ * @brief 停止 DNS 监控器：销毁 BPF link 和 BPF 对象
+ *
+ * 释放所有 libbpf 资源，将状态置为 Stopped，available 置为 false
+ */
 void DnsMonitor::stop() {
     stateSupport_.setState(EbpfMonitorState::Stopped, false, "stopped");
 #if HAVE_LIBBPF
@@ -176,6 +236,14 @@ void DnsMonitor::stop() {
     available_ = false;
 }
 
+/**
+ * @brief 从 dns_stats Map 读取 DNS 聚合统计
+ *
+ * 读取流程：通过 bpf_map_lookup_elem 查询 key=0 的 dns_stats Map 条目，
+ * 然后从原始纳秒值转换为毫秒（/ 1000000）。
+ *
+ * @return DnsAggStats DNS 聚合统计结果；失败时返回零值结构体
+ */
 DnsAggStats DnsMonitor::getStats() {
     DnsAggStats result = {};
 #if HAVE_LIBBPF
@@ -193,6 +261,7 @@ DnsAggStats DnsMonitor::getStats() {
         result.totalResponses = percpu_stats.total_responses;
         result.totalTimeouts = percpu_stats.total_timeouts;
         result.totalErrors = percpu_stats.total_errors;
+        // 平均延迟 = 累计总延迟 / 响应数（避免除以零）
         result.avgLatencyMs = (percpu_stats.total_responses > 0)
             ? (percpu_stats.total_latency_ns / percpu_stats.total_responses / 1000000)
             : 0;
@@ -204,12 +273,20 @@ DnsAggStats DnsMonitor::getStats() {
     return result;
 }
 
+/**
+ * @brief 获取 DNS 平均解析延迟（毫秒）
+ * @return 平均延迟 ms；无数据时返回 0.0
+ */
 double DnsMonitor::getAvgLatencyMs() {
     auto stats = getStats();
     if (stats.totalResponses == 0) return 0.0;
     return stats.avgLatencyMs;
 }
 
+/**
+ * @brief 获取 DNS 超时率
+ * @return 超时率（0.0 ~ 1.0），由 DnsAggStats::timeoutRate() 计算
+ */
 double DnsMonitor::getTimeoutRate() {
     auto stats = getStats();
     return stats.timeoutRate();

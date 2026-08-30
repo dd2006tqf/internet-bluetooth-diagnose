@@ -1,17 +1,38 @@
-// bt_audio_fusion.cpp
-// 蓝牙音频质量融合层 — 实现文件
-//
-// 融合策略：
-//   1. 若有 eBPF 数据：计算时间窗口内的有效活跃占比
-//      - 有效活跃 = D-Bus state==active && bytes_delta > minBytesPerSec * windowSec
-//      - 疑似卡顿 = gap_count > stallCountThreshold
-//      - 融合评分 = 基础评分 × effectiveRatio + ebpfCorrection
-//   2. 若无 eBPF 数据：仅基于 D-Bus 评分（Phase 1b 兼容）
-//
-// 边界条件处理：
-//   - prevStats==nullptr: 首次采集，无法计算增量，仅做绝对评估
-//   - stats==nullptr: eBPF 已降级，走纯 D-Bus 路径
-//   - transport.state != "active": 直接返回非活跃结果
+/**
+ * @file bt_audio_fusion.cpp
+ * @brief 蓝牙音频质量融合评分器 — 将 BlueZ D-Bus MediaTransport1 属性 + eBPF 内核态流量统计融合为单一质量分数
+ *
+ * 模块职责：
+ *   - 接收 BtAudioTransport（来自 BlueZ MediaTransport1 D-Bus 接口）与 BtTrafficStats（来自 eBPF）
+ *   - 基于 eBPF 累计流量增量（bytes_delta / gap_count / max_gap_ns）判断音频会话是否"真正活跃"
+ *   - 检测疑似卡顿（gap_count 异常增长）与大间隔丢包（max_gap_ns 超过阈值）
+ *   - 融合评分 = 基础评分(D-Bus Delay/Codec) × 有效活跃占比 + eBPF 修正量（流量加分 / 卡顿扣分）
+ *   - eBPF 不可用时自动降级为纯 D-Bus 模式（evaluateDbOnly）
+ *
+ * 依赖的外部接口：
+ *   - **bt_monitor.hpp**        协作关系：由 BtMonitor::getAudioFusionResult() 调用
+ *   - **bt_audio_analyzer.hpp** 协作关系：其 BtTrafficStats（内核态累计流量）通过参数 stats/prevStats 传入
+ *   - **bt_audio_fusion.hpp**   定义融合配置 BtAudioFusionConfig 与结果结构体 BtAudioFusionResult
+ *
+ * 音频融合评分算法：
+ *   1. 非活跃（state != "active"）→ score=0, level=inactive
+ *   2. eBPF 不可用 → evaluateDbOnly()：仅按 Delay（2000ms→-40, 1000ms→-20, 500ms→-10）+ SBC 编码（-5）扣分
+ *   3. eBPF 可用 → evaluate()：
+ *      a. 计算增量 bytesDelta/packetsDelta/gapDelta/maxGapDelta（保护 stats<prevStats 重置场景）
+ *      b. effectiveActive = bytesDelta > config.minBytesPerSec
+ *      c. suspectedStall  = gapDelta    > config.stallCountThreshold
+ *      d. maxGapMs = maxGapDelta / 1e6
+ *      e. 计算 ebpfCorrection：有效活跃加分 log2(bytes/1024)*3 (上限+20)；卡顿扣分 gapDelta*5 (上限-30)；maxGap>500ms 额外-10
+ *      f. baseScore（Delay+Codec 扣分，同 D-Bus 逻辑）
+ *      g. activeRatio = effectiveActive ? 1.0 : min(1.0, bytesDelta/minBytesPerSec)
+ *      h. qualityScore = clamp(baseScore × activeRatio + ebpfCorrection, 0, 100)
+ *      i. 映射 level：≥90 excellent, ≥70 good, ≥50 fair, ≥30 poor, 其他 unknown
+ *
+ * 边界条件：
+ *   - prevStats==nullptr：首次采集，无法计算增量，bytesDelta=stats->bytes 直接使用
+ *   - stats==nullptr：eBPF 已降级，走 evaluateDbOnly 纯 D-Bus 路径
+ *   - transport.state != "active"：直接返回非活跃结果
+ */
 
 #include "bt_audio_fusion.hpp"
 #include "bt_monitor.hpp"

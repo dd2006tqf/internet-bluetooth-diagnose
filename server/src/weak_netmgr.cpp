@@ -1,5 +1,32 @@
-// weak_netmgr.cpp
-// 实现 WeakNetMgr：生成 NetInfo 列表
+/**
+ * @file weak_netmgr.cpp
+ * @brief WeakNetMgr：网络接口列表构建与各项指标（RTT/RSSI/TCP丢包/抖动/流量）的线程安全刷新
+ *
+ * 模块职责：
+ *   - 从 NetInterfaceManager 获取系统 Internet 接口列表
+ *   - 使用 UsingInterfaceManager 标记"当前上网接口"（唯一事实源）
+ *   - 为每个接口填充 RTT（通过 NetPing 主动探测）、Wi-Fi RSSI（通过 wpa_supplicant ctrl socket）、
+ *     TCP 丢包率（内核 tcp_retransmit_monitor）、抖动（jitter_monitor）、流量统计（TrafficAnalyzer）
+ *   - 线程安全：所有对 current_interfaces_ 的读写通过 std::mutex 保护（*Safe 系列方法）
+ *
+ * 依赖的外部接口：
+ *   - **NetInterfaceManager (net_iface.h)**       获取系统网络接口列表
+ *   - **UsingInterfaceManager (using_iface.h)**   判断当前哪个接口在上网（读取路由表）
+ *   - **NetPing (net_ping.h)**                    ICMP RTT 主动探测
+ *   - **WiFiRssiClient (net_wifiriss.h)**         通过 wpa_supplicant ctrl socket 获取 Wi-Fi RSSI
+ *   - **TrafficAnalyzer (traffic_analyzer.hpp)** 流量分析器（bps/pps/flows/top flows/异常检测）
+ *
+ * 数据流向：
+ *   collectCurrentInterfaces() → 构建初始 NetInfo 列表（含 usingNow 标记）
+ *       ↓
+ *   updateRttAndStateSafe()  ── pinger → RTT
+ *   updateWifiRssiSafe()     ── wpa ctrl socket → RSSI（仅 WiFi 接口）
+ *   updateTcpLossRateSafe()  ── 外部 monitor 推送 → TCP 丢包率
+ *   updateJitterSafe()       ── 外部 monitor 推送 → 抖动
+ *   updateTrafficAnalysisSafe() ── TrafficAnalyzer → bps/pps/flows
+ *       ↓
+ *   NetworkQualityAssessor::assessQuality() → 综合评分
+ */
 
 #include "weak_netmgr.hpp"
 #include "net_iface.h"

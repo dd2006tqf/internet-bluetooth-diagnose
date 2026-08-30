@@ -1,5 +1,39 @@
-// band_conflict_detector.cpp
-// 实现 BandConflictDetector：2.4GHz 频段冲突检测算法
+/**
+ * @file band_conflict_detector.cpp
+ * @brief 2.4GHz 频段冲突检测器 — 分析同频段 Wi-Fi 与蓝牙 RSSI 相关性，判断是否存在射频干扰
+ *
+ * 模块职责：
+ *   - 接收 Wi-Fi RSSI 与蓝牙 RSSI 时间序列样本（feedSample）
+ *   - 在样本不足、基线异常、降幅未达阈值等场景下返回空结果（保守）
+ *   - 通过 3 层判据确认冲突：降幅阈值检查 → Pearson 相关系数验证 → 综合置信度评分
+ *   - 冲突发生时自动生成中文建议（[band_conflict] 前缀供信号载荷识别）
+ *
+ * 2.4GHz 频段冲突检测原理：
+ *   Wi-Fi（802.11 b/g/n）和蓝牙（BT Classic/BLE）均工作在 2.4GHz ISM 频段，
+ *   当两者同时传输时会发生射频冲突，表现为双方 RSSI 同时下降。
+ *
+ *   检测算法流程（detect()）：
+ *     1. 样本检查：MIN_SAMPLES=10，若历史队列不足直接返回
+ *     2. 基线计算：取最近 BASELINE_SAMPLES=20 个样本的均值作为"无冲突时"的参考值
+ *     3. 当前值计算：取最近 3 个样本均值，降低毛刺影响
+ *     4. 降幅计算：wifiDrop = wifiBaseline - wifiCurrent（正值表示下降 dBm 数）
+ *     5. 降幅阈值：双方同时下降 ≥ DROP_THRESHOLD_DB=6dBm 才可能构成冲突
+ *     6. Pearson 相关性验证：r = Σ(x-x̄)(y-ȳ) / sqrt(Σ(x-x̄)² Σ(y-ȳ)²)
+ *        若 Wi-Fi/BT RSSI 下降是独立事件（如 Wi-Fi 本身离得远），两者不会高度相关；
+ *        若为同一射频干扰源，r 应显著接近 -1（Wi-Fi↓ ↔ BT↓ 高度同步）
+ *     7. 相关性门槛：CORRELATION_THRESHOLD=-0.4（负相关足够显著）
+ *     8. 置信度综合：
+ *        dropScore = min(min(wifiDrop, btDrop), 20) / 20 × 50     （降幅贡献 50%）
+ *        corrScore = |correlation| × 50                             （相关性贡献 50%）
+ *        confidence = dropScore + corrScore
+ *     9. 最终门槛：confidence ≥ 50 才输出结论
+ *
+ * 协作关系：
+ *   - 由 WeakNetMgr / Server 主循环周期性喂入样本（Wi-Fi RSSI 来自 wpa_supplicant ctrl socket，
+ *     蓝牙 RSSI 来自 BtMonitor::getRssiSnapshot()）
+ *   - detect() 结果通过 EventManager 发射 NetworkQualityChanged 信号，
+ *     载荷含 [band_conflict] 前缀便于前端识别冲突类型
+ */
 
 #include "band_conflict_detector.hpp"
 #include "logger.hpp"
@@ -172,7 +206,7 @@ double BandConflictDetector::baseline(const std::deque<int>& h, size_t n) const 
 // ============================================================================
 
 double BandConflictDetector::pearson(const std::deque<int>& x,
-                                       const std::deque<int>& y) const {
+                                         const std::deque<int>& y) const {
     // 取两者中较短的长度
     size_t n = std::min(x.size(), y.size());
 

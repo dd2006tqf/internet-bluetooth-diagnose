@@ -1,5 +1,47 @@
-// database_manager.cpp
-// SQLite 历史数据持久化管理器实现
+/**
+ * @file database_manager.cpp
+ * @brief SQLite 历史数据持久化管理器 — 网络质量快照持久化存储与查询
+ *
+ * 模块职责：
+ *   - 打开/创建 SQLite 数据库（WAL 模式，多线程安全 FULLMUTEX）
+ *   - 自动建表 ensureSchema()，创建 network_history 表 + 时间戳/接口索引
+ *   - insertSnapshot() 将 NetInfo + 综合评分落库（参数绑定防 SQL 注入）
+ *   - queryHistory() 支持按接口、时间范围、数量限制查询，返回 JSON 数组
+ *   - cleanup() 按保留天数过期清理旧记录
+ *   - getDbInfo() 返回数据库元信息（记录数/大小/时间范围）
+ *
+ * 表结构（network_history）：
+ *   ┌──────────────┬────────────┬──────────────────────────────────────┐
+ *   │ 列名          │ 类型        │ 说明                                   │
+ *   ├──────────────┼────────────┼──────────────────────────────────────┤
+ *   │ id           │ INTEGER PK │ 自增主键                               │
+ *   │ ts           │ TEXT NN    │ ISO8601 时间戳（YYYY-MM-DDTHH:MM:SS） │
+ *   │ iface        │ TEXT NN    │ 网卡名（wlan0/eth0 等）               │
+ *   │ rtt_ms       │ INTEGER    │ RTT（毫秒，-1 表示未测量）             │
+ *   │ jitter_ms    │ REAL       │ 抖动（毫秒，-1 表示未测量）            │
+ *   │ rssi_dbm     │ INTEGER    │ Wi-Fi RSSI（dBm，-1000 表示未测量）    │
+ *   │ tcp_loss     │ REAL       │ TCP 丢包率（%，-1 表示未测量）         │
+ *   │ quality      │ TEXT       │ LinkQuality 枚举字符串                │
+ *   │ score        │ REAL       │ 综合质量评分（0~100）                 │
+ *   │ traffic_bps  │ INTEGER    │ 当前接口流量 bps                      │
+ *   │ traffic_pps  │ INTEGER    │ 当前接口流量 pps                      │
+ *   │ flows        │ INTEGER    │ 活跃流数量                            │
+ *   └──────────────┴────────────┴──────────────────────────────────────┘
+ *   索引：idx_history_ts(ts)、idx_history_iface(iface) — 加速时间范围与接口过滤查询
+ *
+ * 写入频率与清理策略：
+ *   - 写入频率：由 Server 主循环控制（通常 3~10 秒/次，每次一行 per 活跃接口）
+ *   - 清理策略：cleanup(retention_days) 按 ts < datetime('now', '-N days') DELETE
+ *     默认由外部定时器（如 history_query_tool --cleanup）每周触发，
+ *     也可由服务端内置周期清理
+ *
+ * SQLite 连接配置：
+ *   - journal_mode=WAL        支持并发读写，读取不受写锁阻塞
+ *   - busy_timeout=5000ms     高频写入时避免 SQLITE_BUSY 死锁
+ *   - synchronous=NORMAL      WAL 模式下安全性足够，写性能最优
+ *   - cache_size=-2048 pages  约 2MB 缓存，加速查询
+ *   - FULLMUTEX 打开标志      多线程安全（比 SERIALIZED 稍快）
+ */
 
 #include "database_manager.hpp"
 #include "net_info.hpp"
@@ -232,7 +274,7 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
 std::string DatabaseManager::queryHistory(const std::string& interface,
                                            const std::string& start,
                                            const std::string& end,
-                                           int limit) {
+                                                 int limit) {
     if (!db_) return "[]";
 
     // 使用参数绑定防止 SQL 注入

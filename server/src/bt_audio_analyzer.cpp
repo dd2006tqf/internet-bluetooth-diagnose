@@ -1,12 +1,29 @@
-// bt_audio_analyzer.cpp
-// 蓝牙音频 eBPF 分析器 — 实现文件
-//
-// 职责：
-//   1. 加载 a2dp_media.bpf.o eBPF 程序
-//   2. 按优先级探测挂点（kprobe/l2cap_sock_sendmsg → kprobe/l2cap_chan_send）
-//   3. 提供 setSessionActive() 控制 eBPF 内核态跟踪开关
-//   4. 提供 getStats() 读取内核态累计流量统计
-//   5. 挂载失败时记录错误信息，通知上层降级
+/**
+ * @file bt_audio_analyzer.cpp
+ * @brief 蓝牙音频 eBPF 分析器 — 加载内核态 eBPF 程序并读取 L2CAP 流量累计统计
+ *
+ * 模块职责：
+ *   - 加载编译好的 a2dp_media.bpf.o，解析 CO-RE 重定位，挂载 kprobe 钩子到蓝牙发送路径
+ *   - 优先级探测挂点：kprobe/l2cap_sock_sendmsg（精确设备级跟踪）→ kprobe/__sock_sendmsg（聚合模式）
+ *   - 提供 setSessionActive() 控制内核态是否跟踪某设备流量（按 BDADDR+方向 key 写入 active_sessions map）
+ *   - 提供 getStats() / getAllStats() 从内核态 bt_traffic map 读取累计 bytes/packets/gap/max_gap
+ *   - 挂载失败时自动降级为 Fallback 状态，不影响上层
+ *
+ * 依赖的外部接口：
+ *   - **libbpf (bpf/libbpf.h)**  eBPF 对象加载、程序挂载、Map 操作（libbpf 1.x API）
+ *   - **bt_audio_analyzer.hpp**  定义状态机 BtAudioAnalyzerState、统计结构体 BtTrafficStats
+ *   - **bt_monitor.hpp**         协作关系：由 BtMonitor::initPhase2() 创建并驱动生命周期
+ *   - **ebpf_monitor_interface.hpp**  上报状态到统一的 EbpfMonitorState 枚举
+ *
+ * 内核态 BPF Map 设计：
+ *   - bt_traffic map（BPF_MAP_TYPE_HASH）：key = { bdaddr[6], direction }，value = { bytes, packets, last_packet_ns, gap_count, max_gap_ns }
+ *   - active_sessions map：控制哪些设备方向对的流量被统计
+ *   - btaudio_cfg map：key=0，value={ enabled }，全局开关
+ *
+ * 挂点优先级策略：
+ *   - 优先级 1: kprobe/l2cap_sock_sendmsg — 仅捕获蓝牙 L2CAP 层，能从 sock 结构体取出 peer BDADDR，实现设备级精准统计
+ *   - 优先级 2: kprobe/__sock_sendmsg — 通用 sendmsg 钩子，捕获所有套接字，需在内核态过滤 AF_BLUETOOTH，统计是聚合的
+ */
 
 #include "bt_audio_analyzer.hpp"
 #include "logger.hpp"
@@ -278,7 +295,7 @@ std::vector<std::pair<std::string, BtTrafficStats>> BtAudioAnalyzer::getAllStats
         return result;
     }
 
-    // 遍历 bt_traffic map
+    auto started = std::chrono::steady_clock::now();
 
     // 第一次遍历：获取第一个 key
     struct {
@@ -392,7 +409,7 @@ bpf_link* BtAudioAnalyzer::tryAttachKprobe(const std::string& funcName, const st
 }
 
 bool BtAudioAnalyzer::readStatsFromMap(const uint8_t bdaddr[6], uint8_t direction,
-                                        BtTrafficStats* out) const {
+                                           BtTrafficStats* out) const {
     if (statsMapFd_ < 0 || !out) return false;
 
     struct {

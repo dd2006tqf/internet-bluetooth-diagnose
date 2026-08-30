@@ -1,6 +1,31 @@
-// wifi_packet_loss_monitor.cpp
-// Wi-Fi/网卡收发丢包归因监控器 - 用户态实现
-// 从 BPF Map 读取收发/丢弃/重传统计，区分发送/接收丢包
+/**
+ * @file wifi_packet_loss_monitor.cpp
+ * @brief Wi-Fi/网卡收发丢包归因监控器 - 用户态实现
+ *
+ * 监控指标：
+ *   - 每接口收发包数 / 收发字节数 / 发送丢弃数 / 发送重试数
+ *   - 发送丢包率：txDrops / (txPkts + txDrops) × 100%
+ *   - 丢包归因分析：区分"主要发送丢包" / "收发均异常" / "正常"
+ *
+ * 数据源（eBPF）：
+ *   - BPF 对象文件名：wifi_packet_loss_monitor.bpf.o
+ *   - 探针类型：tracepoint（内核静态跟踪点，比 kprobe 更稳定）
+ *     - tracepoint/net/netif_receive_skb      → trace_net_rx（捕获接收包，统计 rxPkts/rxBytes）
+ *     - tracepoint/net/net_dev_queue_xmit     → trace_net_tx_queue（入队时统计 txPkts/txBytes）
+ *     - tracepoint/net/netif_xmit_failed      → trace_net_tx_xmit（发送失败时统计 txDrops/txRetries）
+ *   - 数据通道：BPF Map（Hash 类型）
+ *     - packet_stats：每接口收发统计 Map（键 = ifindex，值 = iface_packet_stats）
+ *   - 用户态通过 bpf_map_get_next_key + bpf_map_lookup_elem 遍历 Map
+ *
+ * 线程模型：
+ *   - 本类本身不创建独立线程，由外部周期性调用 getStats() / analyze()
+ *   - 无锁：eBPF Map 读取对并发安全
+ *
+ * 丢包归因策略：
+ *   - 发送丢包率 > 1% 或 txRetries > 100 → 判断本机到 AP 的上行问题
+ *   - 接收丢包率（rxLossRate）当前无法精确测量，保守判断为 0
+ *   - 两者同时高 → 判断链路整体拥塞或信号差
+ */
 
 #include "wifi_packet_loss_monitor.hpp"
 #include "logger.hpp"
@@ -26,19 +51,31 @@ extern "C" {
 
 namespace weaknet_dbus {
 
-// ---- 数据结构映射（与 BPF 端一致） ----
+// ---- 数据结构映射（与 BPF 端 C 结构体一一对应） ----
 
+/**
+ * @brief 接口收发统计结构（与 BPF 端 packet_stats Map 的 value 一致）
+ */
 struct iface_packet_stats {
-    __u64 rx_pkts;
-    __u64 rx_bytes;
-    __u64 tx_pkts;
-    __u64 tx_bytes;
-    __u64 tx_drops;
-    __u64 tx_retries;
+    __u64 rx_pkts;    // 接收包总数
+    __u64 rx_bytes;   // 接收字节总数
+    __u64 tx_pkts;    // 发送包总数
+    __u64 tx_bytes;   // 发送字节总数
+    __u64 tx_drops;   // 发送丢弃包数（驱动层丢包）
+    __u64 tx_retries; // 发送重试次数（Wi-Fi 重传计数器）
 };
 
 #if HAVE_LIBBPF
-// 辅助：按名字找到 BPF 程序并 attach，返回 link 或 nullptr
+/**
+ * @brief 辅助函数：按程序名查找并 attach BPF 程序
+ *
+ * 使用 bpf_program__attach 自动识别探针类型（kprobe/tracepoint），
+ * 简化 init 中重复的 attach 逻辑。
+ *
+ * @param obj     BPF 对象指针
+ * @param progName BPF 程序名（必须与 .bpf.c 中的 SEC() section 名对应）
+ * @return bpf_link* 成功时返回 BPF link，失败时返回 nullptr
+ */
 static struct bpf_link* attachProgram(struct bpf_object* obj, const char* progName) {
     struct bpf_program* prog = bpf_object__find_program_by_name(obj, progName);
     if (!prog) {
@@ -57,12 +94,15 @@ static struct bpf_link* attachProgram(struct bpf_object* obj, const char* progNa
 
 // ---- 实现 ----
 
+/**
+ * @brief Pimpl 实现结构体，持有 libbpf 句柄
+ */
 struct WifiPacketLossMonitor::Impl {
-    int packet_stats_fd = -1;
-    struct bpf_object *obj = nullptr;
-    struct bpf_link *link_rx = nullptr;
-    struct bpf_link *link_tx_queue = nullptr;
-    struct bpf_link *link_tx_xmit = nullptr;
+    int packet_stats_fd = -1;         ///< packet_stats Map fd（每接口收发统计）
+    struct bpf_object *obj = nullptr;  ///< BPF 对象实例
+    struct bpf_link *link_rx = nullptr;        ///< tracepoint/net/netif_receive_skb BPF link（接收侧）
+    struct bpf_link *link_tx_queue = nullptr;  ///< tracepoint/net/net_dev_queue_xmit BPF link（发送入队）
+    struct bpf_link *link_tx_xmit = nullptr;   ///< tracepoint/net/netif_xmit_failed BPF link（发送失败）
 };
 
 WifiPacketLossMonitor::WifiPacketLossMonitor()
@@ -72,6 +112,21 @@ WifiPacketLossMonitor::~WifiPacketLossMonitor() {
     stop();
 }
 
+/**
+ * @brief 初始化 Wi-Fi 丢包监控器：加载 BPF 对象并挂载 tracepoint
+ *
+ * 初始化流程：
+ *   1. 打开并加载 BPF 对象文件（wifi_packet_loss_monitor.bpf.o）
+ *   2. 查找 packet_stats Map 的 fd
+ *   3. 通过 attachProgram 辅助函数挂载 3 个 tracepoint 探针
+ *      - trace_net_rx（接收侧）
+ *      - trace_net_tx_queue（发送入队）
+ *      - trace_net_tx_xmit（发送失败）
+ *
+ * @param bpfObjPath BPF 对象文件路径
+ * @return true  初始化成功（至少一个 tracepoint 挂载成功）
+ *         false 初始化失败（所有 tracepoint 均挂在失败或 libbpf 不可用）
+ */
 bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
@@ -109,7 +164,10 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
         return false;
     }
 
-    // attach 3 个 tracepoint
+    // attach 3 个 tracepoint：
+    //   trace_net_rx      → tracepoint/net/netif_receive_skb（接收侧）
+    //   trace_net_tx_queue→ tracepoint/net/net_dev_queue_xmit（发送入队）
+    //   trace_net_tx_xmit → tracepoint/net/netif_xmit_failed（发送失败）
     impl_->link_rx = attachProgram(obj, "trace_net_rx");
     impl_->link_tx_queue = attachProgram(obj, "trace_net_tx_queue");
     impl_->link_tx_xmit = attachProgram(obj, "trace_net_tx_xmit");
@@ -136,6 +194,11 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
 #endif
 }
 
+/**
+ * @brief 停止 Wi-Fi 丢包监控器：销毁所有 BPF link 和 BPF 对象
+ *
+ * 释放 rx/tx_queue/tx_xmit 三个 tracepoint 的 link 句柄
+ */
 void WifiPacketLossMonitor::stop() {
     stateSupport_.setState(EbpfMonitorState::Stopped, false, "stopped");
 #if HAVE_LIBBPF
@@ -152,6 +215,13 @@ void WifiPacketLossMonitor::stop() {
     available_ = false;
 }
 
+/**
+ * @brief 获取所有接口的收发统计
+ *
+ * 遍历 packet_stats Map 的所有条目，将内核态统计转为用户态 IfacePacketStats 结构。
+ *
+ * @return 以 ifindex 为键的收发统计 Map
+ */
 std::map<uint32_t, IfacePacketStats> WifiPacketLossMonitor::getStats() {
     std::map<uint32_t, IfacePacketStats> result;
 #if HAVE_LIBBPF
@@ -184,13 +254,26 @@ std::map<uint32_t, IfacePacketStats> WifiPacketLossMonitor::getStats() {
     return result;
 }
 
+/**
+ * @brief 获取指定接口的收发统计
+ *
+ * @param ifindex 网卡接口索引（IP 层 ifindex，如 eth0=2, wlan0=3）
+ * @param out     输出参数，成功时写入 IfacePacketStats
+ * @return true  查询成功
+ *         false Map 不可用、ifindex 不存在或 out 为 nullptr
+ */
 bool WifiPacketLossMonitor::getStats(uint32_t ifindex, IfacePacketStats* out) {
 #if HAVE_LIBBPF
-    if (!available_ || impl_->packet_stats_fd < 0 || !out)
+    auto started = std::chrono::steady_clock::now();
+    if (impl_->packet_stats_fd < 0 || !out) {
+        stateSupport_.recordReadFailure("packet_stats map unavailable or invalid output");
         return false;
+    }
     iface_packet_stats stats = {};
-    if (bpf_map_lookup_elem(impl_->packet_stats_fd, &ifindex, &stats) != 0)
+    if (bpf_map_lookup_elem(impl_->packet_stats_fd, &ifindex, &stats) != 0) {
+        stateSupport_.recordReadFailure("packet_stats map lookup failed");
         return false;
+    }
     out->ifindex = ifindex;
     out->rxPkts = stats.rx_pkts;
     out->rxBytes = stats.rx_bytes;
@@ -198,6 +281,9 @@ bool WifiPacketLossMonitor::getStats(uint32_t ifindex, IfacePacketStats* out) {
     out->txBytes = stats.tx_bytes;
     out->txDrops = stats.tx_drops;
     out->txRetries = stats.tx_retries;
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed));
     return true;
 #else
     (void)ifindex; (void)out;
@@ -205,6 +291,21 @@ bool WifiPacketLossMonitor::getStats(uint32_t ifindex, IfacePacketStats* out) {
 #endif
 }
 
+/**
+ * @brief 分析指定接口的丢包归因
+ *
+ * 读取该接口的收发统计，计算发送丢包率（txDrops/(txPkts+txDrops)×100%），
+ * 并根据预定义阈值判断是发送侧问题还是整体正常。
+ *
+ * 归因阈值：
+ *   - 发送丢包率 > 1% 或 txRetries > 100 → 主要发送丢包（上行问题）
+ *   - 发送丢包率 > 1% 且接收也异常（当前 rxLossRate 不可测） → 收发均异常
+ *   - 否则 → 连接正常
+ *
+ * @param ifindex  网卡接口索引
+ * @param ifaceName 接口名（仅用于日志/返回描述）
+ * @return LossAttribution 归因分析结果，含 rxLossRate/txLossRate/analysis 字段
+ */
 WifiPacketLossMonitor::LossAttribution WifiPacketLossMonitor::analyze(uint32_t ifindex, const std::string& ifaceName) {
     LossAttribution result;
     result.ifaceName = ifaceName;
@@ -219,23 +320,22 @@ WifiPacketLossMonitor::LossAttribution WifiPacketLossMonitor::analyze(uint32_t i
         return result;
     }
 
-    // 估算接收丢包率：接收包数 vs 发送包数（近似，若 rx 远低于 tx 且字节相近可能接收丢包）
-    // 更精确的接收丢包率需要对比驱动层 rx_dropped 计数，这里用发送/接收包比例近似
+    // 计算发送丢包率：txDrops / (txPkts + txDrops) × 100%
+    // 这是发送侧最直接的丢包度量（驱动层统计）
     double txLoss = stats.txLossRate();
     result.txRetries = stats.txRetries;
     result.txLossRate = txLoss;
 
     // 接收丢包率近似：接收包数显著少于发送包数，且都不是本地回环
-    // 简化：用 (tx_pkts - rx_pkts) / tx_pkts 作为接收丢包率的粗略估计
+    // 简化策略：由于没有驱动层 rx_dropped 精确计数，此处不估计接收丢包率
+    // 原因：TCP 回显场景 rx ≈ tx；纯下行 rx >> tx；纯上行 rx << tx
+    // 无法单凭此判断接收丢包，这里仅当 txDrops 高时判断发送问题
     if (stats.txPkts > 0 && stats.rxPkts > 0) {
-        double ratio = static_cast<double>(stats.rxPkts) / stats.txPkts;
-        // TCP 回显场景 rx ≈ tx；纯下行 rx >> tx；纯上行 rx << tx
-        // 无法单凭此判断接收丢包，这里仅当 txDrops 高时判断发送问题
         result.rxLossRate = 0.0; // 接收丢包率需要网卡驱动 rx_dropped 数据，此处不虚报
     }
 
     // 归因分析
-    bool txProblem = txLoss > 1.0 || stats.txRetries > 100;
+    bool txProblem = txLoss > 1.0 || stats.txRetries > 100;   // 发送丢包率 > 1% 或重试次数 > 100
     bool rxProblem = false; // 接收丢包率当前无法精确测量，保守判断
 
     if (txProblem && rxProblem) {

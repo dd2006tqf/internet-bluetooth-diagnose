@@ -1,5 +1,19 @@
-// rtt_monitor.cpp
-// 基于 NetPing 的 RTT 周期检测，并更新 WeakNetMgr 中 NetInfo 的 rtt 与质量
+/**
+ * @file rtt_monitor.cpp
+ * @brief RTT（往返时延）周期监控线程实现
+ *
+ * 监控指标：
+ *   - RTT（Round-Trip Time）：从发送 ICMP Echo 请求到收到 Echo Reply 的时间，单位 ms
+ *   - 网络质量等级：基于 RTT 和丢包率综合评估（WeakNetMgr::NetInfo::quality）
+ *
+ * 数据源：
+ *   - 外部库：NetPing 类封装的 ICMP ping 实现（基于原始套接字 raw socket）
+ *
+ * 线程模型：
+ *   - 单一 detached 风格的 std::thread（通过 ServerContext::rtt_thread 持有可 join 句柄）
+ *   - 与 RSSI/Jitter/TCP Loss 等监控线程并行运行，通过 WeakNetMgr 的细粒度更新接口避免锁争用
+ *   - 线程安全：仅调用 WeakNetMgr::updateRttAndStateSafe 线程安全更新方法
+ */
 
 #include <thread>
 #include <chrono>
@@ -15,6 +29,18 @@ using namespace std::chrono_literals;
 
 namespace weaknet_dbus {
 
+/**
+ * @brief 启动 RTT 周期监控线程
+ *
+ * 线程以 intervalMs 为周期，对目标 host 发送 ICMP ping，
+ * 将结果写入 WeakNetMgr 的 NetInfo 列表中对应接口的 rttMs 字段，
+ * 并更新网络质量等级。当 RTT 发生变化时，通过 D-Bus 服务发射变化信号。
+ *
+ * @param ctx         ServerContext 指针，持有弱网管理器和 D-Bus 服务实例
+ * @param host        探测目标主机（IP 或域名）
+ * @param intervalMs  采样周期（毫秒）
+ * @param timeoutMs   单次 ping 超时时间（毫秒）
+ */
 void start_rtt_monitor_thread(ServerContext* ctx, const std::string& host, int intervalMs, int timeoutMs) {
     // 加入可 join 句柄，由主线程退出路径 join，避免 detached 线程在 ctx 析构后野访问
     ctx->rtt_thread = std::thread([ctx, host, intervalMs, timeoutMs]{

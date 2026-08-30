@@ -1,14 +1,25 @@
-// jitter_monitor.cpp
-// 网络抖动监控线程实现
-// 原理：周期性发送 ICMP ping，收集 RTT 样本至滑动窗口，
-//       计算标准差作为抖动值(Jitter)，并据此判定抖动等级。
-// 抖动等级参考 VoIP 质量标准：
-//   - good     : <= 20ms  （适合实时音视频）
-//   - degraded : <= 50ms  （可用但体验下降）
-//   - poor     : >  50ms  （实时业务卡顿明显）
-//
-// 线程安全：通过 WeakNetMgr::updateJitterSafe 细粒度更新 NetInfo 的抖动字段，
-//           避免整体回写覆盖其他监控线程（RTT/RSSI/丢包率/流量）写入的字段。
+/**
+ * @file jitter_monitor.cpp
+ * @brief 网络抖动（Jitter）周期监控线程实现
+ *
+ * 监控指标：
+ *   - Jitter（抖动值）：滑动窗口内 RTT 样本的总体标准差（ms），反映时延稳定性
+ *   - 抖动等级：good(≤20ms)/degraded(≤50ms)/poor(>50ms)，参考 VoIP 质量标准
+ *
+ * 数据源：
+ *   - 外部库：NetPing 类封装的 ICMP ping（与 RTT 监控共享同一 ping 实现）
+ *
+ * 线程模型：
+ *   - 独立 std::thread，与 RTT/RSSI/TCP Loss 等监控线程并行
+ *   - 每个网络接口维护独立的 RTT 样本滑动窗口（std::deque<int>）
+ *   - 线程安全：通过 WeakNetMgr::updateJitterSafe 细粒度更新 NetInfo 的 jitter 字段，
+ *     避免整体回写覆盖其他监控线程（RTT/RSSI/丢包率/流量）写入的字段
+ *
+ * 抖动等级判定（参考 ITU-T G.114 / VoIP 质量标准）：
+ *   - good     : jitter ≤ 20ms  （适合实时音视频）
+ *   - degraded : jitter ≤ 50ms  （可用但体验下降）
+ *   - poor     : jitter >  50ms  （实时业务卡顿明显）
+ */
 
 #include <thread>
 #include <chrono>
@@ -30,7 +41,11 @@ namespace weaknet_dbus {
 
 namespace {
 
-// 根据抖动值(ms)判定等级
+/**
+ * @brief 根据抖动值（ms）判定抖动等级
+ * @param jitterMs 抖动值，单位毫秒；负值表示无有效样本
+ * @return 抖动等级字符串："good" / "degraded" / "poor" / "unknown"
+ */
 static std::string classifyJitterLevel(double jitterMs) {
     if (jitterMs < 0) return "unknown";
     if (jitterMs <= 20.0) return "good";
@@ -38,32 +53,55 @@ static std::string classifyJitterLevel(double jitterMs) {
     return "poor";
 }
 
-// 计算滑动窗口内 RTT 样本的标准差（总体标准差）
-// 仅统计有效样本（rtt >= 0），样本数 < 2 时返回 -1
+/**
+ * @brief 计算滑动窗口内 RTT 样本的抖动值（总体标准差）
+ *
+ * 仅统计有效样本（rtt >= 0），忽略超时返回的负值样本。
+ * 样本数 < 2 时不足以计算标准差，返回 -1.0。
+ *
+ * 计算公式：σ = √(Σ(xᵢ - μ)² / N)
+ *   其中 μ = Σxᵢ / N，N 为有效样本数
+ *
+ * @param samples RTT 样本滑动窗口（ms）
+ * @return 抖动值（标准差，ms）；-1.0 表示样本不足
+ */
 static double calculateJitter(const std::deque<int>& samples) {
     int validCount = 0;
     double sum = 0.0;
     for (int s : samples) {
         if (s >= 0) {
-            sum += s;
-            ++validCount;
+            sum += s;       // 累计有效 RTT 值
+            ++validCount;   // 统计有效样本数
         }
     }
-    if (validCount < 2) return -1.0;
+    if (validCount < 2) return -1.0;  // 至少需要 2 个样本才能计算标准差
 
-    double mean = sum / validCount;
+    double mean = sum / validCount;   // 计算有效样本均值 μ
     double sqSum = 0.0;
     for (int s : samples) {
         if (s >= 0) {
-            double diff = s - mean;
-            sqSum += diff * diff;
+            double diff = s - mean;    // 计算每个样本与均值的偏差
+            sqSum += diff * diff;      // 累计偏差平方和 Σ(xᵢ - μ)²
         }
     }
-    return std::sqrt(sqSum / validCount);
+    return std::sqrt(sqSum / validCount);  // 总体标准差 σ = √(Σ(xᵢ - μ)² / N)
 }
 
 }  // namespace
 
+/**
+ * @brief 启动网络抖动周期监控线程
+ *
+ * 线程以 intervalMs 为周期，对每个网络接口通过 ICMP ping 采集 RTT 样本，
+ * 维护独立的滑动窗口（窗口大小 windowSize），计算抖动值和抖动等级，
+ * 并通过 WeakNetMgr::updateJitterSafe 线程安全地更新到 NetInfo 中。
+ *
+ * @param ctx         ServerContext 指针
+ * @param host        探测目标主机
+ * @param intervalMs  采样周期（毫秒）
+ * @param timeoutMs   单次 ping 超时时间（毫秒）
+ * @param windowSize  RTT 样本滑动窗口大小（样本数），用于计算标准差
+ */
 void start_jitter_monitor_thread(ServerContext* ctx,
                                  const std::string& host,
                                  int intervalMs,
@@ -74,7 +112,7 @@ void start_jitter_monitor_thread(ServerContext* ctx,
                  << ", interval=" << intervalMs << "ms, window=" << windowSize << ")");
         auto pinger = NetPing::getInstance();
 
-        // 每个接口维护独立的 RTT 样本窗口
+        // 每个接口维护独立的 RTT 样本窗口（key = 接口名，value = 样本 deque）
         std::map<std::string, std::deque<int>> sampleWindows;
 
         int loopCount = 0;
@@ -88,19 +126,19 @@ void start_jitter_monitor_thread(ServerContext* ctx,
                 for (const auto& net : currentInterfaces) {
                     const std::string& ifname = net.ifName();
 
-                    // 确保该接口存在样本窗口
+                    // 确保该接口存在样本窗口（第一次访问时自动创建空 deque）
                     auto& window = sampleWindows[ifname];
 
-                    // 发送 ICMP ping 采集 RTT 样本
+                    // 发送 ICMP ping 采集 RTT 样本（负值表示超时）
                     int rtt = pinger->ping(host, ifname, timeoutMs);
 
-                    // 维护滑动窗口
+                    // 维护滑动窗口：新样本入队，超过窗口大小则丢弃最旧样本
                     window.push_back(rtt);
                     while (static_cast<int>(window.size()) > windowSize) {
                         window.pop_front();
                     }
 
-                    // 计算抖动
+                    // 计算抖动（标准差）和抖动等级
                     double jitter = calculateJitter(window);
                     std::string level = classifyJitterLevel(jitter);
 

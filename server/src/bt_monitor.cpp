@@ -1,6 +1,39 @@
-// bt_monitor.cpp
-// 蓝牙监测器实现：通过 BlueZ D-Bus API (系统总线) 监测蓝牙设备
-// BlueZ 接口文档: https://git.kernel.org/pub/scm/bluetooth/bluez.git/tree/doc
+/**
+ * @file bt_monitor.cpp
+ * @brief 蓝牙监测器实现 — 通过 BlueZ D-Bus 系统总线实时监控蓝牙适配器、设备及音频传输状态
+ *
+ * 模块职责：
+ *   - 自动发现并绑定本机第一个蓝牙适配器（hci0 等）
+ *   - 周期性扫描周围蓝牙设备，维护设备列表与 RSSI 历史
+ *   - 实时追踪蓝牙连接/断开/RSSI 变化等事件，通过 EventManager 发射信号
+ *   - 监测 A2DP 音频传输状态（依赖 org.bluez.MediaTransport1 接口）
+ *   - 基于 RSSI 的路径损耗模型估算设备距离
+ *   - Phase 2：集成 BtAudioAnalyzer（eBPF 内核态流量统计）与 BtAudioFusion（融合评分）
+ *
+ * 依赖的外部接口：
+ *   - **BlueZ D-Bus 系统总线** (org.bluez)
+ *     · org.bluez.Adapter1        适配器电源管理、扫描控制
+ *     · org.bluez.Device1         设备属性（RSSI、Connected、UUIDs、Appearance 等）
+ *     · org.bluez.MediaTransport1 A2DP 音频传输状态（State/Delay/Volume/Codec）
+ *     · org.freedesktop.DBus.Properties      属性 Get/GetAll/Set
+ *     · org.freedesktop.DBus.ObjectManager  GetManagedObjects 枚举
+ *   - **libdbus** (dbus/dbus.h)    D-Bus 低级 C API，作为 GLib D-Bus 的替代以减少依赖
+ *   - **bt_monitor.hpp**           定义 BtMonitor 类、BtDeviceInfo、BtEvent、BtAdapterState
+ *   - **bt_audio_analyzer.hpp**    Phase 2 eBPF 流量分析器
+ *   - **bt_audio_fusion.hpp**      Phase 2 音频质量融合评分器
+ *
+ * 设计思路：
+ *   - 使用线程安全的成员（std::mutex + std::lock_guard）保护设备列表、音频传输列表、事件队列
+ *   - 主循环在独立线程（start_bt_monitor_thread）中以 3 秒间隔调用 refreshAdapterState + refreshDeviceStates
+ *   - 扫描自动续期（DISCOVERY_TIMEOUT_SEC=30s），避免 BlueZ 自动停止扫描
+ *   - 事件通过 pendingEvents_ 队列 + fetchEvents() 线程安全地转交给上层
+ *   - Phase 2 eBPF 挂载失败时自动降级为纯 D-Bus 模式，不影响基础功能
+ *
+ * 协作关系：
+ *   - 与 EventManager 协作：蓝牙事件统一通过 emitBluetoothDeviceChanged 发射
+ *   - 与 BtAudioAnalyzer 协作：Phase 2 中调用其 setSessionActive/getStats 获取内核态流量数据
+ *   - 与 BtAudioFusion 协作：将 D-Bus 音频传输状态 + eBPF 流量统计融合为单一质量评分
+ */
 
 #include "bt_monitor.hpp"
 #include "server.hpp"
@@ -38,10 +71,10 @@ static constexpr const char* DBUS_PROPS_IFACE = "org.freedesktop.DBus.Properties
 static constexpr const char* DBUS_OBJMGR_IFACE = "org.freedesktop.DBus.ObjectManager";
 
 // ============================================================================
-// 工具函数
+// D-Bus variant 迭代器辅助函数
 // ============================================================================
 
-// 从迭代器递归提取 variant 容器内的 int16 值 (DBUS_TYPE_INT16)
+/** @brief 从 D-Bus 迭代器递归提取 variant 容器内的 int16 值 */
 static bool extractInt16FromIter(DBusMessageIter* iter, int16_t* out) {
     int type = dbus_message_iter_get_arg_type(iter);
     if (type == DBUS_TYPE_INT16) {
@@ -56,7 +89,7 @@ static bool extractInt16FromIter(DBusMessageIter* iter, int16_t* out) {
     return false;
 }
 
-// 从迭代器递归提取 variant 容器内的 bool 值
+/** @brief 从 D-Bus 迭代器递归提取 variant 容器内的 bool 值 */
 static bool extractBoolFromIter(DBusMessageIter* iter, bool* out) {
     int type = dbus_message_iter_get_arg_type(iter);
     if (type == DBUS_TYPE_BOOLEAN) {
@@ -73,7 +106,7 @@ static bool extractBoolFromIter(DBusMessageIter* iter, bool* out) {
     return false;
 }
 
-// 从迭代器递归提取 variant 容器内的 string 值
+/** @brief 从 D-Bus 迭代器递归提取 variant 容器内的 string 值 */
 static bool extractStringFromIter(DBusMessageIter* iter, std::string* out) {
     int type = dbus_message_iter_get_arg_type(iter);
     if (type == DBUS_TYPE_STRING) {
@@ -90,8 +123,7 @@ static bool extractStringFromIter(DBusMessageIter* iter, std::string* out) {
     return false;
 }
 
-// 从迭代器递归提取 variant 容器内的 uint16 值
-// 从迭代器递归提取 variant 容器内的 int32 值
+/** @brief 从 D-Bus 迭代器递归提取 variant 容器内的 int32 值 */
 static bool extractInt32FromIter(DBusMessageIter* iter, int32_t* out) {
     int type = dbus_message_iter_get_arg_type(iter);
     if (type == DBUS_TYPE_INT32) {
@@ -106,6 +138,7 @@ static bool extractInt32FromIter(DBusMessageIter* iter, int32_t* out) {
     return false;
 }
 
+/** @brief 从 D-Bus 迭代器递归提取 variant 容器内的 uint16 值 */
 static bool extractUint16FromIter(DBusMessageIter* iter, uint16_t* out) {
     int type = dbus_message_iter_get_arg_type(iter);
     if (type == DBUS_TYPE_UINT16) {
@@ -120,7 +153,7 @@ static bool extractUint16FromIter(DBusMessageIter* iter, uint16_t* out) {
     return false;
 }
 
-// 从迭代器递归提取 variant 容器内的字符串数组
+/** @brief 从 D-Bus 迭代器递归提取 variant 容器内的字符串数组 */
 static bool extractStringArrayFromIter(DBusMessageIter* iter, std::vector<std::string>* out) {
     int type = dbus_message_iter_get_arg_type(iter);
     if (type == DBUS_TYPE_VARIANT) {
@@ -144,7 +177,7 @@ static bool extractStringArrayFromIter(DBusMessageIter* iter, std::vector<std::s
     return false;
 }
 
-// MAC 地址比较 (忽略大小写)
+/** @brief MAC 地址比较（忽略大小写） */
 static bool macEquals(const std::string& a, const std::string& b) {
     if (a.length() != b.length()) return false;
     for (size_t i = 0; i < a.length(); ++i) {
@@ -165,6 +198,11 @@ BtMonitor::~BtMonitor() {
     cleanup();
 }
 
+/**
+ * @brief 初始化蓝牙监测器：连接 D-Bus 系统总线，验证 BlueZ 服务，发现第一个适配器
+ * @return true 初始化成功（或 BlueZ 不可用但已记录状态）；false 连接/服务检查失败
+ * @note 无蓝牙适配器是正常场景（返回 false 但不是错误），调用方可周期性重试
+ */
 bool BtMonitor::initialize() {
     if (initialized_.load()) {
         LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: already initialized");
@@ -331,6 +369,9 @@ bool BtMonitor::initialize() {
     return true;
 }
 
+/**
+ * @brief 释放资源：停止扫描、断开 D-Bus 连接、停止工作线程
+ */
 void BtMonitor::cleanup() {
     if (!initialized_.load()) return;
     running_.store(false);
@@ -356,6 +397,10 @@ void BtMonitor::cleanup() {
 // 适配器状态刷新
 // ============================================================================
 
+/**
+ * @brief 从 BlueZ Adapter1 接口拉取适配器当前状态（MAC/名称/电源/扫描中 等）
+ * @return true 刷新成功
+ */
 bool BtMonitor::refreshAdapterState() {
     if (adapterPath_.empty() || !sysConn_) return false;
 
@@ -372,11 +417,13 @@ bool BtMonitor::refreshAdapterState() {
     return true;
 }
 
+/** @brief 检查是否存在可用的已上电蓝牙适配器 */
 bool BtMonitor::hasAdapter() const {
     std::lock_guard<std::mutex> lock(adapterMutex_);
     return !adapterPath_.empty() && adapterState_.powered;
 }
 
+/** @brief 获取当前适配器状态快照（线程安全拷贝） */
 BtAdapterState BtMonitor::getAdapterState() const {
     std::lock_guard<std::mutex> lock(adapterMutex_);
     return adapterState_;
@@ -386,6 +433,7 @@ BtAdapterState BtMonitor::getAdapterState() const {
 // 发现控制
 // ============================================================================
 
+/** @brief 调用 BlueZ StartDiscovery 开始扫描，并投递 DiscoveryStarted 事件 */
 bool BtMonitor::startDiscovery() {
     if (!sysConn_ || adapterPath_.empty()) return false;
     if (adapterState_.discovering) return true;  // 已经在扫描
@@ -409,6 +457,7 @@ bool BtMonitor::startDiscovery() {
     return ok;
 }
 
+/** @brief 调用 BlueZ StopDiscovery 停止扫描，并投递 DiscoveryStopped 事件 */
 bool BtMonitor::stopDiscovery() {
     if (!sysConn_ || adapterPath_.empty()) return false;
     if (!adapterState_.discovering) return true;  // 已经停止
@@ -431,6 +480,7 @@ bool BtMonitor::stopDiscovery() {
     return ok;
 }
 
+/** @brief 通过 DBus Properties.Set 设置适配器 Powered 属性（开/关蓝牙） */
 bool BtMonitor::setPowered(bool on) {
     if (!sysConn_ || adapterPath_.empty()) return false;
 
@@ -468,7 +518,7 @@ bool BtMonitor::setPowered(bool on) {
 // 设备属性解析
 // ============================================================================
 
-// 列出 /org/bluez/hci0 下所有 Device1 对象路径
+/** @brief 列出当前适配器下所有 Device1 D-Bus 对象路径（/org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX） */
 std::vector<std::string> BtMonitor::listDevicePaths(DBusConnection* conn) {
     std::vector<std::string> paths;
     if (!conn || adapterPath_.empty()) return paths;
@@ -528,8 +578,14 @@ std::vector<std::string> BtMonitor::listDevicePaths(DBusConnection* conn) {
     return paths;
 }
 
+/**
+ * @brief 从 Device1 对象的 D-Bus 路径解析出完整 BtDeviceInfo（含 MAC/RSSI/连接状态/UUIDs/Appearance 等）
+ * @param conn D-Bus 系统总线连接
+ * @param devPath 设备 D-Bus 对象路径
+ * @return 填充好的 BtDeviceInfo；失败时 MAC 为空
+ */
 BtDeviceInfo BtMonitor::parseDeviceProperties(DBusConnection* conn,
-                                               const std::string& devPath) {
+                                                         const std::string& devPath) {
     BtDeviceInfo info;
 
     // 解析 MAC 地址 (从路径提取: /org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF)
@@ -636,6 +692,10 @@ BtDeviceInfo BtMonitor::parseDeviceProperties(DBusConnection* conn,
 // 设备状态刷新 (核心轮询逻辑)
 // ============================================================================
 
+/**
+ * @brief 核心轮询函数：枚举所有已知设备、更新 RSSI/连接状态/距离估算、检测新设备/离站
+ * @note 同时自动续期扫描（>30s 未启动扫描时重启），并调用 refreshAudioTransports() 刷新 A2DP 状态
+ */
 void BtMonitor::refreshDeviceStates() {
     if (!sysConn_ || adapterPath_.empty()) return;
 
@@ -835,6 +895,7 @@ void BtMonitor::refreshDeviceStates() {
 // 设备查询 API (线程安全)
 // ============================================================================
 
+/** @brief 获取所有已知设备的拷贝列表 */
 std::vector<BtDeviceInfo> BtMonitor::getDevices() const {
     std::lock_guard<std::mutex> lock(deviceMutex_);
     std::vector<BtDeviceInfo> result;
@@ -845,6 +906,7 @@ std::vector<BtDeviceInfo> BtMonitor::getDevices() const {
     return result;
 }
 
+/** @brief 按 MAC 地址查找设备 */
 bool BtMonitor::getDevice(const std::string& mac, BtDeviceInfo* out) const {
     std::lock_guard<std::mutex> lock(deviceMutex_);
     for (const auto& [addr, info] : devices_) {
@@ -856,6 +918,7 @@ bool BtMonitor::getDevice(const std::string& mac, BtDeviceInfo* out) const {
     return false;
 }
 
+/** @brief 获取所有处于 Connected 状态的设备 */
 std::vector<BtDeviceInfo> BtMonitor::getConnectedDevices() const {
     std::lock_guard<std::mutex> lock(deviceMutex_);
     std::vector<BtDeviceInfo> result;
@@ -865,6 +928,7 @@ std::vector<BtDeviceInfo> BtMonitor::getConnectedDevices() const {
     return result;
 }
 
+/** @brief 获取最近 maxAgeSec 秒内见过的设备，按 RSSI 降序（信号强的在前） */
 std::vector<BtDeviceInfo> BtMonitor::getNearbyDevices(int maxAgeSec) const {
     std::lock_guard<std::mutex> lock(deviceMutex_);
     auto now = std::chrono::system_clock::now();
@@ -881,6 +945,7 @@ std::vector<BtDeviceInfo> BtMonitor::getNearbyDevices(int maxAgeSec) const {
     return result;
 }
 
+/** @brief 获取指定设备当前 RSSI；未找到返回 -1000 */
 int16_t BtMonitor::getDeviceRssi(const std::string& mac) const {
     std::lock_guard<std::mutex> lock(deviceMutex_);
     for (const auto& [addr, info] : devices_) {
@@ -889,6 +954,7 @@ int16_t BtMonitor::getDeviceRssi(const std::string& mac) const {
     return -1000;
 }
 
+/** @brief 获取所有设备的 {MAC → RSSI} 快照 */
 std::map<std::string, int16_t> BtMonitor::getRssiSnapshot() const {
     std::lock_guard<std::mutex> lock(deviceMutex_);
     std::map<std::string, int16_t> snapshot;
@@ -898,6 +964,7 @@ std::map<std::string, int16_t> BtMonitor::getRssiSnapshot() const {
     return snapshot;
 }
 
+/** @brief 消费事件队列：取出所有待处理事件并清空队列 */
 std::vector<BtEvent> BtMonitor::fetchEvents() {
     std::lock_guard<std::mutex> lock(eventMutex_);
     std::vector<BtEvent> events = std::move(pendingEvents_);
@@ -905,11 +972,13 @@ std::vector<BtEvent> BtMonitor::fetchEvents() {
     return events;
 }
 
+/** @brief 已知设备总数 */
 size_t BtMonitor::deviceCount() const {
     std::lock_guard<std::mutex> lock(deviceMutex_);
     return devices_.size();
 }
 
+/** @brief 已连接设备数 */
 size_t BtMonitor::connectedCount() const {
     std::lock_guard<std::mutex> lock(deviceMutex_);
     size_t count = 0;
@@ -923,6 +992,7 @@ size_t BtMonitor::connectedCount() const {
 // D-Bus 辅助方法
 // ============================================================================
 
+/** @brief 发送 D-Bus 方法调用并阻塞等待回复 */
 DBusMessage* BtMonitor::sendWithReply(DBusConnection* conn, DBusMessage* msg, int timeoutMs) {
     if (!conn || !msg) return nullptr;
     DBusError err;
@@ -935,6 +1005,7 @@ DBusMessage* BtMonitor::sendWithReply(DBusConnection* conn, DBusMessage* msg, in
     return reply;
 }
 
+/** @brief 调用无参数 BlueZ 方法（如 StartDiscovery/StopDiscovery） */
 bool BtMonitor::callBlueZMethod(const std::string& objPath,
                                  const std::string& iface,
                                  const std::string& method) {
@@ -954,10 +1025,11 @@ bool BtMonitor::callBlueZMethod(const std::string& objPath,
     return false;
 }
 
+/** @brief 通过 Properties.Get 获取 string 属性值 */
 std::string BtMonitor::getStringProperty(DBusConnection* conn,
                                           const std::string& objPath,
                                           const std::string& iface,
-                                          const std::string& propName) {
+                                               const std::string& propName) {
     if (!conn) return "";
     DBusMessage* msg = dbus_message_new_method_call(
         BLUEZ_SERVICE, objPath.c_str(),
@@ -979,6 +1051,7 @@ std::string BtMonitor::getStringProperty(DBusConnection* conn,
     return result;
 }
 
+/** @brief 通过 Properties.Get 获取 int16 属性值 */
 int16_t BtMonitor::getInt16Property(DBusConnection* conn,
                                      const std::string& objPath,
                                      const std::string& iface,
@@ -1004,6 +1077,7 @@ int16_t BtMonitor::getInt16Property(DBusConnection* conn,
     return result;
 }
 
+/** @brief 通过 Properties.Get 获取 bool 属性值 */
 bool BtMonitor::getBoolProperty(DBusConnection* conn,
                                  const std::string& objPath,
                                  const std::string& iface,
@@ -1029,10 +1103,11 @@ bool BtMonitor::getBoolProperty(DBusConnection* conn,
     return result;
 }
 
+/** @brief 通过 Properties.Get 获取 string[] 属性值 */
 std::vector<std::string> BtMonitor::getStringArrayProperty(DBusConnection* conn,
                                                             const std::string& objPath,
                                                             const std::string& iface,
-                                                            const std::string& propName) {
+                                                                                   const std::string& propName) {
     std::vector<std::string> result;
     if (!conn) return result;
 
@@ -1059,6 +1134,11 @@ std::vector<std::string> BtMonitor::getStringArrayProperty(DBusConnection* conn,
 // 蓝牙监测线程入口 (集成到 server.cpp)
 // ============================================================================
 
+/**
+ * @brief 启动蓝牙监测后台线程：初始化 → Phase 2 eBPF → 主循环（3s 轮询） → 事件转发 → 被动重试
+ * @param ctx ServerContext 智能指针容器，线程通过 .get() 使用 monitor，ownership 由 ServerContext 持有
+ * @param outMonitor 输出参数（预留）
+ */
 void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** /*outMonitor*/) {
     // BtMonitor 由 ServerContext 持有 ownership（智能指针），线程通过 .get() 使用。
     ctx->bt_thread = std::thread([ctx]() {
@@ -1196,9 +1276,10 @@ void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** /*outMonitor*/) {
 
 
 // ============================================================================
-// A2DP 音频质量监控（Phase 1b）
+// A2DP 音频质量监控（Phase 1b） — 依赖 org.bluez.MediaTransport1 接口
 // ============================================================================
 
+/** @brief 探测 BlueZ 是否暴露了 MediaTransport1 接口（缓存结果） */
 bool BtMonitor::hasMediaTransportInterface() {
     if (mediaTransportProbed_) {
         return hasMediaTransport_;
@@ -1261,6 +1342,7 @@ bool BtMonitor::hasMediaTransportInterface() {
     return found;
 }
 
+/** @brief 列出当前适配器下所有 MediaTransport1 D-Bus 对象路径 */
 std::vector<std::string> BtMonitor::listMediaTransportPaths() {
     std::vector<std::string> paths;
     if (!sysConn_) return paths;
@@ -1316,6 +1398,11 @@ std::vector<std::string> BtMonitor::listMediaTransportPaths() {
     return paths;
 }
 
+/**
+ * @brief 从 MediaTransport1 对象的 D-Bus 路径解析 BtAudioTransport
+ * @param path MediaTransport1 对象路径（如 /org/bluez/hci0/dev_XX_XX_XX_XX_XX_XX/transport1）
+ * @return 填充好的 BtAudioTransport（含 State/Delay/Volume/Codec/deviceMac）
+ */
 BtAudioTransport BtMonitor::parseMediaTransportProperties(const std::string& path) {
     BtAudioTransport transport;
     transport.transportPath = path;
@@ -1376,6 +1463,10 @@ BtAudioTransport BtMonitor::parseMediaTransportProperties(const std::string& pat
     return transport;
 }
 
+/**
+ * @brief 刷新所有 A2DP 音频传输状态
+ * @details 检测新 Transport、状态变化、已移除 Transport；对持续 active 的传输累计 activeDurationMs
+ */
 void BtMonitor::refreshAudioTransports() {
     if (!hasMediaTransportInterface()) {
         return;
@@ -1431,6 +1522,12 @@ void BtMonitor::refreshAudioTransports() {
     }
 }
 
+/**
+ * @brief 获取指定蓝牙设备的音频质量评估（纯 D-Bus 模式，不依赖 eBPF）
+ * @param mac 目标设备 MAC 地址
+ * @param out 输出 BtAudioQuality 结构体
+ * @return true 找到该设备且有音频传输
+ */
 bool BtMonitor::getAudioQuality(const std::string& mac, BtAudioQuality* out) const {
     if (!out) return false;
 
@@ -1462,6 +1559,7 @@ bool BtMonitor::getAudioQuality(const std::string& mac, BtAudioQuality* out) con
     return false;
 }
 
+/** @brief 获取所有当前已知的 A2DP 音频传输 */
 std::vector<BtAudioTransport> BtMonitor::getAudioTransports() const {
     std::lock_guard<std::mutex> lock(audioMutex_);
     std::vector<BtAudioTransport> result;
@@ -1472,6 +1570,11 @@ std::vector<BtAudioTransport> BtMonitor::getAudioTransports() const {
     return result;
 }
 
+/**
+ * @brief 基于 D-Bus 属性（Delay/Codec/State）计算音频质量评分（Phase 1b 纯 D-Bus 逻辑）
+ * @param transport MediaTransport1 属性集合
+ * @return 0~100 分，越大越好
+ */
 double BtMonitor::calculateAudioScore(const BtAudioTransport& transport) const {
     double score = 100.0;
     if (transport.delay > 2000) {
@@ -1490,6 +1593,7 @@ double BtMonitor::calculateAudioScore(const BtAudioTransport& transport) const {
     return std::max(0.0, score);
 }
 
+/** @brief 将分数映射为质量等级字符串 */
 std::string BtMonitor::scoreToLevel(double score) {
     if (score >= 90.0) return "excellent";
     if (score >= 70.0) return "good";
@@ -1499,9 +1603,15 @@ std::string BtMonitor::scoreToLevel(double score) {
 }
 
 // ============================================================================
-// 设备距离估算（Phase 1b）
+// 设备距离估算（Phase 1b） — 基于对数路径损耗模型
 // ============================================================================
 
+/**
+ * @brief RSSI → 距离的对数路径损耗模型
+ * @param rssiDbm 接收信号强度
+ * @return 估算距离（米）；无效 RSSI 返回 -1
+ * @note 公式：d = 10^((TxPower - RSSI) / (10*n)) * d0，默认 n=2.0 (自由空间)，d0=1m
+ */
 double BtMonitor::estimateDistance(int16_t rssiDbm) const {
     if (rssiDbm == 0 || rssiDbm <= -1000) {
         return -1.0;
@@ -1511,6 +1621,12 @@ double BtMonitor::estimateDistance(int16_t rssiDbm) const {
     return ratio * REFERENCE_DISTANCE_M;
 }
 
+/**
+ * @brief 使用已知距离校准 TxPower，提升后续距离估算精度
+ * @param mac 目标设备 MAC
+ * @param knownMeters 已知的实际距离（米）
+ * @return true 校准成功
+ */
 bool BtMonitor::calibrateDistance(const std::string& mac, double knownMeters) {
     if (knownMeters <= 0.0) return false;
     std::lock_guard<std::mutex> lock(deviceMutex_);
@@ -1532,15 +1648,21 @@ bool BtMonitor::calibrateDistance(const std::string& mac, double knownMeters) {
     return false;
 }
 
+/** @brief 设置默认 TxPower 参考值（用于路径损耗模型） */
 void BtMonitor::setDefaultTxPower(int16_t txPower) {
     defaultTxPower_ = txPower;
     LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: default TxPower set to " << txPower << "dBm");
 }
 
 // ============================================================================
-// Phase 2: eBPF 融合层
+// Phase 2: eBPF 融合层 — 集成 BtAudioAnalyzer + BtAudioFusion
 // ============================================================================
 
+/**
+ * @brief Phase 2 初始化：创建融合评分器 + eBPF 分析器并尝试挂载内核钩子
+ * @param bpfObjectPath 编译好的 eBPF 对象文件路径（如 build/a2dp_media.bpf.o）
+ * @return true eBPF 挂载成功；false 挂载失败（自动降级为纯 D-Bus 模式）
+ */
 bool BtMonitor::initPhase2(const std::string& bpfObjectPath) {
     // 创建融合评估器（始终可用，用于纯 D-Bus 降级模式）
     if (!btAudioFusion_) {
@@ -1548,7 +1670,6 @@ bool BtMonitor::initPhase2(const std::string& bpfObjectPath) {
     }
 
     // 创建 eBPF 分析器并尝试挂载
-    btAudioAnalyzer_ = std::make_unique<BtAudioAnalyzer>();
     bool ebpfAttached = btAudioAnalyzer_->init(bpfObjectPath);
 
     if (ebpfAttached) {
@@ -1562,6 +1683,7 @@ bool BtMonitor::initPhase2(const std::string& bpfObjectPath) {
     return ebpfAttached;
 }
 
+/** @brief 停止 Phase 2：释放 eBPF 内核资源、清空前次统计快照 */
 void BtMonitor::stopPhase2() {
     if (btAudioAnalyzer_) {
         btAudioAnalyzer_->stop();
@@ -1574,6 +1696,16 @@ void BtMonitor::stopPhase2() {
     LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: Phase 2 stopped");
 }
 
+/**
+ * @brief 获取融合音频质量评分（D-Bus 传输状态 + eBPF 流量统计 融合）
+ * @details 协作链：
+ *   1. BtMonitor 从 BlueZ D-Bus 拉取 MediaTransport1 属性 → BtAudioTransport
+ *   2. BtMonitor 调用 BtAudioAnalyzer::getStats() 从内核态 bt_traffic map 读取累计流量
+ *   3. BtAudioFusion::evaluate() 将 Transport + eBPF 统计融合为单一质量分数
+ * @param mac 目标设备 MAC
+ * @param out 输出融合结果（含 qualityScore / effectiveActive / suspectedStall / ebpfCorrection）
+ * @return true 成功；false 该设备无音频传输
+ */
 bool BtMonitor::getAudioFusionResult(const std::string& mac, BtAudioFusionResult* out) const {
     if (!out) return false;
 
@@ -1636,6 +1768,7 @@ bool BtMonitor::getAudioFusionResult(const std::string& mac, BtAudioFusionResult
     return true;
 }
 
+/** @brief Phase 2 是否可用（eBPF 已挂载且正常工作） */
 bool BtMonitor::isPhase2Available() const {
     return btAudioAnalyzer_ && btAudioAnalyzer_->isAvailable();
 }

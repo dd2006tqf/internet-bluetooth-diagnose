@@ -1,12 +1,28 @@
-// history_query_tool.cpp
-// SQLite 历史监控数据查询工具
-//
-// 用法:
-//   ./history_query_tool --iface wlan0 --last 1h
-//   ./history_query_tool --iface wlan0 --start "2026-08-20T00:00:00" --end "2026-08-20T06:00:00"
-//   ./history_query_tool --info
-//   ./history_query_tool --cleanup 7
-//   ./history_query_tool --all --last 30m
+/**
+ * @file history_query_tool.cpp
+ * @brief SQLite 历史监控数据查询命令行工具 — 用于调试/运维，查询 network_history 表
+ *
+ * 模块职责：
+ *   - 独立可执行程序（与服务端分开编译），连接 DatabaseManager 指向的同一个数据库文件
+ *   - 支持按接口名、相对时间（--last 1h/30m/7d）或绝对时间范围（--start/--end）查询
+ *   - 输出模式：默认表格视图（人类可读）或 --json 原始 JSON（供脚本消费）
+ *   - 内置 --info 显示数据库元信息，--cleanup N 天直接触发过期清理
+ *
+ * 命令行参数：
+ *   --iface <name>       指定网卡（默认 wlan0，--all 忽略此项）
+ *   --all                查询所有网卡
+ *   --last <duration>    相对时间：数字+单位（h/m/d），如 1h、30m、7d
+ *   --start / --end      绝对时间范围（ISO8601），与 --last 互斥
+ *   --limit <N>          最大返回行数（默认 100）
+ *   --info               仅打印数据库元信息后退出
+ *   --cleanup <days>     删除超过 N 天的记录后退出
+ *   --json               输出原始 JSON 数组
+ *   -h / --help          打印用法
+ *
+ * 依赖：
+ *   - database_manager.hpp   复用 DatabaseManager 类，指定 kDatabasePath 常量
+ *   - common.hpp             提供 kDatabasePath 常量定义
+ */
 
 #include "database_manager.hpp"
 #include "common.hpp"

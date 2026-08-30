@@ -1,5 +1,21 @@
-// client.cpp
-// 使用 libdbus-1 客户端：提供对外调用接口与server通信的工具库
+/**
+ * @file client.cpp
+ * @brief WeakNet 客户端动态库实现 —— 通过 libdbus-1 与 WeakNet 服务端通信
+ *
+ * 本文件实现了 weaknet_client.h 中声明的所有 C API，核心机制：
+ *
+ *   1. 通过 libdbus-1 连接 D-Bus Session 总线
+ *   2. 所有 D-Bus 调用指向：
+ *        - BusName:  com.example.WeakNet
+ *        - ObjPath:  /com/example/WeakNet
+ *        - Interface: com.example.WeakNet
+ *   3. 内部用 WeakNetClient 类封装 D-Bus 连接和消息构造，
+ *      通过全局单例 g_client 暴露给 C 接口
+ *   4. 事件/信号通过 dbus_bus_add_match 注册匹配规则，
+ *      非阻塞轮询用 dbus_connection_read_write(conn, 0) + pop_message
+ *
+ * 注意：本文件现在编译为动态库（libweaknet_client.so），不含 main 函数。
+ */
 
 #include <dbus/dbus.h>
 #include <cstdio>
@@ -16,16 +32,31 @@
 
 namespace weaknet_dbus {
 
-// 客户端连接管理类
+/**
+ * @brief WeakNet D-Bus 客户端封装类
+ *
+ * 管理与 WeakNet 服务端的 D-Bus 连接，提供方法调用和信号订阅能力。
+ * 此类被包装为 C API（weaknet_* 函数）对外暴露，
+ * 外部程序不应直接使用此类。
+ */
 class WeakNetClient {
 private:
-    DBusConnection* conn_;
-    bool connected_;
+    DBusConnection* conn_;    ///< D-Bus Session 总线连接句柄
+    bool connected_;          ///< 连接状态标记
 
-    // 初始化DBus连接
+    /**
+     * @brief 初始化 D-Bus 连接（Session 总线）
+     *
+     * 调用 dbus_bus_get(DBUS_BUS_SESSION, ...) 连接到当前桌面会话的 D-Bus。
+     * 连接失败时记录日志并将 connected_ 置为 false。
+     *
+     * @return true  - 连接成功
+     * @return false - 连接失败
+     */
     bool initConnection() {
         DBusError err;
         dbus_error_init(&err);
+        // 连接到 D-Bus Session 总线
         conn_ = dbus_bus_get(DBUS_BUS_SESSION, &err);
         if (dbus_error_is_set(&err)) {
             LOG_ERROR(LogModule::CLIENT, "连接DBus总线失败: " << err.message);
@@ -37,30 +68,45 @@ private:
 
 public:
     WeakNetClient() : conn_(nullptr), connected_(false) {}
-    
+
     ~WeakNetClient() {
         if (conn_) {
             dbus_connection_unref(conn_);
         }
     }
 
-    // 连接到服务
+    /** @brief 发起 D-Bus 连接
+     *  @return 连接是否成功 */
     bool connect() {
         return initConnection();
     }
 
-    // 检查连接状态
+    /** @brief 查询当前是否已连接
+     *  @return true=已连接 */
     bool isConnected() const {
         return connected_ && conn_ != nullptr;
     }
 
-    // 调用GetInterfaces方法获取当前网络接口列表
+    /**
+     * @brief 调用 GetInterfaces 方法获取当前网络接口列表
+     *
+     * D-Bus 调用：
+     *   - Method:  GetInterfaces
+     *   - Returns: ARRAY of STRING
+     *   - 解析策略：遍历数组元素，用逗号拼接成 "eth0,wlan0,lo" 格式
+     *   - 超时：5000ms（5秒）
+     *
+     * @param result   输出：逗号分隔的网卡名称
+     * @param errorMsg 输出：失败时的错误描述
+     * @return true=成功
+     */
     bool getInterfaces(std::string& result, std::string& errorMsg) {
         if (!isConnected()) {
             errorMsg = "客户端未连接";
             return false;
         }
 
+        // 构造方法调用消息：com.example.WeakNet /com/example/WeakNet GetInterfaces
         DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodGetInterfaces);
         if (!msg) {
             errorMsg = "创建方法调用消息失败";
@@ -70,6 +116,7 @@ public:
         DBusError err;
         dbus_error_init(&err);
 
+        // 阻塞发送并等待应答（5秒超时）
         DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 5000, &err);
         dbus_message_unref(msg);
         
@@ -84,6 +131,7 @@ public:
             return false;
         }
 
+        // 解析返回值：期望一个 ARRAY of STRING
         DBusMessageIter iter;
         if (!dbus_message_iter_init(reply, &iter) ||
             dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_ARRAY) {
@@ -92,6 +140,7 @@ public:
             return false;
         }
 
+        // 进入数组内部，逐个取出 STRING 元素
         DBusMessageIter array_iter;
         dbus_message_iter_recurse(&iter, &array_iter);
 
@@ -112,13 +161,25 @@ public:
         return true;
     }
 
-    // 调用HealthCheck方法获取网络健康检查结果
+    /**
+     * @brief 调用 HealthCheck 方法获取网络健康检查结果
+     *
+     * D-Bus 调用：
+     *   - Method:  HealthCheck
+     *   - Returns: STRING（JSON 格式诊断报告）
+     *   - 超时：5000ms
+     *
+     * @param result   输出：JSON 诊断字符串
+     * @param errorMsg 输出：失败时的错误描述
+     * @return true=成功
+     */
     bool healthCheck(std::string& result, std::string& errorMsg) {
         if (!isConnected()) {
             errorMsg = "客户端未连接";
             return false;
         }
 
+        // 构造方法调用：HealthCheck
         DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodHealthCheck);
         if (!msg) {
             errorMsg = "创建健康检查消息失败";
@@ -142,6 +203,7 @@ public:
             return false;
         }
 
+        // 解析返回值：单个 STRING 参数
         const char* s = nullptr;
         if (!dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &s, DBUS_TYPE_INVALID)) {
             if (dbus_error_is_set(&err)) {
@@ -159,7 +221,23 @@ public:
         return true;
     }
 
-    // 订阅网络状态变化信号
+    /**
+     * @brief 阻塞订阅网络状态变化信号（Changed）
+     *
+     * 流程：
+     *   1. 通过 dbus_bus_add_match 注册匹配规则 "type='signal',interface='com.example.WeakNet',member='Changed'"
+     *   2. 进入 while(true) 消息循环，每次 read_write 超时 100ms
+     *   3. 弹出消息后检查是否为目标信号，解析 STRING + INT32 两个参数
+     *   4. 每次收到信号还会从服务端序列化文件读取更详细的负载
+     *   5. 若用户提供了 callback 且返回 true，退出监听
+     *
+     * D-Bus 信号：
+     *   - Signal:  Changed
+     *   - Payload: STRING text + INT32 counter
+     *
+     * @param callback 可选回调，返回 true 时停止监听
+     * @return true（正常退出时）
+     */
     bool subscribeToChanges(bool (*callback)(const std::string& message, int32_t counter) = nullptr) {
         if (!isConnected()) {
             return false;
@@ -168,6 +246,7 @@ public:
         DBusError err;
         dbus_error_init(&err);
 
+        // 注册 D-Bus 信号匹配规则，只接收来自 WeakNet 接口的 Changed 信号
         std::string rule = std::string("type='signal',interface='") + kInterface + "',member='" + kSignalChanged + "'";
         dbus_bus_add_match(conn_, rule.c_str(), &err);
         dbus_connection_flush(conn_);
@@ -185,6 +264,7 @@ public:
         const auto statusInterval = std::chrono::seconds(5);
         
         while (true) {
+            // 非阻塞读写，超时 100ms
             dbus_connection_read_write(conn_, 100);
             DBusMessage* msg = dbus_connection_pop_message(conn_);
             
@@ -197,12 +277,14 @@ public:
             
             if (!msg) continue;
 
+            // 检查是否为期望的 Changed 信号
             if (dbus_message_is_signal(msg, kInterface, kSignalChanged)) {
                 const char* text = nullptr;
                 int32_t counter = 0;
                 DBusError e;
                 dbus_error_init(&e);
                 
+                // 解析信号参数：STRING text + INT32 counter
                 if (dbus_message_get_args(msg, &e, DBUS_TYPE_STRING, &text, DBUS_TYPE_INT32, &counter, DBUS_TYPE_INVALID)) {
                     LOG_INFO(LogModule::CLIENT, "收到网络状态变化: '" << (text ? text : "<null>") << "', counter=" << counter);
                     
@@ -216,7 +298,7 @@ public:
                     dbus_error_free(&e);
                 }
 
-                // 读取服务端序列化到文件的信号负载
+                // 读取服务端序列化到文件的信号负载（补充更多详细信息）
                 ChangedPayload restored{};
                 std::string ferr;
                 if (deserializeChangedPayloadFromFile(kSignalSerializedFile, &restored, &ferr)) {
@@ -229,13 +311,25 @@ public:
         return true;
     }
 
-    // 单次检查网络状态变化（非阻塞）
+    /**
+     * @brief 单次非阻塞检查网络状态变化
+     *
+     * 从 D-Bus 队列尝试弹出一个 Changed 信号。
+     *
+     * D-Bus 信号：
+     *   - Signal:  Changed
+     *   - Payload: STRING text + INT32 counter
+     *
+     * @param message 输出：变化描述
+     * @param counter 输出：事件计数器
+     * @return true=捕获到变化
+     */
     bool checkForChanges(std::string& message, int32_t& counter) {
         if (!isConnected()) {
             return false;
         }
 
-        dbus_connection_read_write(conn_, 0); // 非阻塞轮询
+        dbus_connection_read_write(conn_, 0); // 非阻塞轮询，超时0表示不等
         DBusMessage* msg = dbus_connection_pop_message(conn_);
         if (!msg) return false;
 
@@ -244,6 +338,7 @@ public:
             DBusError e;
             dbus_error_init(&e);
             
+            // 解析 STRING + INT32
             if (dbus_message_get_args(msg, &e, DBUS_TYPE_STRING, &text, DBUS_TYPE_INT32, &counter, DBUS_TYPE_INVALID)) {
                 message = text ? std::string(text) : "";
                 dbus_message_unref(msg);
@@ -257,12 +352,18 @@ public:
         return false;
     }
 
-    // 发送网络健康检查请求
+    /** @brief 同 healthCheck()，别名接口 */
     bool requestHealthCheck(std::string& result, std::string& errorMsg) {
         return healthCheck(result, errorMsg);
     }
 
-    // 读取最新的网络接口状态（从序列化文件）
+    /**
+     * @brief 读取服务端通过序列化文件留下的最新网络接口状态（离线模式）
+     *
+     * 不发起 D-Bus 调用，直接反序列化本地文件。
+     * @param result   输出：序列化文件内容
+     * @param errorMsg 输出：错误描述
+     */
     bool getLatestFromFile(std::string& result, std::string& errorMsg) {
         std::string file_err;
         if (deserializeGetReplyFromFile(kGetReplySerializedFile, &result, &file_err)) {
@@ -273,7 +374,20 @@ public:
         }
     }
 
-    // Ping指定主机
+    /**
+     * @brief 调用 Ping 方法，让服务端对指定主机执行 ICMP Ping
+     *
+     * D-Bus 调用：
+     *   - Method:  Ping
+     *   - Args:    STRING hostname
+     *   - Returns: STRING（包含平均延迟、丢包率等）
+     *   - 超时：10000ms（10秒，因为 Ping 本身可能耗时）
+     *
+     * @param hostname 目标主机名或 IP
+     * @param result   输出：Ping 统计文本
+     * @param errorMsg 输出：失败时的错误描述
+     * @return true=成功
+     */
     bool pingHost(const std::string& hostname, std::string& result, std::string& errorMsg) {
         if (!isConnected()) {
             errorMsg = "客户端未连接";
@@ -285,12 +399,14 @@ public:
             return false;
         }
 
+        // 构造 Ping 方法调用
         DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodPing);
         if (!msg) {
             errorMsg = "创建ping方法调用消息失败";
             return false;
         }
 
+        // 追加参数：STRING hostname
         DBusMessageIter args;
         dbus_message_iter_init_append(msg, &args);
         const char* host = hostname.c_str();
@@ -303,7 +419,8 @@ public:
         DBusError err;
         dbus_error_init(&err);
 
-        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 10000, &err); // 10秒超时
+        // 发送并等待应答，超时 10 秒
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 10000, &err);
         dbus_message_unref(msg);
         
         if (dbus_error_is_set(&err)) {
@@ -317,6 +434,7 @@ public:
             return false;
         }
 
+        // 解析返回值：单个 STRING
         const char* s = nullptr;
         if (!dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &s, DBUS_TYPE_INVALID)) {
             if (dbus_error_is_set(&err)) {
@@ -334,7 +452,7 @@ public:
         return true;
     }
 
-    // 断开连接
+    /** @brief 断开 D-Bus 连接并释放句柄 */
     void disconnect() {
         if (conn_) {
             dbus_connection_unref(conn_);
@@ -343,12 +461,19 @@ public:
         }
     }
 
-    // 获取连接对象（用于C接口）
+    /** @brief 获取底层 D-Bus 连接句柄（供 C 接口中的非阻塞检查使用） */
     DBusConnection* getConnection() const {
         return conn_;
     }
 
-    // 订阅特定事件类型
+    /**
+     * @brief 订阅指定事件类型（只添加 match 规则，不阻塞监听）
+     *
+     * 注册 D-Bus 匹配规则：type='signal', interface='com.example.WeakNet', member=<eventType>
+     *
+     * @param eventType D-Bus 信号名（如 "InterfaceChanged"、"NetworkQualityChanged" 等）
+     * @return true=添加成功
+     */
     bool subscribeToEvent(const std::string& eventType) {
         if (!isConnected()) return false;
 
@@ -370,7 +495,15 @@ public:
         return true;
     }
 
-    // 订阅网络质量事件
+    /**
+     * @brief 阻塞订阅网络质量变化信号（NetworkQualityChanged）
+     *
+     * D-Bus 信号：
+     *   - Signal:  NetworkQualityChanged
+     *   - Payload: STRING quality + STRING details + INT32 counter
+     *
+     * 监听逻辑同 subscribeToChanges()，回调返回 true 时继续、返回 false 时退出。
+     */
     bool subscribeToNetworkQuality(bool (*callback)(const std::string& quality, const std::string& details, int32_t counter) = nullptr) {
         if (!isConnected()) {
             return false;
@@ -379,7 +512,7 @@ public:
         DBusError err;
         dbus_error_init(&err);
 
-        // 订阅网络质量变化信号
+        // 订阅 NetworkQualityChanged 信号
         std::string rule = std::string("type='signal',interface='") + kInterface + "',member='" + kSignalNetworkQualityChanged + "'";
         dbus_bus_add_match(conn_, rule.c_str(), &err);
         dbus_connection_flush(conn_);
@@ -409,6 +542,7 @@ public:
             
             if (!msg) continue;
 
+            // 检查是否为 NetworkQualityChanged 信号
             if (dbus_message_is_signal(msg, kInterface, kSignalNetworkQualityChanged)) {
                 const char* quality = nullptr;
                 const char* details = nullptr;
@@ -416,6 +550,7 @@ public:
                 DBusError e;
                 dbus_error_init(&e);
                 
+                // 解析三个参数：STRING quality + STRING details + INT32 counter
                 if (dbus_message_get_args(msg, &e, DBUS_TYPE_STRING, &quality, DBUS_TYPE_STRING, &details, DBUS_TYPE_INT32, &counter, DBUS_TYPE_INVALID)) {
                     LOG_INFO(LogModule::CLIENT, "收到网络质量变化: quality='" << (quality ? quality : "<null>") 
                         << "', details='" << (details ? details : "<null>") << "', counter=" << counter);
@@ -436,7 +571,20 @@ public:
         return true;
     }
 
-    // 非阻塞检查事件
+    /**
+     * @brief 非阻塞检查多类事件信号
+     *
+     * 从 D-Bus 队列中弹出以下任一信号：
+     *   - InterfaceChanged / ConnectionModeChanged / NetworkQualityChanged / BluetoothDeviceChanged
+     *
+     * 所有这些信号的 Payload 格式统一为 STRING + INT32。
+     *
+     * @param eventType 输出：信号成员名（如 "InterfaceChanged"）
+     * @param message   输出：变化描述文本
+     * @param counter   输出：事件计数器
+     * @param source    输出：固定为 "event_manager"
+     * @return true=捕获到事件
+     */
     bool checkForEvents(std::string& eventType, std::string& message, int32_t& counter, std::string& source) {
         if (!isConnected()) return false;
 
@@ -444,17 +592,18 @@ public:
         DBusMessage* msg = dbus_connection_pop_message(conn_);
         if (!msg) return false;
 
-        // 检查是否为事件信号
+        // 检查是否为四类事件信号中的任何一个
         if (dbus_message_is_signal(msg, kInterface, kSignalInterfaceChanged) ||
             dbus_message_is_signal(msg, kInterface, kSignalConnectionModeChanged) ||
             dbus_message_is_signal(msg, kInterface, kSignalNetworkQualityChanged) ||
             dbus_message_is_signal(msg, kInterface, kSignalBluetoothDeviceChanged)) {
             
-            const char* signal_name = dbus_message_get_member(msg);
+            const char* signal_name = dbus_message_get_member(msg);  // 获取信号名
             const char* text = nullptr;
             DBusError e;
             dbus_error_init(&e);
             
+            // 解析 STRING text + INT32 counter
             if (dbus_message_get_args(msg, &e, DBUS_TYPE_STRING, &text, DBUS_TYPE_INT32, &counter, DBUS_TYPE_INVALID)) {
                 eventType = signal_name ? signal_name : "unknown";
                 message = text ? std::string(text) : "";
@@ -472,13 +621,21 @@ public:
 
     // ----- 蓝牙设备查询 -----
 
-    // 获取蓝牙设备列表
+    /**
+     * @brief 调用 GetBluetoothDevices 方法获取蓝牙设备列表
+     *
+     * D-Bus 调用：
+     *   - Method:  GetBluetoothDevices
+     *   - Returns: ARRAY of STRING（每行一个设备，'MAC|Name|RSSI|Connected|Type|Level'）
+     *   - 超时：3000ms
+     */
     bool getBluetoothDevices(std::string& result, std::string& errorMsg) {
         if (!isConnected()) {
             errorMsg = "客户端未连接";
             return false;
         }
 
+        // 构造方法调用：GetBluetoothDevices
         DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodGetBluetoothDevices);
         if (!msg) {
             errorMsg = "创建蓝牙设备查询消息失败";
@@ -500,6 +657,7 @@ public:
             return false;
         }
 
+        // 解析 ARRAY of STRING，用 '\n' 拼接
         DBusMessageIter iter;
         if (!dbus_message_iter_init(reply, &iter) ||
             dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_ARRAY) {
@@ -524,13 +682,21 @@ public:
         return true;
     }
 
-    // 获取蓝牙适配器信息
+    /**
+     * @brief 调用 GetBluetoothAdapter 方法获取蓝牙适配器信息
+     *
+     * D-Bus 调用：
+     *   - Method:  GetBluetoothAdapter
+     *   - Returns: STRING（"Powered:1|Name:xxx|Address:xx:xx:..."）
+     *   - 超时：3000ms
+     */
     bool getBluetoothAdapter(std::string& result, std::string& errorMsg) {
         if (!isConnected()) {
             errorMsg = "客户端未连接";
             return false;
         }
 
+        // 构造方法调用：GetBluetoothAdapter
         DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodGetBluetoothAdapter);
         if (!msg) {
             errorMsg = "创建蓝牙适配器查询消息失败";
@@ -552,6 +718,7 @@ public:
             return false;
         }
 
+        // 解析返回值：单个 STRING
         const char* s = nullptr;
         if (!dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &s, DBUS_TYPE_INVALID)) {
             errorMsg = "解析蓝牙适配器信息失败";
@@ -563,49 +730,58 @@ public:
         return true;
     }
 
-    // 获取 DNS 监控统计
+    /** @brief 调用 GetDnsStats 获取 DNS eBPF 监控统计 */
     bool getDnsStats(std::string& result, std::string& errorMsg) {
         if (!isConnected()) return fail("客户端未连接", errorMsg);
         return requestStringData(kMethodGetDnsStats, "DNS 监控统计", result, errorMsg);
     }
 
-    // 获取 Wi-Fi 丢包统计
+    /** @brief 调用 GetWifiLossStats 获取 Wi-Fi 丢包统计 */
     bool getWifiLossStats(std::string& result, std::string& errorMsg) {
         if (!isConnected()) return fail("客户端未连接", errorMsg);
         return requestStringData(kMethodGetWifiLossStats, "Wi-Fi 丢包统计", result, errorMsg);
     }
 
-    // 获取 HTTP 请求延迟统计
+    /** @brief 调用 GetHttpLatencyStats 获取 HTTP 请求延迟统计 */
     bool getHttpLatencyStats(std::string& result, std::string& errorMsg) {
         if (!isConnected()) return fail("客户端未连接", errorMsg);
         return requestStringData(kMethodGetHttpLatencyStats, "HTTP 请求延迟统计", result, errorMsg);
     }
 
-    // 获取进程网络画像
+    /** @brief 调用 GetProcessProfiling 获取进程网络画像 */
     bool getProcessProfiling(std::string& result, std::string& errorMsg) {
         if (!isConnected()) return fail("客户端未连接", errorMsg);
         return requestStringData(kMethodGetProcessProfiling, "进程网络画像", result, errorMsg);
     }
 
-    // 获取六个 eBPF 监控器健康与性能快照
+    /** @brief 调用 GetEbpfMonitorHealth 获取 eBPF 监控器健康快照 */
     bool getEbpfMonitorHealth(std::string& result, std::string& errorMsg) {
         if (!isConnected()) return fail("客户端未连接", errorMsg);
         return requestStringData(kMethodGetEbpfMonitorHealth, "eBPF 监控器健康状态", result, errorMsg);
     }
 
-    // 查询历史监控数据（带参数）
+    /**
+     * @brief 调用 GetHistory 查询历史监控数据
+     *
+     * D-Bus 调用：
+     *   - Method:  GetHistory
+     *   - Args:    STRING interface, STRING start, STRING end, INT32 limit
+     *   - Returns: STRING（JSON 数组）
+     *   - 超时：5000ms
+     */
     bool getHistory(const std::string& iface, const std::string& start,
                     const std::string& end, int32_t limit,
                     std::string& result, std::string& errorMsg) {
         if (!isConnected()) return fail("客户端未连接", errorMsg);
 
+        // 构造方法调用：GetHistory
         DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodGetHistory);
         if (!msg) {
             errorMsg = "创建历史查询消息失败";
             return false;
         }
 
-        // 添加参数：interface(string), start(string), end(string), limit(int32)
+        // 按顺序追加四个参数：STRING interface, STRING start, STRING end, INT32 limit
         DBusMessageIter args;
         dbus_message_iter_init_append(msg, &args);
 
@@ -633,6 +809,7 @@ public:
             return false;
         }
 
+        // 解析返回值：单个 STRING（JSON）
         const char* data = nullptr;
         if (!dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &data, DBUS_TYPE_INVALID)) {
             errorMsg = "解析历史查询结果失败";
@@ -645,13 +822,24 @@ public:
     }
 
 private:
-    // 统一失败的辅助函数
+    /** @brief 统一设置错误消息并返回 false 的辅助函数 */
     bool fail(const char* msg, std::string& errorMsg) {
         errorMsg = msg;
         return false;
     }
 
-    // 通用字符串返回型 D-Bus 方法调用
+    /**
+     * @brief 通用字符串返回型 D-Bus 方法调用模板
+     *
+     * 适用于所有"无参数、返回单个 STRING"的 D-Bus 方法。
+     * 被 getDnsStats / getWifiLossStats / getHttpLatencyStats 等复用。
+     *
+     * @param methodName D-Bus 方法名（如 "GetDnsStats"）
+     * @param label      日志/错误信息中用于标识此次调用的中文名称
+     * @param result     输出：返回的字符串
+     * @param errorMsg   输出：失败时的错误描述
+     * @return true=调用成功
+     */
     bool requestStringData(const char* methodName, const char* label,
                            std::string& result, std::string& errorMsg) {
         DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, methodName);
@@ -672,6 +860,7 @@ private:
             errorMsg = "未收到" + std::string(label) + "查询应答";
             return false;
         }
+        // 解析返回值：单个 STRING
         const char* data = nullptr;
         if (!dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &data, DBUS_TYPE_INVALID)) {
             errorMsg = "解析" + std::string(label) + "信息失败";
@@ -683,12 +872,21 @@ private:
         return true;
     }
 
-    // 订阅蓝牙设备变化事件
+    /**
+     * @brief 阻塞订阅蓝牙设备变化信号（BluetoothDeviceChanged）
+     *
+     * D-Bus 信号：
+     *   - Signal:  BluetoothDeviceChanged
+     *   - Payload: STRING text + INT32 counter
+     *
+     * 监听逻辑同 subscribeToChanges()。
+     */
     bool subscribeToBluetoothEvents(bool (*callback)(const std::string& message, int32_t counter) = nullptr) {
         if (!isConnected()) return false;
 
         DBusError err;
         dbus_error_init(&err);
+        // 注册 BluetoothDeviceChanged 信号匹配规则
         std::string rule = std::string("type='signal',interface='") + kInterface + "',member='" + kSignalBluetoothDeviceChanged + "'";
         dbus_bus_add_match(conn_, rule.c_str(), &err);
         dbus_connection_flush(conn_);
@@ -713,6 +911,7 @@ private:
             }
             if (!signal) continue;
 
+            // 解析 BluetoothDeviceChanged 信号的 STRING + INT32 两个参数
             if (dbus_message_is_signal(signal, kInterface, kSignalBluetoothDeviceChanged)) {
                 const char* text = nullptr;
                 int32_t counter = 0;
@@ -734,16 +933,19 @@ private:
     }
 
 private:
+    /** @brief 获取 D-Bus 消息的信号成员名（辅助函数） */
     std::string getSignalMember(DBusMessage* msg) {
         const char* member = dbus_message_get_member(msg);
         return member ? std::string(member) : "";
     }
 };
 
-// 全局客户端实例（单例模式）
+// ===== 全局单例客户端实例 =====
 static WeakNetClient* g_client = nullptr;
 
-// 初始化客户端
+// ========== C 接口实现（weaknet_client.h 中声明） ==========
+
+/** @brief 初始化 WeakNet 客户端库，建立 D-Bus Session 连接 */
 extern "C" bool weaknet_init() {
     if (g_client) {
         LOG_INFO(LogModule::CLIENT, "weaknet_init: already initialized, connected=" << g_client->isConnected());
@@ -759,7 +961,7 @@ extern "C" bool weaknet_init() {
     return result;
 }
 
-// 清理客户端
+/** @brief 清理 WeakNet 客户端库资源 */
 extern "C" void weaknet_cleanup() {
     LOG_INFO(LogModule::CLIENT, "weaknet_cleanup: cleaning up");
     if (g_client) {
@@ -770,7 +972,7 @@ extern "C" void weaknet_cleanup() {
     Logger::shutdown();
 }
 
-// 获取当前网络接口信息
+/** @brief C 接口包装：调用 GetInterfaces 方法 */
 extern "C" bool weaknet_get_interfaces(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
     if (!g_client || !g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_get_interfaces: client not connected");
@@ -790,7 +992,7 @@ extern "C" bool weaknet_get_interfaces(char* buffer, size_t buffer_size, char* e
     }
 }
 
-// 获取网络状态变化（非阻塞）
+/** @brief C 接口包装：非阻塞检查 Changed 信号 */
 extern "C" bool weaknet_check_changes(char* message_buffer, size_t message_size, int32_t* counter, char* error_buffer, size_t error_size) {
     if (!g_client || !g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_check_changes: client not connected");
@@ -809,7 +1011,7 @@ extern "C" bool weaknet_check_changes(char* message_buffer, size_t message_size,
     return false;
 }
 
-// 请求网络健康检查
+/** @brief C 接口包装：调用 HealthCheck 方法 */
 extern "C" bool weaknet_health_check(char* result_buffer, size_t result_size, char* error_buffer, size_t error_size) {
     if (!g_client || !g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_health_check: client not connected");
@@ -829,7 +1031,7 @@ extern "C" bool weaknet_health_check(char* result_buffer, size_t result_size, ch
     }
 }
 
-// 从文件读取最新状态（离线模式）
+/** @brief C 接口包装：从序列化文件读取最新状态（离线模式，不发起 D-Bus 调用） */
 extern "C" bool weaknet_get_from_file(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
     if (!g_client) {
         snprintf(error_buffer, error_size, "客户端未初始化");
@@ -846,7 +1048,7 @@ extern "C" bool weaknet_get_from_file(char* buffer, size_t buffer_size, char* er
     }
 }
 
-// Ping指定主机
+/** @brief C 接口包装：调用 Ping 方法 */
 extern "C" bool weaknet_ping_host(const char* hostname, char* result_buffer, size_t result_size, char* error_buffer, size_t error_size) {
     if (!g_client || !g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_ping_host: client not connected");
@@ -874,11 +1076,16 @@ extern "C" bool weaknet_ping_host(const char* hostname, char* result_buffer, siz
 
 } // namespace weaknet_dbus
 
-// C接口函数实现
+// ========== C 接口函数实现（weaknet_dbus 命名空间外） ==========
 
 using namespace weaknet_dbus;
 
-// 订阅特定事件类型
+/**
+ * @brief C 接口包装：订阅指定 D-Bus 事件（只添加 match，不阻塞）
+ *
+ * @param event_type 信号成员名（如 "InterfaceChanged"）
+ * @param callback   事件回调（当前 C 接口只注册 D-Bus 订阅，回调暂未在内部触发）
+ */
 extern "C" bool weaknet_subscribe_event(const char* event_type, weaknet_event_callback_t callback) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_subscribe_event: client not connected");
@@ -888,14 +1095,14 @@ extern "C" bool weaknet_subscribe_event(const char* event_type, weaknet_event_ca
     return weaknet_dbus::g_client->subscribeToEvent(std::string(event_type));
 }
 
-// 取消订阅事件（简化实现）
+/** @brief C 接口：取消订阅事件（简化实现，当前固定返回 true） */
 extern "C" bool weaknet_unsubscribe_event(const char* event_type) {
     // 注意：这个简化实现只是返回成功，实际项目中可能需要更复杂的去订阅逻辑
     // 简化实现，不记录日志
     return true;
 }
 
-// 获取支持的事件类型列表
+/** @brief C 接口：获取支持的事件类型列表（本地拼接，不发起 D-Bus 调用） */
 extern "C" bool weaknet_get_event_types(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
     snprintf(buffer, buffer_size, "%s,%s,%s,%s",
              weaknet_dbus::kSignalInterfaceChanged,
@@ -905,7 +1112,7 @@ extern "C" bool weaknet_get_event_types(char* buffer, size_t buffer_size, char* 
     return true;
 }
 
-// 非阻塞检查事件
+/** @brief C 接口包装：非阻塞检查多类事件信号 */
 extern "C" bool weaknet_check_events(char* event_type_buffer, size_t event_type_size,
                                    char* message_buffer, size_t message_size,
                                    int32_t* counter, char* source_buffer, size_t source_size,
@@ -929,24 +1136,29 @@ extern "C" bool weaknet_check_events(char* event_type_buffer, size_t event_type_
     return false;
 }
 
-// 检查客户端连接状态
+/** @brief C 接口：检查客户端连接状态 */
 extern "C" bool weaknet_is_connected() {
     return weaknet_dbus::g_client && weaknet_dbus::g_client->isConnected();
 }
 
-// 获取WeakNet客户端库版本信息
+/** @brief C 接口：返回硬编码版本字符串 "WeakNet Client Library v1.0.0"（不发起 D-Bus 调用） */
 extern "C" bool weaknet_get_version(char* buffer, size_t buffer_size) {
     snprintf(buffer, buffer_size, "WeakNet Client Library v1.0.0");
     return true;
 }
 
-// 获取库的编译时间和编译选项信息
+/** @brief C 接口：返回编译时间信息（使用 __DATE__ / __TIME__ 宏，不发起 D-Bus 调用） */
 extern "C" bool weaknet_get_build_info(char* buffer, size_t buffer_size) {
     snprintf(buffer, buffer_size, "Built: %s %s | DBus-enabled | C++17", __DATE__, __TIME__);
     return true;
 }
 
-// 订阅网络质量事件
+/**
+ * @brief C 接口包装：阻塞订阅 NetworkQualityChanged 信号
+ *
+ * 内部通过静态变量保存用户回调指针，构造 C++ lambda 包装器
+ * 传给 WeakNetClient::subscribeToNetworkQuality()。
+ */
 extern "C" bool weaknet_subscribe_network_quality(weaknet_network_quality_callback_t callback) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_subscribe_network_quality: client not connected");
@@ -954,10 +1166,11 @@ extern "C" bool weaknet_subscribe_network_quality(weaknet_network_quality_callba
     }
     LOG_INFO(LogModule::CLIENT, "weaknet_subscribe_network_quality: subscribing");
     
-    // 创建C++回调包装器
+    // 用静态变量保存用户回调指针（注意：这只支持一次订阅，多次调用会覆盖）
     static weaknet_network_quality_callback_t s_callback = nullptr;
     s_callback = callback;
     
+    // 构造 C++ lambda，把 std::string 转换回 const char* 后调用用户 C 回调
     auto cpp_callback = [](const std::string& quality, const std::string& details, int32_t counter) -> bool {
         if (s_callback) {
             return s_callback(quality.c_str(), details.c_str(), counter);
@@ -968,10 +1181,15 @@ extern "C" bool weaknet_subscribe_network_quality(weaknet_network_quality_callba
     return weaknet_dbus::g_client->subscribeToNetworkQuality(cpp_callback);
 }
 
-// 非阻塞检查网络质量事件
+/**
+ * @brief C 接口包装：非阻塞检查 NetworkQualityChanged 信号
+ *
+ * 直接访问底层 D-Bus 连接，手动执行 read_write + pop_message + parse，
+ * 与 WeakNetClient 类的 checkForEvents 类似但只处理 NetworkQualityChanged 信号。
+ */
 extern "C" bool weaknet_check_network_quality(char* quality_buffer, size_t quality_size,
                                              char* details_buffer, size_t details_size, 
-                                             int32_t* counter, char* error_buffer, size_t error_size) {
+                                                     int32_t* counter, char* error_buffer, size_t error_size) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
@@ -979,16 +1197,19 @@ extern "C" bool weaknet_check_network_quality(char* quality_buffer, size_t quali
 
     if (!weaknet_dbus::g_client->isConnected()) return false;
 
-    dbus_connection_read_write(weaknet_dbus::g_client->getConnection(), 0); // 非阻塞轮询
+    // 非阻塞轮询 D-Bus 队列
+    dbus_connection_read_write(weaknet_dbus::g_client->getConnection(), 0);
     DBusMessage* msg = dbus_connection_pop_message(weaknet_dbus::g_client->getConnection());
     if (!msg) return false;
 
+    // 检查是否为 NetworkQualityChanged 信号，并解析其三个参数
     if (dbus_message_is_signal(msg, weaknet_dbus::kInterface, weaknet_dbus::kSignalNetworkQualityChanged)) {
         const char* quality = nullptr;
         const char* details = nullptr;
         DBusError e;
         dbus_error_init(&e);
         
+        // 解析：STRING quality + STRING details + INT32 counter
         if (dbus_message_get_args(msg, &e, DBUS_TYPE_STRING, &quality, DBUS_TYPE_STRING, &details, DBUS_TYPE_INT32, counter, DBUS_TYPE_INVALID)) {
             snprintf(quality_buffer, quality_size, "%s", quality ? quality : "");
             snprintf(details_buffer, details_size, "%s", details ? details : "");
@@ -1005,8 +1226,9 @@ extern "C" bool weaknet_check_network_quality(char* quality_buffer, size_t quali
     return false;
 }
 
-// ============== 蓝牙设备 API ==============
+// ============== 蓝牙设备 C API 实现 ==============
 
+/** @brief C 接口包装：调用 GetBluetoothDevices 方法 */
 extern "C" bool weaknet_get_bluetooth_devices(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
@@ -1022,6 +1244,7 @@ extern "C" bool weaknet_get_bluetooth_devices(char* buffer, size_t buffer_size, 
     }
 }
 
+/** @brief C 接口包装：调用 GetBluetoothAdapter 方法 */
 extern "C" bool weaknet_get_bluetooth_adapter(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
@@ -1037,6 +1260,12 @@ extern "C" bool weaknet_get_bluetooth_adapter(char* buffer, size_t buffer_size, 
     }
 }
 
+/**
+ * @brief C 接口包装：订阅 BluetoothDeviceChanged 信号
+ *
+ * 当前实现只添加 D-Bus match 规则，不进入阻塞监听循环。
+ * 实际事件需通过 weaknet_check_events() 轮询。
+ */
 extern "C" bool weaknet_subscribe_bluetooth_events(weaknet_event_callback_t callback) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         return false;
@@ -1046,8 +1275,9 @@ extern "C" bool weaknet_subscribe_bluetooth_events(weaknet_event_callback_t call
     return true;
 }
 
-// ============== eBPF 监控数据 API ==============
+// ============== eBPF 监控数据 C API 实现 ==============
 
+/** @brief C 接口包装：调用 GetDnsStats 方法 */
 extern "C" bool weaknet_get_dns_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
@@ -1063,6 +1293,7 @@ extern "C" bool weaknet_get_dns_stats(char* buffer, size_t buffer_size, char* er
     }
 }
 
+/** @brief C 接口包装：调用 GetWifiLossStats 方法 */
 extern "C" bool weaknet_get_wifi_loss_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
@@ -1078,6 +1309,7 @@ extern "C" bool weaknet_get_wifi_loss_stats(char* buffer, size_t buffer_size, ch
     }
 }
 
+/** @brief C 接口包装：调用 GetHttpLatencyStats 方法 */
 extern "C" bool weaknet_get_http_latency_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
@@ -1093,6 +1325,7 @@ extern "C" bool weaknet_get_http_latency_stats(char* buffer, size_t buffer_size,
     }
 }
 
+/** @brief C 接口包装：调用 GetProcessProfiling 方法 */
 extern "C" bool weaknet_get_process_profiling(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
@@ -1108,6 +1341,7 @@ extern "C" bool weaknet_get_process_profiling(char* buffer, size_t buffer_size, 
     }
 }
 
+/** @brief C 接口包装：调用 GetEbpfMonitorHealth 方法 */
 extern "C" bool weaknet_get_ebpf_monitor_health(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
@@ -1124,6 +1358,7 @@ extern "C" bool weaknet_get_ebpf_monitor_health(char* buffer, size_t buffer_size
 
 // 注意: 此文件现在作为动态库使用，不包含main函数
 
+/** @brief C 接口包装：调用 GetHistory 方法查询历史监控数据 */
 extern "C" bool weaknet_get_history(const char* interface, const char* start, const char* end,
                                     int32_t limit, char* buffer, size_t buffer_size,
                                     char* error_buffer, size_t error_size) {
