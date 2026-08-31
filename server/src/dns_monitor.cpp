@@ -139,6 +139,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
         LOG_ERROR(LogModule::NETWORK, "DnsMonitor: failed to open BPF object: " << bpfObjPath);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
         return false;
     }
 
@@ -147,6 +148,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "failed to load BPF object");
         return false;
     }
 
@@ -156,6 +158,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "dns_queries map not found");
         return false;
     }
 
@@ -165,6 +168,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "dns_stats map not found");
         return false;
     }
 
@@ -177,6 +181,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "BPF program not found");
         return false;
     }
 
@@ -200,6 +205,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
         impl_->link_send = impl_->link_recv = nullptr;
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Fallback, false, "all BPF probes failed to attach");
         return false;
     }
 

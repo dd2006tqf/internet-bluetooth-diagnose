@@ -327,6 +327,9 @@ std::vector<std::pair<std::string, BtTrafficStats>> BtAudioAnalyzer::getAllStats
         ret = bpf_map_get_next_key(statsMapFd_, &next_key, &next_key);
     }
 
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed), !result.empty());
     return result;
 }
 

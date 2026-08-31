@@ -12,7 +12,7 @@
  * 算法核心：Z-Score + 百分位 + 领域规则组合判定。
  *
  * 线程安全：patternsMutex_ 保护 trafficPatterns_；
- *           所有 analyze*/detect* 方法内部加锁，可多线程并发调用。
+ *           所有 analyze/detect 方法内部加锁，可多线程并发调用。
  */
 
 #pragma once

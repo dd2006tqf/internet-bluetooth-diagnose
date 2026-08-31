@@ -205,8 +205,9 @@ EbpfMonitorHealth EbpfMonitorStateSupport::health() const {
     result.consecutiveErrors = tracker_.consecutiveErrors();
     result.totalErrors = metrics.mapReadErrors;
     result.status = status_;
-    // 健康判定：可用 + 状态为 Attached（探针已挂载）
-    result.healthy = available_ && (state_ == EbpfMonitorState::Attached);
+    // 健康判定：Attached 且没有连续读取错误；Fallback 表示可降级但不健康
+    result.healthy = available_ && (state_ == EbpfMonitorState::Attached) &&
+                     tracker_.consecutiveErrors() < 3;
     return result;
 }
 

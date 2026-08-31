@@ -107,6 +107,7 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
     LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: BPF not available (no libbpf)");
     available_ = false;
     initialized_ = true;
+    stateSupport_.setState(EbpfMonitorState::Fallback, false, "libbpf unavailable");
     return false;
 #else
     // 优先从 TrafficAnalyzer 共享 map fd（避免重复加载 flow_rate.bpf.o 导致 kprobe 冲突）
@@ -119,6 +120,10 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
         available_ = true;
         initialized_ = true;
         LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: using shared process_stats fd from TrafficAnalyzer");
+        stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached (shared TrafficAnalyzer)");
+        stateSupport_.recordProbeAttached();
+        stateSupport_.recordProbeAttached();
+        stateSupport_.recordProbeAttached();
         return true;
     }
 
@@ -131,6 +136,7 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
         LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: failed to open BPF object: " << bpfObjPath);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
         return false;
     }
 
@@ -139,6 +145,7 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "failed to load BPF object");
         return false;
     }
 
@@ -148,6 +155,7 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "process_stats map not found");
         return false;
     }
 
@@ -178,6 +186,7 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
         impl_->link_retrans = impl_->link_xmit = impl_->link_udp = nullptr;
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Fallback, false, "all BPF probes failed to attach");
         return false;
     }
 

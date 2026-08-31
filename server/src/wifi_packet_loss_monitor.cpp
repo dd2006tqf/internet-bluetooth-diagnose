@@ -129,11 +129,11 @@ WifiPacketLossMonitor::~WifiPacketLossMonitor() {
  */
 bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
-    stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
     LOG_INFO(LogModule::NETWORK, "WifiPacketLossMonitor: BPF not available (no libbpf)");
     available_ = false;
     initialized_ = true;
+    stateSupport_.setState(EbpfMonitorState::Fallback, false, "libbpf unavailable");
     return false;
 #else
     LOG_INFO(LogModule::NETWORK, "WifiPacketLossMonitor: loading BPF object from " << bpfObjPath);
@@ -141,17 +141,16 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
     LIBBPF_OPTS(bpf_object_open_opts, opts);
     struct bpf_object *obj = bpf_object__open_file(bpfObjPath.c_str(), &opts);
     if (!obj) {
-        LOG_ERROR(LogModule::NETWORK, "WifiPacketLossMonitor: failed to open BPF object: " << bpfObjPath);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
         return false;
     }
 
     if (bpf_object__load(obj) != 0) {
-        LOG_ERROR(LogModule::NETWORK, "WifiPacketLossMonitor: failed to load BPF object");
-        bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "failed to load BPF object");
         return false;
     }
 
@@ -161,6 +160,7 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "packet_stats map not found");
         return false;
     }
 

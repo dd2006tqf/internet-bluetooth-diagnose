@@ -122,6 +122,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
     LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: BPF not available (no libbpf)");
     available_ = false;
     initialized_ = true;
+    stateSupport_.setState(EbpfMonitorState::Fallback, false, "libbpf unavailable");
     return false;
 #else
     LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: loading BPF object from " << bpfObjPath);
@@ -132,6 +133,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
         LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: failed to open BPF object: " << bpfObjPath);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
         return false;
     }
 
@@ -140,6 +142,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "failed to load BPF object");
         return false;
     }
 
@@ -149,6 +152,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "http_txn_stats map not found");
         return false;
     }
 
@@ -164,6 +168,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Error, false, "BPF program not found");
         return false;
     }
 
@@ -225,6 +230,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
         impl_->link_send = impl_->link_recv = nullptr;
         available_ = false;
         initialized_ = true;
+        stateSupport_.setState(EbpfMonitorState::Fallback, false, "all BPF probes failed to attach");
         return false;
     }
 
