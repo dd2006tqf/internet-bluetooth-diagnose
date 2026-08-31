@@ -70,7 +70,7 @@ std::vector<NetInfo> WeakNetMgr::collectCurrentInterfaces() {
     LOG_INFO(LogModule::WEAK_MGR, "collectCurrentInterfaces end: " << result.size() << " ifaces, using=" << (usingIf.empty() ? "(none)" : usingIf));
     return result;
 }
-static LinkQuality classifyQualityFromRtt(int rttMs, int prevMs) {
+static LinkQuality classifyQualityFromRtt(int rttMs, int /*prevMs*/) {
     if (rttMs < 0) return LinkQuality::Bad;
     // 简单阈值，可按需调整
     if (rttMs <= 50) return LinkQuality::Good;

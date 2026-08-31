@@ -92,42 +92,7 @@ ServerContext::~ServerContext() {
 // 处理进入总线的消息（方法调用等）
 // 消息处理迁移，由 DbusService::MessageHandler 提供
 
-// 将字符串数组作为返回
-static bool replyStringArray(DBusConnection* conn, DBusMessage* msg, const std::vector<std::string>& arr) {
-    DBusMessage* reply = dbus_message_new_method_return(msg);
-    if (!reply) return false;
-
-    DBusMessageIter iter;
-    dbus_message_iter_init_append(reply, &iter);
-
-    DBusMessageIter array_iter;
-    int element_type = DBUS_TYPE_STRING;
-    if (!dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &array_iter)) {
-        dbus_message_unref(reply);
-        return false;
-    }
-
-    for (const auto& s : arr) {
-        const char* cs = s.c_str();
-        if (!dbus_message_iter_append_basic(&array_iter, element_type, &cs)) {
-            dbus_message_iter_close_container(&iter, &array_iter);
-            dbus_message_unref(reply);
-            return false;
-        }
-    }
-
-    if (!dbus_message_iter_close_container(&iter, &array_iter)) {
-        dbus_message_unref(reply);
-        return false;
-    }
-
-    bool ok = dbus_connection_send(conn, reply, nullptr);
-    dbus_connection_flush(conn);
-    dbus_message_unref(reply);
-    return ok;
-}
-
-// 字符串数组回复已封装到 DbusService
+// 将字符串数组作为返回，已封装到 DbusService
 
 // 比较两个列表，打印新增与删除项，并返回是否有变化
 static bool diffInterfaces(const std::vector<std::string>& old_list,

@@ -191,6 +191,7 @@ static bool macEquals(const std::string& a, const std::string& b) {
 // ============================================================================
 
 BtMonitor::BtMonitor() {
+    btAudioAnalyzer_ = std::make_unique<BtAudioAnalyzer>();
     LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: instance created");
 }
 

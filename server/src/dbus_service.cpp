@@ -782,12 +782,9 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
         return false;
     }
 
-    // 蓝牙音频分析器可选：有就用真实实例，没有就用栈上 fallback（状态=unavailable）
-    BtAudioAnalyzer fallbackAudioAnalyzer;
+    // 蓝牙音频分析器可选：有就用真实实例
     const IEbpfMonitor* audioMonitor = ctx_->bt_monitor->audioAnalyzer();
-    if (!audioMonitor) audioMonitor = &fallbackAudioAnalyzer;
-
-    // 统一用 IEbpfMonitor 接口指针收集，后续循环按 interface 方法处理，避免每个 monitor 单独写一遍
+    // 若尚未创建，使用服务端持有的稳定不可用观测对象
     const std::vector<const IEbpfMonitor*> monitors = {
         static_cast<const IEbpfMonitor*>(ctx_->dns_monitor.get()),
         static_cast<const IEbpfMonitor*>(ctx_->wifi_loss_monitor.get()),
@@ -804,15 +801,21 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
         if (i > 0) json << ",";
         const auto health = monitors[i]->health();
         const auto metrics = monitors[i]->metrics();
-        json << "{\"name\":\"" << health.name
+        json << "{\"name\":\"" << weaknet_utils::escapeJsonString(health.name)
              << "\",\"state\":\"" << ebpfMonitorStateName(health.state)
              << "\",\"available\":" << (health.available ? "true" : "false")
              << ",\"healthy\":" << (health.healthy ? "true" : "false")
+             << ",\"last_successful_sample_ns\":" << health.lastSuccessfulSampleNs
+             << ",\"consecutive_errors\":" << health.consecutiveErrors
+             << ",\"total_errors\":" << health.totalErrors
+             << ",\"attached_probes\":" << metrics.attachedProbes
              << ",\"map_reads\":" << metrics.mapReads
              << ",\"map_read_errors\":" << metrics.mapReadErrors
              << ",\"samples\":" << metrics.samples
+             << ",\"total_read_time_us\":" << metrics.totalReadTimeUs
              << ",\"average_read_time_us\":" << metrics.averageReadTimeUs
-             << ",\"status\":\"" << weaknet_utils::escapeJsonString(health.status)
+             << ",\"last_error\":\"" << weaknet_utils::escapeJsonString(metrics.lastError)
+             << "\",\"status\":\"" << weaknet_utils::escapeJsonString(health.status)
              << "\"}";
     }
     json << "]}";
