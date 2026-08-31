@@ -110,7 +110,7 @@ struct ServerContext {
  *
  * 执行步骤：
  *   1. dbus_threads_init_default() 启用线程安全
- *   2. dbus_bus_get(DBUS_BUS_SESSION) 获取会话总线连接
+ *   2. dbus_bus_get(DBUS_BUS_SYSTEM) 获取系统总线连接
  *   3. dbus_bus_request_name() 注册 com.example.WeakNet 服务名
  *   4. 将连接存入 ctx->connection
  *

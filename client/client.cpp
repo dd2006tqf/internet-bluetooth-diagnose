@@ -41,13 +41,16 @@ namespace weaknet_dbus {
  */
 class WeakNetClient {
 private:
-    DBusConnection* conn_;    ///< D-Bus Session 总线连接句柄
+    DBusConnection* conn_;    ///< D-Bus 系统总线连接句柄
     bool connected_;          ///< 连接状态标记
 
     /**
-     * @brief 初始化 D-Bus 连接（Session 总线）
+     * @brief 初始化 D-Bus 连接（系统总线）
      *
-     * 调用 dbus_bus_get(DBUS_BUS_SESSION, ...) 连接到当前桌面会话的 D-Bus。
+     * 调用 dbus_bus_get(DBUS_BUS_SYSTEM, ...) 连接到系统总线。
+     * 服务端以 root 系统服务运行并注册在系统总线（/etc/dbus-1/system.d/
+     * 中的 com.example.WeakNet.conf 策略允许本地用户访问），客户端与服务端
+     * 必须使用同一条总线。
      * 连接失败时记录日志并将 connected_ 置为 false。
      *
      * @return true  - 连接成功
@@ -56,8 +59,8 @@ private:
     bool initConnection() {
         DBusError err;
         dbus_error_init(&err);
-        // 连接到 D-Bus Session 总线
-        conn_ = dbus_bus_get(DBUS_BUS_SESSION, &err);
+        // 连接到 D-Bus 系统总线（与服务端一致）
+        conn_ = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
         if (dbus_error_is_set(&err)) {
             LOG_ERROR(LogModule::CLIENT, "连接DBus总线失败: " << err.message);
             dbus_error_free(&err);

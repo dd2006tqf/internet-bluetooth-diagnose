@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # ============================================================================
 # WeakNet 开发板全面测试脚本
-# 在私有 D-Bus 会话中启动服务端，然后逐项运行所有测试
+# 服务端与客户端均通过 D-Bus 系统总线通信（/etc/dbus-1/system.d/
+# com.example.WeakNet.conf 已放行本地用户访问）。
+# 测试前会先停掉 systemd 常驻实例，避免系统总线上服务名冲突；
+# 测试结束后自动恢复 systemd 服务。
 #
 # 用法:
-#   ssh -t radxa@192.168.2.77 'sudo /home/radxa/weaknet/weaknet-test-full.sh'
+#   ssh radxa@radxa-cubie-a7a.local 'sudo /home/radxa/weaknet/weaknet-test-full.sh'
 #   # 或通过 ci.sh 自动调用
 # ============================================================================
 
 export HOME=/home/radxa
 export LD_LIBRARY_PATH=/home/radxa/weaknet/lib:/home/radxa/weaknet/client/lib:/usr/local/lib
 
-exec dbus-run-session -- bash -lc '
 set -u
 
 # ---- 配置 ----
@@ -24,6 +26,13 @@ fail()  { echo -e "  \033[0;31m[FAIL]\033[0m $1"; ((FAIL++)); }
 skip()  { echo -e "  \033[1;33m[SKIP]\033[0m $1"; ((SKIP++)); }
 
 ulimit -l unlimited 2>/dev/null || true
+
+# 系统总线上只允许一个 com.example.WeakNet：先停掉 systemd 常驻实例。
+# 注意：pkill -f 的模式用 [s] 方括号 trick，避免匹配到脚本自身
+# （内层 bash -lc 的命令行里包含模式文本，无 trick 会把自己杀掉导致脚本无输出退出）。
+systemctl stop weaknet-server 2>/dev/null || true
+pkill -f "weaknet-dbus-[s]erver" 2>/dev/null || true
+sleep 1
 
 cd /home/radxa/weaknet/server
 mkdir -p logs/server
@@ -45,6 +54,8 @@ SERVER_PID=$!
 cleanup() {
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
+    # 恢复 systemd 常驻实例（生产状态）
+    systemctl restart weaknet-server 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -201,4 +212,3 @@ echo "=============================================="
 echo ""
 
 exit $FAIL
-'

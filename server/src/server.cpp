@@ -113,19 +113,22 @@ static bool diffInterfaces(const std::vector<std::string>& old_list,
 
 // 独立接口：初始化 DBus、注册对象路径
 DBusConnection* init_dbus(ServerContext* ctx) {
-    LOG_INFO(LogModule::DBUS, "init_dbus: start connecting to session bus...");
+    LOG_INFO(LogModule::DBUS, "init_dbus: start connecting to system bus...");
     dbus_threads_init_default();
 
     DBusError err;
     dbus_error_init(&err);
 
-    DBusConnection* conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
+    // 服务端以 root 系统服务运行（eBPF 需要 CAP_BPF/CAP_SYS_ADMIN），
+    // 用户会话总线的生命周期与桌面/SSH 会话绑定且不允许 root 连接，
+    // 因此统一使用系统总线（与 bt_monitor 访问 BlueZ 的拓扑一致）。
+    DBusConnection* conn = dbus_bus_get(DBUS_BUS_SYSTEM, &err);
     if (dbus_error_is_set(&err)) {
         LOG_ERROR(LogModule::DBUS, "连接总线失败: " << err.message);
         dbus_error_free(&err);
     }
     if (!conn) return nullptr;
-    LOG_INFO(LogModule::DBUS, "connected to session bus");
+    LOG_INFO(LogModule::DBUS, "connected to system bus");
 
     LOG_INFO(LogModule::DBUS, "requesting bus name: " << kBusName);
     int ret = dbus_bus_request_name(conn, kBusName, DBUS_NAME_FLAG_REPLACE_EXISTING, &err);

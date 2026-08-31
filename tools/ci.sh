@@ -14,13 +14,13 @@
 #
 # 环境变量:
 #   CONTAINER - ARM64 构建容器名（默认: weaknet-arm64-dev）
-#   BOARD     - 开发板 SSH 地址（默认: radxa@192.168.2.77）
+#   BOARD     - 开发板 SSH 地址（默认: radxa@radxa-cubie-a7a.local）
 # ============================================================================
 set -euo pipefail
 
 # ---- 配置 ----
 CONTAINER="${CONTAINER:-weaknet-arm64-dev}"
-BOARD="${BOARD:-radxa@192.168.2.77}"
+BOARD="${BOARD:-radxa@radxa-cubie-a7a.local}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT}/dist-arm64"
 REPORT_DIR="${ROOT}/ci-reports"
@@ -50,7 +50,7 @@ for arg in "$@"; do
             echo ""
             echo "环境变量:"
             echo "  CONTAINER=容器名   ARM64 构建容器（默认: weaknet-arm64-dev）"
-            echo "  BOARD=用户名@IP    开发板地址（默认: radxa@192.168.2.77）"
+            echo "  BOARD=用户名@IP    开发板地址（默认: radxa@radxa-cubie-a7a.local）"
             exit 0
             ;;
         *) echo "未知参数: $arg"; exit 1 ;;
@@ -169,9 +169,15 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # 只同步 dist-arm64 编译产物，不同步源码和构建目录
     rsync -az --delete --exclude "data/" --exclude "server/logs/" -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" 2>/dev/null
 
-    # 部署 systemd 单元并启动唯一服务实例
+    # 部署 systemd 单元、D-Bus 系统总线策略并启动唯一服务实例
     scp "${ROOT}/tools/weaknet-server.service" "${BOARD}:/tmp/weaknet-server.service" 2>/dev/null
-    ssh "${BOARD}" "sudo cp /tmp/weaknet-server.service /etc/systemd/system/weaknet-server.service && sudo systemctl daemon-reload && sudo systemctl enable weaknet-server && sudo systemctl restart weaknet-server"
+    scp "${ROOT}/tools/com.example.WeakNet.conf" "${BOARD}:/tmp/com.example.WeakNet.conf" 2>/dev/null
+    ssh "${BOARD}" "sudo cp /tmp/weaknet-server.service /etc/systemd/system/weaknet-server.service && sudo cp /tmp/com.example.WeakNet.conf /etc/dbus-1/system.d/com.example.WeakNet.conf && sudo systemctl daemon-reload && sudo systemctl reload dbus 2>/dev/null || true; sudo systemctl enable weaknet-server && sudo systemctl restart weaknet-server"
+
+    # 测试脚本也在部署步上传（rsync --delete 会删除 dist 之外的板端文件，
+    # 若只在测试步上传，--skip-test 部署后板上会缺失该脚本）
+    scp "${ROOT}/tools/weaknet-test-full.sh" "${BOARD}:/home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null
+    ssh "${BOARD}" "chmod +x /home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null
     pass "部署完成"
 else
     info "跳过部署"

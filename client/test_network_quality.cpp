@@ -91,7 +91,7 @@ int main() {
     signal(SIGTERM, signal_handler);
     
     // ===== 步骤 2：初始化 WeakNet 客户端 =====
-    // 内部调用 dbus_bus_get(DBUS_BUS_SESSION, ...) 建立 D-Bus 连接
+    // 内部调用 dbus_bus_get(DBUS_BUS_SYSTEM, ...) 建立 D-Bus 连接
     if (!weaknet_init()) {
         std::cerr << "错误: 无法初始化WeakNet客户端" << std::endl;
         return 1;

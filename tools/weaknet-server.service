@@ -14,8 +14,10 @@ Environment=WEAKNET_DATA_DIR=/home/radxa/weaknet/data
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 User=root
 Group=root
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+# eBPF 探针加载/挂载需要 CAP_BPF + CAP_PERFMON（内核 5.8+），
+# 网络诊断（ping raw socket / netlink）需要 CAP_NET_RAW + CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON
 NoNewPrivileges=false
 LimitNOFILE=65536
 

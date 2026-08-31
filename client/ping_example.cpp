@@ -35,7 +35,7 @@ int main() {
     std::cout << "=== WeakNet Ping功能使用示例 ===" << std::endl;
 
     // ===== 初始化 WeakNet 客户端库 =====
-    // 内部建立 D-Bus Session 连接（dbus_bus_get）
+    // 内部建立 D-Bus 系统总线连接（dbus_bus_get DBUS_BUS_SYSTEM）
     if (!weaknet_init()) {
         std::cerr << "❌ 初始化WeakNet客户端库失败!" << std::endl;
         return 1;

@@ -57,7 +57,7 @@ int main() {
     std::cout << "=== WeakNet 动态库使用示例 ===" << std::endl;
 
     // ===== 步骤 1：初始化 WeakNet 客户端库 =====
-    // 内部会调用 dbus_bus_get(DBUS_BUS_SESSION) 连接 D-Bus
+    // 内部会调用 dbus_bus_get(DBUS_BUS_SYSTEM) 连接 D-Bus
     std::cout << "\n1. 初始化WeakNet客户端库..." << std::endl;
     if (!weaknet_init()) {
         std::cerr << "❌ 初始化失败!" << std::endl;
