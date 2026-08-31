@@ -6,6 +6,7 @@
 #include "http_latency_monitor.hpp"
 #include "process_net_profiler.hpp"
 #include "tcp_retransmit_monitor.hpp"
+#include "tcp_conn_monitor.hpp"
 #include "bt_audio_analyzer.hpp"
 
 using namespace weaknet_dbus;
@@ -65,18 +66,20 @@ TEST(EbpfMonitorMetricsTest, HealthStateTransitions) {
     EXPECT_FALSE(health.healthy);
 }
 
-TEST(EbpfMonitorInterfaceTest, AllSixMonitorsExposeCommonContract) {
+TEST(EbpfMonitorInterfaceTest, AllMonitorsExposeCommonContract) {
     DnsMonitor dns;
     WifiPacketLossMonitor wifi;
     HttpLatencyMonitor http;
     ProcessNetProfiler process;
     TcpRetransMonitor tcp;
+    TcpConnMonitor tcpConn;
     BtAudioAnalyzer bt;
 
-    IEbpfMonitor* monitors[] = {&dns, &wifi, &http, &process, &tcp, &bt};
+    IEbpfMonitor* monitors[] = {&dns, &wifi, &http, &process, &tcp, &tcpConn, &bt};
     const char* names[] = {"DnsMonitor", "WifiPacketLossMonitor", "HttpLatencyMonitor",
-                           "ProcessNetProfiler", "TcpRetransMonitor", "BtAudioAnalyzer"};
-    for (size_t i = 0; i < 6; ++i) {
+                           "ProcessNetProfiler", "TcpRetransMonitor", "TcpConnMonitor",
+                           "BtAudioAnalyzer"};
+    for (size_t i = 0; i < sizeof(monitors) / sizeof(monitors[0]); ++i) {
         EXPECT_STREQ(monitors[i]->monitorName(), names[i]);
         EXPECT_EQ(monitors[i]->commonState(), EbpfMonitorState::Uninitialized);
         EXPECT_FALSE(monitors[i]->isAvailable());
@@ -91,4 +94,10 @@ TEST(EbpfMonitorInterfaceTest, FailedInitializationReportsFallbackOrError) {
     EXPECT_FALSE(dns.isAvailable());
     EXPECT_TRUE(dns.commonState() == EbpfMonitorState::Error ||
                 dns.commonState() == EbpfMonitorState::Fallback);
+
+    TcpConnMonitor tcpConn;
+    EXPECT_FALSE(tcpConn.init("/nonexistent/tcp_conn_stats.bpf.o"));
+    EXPECT_FALSE(tcpConn.isAvailable());
+    EXPECT_TRUE(tcpConn.commonState() == EbpfMonitorState::Error ||
+                tcpConn.commonState() == EbpfMonitorState::Fallback);
 }

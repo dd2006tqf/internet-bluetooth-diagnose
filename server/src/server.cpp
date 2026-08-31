@@ -53,6 +53,7 @@
 #include "http_latency_monitor.hpp"
 #include "process_net_profiler.hpp"
 #include "tcp_retransmit_monitor.hpp"
+#include "tcp_conn_monitor.hpp"
 #include "bt_audio_analyzer.hpp"
 #include "database_manager.hpp"
 #include "using_iface.h"
@@ -627,17 +628,42 @@ void start_tcp_retrans_monitor_thread(ServerContext* ctx) {
     });
 }
 
+void start_tcp_conn_monitor_thread(ServerContext* ctx) {
+    ctx->tcp_conn_monitor_thread = std::thread([ctx]() {
+        auto* monitor = ctx->tcp_conn_monitor.get();
+        if (!monitor) return;
+        LOG_INFO(LogModule::TCP_LOSS, "TCP conn monitor thread started");
+        if (!monitor->init("build/tcp_conn_stats.bpf.o")) {
+            LOG_INFO(LogModule::TCP_LOSS, "TCP conn monitor unavailable, thread exiting");
+            return;
+        }
+        while (ctx->running.load()) {
+            const auto stats = monitor->getStats();
+            if (stats.totalAccepts > 0 || stats.totalAcceptFailures > 0) {
+                LOG_INFO(LogModule::TCP_LOSS, "TCP conn tick: accepts=" << stats.totalAccepts
+                    << " closes=" << stats.totalCloses
+                    << " active=" << stats.activeInbound
+                    << " acceptFailures=" << stats.totalAcceptFailures
+                    << " avgDur=" << stats.avgDurationMs << "ms");
+            }
+            for (int i = 0; i < 150 && ctx->running.load(); ++i)
+                std::this_thread::sleep_for(100ms);
+        }
+        monitor->stop();
+        LOG_INFO(LogModule::TCP_LOSS, "TCP conn monitor thread stopped");
+    });
+}
+
 // 启动历史数据持久化线程
 void start_history_persistence_thread(ServerContext* ctx) {
     ctx->history_thread = std::thread([ctx](){
         LOG_INFO(LogModule::SYSTEM, "History persistence thread started");
 
         auto last_cleanup = std::chrono::steady_clock::now();
-        const auto persist_interval = std::chrono::seconds(5);
         const auto cleanup_interval = std::chrono::hours(24);
 
         while (ctx->running.load()) {
-            // 等待 5 秒（每秒检查 running 标志）
+            // 每 5 秒持久化一轮（每秒检查 running 标志以便快速退出）
             for (int i = 0; i < 5 && ctx->running.load(); ++i) {
                 std::this_thread::sleep_for(1s);
             }
@@ -771,6 +797,7 @@ int start_server() {
     ctx.http_latency_monitor = std::make_unique<HttpLatencyMonitor>();
     ctx.process_net_profiler = std::make_unique<ProcessNetProfiler>();
     ctx.tcp_retrans_monitor = std::make_unique<TcpRetransMonitor>();
+    ctx.tcp_conn_monitor = std::make_unique<TcpConnMonitor>();
 
     // DNS 监控器：挂载 kprobe/udp_sendmsg + kprobe/udp_recvmsg
     LOG_INFO(LogModule::NETWORK, "starting DNS monitor thread (interval=10s)");
@@ -793,7 +820,11 @@ int start_server() {
     LOG_INFO(LogModule::NETWORK, "starting TCP retransmit eBPF monitor thread (interval=15s)");
     start_tcp_retrans_monitor_thread(&ctx);
 
-    // 启动历史数据持久化线程（每 5 分钟写入一次）
+    // TCP 连接生命周期：挂载 kretprobe/inet_csk_accept + kprobe/tcp_close
+    LOG_INFO(LogModule::NETWORK, "starting TCP conn monitor thread (interval=15s)");
+    start_tcp_conn_monitor_thread(&ctx);
+
+    // 启动历史数据持久化线程（每 5 秒写入一轮）
     if (ctx.db_mgr && ctx.db_mgr->isOpen()) {
         LOG_INFO(LogModule::SYSTEM, "starting history persistence thread (interval=5s)");
         start_history_persistence_thread(&ctx);
@@ -827,6 +858,7 @@ int start_server() {
     if (ctx.http_latency_monitor_thread.joinable())     ctx.http_latency_monitor_thread.join();
     if (ctx.process_net_profiler_thread.joinable())     ctx.process_net_profiler_thread.join();
     if (ctx.tcp_retrans_monitor_thread.joinable())      ctx.tcp_retrans_monitor_thread.join();
+    if (ctx.tcp_conn_monitor_thread.joinable())         ctx.tcp_conn_monitor_thread.join();
 
     LOG_INFO(LogModule::NETWORK, "all monitor threads joined");
 

@@ -54,6 +54,7 @@ set(BPF_PROGRAMS
     dns_monitor
     wifi_packet_loss
     http_latency
+    tcp_conn_stats
 )
 
 foreach(BPF_PROG ${BPF_PROGRAMS})
@@ -91,6 +92,7 @@ add_custom_target(ebpf
         ${BPF_BUILD_DIR}/dns_monitor.bpf.o
         ${BPF_BUILD_DIR}/wifi_packet_loss.bpf.o
         ${BPF_BUILD_DIR}/http_latency.bpf.o
+        ${BPF_BUILD_DIR}/tcp_conn_stats.bpf.o
         ${BPF_BUILD_DIR}/a2dp_media.bpf.o
 )
 # eBPF 依赖：在 ARM64 容器内编译时链接，x86 开发机可跳过

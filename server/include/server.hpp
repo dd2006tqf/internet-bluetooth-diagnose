@@ -35,6 +35,7 @@ class WifiPacketLossMonitor;// 前置声明：Wi-Fi 丢包归因（eBPF）
 class HttpLatencyMonitor;   // 前置声明：HTTP 请求延迟（eBPF）
 class ProcessNetProfiler;   // 前置声明：进程网络画像（eBPF）
 class TcpRetransMonitor;    // 前置声明：TCP 重传监控（eBPF）
+class TcpConnMonitor;       // 前置声明：TCP 连接生命周期监控（eBPF）
 class DatabaseManager;      // 前置声明：SQLite 历史数据持久化
 
 /**
@@ -79,6 +80,7 @@ struct ServerContext {
     std::unique_ptr<HttpLatencyMonitor> http_latency_monitor; ///< HTTP 请求级 TTFB 延迟
     std::unique_ptr<ProcessNetProfiler> process_net_profiler; ///< 每进程带宽/重传统计
     std::unique_ptr<TcpRetransMonitor> tcp_retrans_monitor;   ///< TCP 连接级重传追踪
+    std::unique_ptr<TcpConnMonitor> tcp_conn_monitor;         ///< TCP 连接生命周期统计（accept/close/时长）
 
     // ---------- eBPF 监控器线程 ----------
     std::thread dns_monitor_thread;
@@ -86,10 +88,11 @@ struct ServerContext {
     std::thread http_latency_monitor_thread;
     std::thread process_net_profiler_thread;
     std::thread tcp_retrans_monitor_thread;
+    std::thread tcp_conn_monitor_thread;
 
     // ---------- 历史数据持久化 ----------
     std::unique_ptr<DatabaseManager> db_mgr;   ///< SQLite 管理器，持有数据库连接
-    std::thread history_thread;                 ///< 每 5 分钟将 iface_list 快照写入 DB
+    std::thread history_thread;                 ///< 每 5 秒将 iface_list 快照写入 DB
 
     /**
      * @brief 析构：释放所有资源
@@ -180,9 +183,20 @@ void start_process_net_profiler_thread(ServerContext* ctx);
 void start_tcp_retrans_monitor_thread(ServerContext* ctx);
 
 /**
+ * @brief 启动 TCP 连接生命周期监控线程
+ *
+ * 加载独立的 tcp_conn_stats.bpf.o（kretprobe/inet_csk_accept + kprobe/tcp_close），
+ * 统计入向连接 accept/close、活跃连接数、连接时长分布与每端口计数，
+ * 与 ProcessNetProfiler/TcpRetransMonitor 的流量/重传维度互不重叠。
+ *
+ * @param ctx 全局上下文
+ */
+void start_tcp_conn_monitor_thread(ServerContext* ctx);
+
+/**
  * @brief 启动历史数据持久化线程
  *
- * 每 5 分钟遍历 ctx->iface_list，将每个 NetInfo 快照写入 SQLite。
+ * 每 5 秒遍历 ctx->iface_list，将每个 usingNow 的 NetInfo 快照写入 SQLite。
  * 数据库路径由 WEAKNET_DATA_DIR 环境变量决定，默认 /home/radxa/weaknet/data/history.db。
  *
  * @param ctx 全局上下文

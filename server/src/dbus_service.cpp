@@ -44,6 +44,7 @@
 #include "http_latency_monitor.hpp"
 #include "process_net_profiler.hpp"
 #include "tcp_retransmit_monitor.hpp"
+#include "tcp_conn_monitor.hpp"
 #include "utils/json_escape.hpp"
 #include "database_manager.hpp"
 #include <sstream>
@@ -761,18 +762,19 @@ bool DbusService::handleGetProcessProfiling(DBusConnection* conn, DBusMessage* m
 
 /**
  * @brief DBus 方法实现：GetEbpfMonitorHealth —— 返回所有 eBPF monitor 健康状态（JSON）
- * @return JSON 字符串，结构: {"monitors":[{name,state,available,healthy,map_reads,map_read_errors,samples,average_read_time_us,status}, ...]}
+ * @return JSON 字符串,结构: {"monitors":[{name,state,available,healthy,map_reads,map_read_errors,samples,average_read_time_us,status}, ...]}
  *
- * 遍历 6 个实现了 IEbpfMonitor 接口的组件（DNS/Wi-Fi 丢包/HTTP 延迟/进程 profiling/TCP 重传/蓝牙音频），
- * 每个采集 health() 和 metrics()。蓝牙音频 monitor 有条件时走 bt_monitor->audioAnalyzer()，否则用
- * 栈上的 fallbackAudioAnalyzer 占位，保证 JSON 始终包含 6 项而不出现 key 缺失。
+ * 遍历 7 个实现了 IEbpfMonitor 接口的组件（DNS/Wi-Fi 丢包/HTTP 延迟/进程 profiling/
+ * TCP 重传/TCP 连接统计/蓝牙音频），每个采集 health() 和 metrics()。
+ * 蓝牙音频分析器为可选项：对象未创建时输出一份 "uninitialized" 占位条目，
+ * 保证 JSON 始终包含全部 7 项且不出现空指针解引用。
  */
 bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleGetEbpfMonitorHealth called");
     // 预先检查所有必要组件，任何一个缺失都直接返回 DBus error，避免下游空指针崩溃
     if (!ctx_ || !ctx_->dns_monitor || !ctx_->wifi_loss_monitor ||
         !ctx_->http_latency_monitor || !ctx_->process_net_profiler ||
-        !ctx_->tcp_retrans_monitor || !ctx_->bt_monitor) {
+        !ctx_->tcp_retrans_monitor || !ctx_->tcp_conn_monitor || !ctx_->bt_monitor) {
         DBusMessage* error = dbus_message_new_error(msg, "com.example.WeakNet.Error", "eBPF monitor context unavailable");
         if (error) {
             dbus_connection_send(conn, error, nullptr);
@@ -782,15 +784,15 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
         return false;
     }
 
-    // 蓝牙音频分析器可选：有就用真实实例
+    // 蓝牙音频分析器可选：有就用真实实例；为空时在下方循环中输出占位条目（不崩溃）
     const IEbpfMonitor* audioMonitor = ctx_->bt_monitor->audioAnalyzer();
-    // 若尚未创建，使用服务端持有的稳定不可用观测对象
     const std::vector<const IEbpfMonitor*> monitors = {
         static_cast<const IEbpfMonitor*>(ctx_->dns_monitor.get()),
         static_cast<const IEbpfMonitor*>(ctx_->wifi_loss_monitor.get()),
         static_cast<const IEbpfMonitor*>(ctx_->http_latency_monitor.get()),
         static_cast<const IEbpfMonitor*>(ctx_->process_net_profiler.get()),
         static_cast<const IEbpfMonitor*>(ctx_->tcp_retrans_monitor.get()),
+        static_cast<const IEbpfMonitor*>(ctx_->tcp_conn_monitor.get()),
         audioMonitor
     };
 
@@ -799,6 +801,15 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
     json << "{\"monitors\":[";
     for (size_t i = 0; i < monitors.size(); ++i) {
         if (i > 0) json << ",";
+        if (!monitors[i]) {
+            // 音频分析器对象尚未创建时的占位条目（与 Uninitialized 状态的健康快照同构）
+            json << "{\"name\":\"BtAudioAnalyzer\",\"state\":\"uninitialized\",\"available\":false"
+                 << ",\"healthy\":false,\"last_successful_sample_ns\":0,\"consecutive_errors\":0"
+                 << ",\"total_errors\":0,\"attached_probes\":0,\"map_reads\":0,\"map_read_errors\":0"
+                 << ",\"samples\":0,\"total_read_time_us\":0,\"average_read_time_us\":0"
+                 << ",\"last_error\":\"\",\"status\":\"analyzer not created\"}";
+            continue;
+        }
         const auto health = monitors[i]->health();
         const auto metrics = monitors[i]->metrics();
         json << "{\"name\":\"" << weaknet_utils::escapeJsonString(health.name)
@@ -845,13 +856,15 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
 bool DbusService::handleGetHistory(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleGetHistory called");
 
-    // 解析参数：interface(string), start(string), end(string), limit(int32)
+    // 解析收到的消息必须用 dbus_message_iter_init（读迭代器）；
+    // init_append 是写迭代器，对入站消息使用会触发 libdbus 断言/未定义行为。
+    // init 返回 FALSE 表示消息无参数，全部走缺省值。
     std::string iface_filter, start_time, end_time;
     int32_t limit = 100;
 
     DBusMessageIter args;
-    dbus_message_iter_init_append(msg, &args);
-
+    const bool hasArgs = dbus_message_iter_init(msg, &args) == TRUE;
+    if (hasArgs) {
     // 参数 1: interface (string)，可缺省
     if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING) {
         const char* val = nullptr;
@@ -880,6 +893,7 @@ bool DbusService::handleGetHistory(DBusConnection* conn, DBusMessage* msg) {
             dbus_message_iter_get_basic(&args, &limit);
         }
     }
+    }  // hasArgs
 
     std::string result = "[]";
     if (ctx_ && ctx_->db_mgr && ctx_->db_mgr->isOpen()) {

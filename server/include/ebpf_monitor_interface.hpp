@@ -3,7 +3,7 @@
  * @brief eBPF 监控器统一接口（抽象基类）
  *
  * 所有 eBPF 监控器（DnsMonitor / HttpLatencyMonitor / WifiPacketLossMonitor /
- * TcpRetransMonitor / ProcessNetProfiler / BtAudioAnalyzer）都继承 IEbpfMonitor，
+ * TcpRetransMonitor / TcpConnMonitor / ProcessNetProfiler / BtAudioAnalyzer）都继承 IEbpfMonitor，
  * 提供统一的健康查询和指标读取能力。
  *
  * 设计动机：
