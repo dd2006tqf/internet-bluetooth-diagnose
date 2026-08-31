@@ -154,7 +154,7 @@
 - **eBPF/服务端编译必须用 ARM64 Docker 容器**：本项目目标是 ARM64 开发板（Radxa Cubie A7A），eBPF 程序和 C++ 服务端的编译验证必须通过常驻 ARM64 容器 `weaknet-arm64-dev`（基于 `weaknet-builder:bullseye-arm64` 镜像）执行，并预置开发板的 `board-assets/vmlinux.h`。**禁止在 x86 开发机上直接编译**（会因 `user_pt_regs` 报错且产物架构错误）。详见 `docs/交叉编译与开发板部署.md`。容器内编译命令：
   ```bash
   docker exec weaknet-arm64-dev bash -c \
-    'cd /src && cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j1'
+    'cd /src && cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-arm64 -j1'
   ```
 
 ### surface 与 evidence 契约
@@ -212,9 +212,9 @@
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
-| "编译一下" / "build" | `cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build -j$(nproc)` | x86 本地快速编译 |
-| "跑测试" / "test" | `build/server/test/test_database_manager_gtest` | 运行指定测试 |
-| "跑全部测试" | `cmake --build build -j$(nproc) && ctest --test-dir build/server -R "test_net_info\|test_quality\|test_anomaly\|test_audio\|test_band\|test_serializer\|test_event\|test_bt_full\|test_bt_monitor$\|test_iface\|test_logger\|test_traffic\|test_database"` | x86 单元测试（排除需要 D-Bus 的集成测试） |
+| "编译一下" / "build" | `cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build-x86 -j$(nproc)` | x86 本地快速编译 |
+| "跑测试" / "test" | `build-x86/server/test/test_database_manager_gtest` | 运行指定测试 |
+| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server -R "test_net_info\|test_quality\|test_anomaly\|test_audio\|test_band\|test_serializer\|test_event\|test_bt_full\|test_bt_monitor$\|test_iface\|test_logger\|test_traffic\|test_database"` | x86 单元测试（排除需要 D-Bus 的集成测试） |
 
 ### 部署到开发板
 
@@ -230,8 +230,8 @@
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
-| "容器内编译" / "ARM64 编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build -j1'` | 需要 ~10 分钟（QEMU 模拟） |
-| "编译 eBPF" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake --build build --target ebpf -j1'` | 单独编译 eBPF 程序 |
+| "容器内编译" / "ARM64 编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-arm64 -j1'` | 需要 ~10 分钟（QEMU 模拟） |
+| "编译 eBPF" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake --build build-arm64 --target ebpf -j1'` | 单独编译 eBPF 程序 |
 
 ### 历史数据查询
 
@@ -262,7 +262,7 @@
 - **容器内编译必须用 `-j1`**，QEMU 模拟下高并行度会 segfault
 - **开发板测试需要 sudo**，脚本已内置 `dbus-run-session`
 - **部署前需清理残留目录**，脚本已自动处理
-- **增量编译**：ARM64 容器内 QEMU 模拟编译极慢（全量约 10-20 分钟），**必须保留 build 目录做增量编译**。只有改了代码的文件会被重编译（几秒完成），切勿每次 `rm -rf build` 清目录全量重编。仅在 CMakeLists.txt 变更或头文件依赖变化时才需要清理重编。
+- **增量编译**：ARM64 容器内 QEMU 模拟编译极慢（全量约 10-20 分钟），**必须保留 build-arm64 目录做增量编译**。只有改了代码的文件会被重编译（几秒完成），切勿每次 `rm -rf build-arm64` 清目录全量重编。仅在 CMakeLists.txt 变更或头文件依赖变化时才需要清理重编。
 
 ### 正确的工作流程
 
@@ -271,7 +271,7 @@
 ```
 1. 改代码
 2. 本地编译验证（x86: cmake 编译 + 单元测试）
-3. ARM64 编译（容器内 cmake -B build）
+3. ARM64 编译（容器内 cmake -B build-arm64）
 4. 部署到开发板（rsync + 服务端启动 + eBPF 加载）
 5. 开发板测试通过 ✅
 6. git commit + git push → GitHub CI 作为最终安全网
