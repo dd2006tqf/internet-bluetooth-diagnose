@@ -114,11 +114,15 @@ void Looper::run(ServerContext* ctx) {
         LOG_ERROR(LogModule::DBUS, "Looper::run: pipe() failed, falling back to timeout mode");
         s_stop_pipe[0] = s_stop_pipe[1] = -1;
     } else {
-        // 读端必须非阻塞：排空循环用 `while (read(...) > 0)` 清空管道，
-        // 阻塞模式下管道清空后第二次 read 会永久挂起（SIGTERM 后主线程
-        // 卡死在 pipe_read，systemd 只能等 TimeoutStopSec 后 SIGKILL）。
-        const int flags = fcntl(s_stop_pipe[0], F_GETFL, 0);
-        fcntl(s_stop_pipe[0], F_SETFL, flags | O_NONBLOCK);
+        // 两端均设 O_NONBLOCK：
+        // - 读端：排空循环用 `while (read(...) > 0)` 清空管道，阻塞模式下管道清空后
+        //   第二次 read 会永久挂起（SIGTERM 后主线程卡死在 pipe_read，systemd 只能
+        //   等 TimeoutStopSec 后 SIGKILL）。
+        // - 写端：signal handler 中的 write 不因管道满而阻塞（async-signal-safe 约束）。
+        for (int& fd : s_stop_pipe) {
+            const int flags = fcntl(fd, F_GETFL, 0);
+            if (flags >= 0) (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        }
     }
 
     // ---- 注册信号处理器 ----

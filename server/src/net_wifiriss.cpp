@@ -187,6 +187,19 @@ WiFiRssiClient::~WiFiRssiClient() {
  */
 bool WiFiRssiClient::connect(const std::string& ifaceName, const std::string& ctrlDir) {
     LOG_INFO(LogModule::NETWORK, "connect: starting, iface=" << ifaceName << ", ctrlDir=" << ctrlDir);
+
+    // 先释放上一轮的 socket 与本地绑定路径：本方法每个采集周期都会被调用，
+    // 若直接覆盖 sockfd_ 会泄漏旧 fd（约每 10s 每个 Wi-Fi 接口 1 个，
+    // 数小时后耗尽 ulimit -n，RSSI 监控永久失效）。
+    if (sockfd_ != -1) {
+        ::close(sockfd_);
+        sockfd_ = -1;
+    }
+    if (!localSockPath_.empty()) {
+        ::unlink(localSockPath_.c_str());
+        localSockPath_.clear();
+    }
+
     iface_ = ifaceName;
 
     // 创建 Unix 域数据报 socket

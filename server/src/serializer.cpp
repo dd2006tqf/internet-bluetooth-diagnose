@@ -22,10 +22,13 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cerrno>
+#include <fcntl.h>
 #include <fstream>
 #include <limits>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 namespace weaknet_dbus {
 
@@ -41,31 +44,77 @@ static void appendBytes(const void* data, size_t len, std::vector<uint8_t>& out)
 }
 
 /**
- * @brief 确保序列化文件的父目录存在，权限设为 0700（仅 owner 可读写）
- * @param filepath 完整文件路径
+ * @brief 确保私有目录存在，权限设为 0700（仅 owner 可读写）
+ * @param dir 允许的私有目录（$XDG_RUNTIME_DIR/weaknet 或 /tmp/weaknet）
  *
- * 递归创建目录。$XDG_RUNTIME_DIR 通常已存在，仅需创建 weaknet/ 子目录；
- * mkdir 失败（目录已存在）不报错。
+ * $XDG_RUNTIME_DIR 或 /tmp 通常已存在，仅需创建 weaknet/ 子目录；
+ * 目录已存在时 mkdir 返回 EEXIST，视为成功。
  */
-static void ensureParentDir(const std::string& filepath) {
-    size_t pos = filepath.find_last_of('/');
-    if (pos == std::string::npos || pos == 0) return;
-    std::string dir = filepath.substr(0, pos);
-    // 递归创建（$XDG_RUNTIME_DIR 通常存在，仅需创建 weaknet/ 子目录）
-    ::mkdir(dir.c_str(), 0700);
+static void ensureParentDir(const std::string& dir) {
+    if (::mkdir(dir.c_str(), 0700) != 0 && errno != EEXIST) {
+        LOG_ERROR(LogModule::WEAK_MGR, "ensureParentDir: mkdir " << dir << " failed: " << strerror(errno));
+    }
 }
 
 /**
- * @brief 检查路径安全性：防止符号链接攻击
+ * @brief 检查路径安全性：仅允许 $XDG_RUNTIME_DIR/weaknet/ 或 /tmp/weaknet/ 下的直接子文件
  * @param filepath 待检查路径
- * @return true 路径在允许的私有目录下；false 路径不安全
+ * @return true 文件的父目录恰好是允许的私有目录；false 路径不安全
  *
- * 序列化文件必须落在 $XDG_RUNTIME_DIR/weaknet/ 或 /tmp/weaknet/ 下（后者覆盖测试临时目录）。
- * 硬编码 /tmp/weaknet 前缀是因为在本项目的运行时环境中 XDG_RUNTIME_DIR 统一映射到 /tmp。
+ * 父目录必须与允许目录逐字节相等（不做前缀匹配，防止 /tmp/weaknet_evil/ 这类
+ * 相似前缀绕过），且文件名部分不得再包含 '/'（不允许更深嵌套）。
  */
 static bool isSafePath(const std::string& filepath) {
-    // 必须以 /tmp/weaknet 开头（覆盖正常路径和测试临时目录）
-    return filepath.find("/tmp/weaknet") == 0;
+    const size_t pos = filepath.find_last_of('/');
+    if (pos == std::string::npos || pos == 0) return false;
+    if (filepath.find('/', pos + 1) != std::string::npos) return false;
+    const std::string dir = filepath.substr(0, pos);
+    if (dir == "/tmp/weaknet") return true;
+    const char* xdg = std::getenv("XDG_RUNTIME_DIR");
+    if (xdg && *xdg && dir == std::string(xdg) + "/weaknet") return true;
+    return false;
+}
+
+/**
+ * @brief 以"不跟随符号链接"的方式打开安全路径下的文件
+ * @param filepath      完整文件路径（须通过 isSafePath 校验）
+ * @param forWrite      true=写（O_WRONLY|O_CREAT|O_TRUNC，0600）；false=读
+ * @param error_message [out] 失败原因（可传 nullptr）
+ * @return fd 成功；-1 路径不安全或打开失败（含符号链接攻击场景）
+ *
+ * 加固点：
+ *   - 目录用 open(O_DIRECTORY|O_NOFOLLOW) 打开 —— 私有目录本身被替换为符号链接时直接失败；
+ *   - 文件用 openat(...O_NOFOLLOW) 打开 —— 目标是符号链接（含悬空链接）时返回 ELOOP；
+ *   - 打开与读写之间不存在"检查后再打开"的窗口：openat 相对 dirfd 定位，攻击者无法
+ *     通过替换父目录组件把写入重定向到别的目录。
+ */
+static int openSafeFile(const std::string& filepath, bool forWrite, std::string* error_message) {
+    if (!isSafePath(filepath)) {
+        if (error_message) *error_message = "路径不安全，必须直接位于 $XDG_RUNTIME_DIR/weaknet/ 或 /tmp/weaknet/ 下: " + filepath;
+        return -1;
+    }
+    const size_t pos = filepath.find_last_of('/');
+    const std::string dir = filepath.substr(0, pos);
+    const std::string name = filepath.substr(pos + 1);
+
+    if (forWrite) ensureParentDir(dir);
+
+    const int dirfd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dirfd < 0) {
+        LOG_ERROR(LogModule::WEAK_MGR, "openSafeFile: open dir " << dir << " failed: " << strerror(errno));
+        if (error_message) *error_message = "无法安全打开私有目录: " + dir + " (" + strerror(errno) + ")";
+        return -1;
+    }
+    const int fd = ::openat(dirfd, name.c_str(),
+                            (forWrite ? (O_WRONLY | O_CREAT | O_TRUNC) : O_RDONLY) | O_NOFOLLOW | O_CLOEXEC,
+                            forWrite ? 0600 : 0);
+    ::close(dirfd);
+    if (fd < 0) {
+        const std::string reason = (errno == ELOOP) ? "路径包含符号链接（已拒绝）" : strerror(errno);
+        LOG_ERROR(LogModule::WEAK_MGR, "openSafeFile: open " << filepath << " failed: " << reason);
+        if (error_message) *error_message = "无法安全打开文件: " + filepath + " (" + reason + ")";
+    }
+    return fd;
 }
 
 /**
@@ -77,24 +126,27 @@ static bool isSafePath(const std::string& filepath) {
  */
 bool writeBufferToFile(const std::vector<uint8_t>& buffer, const std::string& filepath, std::string* error_message) {
     LOG_INFO(LogModule::WEAK_MGR, "writeBufferToFile: writing " << buffer.size() << " bytes to " << filepath);
-    if (!isSafePath(filepath)) {
-        if (error_message) *error_message = "路径不安全，必须在 $XDG_RUNTIME_DIR/weaknet/ 下: " + filepath;
-        return false;
+    const int fd = openSafeFile(filepath, /*forWrite=*/true, error_message);
+    if (fd < 0) return false;
+
+    size_t off = 0;
+    bool ok = true;
+    while (off < buffer.size()) {
+        const ssize_t n = ::write(fd, buffer.data() + off, buffer.size() - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ok = false;
+            break;
+        }
+        off += static_cast<size_t>(n);
     }
-    ensureParentDir(filepath);
-    std::ofstream ofs(filepath, std::ios::binary | std::ios::trunc);
-    if (!ofs.is_open()) {
-        LOG_ERROR(LogModule::WEAK_MGR, "writeBufferToFile: failed to open " << filepath);
-        if (error_message) *error_message = "无法打开文件写入: " + filepath;
-        return false;
-    }
-    ofs.write(reinterpret_cast<const char*>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
-    if (!ofs.good()) {
+    if (::close(fd) != 0) ok = false;
+
+    if (!ok) {
         LOG_ERROR(LogModule::WEAK_MGR, "writeBufferToFile: write failed for " << filepath);
         if (error_message) *error_message = "写入失败: " + filepath;
-        return false;
     }
-    return true;
+    return ok;
 }
 
 /**
@@ -106,32 +158,30 @@ bool writeBufferToFile(const std::vector<uint8_t>& buffer, const std::string& fi
  */
 bool readFileToBuffer(const std::string& filepath, std::vector<uint8_t>* buffer, std::string* error_message) {
     LOG_INFO(LogModule::WEAK_MGR, "readFileToBuffer: reading from " << filepath);
-    if (!isSafePath(filepath)) {
-        if (error_message) *error_message = "路径不安全，必须在 $XDG_RUNTIME_DIR/weaknet/ 下: " + filepath;
-        return false;
-    }
-    std::ifstream ifs(filepath, std::ios::binary);
-    if (!ifs.is_open()) {
-        LOG_ERROR(LogModule::WEAK_MGR, "readFileToBuffer: failed to open " << filepath);
-        if (error_message) *error_message = "无法打开文件读取: " + filepath;
-        return false;
-    }
-    // 先 seek 到末尾获取文件大小，再 resize 缓冲区，最后 seek 回头部读取
-    ifs.seekg(0, std::ios::end);
-    std::streamsize size = ifs.tellg();
-    if (size < 0) {
-        if (error_message) *error_message = "读取文件大小失败: " + filepath;
-        return false;
-    }
-    ifs.seekg(0, std::ios::beg);
-    buffer->resize(static_cast<size_t>(size));
-    if (size > 0) {
-        ifs.read(reinterpret_cast<char*>(buffer->data()), size);
-        if (!ifs.good()) {
-            if (error_message) *error_message = "读取失败: " + filepath;
-            return false;
+    const int fd = openSafeFile(filepath, /*forWrite=*/false, error_message);
+    if (fd < 0) return false;
+
+    // 循环读至 EOF（不信任文件预读大小，处理读取中途文件变化/部分读）
+    std::vector<uint8_t> data;
+    uint8_t chunk[8192];
+    bool ok = true;
+    for (;;) {
+        const ssize_t n = ::read(fd, chunk, sizeof(chunk));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ok = false;
+            break;
         }
+        if (n == 0) break;
+        data.insert(data.end(), chunk, chunk + n);
     }
+    ::close(fd);
+
+    if (!ok) {
+        if (error_message) *error_message = "读取失败: " + filepath;
+        return false;
+    }
+    *buffer = std::move(data);
     return true;
 }
 

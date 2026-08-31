@@ -18,27 +18,30 @@ using namespace weaknet_dbus;
 class SerializerTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Generate unique temp dir per test to avoid conflicts
+        // Fixture 必须使用允许的私有目录 /tmp/weaknet：isSafePath 要求文件的
+        // 父目录与允许目录逐字节相等（不接受相似前缀，也不允许嵌套子目录），
+        // 因此直接在该目录下以 "测试名_文件名" 命名临时文件避免冲突。
         const char* testName = ::testing::UnitTest::GetInstance()->current_test_info()->name();
-        tmpDir_ = "/tmp/weaknet_gtest_" + std::to_string(getpid()) + "_" + std::string(testName);
-        mkdir(tmpDir_.c_str(), 0755);
+        testName_ = testName;
+        mkdir("/tmp/weaknet", 0700);
+        tmpDir_ = "/tmp/weaknet";
     }
 
     void TearDown() override {
-        // Clean up temp files
+        // Clean up temp files（不删除 /tmp/weaknet 本身：服务端运行期会复用该目录）
         for (const auto& f : filesToRemove_) {
             std::remove(f.c_str());
         }
-        rmdir(tmpDir_.c_str());
     }
 
-    // Helper: create temp file path
+    // Helper: create temp file path（文件名以测试名开头，避免并行用例冲突）
     std::string tmpFile(const std::string& name) {
-        std::string path = tmpDir_ + "/" + name;
+        std::string path = tmpDir_ + "/" + testName_ + "_" + name;
         filesToRemove_.push_back(path);
         return path;
     }
 
+    std::string testName_;
     std::string tmpDir_;
     std::vector<std::string> filesToRemove_;
 };

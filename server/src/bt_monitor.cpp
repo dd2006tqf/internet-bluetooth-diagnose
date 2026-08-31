@@ -1684,11 +1684,13 @@ bool BtMonitor::initPhase2(const std::string& bpfObjectPath) {
     return ebpfAttached;
 }
 
-/** @brief 停止 Phase 2：释放 eBPF 内核资源、清空前次统计快照 */
+/** @brief 停止 Phase 2：释放 eBPF 内核资源、清空前次统计快照
+ *  @note  刻意保留 btAudioAnalyzer_ 对象（只 stop 不 reset）：
+ *         GetEbpfMonitorHealth 会遍历 audioAnalyzer()，置空会产生悬空空指针；
+ *         停止后的分析器以 Stopped 状态继续如实上报健康快照。 */
 void BtMonitor::stopPhase2() {
     if (btAudioAnalyzer_) {
         btAudioAnalyzer_->stop();
-        btAudioAnalyzer_.reset();
     }
     if (btAudioFusion_) {
         btAudioFusion_.reset();
