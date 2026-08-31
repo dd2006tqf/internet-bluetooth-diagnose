@@ -28,6 +28,7 @@
 #include "logger.hpp"
 
 #include <chrono>
+#include <cerrno>
 #include <cstdio>
 #include <arpa/inet.h>
 
@@ -214,6 +215,18 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
     initialized_ = true;
 
     LOG_INFO(LogModule::NETWORK, "DnsMonitor: initialized successfully");
+    // 预创建 key=0 聚合条目：BPF 侧只在首个 DNS 事件到达时才创建该条目，
+    // 若窗口期内无 DNS 流量，用户态 lookup 会得到 ENOENT。预先写入零值记录，
+    // 保证 getStats() 在无流量时也能成功读到零值而不是被计为读取错误。
+    {
+        __u32 stats_key = 0;
+        dns_stats_record empty_record = {};
+        if (bpf_map_update_elem(impl_->dns_stats_fd, &stats_key, &empty_record, BPF_ANY) != 0) {
+            LOG_WARNING(LogModule::NETWORK,
+                        "DnsMonitor: pre-create dns_stats entry failed (errno=" << errno
+                        << "), getStats will treat ENOENT as empty stats");
+        }
+    }
     stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached");
     stateSupport_.recordProbeAttached();
     stateSupport_.recordProbeAttached();
@@ -258,20 +271,26 @@ DnsAggStats DnsMonitor::getStats() {
 
     auto started = std::chrono::steady_clock::now();
     __u32 key = 0;
-    dns_stats_record percpu_stats = {};
-    if (bpf_map_lookup_elem(impl_->dns_stats_fd, &key, &percpu_stats) == 0) {
+    dns_stats_record stats = {};
+    if (bpf_map_lookup_elem(impl_->dns_stats_fd, &key, &stats) == 0) {
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - started).count();
         stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed));
-        result.totalQueries = percpu_stats.total_queries;
-        result.totalResponses = percpu_stats.total_responses;
-        result.totalTimeouts = percpu_stats.total_timeouts;
-        result.totalErrors = percpu_stats.total_errors;
+        result.totalQueries = stats.total_queries;
+        result.totalResponses = stats.total_responses;
+        result.totalTimeouts = stats.total_timeouts;
+        result.totalErrors = stats.total_errors;
         // 平均延迟 = 累计总延迟 / 响应数（避免除以零）
-        result.avgLatencyMs = (percpu_stats.total_responses > 0)
-            ? (percpu_stats.total_latency_ns / percpu_stats.total_responses / 1000000)
+        result.avgLatencyMs = (stats.total_responses > 0)
+            ? (stats.total_latency_ns / stats.total_responses / 1000000)
             : 0;
-        result.maxLatencyMs = percpu_stats.max_latency_ns / 1000000;
+        result.maxLatencyMs = stats.max_latency_ns / 1000000;
+    } else if (errno == ENOENT) {
+        // 条目尚未创建（窗口期内无 DNS 流量）——“暂无数据”不是监控故障，
+        // 记为一次成功读取并返回零值，避免把空闲期误报成持续读取错误。
+        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed));
     } else {
         stateSupport_.recordReadFailure("dns_stats map lookup failed");
     }

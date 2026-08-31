@@ -23,6 +23,7 @@
 #include <dbus/dbus.h>
 #include <poll.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <memory>
 #include <cerrno>
@@ -112,6 +113,12 @@ void Looper::run(ServerContext* ctx) {
     if (pipe(s_stop_pipe) < 0) {
         LOG_ERROR(LogModule::DBUS, "Looper::run: pipe() failed, falling back to timeout mode");
         s_stop_pipe[0] = s_stop_pipe[1] = -1;
+    } else {
+        // 读端必须非阻塞：排空循环用 `while (read(...) > 0)` 清空管道，
+        // 阻塞模式下管道清空后第二次 read 会永久挂起（SIGTERM 后主线程
+        // 卡死在 pipe_read，systemd 只能等 TimeoutStopSec 后 SIGKILL）。
+        const int flags = fcntl(s_stop_pipe[0], F_GETFL, 0);
+        fcntl(s_stop_pipe[0], F_SETFL, flags | O_NONBLOCK);
     }
 
     // ---- 注册信号处理器 ----
@@ -159,12 +166,16 @@ void Looper::run(ServerContext* ctx) {
                 break;
             }
 
-            // D-Bus fd 可读：循环 dispatch 直到队列清空
-            // dbus_connection_read_write_dispatch(conn_, 0) 中 timeout=0 表示非阻塞
+            // D-Bus fd 可读：单次非阻塞派发
+            // 注意：dbus_connection_read_write_dispatch(conn_, 0) 的返回值语义是
+            // “连接未断开”而不是“还有数据”——无界 while 会把主循环永久卡死在这里：
+            //   1. self-pipe 停止信号永远得不到检查，SIGTERM/SIGINT 失效
+            //      （systemd 停服只能等 TimeoutStopSec 后 SIGKILL，journal 可见 stop timeout）
+            //   2. 主线程空转，单核 CPU 接近 100%
+            //   3. 切换到系统总线后该问题必现（原会话总线场景同样存在，只是未暴露）
+            // 因此每次 POLLIN 只派发一次；若仍有数据到达，poll 会立即再次唤醒。
             if (fds[0].revents & POLLIN) {
-                while (dbus_connection_read_write_dispatch(conn_, 0)) {
-                    // 内部会读取、解析、分发 D-Bus 消息到注册的回调处理器
-                }
+                (void)dbus_connection_read_write_dispatch(conn_, 0);
             }
         }
     } else {
