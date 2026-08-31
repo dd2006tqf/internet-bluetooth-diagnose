@@ -7,7 +7,7 @@
  *     典型范围：-30 dBm（信号极好）~ -90 dBm（信号极弱）
  *
  * 数据源：
- *   - 系统调用：通过 Linux nl80211 netlink 接口查询 Wi-Fi 驱动的 BSS 信息
+ *   - 系统调用：通过 wpa_supplicant Unix DGRAM 控制 socket 发送 SIGNAL_POLL
  *     （由 WeakNetMgr::updateWifiRssiSafe 内部封装实现）
  *
  * 线程模型：
@@ -37,8 +37,7 @@ namespace weaknet_dbus {
  * 当 RSSI 发生变化时，通过 D-Bus 服务发射变化信号。
  *
  * @param ctx     ServerContext 指针
- * @param ctrlDir nl80211 控制目录路径（通常为 "/sys/class/net"，
- *                用于定位 Wi-Fi 接口设备并发起 netlink 查询）
+ * @param ctrlDir wpa_supplicant 控制目录（为空时自动探测 /run/wpa_supplicant 等路径）
  */
 void start_rssi_monitor_thread(ServerContext* ctx, const std::string& ctrlDir) {
     // 加入可 join 句柄，由主线程退出路径 join，避免 detached 线程在 ctx 析构后野访问
@@ -48,7 +47,7 @@ void start_rssi_monitor_thread(ServerContext* ctx, const std::string& ctrlDir) {
         while (ctx->running.load()) {
             loop_count++;
 
-            // 直接调用线程安全的RSSI更新方法（内部通过 nl80211 netlink 查询驱动）
+            // 直接调用线程安全的RSSI更新方法（内部通过 wpa_supplicant 控制 socket 查询）
             bool changed = ctx->weak_mgr->updateWifiRssiSafe(ctrlDir);
 
             // 获取当前接口列表用于日志输出

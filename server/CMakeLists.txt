@@ -3,6 +3,7 @@ file(GLOB SERVER_SOURCES CONFIGURE_DEPENDS src/*.cpp src/utils/*.cpp)
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*\\.bpf\\.c$")
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*history_query_tool\\.cpp$")
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*main\\.cpp$")
+list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*server\\.cpp$")
 
 # ---- 公共代码库（客户端和服务端共享 serializer + logger + json_escape） ----
 add_library(weaknet_common STATIC src/serializer.cpp src/logger.cpp src/utils/json_escape.cpp)

@@ -9,7 +9,7 @@
  *   - 顶 N 重传最多连接（getTopRetransConnections）
  *
  * 数据源（eBPF）：
- *   - BPF 对象文件名：tcp_retransmit_monitor.bpf.o
+ *   - BPF 对象文件名：tcp_retransmit.bpf.o
  *   - 探针类型：kprobe（内核函数入口）
  *     - kprobe/tcp_retransmit_skb → trace_tcp_retransmit（捕获 TCP 重传事件，更新 retrans_stats Map）
  *     - kprobe/tcp_sendmsg         → trace_tcp_sendmsg（捕获正常 TCP 发送，累计 total_segs）
@@ -149,7 +149,7 @@ TcpRetransMonitor::~TcpRetransMonitor() {
  *   - kprobe/tcp_retransmit_skb → trace_tcp_retransmit（捕获重传事件，更新 total_retrans）
  *   - kprobe/tcp_sendmsg         → trace_tcp_sendmsg（捕获正常 TCP 发送，更新 total_segs）
  *
- * @param bpfObjPath BPF 对象文件路径（通常为 "build/tcp_retransmit_monitor.bpf.o"）
+ * @param bpfObjPath BPF 对象文件路径（通常为 "build/tcp_retransmit.bpf.o"）
  * @return true  初始化成功（至少一个 kprobe 挂载成功）
  *         false 初始化失败
  */

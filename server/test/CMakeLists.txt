@@ -112,6 +112,7 @@ foreach(test_target
     test_bt_monitor_extra_gtest
     test_jitter_monitor_gtest
     test_dns_monitor_gtest
-    test_database_manager_gtest)
+    test_database_manager_gtest
+    test_ebpf_monitor_observability_gtest)
     add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()

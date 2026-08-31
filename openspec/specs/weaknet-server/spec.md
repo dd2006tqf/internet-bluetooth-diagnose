@@ -33,7 +33,7 @@ MUST 在流量分析启动后检查降级模式状态并输出 WARNING 日志。
 
 #### Scenario: 评估器集成和构建更新
 - **WHEN** 服务端编译
-- **THEN** MUST 编译新的 wifi_packet_loss.bpf.o，server/Makefile 包含新的编译规则
+- **THEN** MUST 编译新的 wifi_packet_loss.bpf.o，并由 CMake eBPF 目标纳入构建图
 
 ### Requirement: 进程网络画像
 服务端 MUST 通过 eBPF 探针统计每个进程的网络流量，定位占带宽或大量重传的进程。
@@ -51,7 +51,7 @@ MUST 在流量分析启动后检查降级模式状态并输出 WARNING 日志。
 
 #### Scenario: 构建更新
 - **WHEN** 服务端编译
-- **THEN** MUST 编译新增的 process_net_profiler.cpp，server/Makefile 包含新的源文件
+- **THEN** MUST 编译新增的 process_net_profiler.cpp，并由 CMake 服务端目标纳入构建图
 
 ### Requirement: TCP重传追踪
 服务端 MUST 通过 eBPF 探针实时追踪每个 TCP 连接的重传事件。
@@ -98,7 +98,7 @@ HTTP 延迟监控 MUST 集成到构建系统。
 
 #### Scenario: 构建更新
 - **WHEN** 服务端编译
-- **THEN** MUST 编译新增的 http_latency.bpf.o，server/Makefile 包含新的编译规则
+- **THEN** MUST 编译新增的 http_latency.bpf.o，并由 CMake eBPF 目标纳入构建图
 
 ### Requirement: 服务端启动时创建带时间戳的日志文件
 

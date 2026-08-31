@@ -8,9 +8,9 @@
  *   - 丢包等级：根据丢包率阈值分类（由 net_tcp.h 中的 TcpLossMonitor 定义）
  *
  * 数据源：
- *   - 系统调用：读取 /proc/net/snmp 中的 Tcp 段统计（SegmentsOut/RetransSegs），
+ *   - 系统调用：通过 NETLINK_SOCK_DIAG 查询 TCP socket 的 tcp_info，
  *     由 TcpLossMonitor::sampleForInterface 封装实现
- *   - 注意：此处基于 /proc 文本解析，与 eBPF 的 tcp_retransmit_monitor 形成互补
+ *   - 通过两次采样的计数差分估算发送段与重传段增量
  *
  * 线程模型：
  *   - 独立 std::thread，与 RTT/RSSI/Jitter 等监控线程并行
@@ -75,7 +75,7 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
                 continue;
             }
 
-            // 采样当前 TCP 统计信息（从 /proc/net/snmp 读取）
+            // 采样当前 TCP 统计信息（通过 NETLINK_SOCK_DIAG 查询）
             if (!tcpMonitor->sampleForInterface(currentIface, currStats)) {
                 LOG_ERROR(LogModule::TCP_LOSS, "failed to sample TCP stats for interface: " << currentIface);
                 for (int i = 0; i < 100 && ctx->running.load(); ++i)
