@@ -248,7 +248,7 @@ file "$LLAMA_SRC/build/bin/llama-server"
 #!/usr/bin/env bash
 set -euo pipefail
 
-BOARD="${BOARD:-radxa@192.168.2.77}"
+BOARD="${BOARD:-radxa@radxa-cubie-a7a.local}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LLAMA_SRC="$ROOT/llama.cpp"
 
@@ -338,7 +338,7 @@ wget https://www.modelscope.cn/models/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/mast
 **策略 B：开发板直接下载**
 ```bash
 # 利用 HuggingFace 镜像或 ModelScope 国内源
-ssh radxa@192.168.2.77 \
+ssh radxa@radxa-cubie-a7a.local \
   "wget -c 'https://hf-mirror.com/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf' \
    -O /home/radxa/llama/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 ```

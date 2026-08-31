@@ -161,7 +161,7 @@ ctest --test-dir build-x86/server -R 'test_net_info|test_quality|test_serializer
 2. **资源清理**: 程序退出前应调用 `weaknet_cleanup()`
 3. **错误处理**: 所有函数返回 `false` 时检查错误缓冲区
 4. **线程安全**: 库内部使用DBus，基本是线程安全的
-5. **环境依赖**: 需要DBus会话总线运行WeakNet服务器
+5. **环境依赖**: 需要 D-Bus 系统总线运行 WeakNet 服务器（服务端注册于 system bus）
 
 ## 🌐 集成示例
 

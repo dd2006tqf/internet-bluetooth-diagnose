@@ -73,7 +73,7 @@ docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build -DCMAKE_BUILD_T
 ```bash
 ./tools/ci.sh --skip-test  # deploy without tests
 # Then verify:
-ssh radxa@192.168.2.77 'systemctl status weaknet-server'
+ssh radxa@radxa-cubie-a7a.local 'systemctl status weaknet-server'
 # Expected: active (running)
 ```
 

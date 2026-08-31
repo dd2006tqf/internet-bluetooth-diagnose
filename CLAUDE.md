@@ -29,6 +29,23 @@
 - 这是硬性前置要求，不是可选项。跳过通读直接开始任务会导致规划/实现/评审违反铁律而返工。
 - 涉及具体 change 时，还必须阅读该 change 的 `proposal.md`、`design.md`、`specs/`、`tasks.md` 及 `harness/` 下证据。
 
+## 开发板 SSH 连接约定
+
+- 开发板主机名：`radxa-cubie-a7a.local`（开发板通过 mDNS/Avahi 发布 `.local` 主机名）
+- SSH 用户名：`radxa`，端口：`22`
+- 默认 SSH 命令：
+
+  ```bash
+  ssh radxa@radxa-cubie-a7a.local
+  ```
+
+- 后续所有涉及开发板的远程操作（开发、部署、调试、编译、测试、日志查看等），**一律优先使用 `radxa-cubie-a7a.local`，禁止硬编码开发板当前 DHCP 分配到的 IPv4 地址**。热点重连后 IP 会变化，`.local` 主机名不变。
+- Agent 需要在开发板执行命令时使用：`ssh radxa@radxa-cubie-a7a.local "命令"`
+- 如果 `.local` 无法解析，按以下顺序排查，**不要直接修改为静态 IP**：
+  1. 确认本机与开发板处于**同一局域网**（mDNS 是链路本地组播，不能跨网段/路由器解析；例如本机在 192.168.3.x、开发板在 192.168.137.x 时必然解析失败，这是拓扑限制而不是配置错误）；
+  2. 检查开发板上 `avahi-daemon` 与 ssh 服务状态：`ssh radxa@<当前IP> 'systemctl is-active avahi-daemon ssh'`；
+  3. 检查本机 mDNS 解析能力（Linux 需 avahi/nss-mdns，且 avahi-daemon 运行中）。
+
 ## Canonical workflow
 
 - OpenSpec is the only source of truth for proposals, behavior specs, design and tasks.
@@ -237,8 +254,8 @@
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
-| "查历史数据" / "查数据库" | `ssh radxa@192.168.2.77 'sudo /home/radxa/weaknet/server/bin/history_query_tool --info'` | 查看数据库信息 |
-| "查 wlan0 最近 1 小时" | `ssh radxa@192.168.2.77 'sudo /home/radxa/weaknet/server/bin/history_query_tool --iface wlan0 --last 1h'` | 按网卡 + 时间查询 |
+| "查历史数据" / "查数据库" | `ssh radxa@radxa-cubie-a7a.local 'sudo /home/radxa/weaknet/server/bin/history_query_tool --info'` | 查看数据库信息 |
+| "查 wlan0 最近 1 小时" | `ssh radxa@radxa-cubie-a7a.local 'sudo /home/radxa/weaknet/server/bin/history_query_tool --iface wlan0 --last 1h'` | 按网卡 + 时间查询 |
 
 ### Harness 工作流
 
@@ -252,7 +269,7 @@
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
-| "板子在线吗" / "检查开发板" | `ping -c 1 -W 2 192.168.2.77 && ssh radxa@192.168.2.77 'uname -m'` | 检查连通性 + 架构 |
+| "板子在线吗" / "检查开发板" | `ping -c 1 -W 2 radxa-cubie-a7a.local && ssh radxa@radxa-cubie-a7a.local 'uname -m'` | 检查连通性 + 架构 |
 | "容器状态" | `docker ps --filter name=weaknet-arm64-dev` | 检查 ARM64 容器 |
 | "CI 状态" | `gh run list --limit 5` | 查看 GitHub Actions 运行记录 |
 

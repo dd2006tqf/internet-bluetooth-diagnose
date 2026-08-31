@@ -52,7 +52,7 @@
 ### 手动在开发板测试
 
 ```bash
-ssh -t radxa@192.168.2.77 'sudo /home/radxa/weaknet/weaknet-test-full.sh'
+ssh -t radxa@radxa-cubie-a7a.local 'sudo /home/radxa/weaknet/weaknet-test-full.sh'
 ```
 
 ## 环境变量
@@ -60,7 +60,7 @@ ssh -t radxa@192.168.2.77 'sudo /home/radxa/weaknet/weaknet-test-full.sh'
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `CONTAINER` | `weaknet-arm64-dev` | ARM64 构建容器名 |
-| `BOARD` | `radxa@192.168.2.77` | 开发板 SSH 地址 |
+| `BOARD` | `radxa@radxa-cubie-a7a.local` | 开发板 SSH 地址 |
 | `JOBS` | `1` | 编译并行度（QEMU 下不要超过 1） |
 
 示例：
@@ -144,7 +144,7 @@ ci-reports/
 A: 首次编译约 30 分钟（QEMU 模拟），之后 ccache 加速，增量编译只需几秒。用 `--skip-build` 可跳过编译。
 
 ### Q: 开发板连不上？
-A: 检查 `ssh radxa@192.168.2.77 echo ok`。连不上会自动跳过远程测试。
+A: 检查 `ssh radxa@radxa-cubie-a7a.local echo ok`。连不上会自动跳过远程测试。
 
 ### Q: 功能测试失败？
 A: 确保服务端正常启动（`weaknet-test-full.sh` 会自动启动）。如果 `test-client get` 超时，是已知的 D-Bus 延迟问题。
@@ -152,7 +152,7 @@ A: 确保服务端正常启动（`weaknet-test-full.sh` 会自动启动）。如
 ### Q: 如何只测试某个模块？
 A: 在开发板上直接运行单个测试：
 ```bash
-ssh radxa@192.168.2.77 '
+ssh radxa@radxa-cubie-a7a.local '
 export LD_LIBRARY_PATH=/home/radxa/weaknet/lib:/home/radxa/weaknet/client/lib
 cd /home/radxa/weaknet/server
 ./test/bin/test_quality_assessor_gtest

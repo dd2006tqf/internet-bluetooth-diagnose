@@ -547,7 +547,7 @@ Skills 是来自 [superpowers](https://github.com/obra/superpowers) 框架的技
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
-| "板子在线吗" / "检查开发板" | `ping -c 1 -W 2 192.168.2.77 && ssh radxa@192.168.2.77 'uname -m'` | 检查连通性 + 架构 |
+| "板子在线吗" / "检查开发板" | `ping -c 1 -W 2 radxa-cubie-a7a.local && ssh radxa@radxa-cubie-a7a.local 'uname -m'` | 检查连通性 + 架构 |
 | "容器状态" | `docker ps --filter name=weaknet-arm64-dev` | 检查 ARM64 容器 |
 | "CI 状态" | `gh run list --limit 5` | 查看 GitHub Actions 运行记录 |
 
