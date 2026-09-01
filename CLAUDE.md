@@ -273,6 +273,16 @@
 | "容器状态" | `docker ps --filter name=weaknet-arm64-dev` | 检查 ARM64 容器 |
 | "CI 状态" | `gh run list --limit 5` | 查看 GitHub Actions 运行记录 |
 
+### 配置化与实时调参（新增）
+
+| 用户意图 | 执行命令 | 说明 |
+|---------|---------|------|
+| "查配置" / "config get" | `weaknet-cli get <monitor>` | 查询监控器当前参数（JSON），如 `weaknet-cli get rtt` |
+| "改配置" / "config set" | `weaknet-cli set <key> <value>` | 实时设置参数（白名单校验），如 `weaknet-cli set rtt.interval 5s` |
+| "列配置" / "config list" | `weaknet-cli list` | 列出所有可用监控器名 |
+
+---
+
 ### 注意事项
 
 - **eBPF 必须在 ARM64 容器内编译**，x86 上会报 `user_pt_regs` 错误
@@ -311,6 +321,24 @@
 sudo killall weaknet-dbus-server 2>/dev/null
 sudo chown -R radxa:radxa /tmp/weaknet/
 sudo systemctl restart weaknet-server
+```
+
+**实时调参（部署后即可使用，无需重启服务）：**
+```bash
+# 查看所有可调监控器
+weaknet-cli list
+
+# 查看 RTT 当前参数
+weaknet-cli get rtt
+
+# 实时修改 RTT 采样周期为 5 秒（立即生效）
+weaknet-cli set rtt.interval 5s
+
+# 实时修改 RTT 探测目标
+weaknet-cli set rtt.target 8.8.8.8
+
+# 查看所有配置
+weaknet-cli get all
 ```
 
 **禁止操作：**
