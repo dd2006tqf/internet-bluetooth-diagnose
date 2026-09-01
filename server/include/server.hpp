@@ -21,6 +21,8 @@
 #include <atomic>
 #include <memory>
 
+#include "weaknet_config.hpp"
+
 // 前置声明，避免强依赖 dbus 头
 struct DBusConnection;
 
@@ -93,6 +95,9 @@ struct ServerContext {
     // ---------- 历史数据持久化 ----------
     std::unique_ptr<DatabaseManager> db_mgr;   ///< SQLite 管理器，持有数据库连接
     std::thread history_thread;                 ///< 每 5 秒将 iface_list 快照写入 DB
+
+    // ---------- 运行时配置 ----------
+    WeakNetConfig cfg;                          ///< 线程安全配置（启动时构建一次，此后通过 D-Bus 运行时调参）
 
     /**
      * @brief 析构：释放所有资源
@@ -207,17 +212,18 @@ void start_history_persistence_thread(ServerContext* ctx);
  * @brief 启动 WeakNet D-Bus 服务端主入口
  *
  * 完整启动流程：
- *   1. 创建 ServerContext（unique_ptr 智能持有）
- *   2. init_dbus() 建立会话总线连接、注册服务名 com.example.WeakNet
- *   3. 创建 DbusService / WeakNetMgr / eBPF 监控器实例
- *   4. 启动 13+ 个监控线程 + 历史持久化线程
- *   5. 主线程进入 Looper::run() 阻塞，处理 D-Bus 消息
+ *   1. 解析 --config <path> 命令行参数（默认 /etc/weaknet/config.yaml）
+ *   2. 加载配置文件，回落 WeakNetConfig 默认值（行为零变化）
+ *   3. 应用日志级别配置
+ *   4. 初始化日志系统
+ *   5. 解析数据库路径（优先级：cfg.data_dir > WEAKNET_DATA_DIR > 默认）
+ *   6. 启动 D-Bus 连接、监控线程、eBPF 监控器、历史持久化线程
+ *   7. 主线程进入 Looper::run() 阻塞
  *
  * 该函数会阻塞，直到进程被外部信号（SIGINT/SIGTERM）终止或 ServerContext::running_ 被置 false。
- * 退出时 ServerContext 析构函数负责按逆序停止所有线程和释放资源。
  *
- * @return 0 表示正常退出，非零表示初始化失败
+ * @return 0 正常退出；非零为配置错误等可恢复错误
  */
-int start_server();
+int start_server(int argc, char** argv);
 
 }  // namespace weaknet_dbus

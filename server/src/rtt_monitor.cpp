@@ -42,15 +42,25 @@ namespace weaknet_dbus {
  * @param timeoutMs   单次 ping 超时时间（毫秒）
  */
 void start_rtt_monitor_thread(ServerContext* ctx, const std::string& host, int intervalMs, int timeoutMs) {
-    // 加入可 join 句柄，由主线程退出路径 join，避免 detached 线程在 ctx 析构后野访问
+    // 加入可 join 句柄，由主线程退出路径 join，避免 detached 线程在 ctx 析构后野访问。
+    // 循环内每轮从线程安全配置现读 target/interval/timeout，
+    // 支持 D-Bus SetMonitorParam 实时调参。start 参数仅作 cfg 为空时的兜底。
     ctx->rtt_thread = std::thread([ctx, host, intervalMs, timeoutMs]{
         LOG_INFO(LogModule::RTT, "RTT monitor thread started");
         int loop_count = 0;
         while (ctx->running.load()) {
             loop_count++;
             try {
+                // 每轮现读配置（D-Bus 调参立即生效）
+                std::string eff_host = ctx->cfg.rtt.target.get();
+                int eff_interval = ctx->cfg.rtt.interval_ms.load();
+                int eff_timeout = ctx->cfg.rtt.timeout_ms.load();
+                if (eff_host.empty()) eff_host = host;
+                if (eff_interval <= 0) eff_interval = intervalMs;
+                if (eff_timeout <= 0) eff_timeout = timeoutMs;
+
                 // 直接调用线程安全的RTT更新方法
-                bool changed = ctx->weak_mgr->updateRttAndStateSafe(host, timeoutMs);
+                bool changed = ctx->weak_mgr->updateRttAndStateSafe(eff_host, eff_timeout);
 
                 // 获取当前接口列表用于日志输出
                 auto current_interfaces = ctx->weak_mgr->getCurrentInterfaces();
@@ -62,7 +72,7 @@ void start_rtt_monitor_thread(ServerContext* ctx, const std::string& host, int i
                             LOG_INFO(LogModule::RTT, "RTT_MONITOR: " << net.ifName()
                                 << " | RTT: " << net.rttMs() << "ms"
                                 << " | Quality: " << static_cast<int>(net.quality())
-                                << " | Target: " << host);
+                                << " | Target: " << eff_host);
                         }
                     }
                 }
@@ -71,7 +81,7 @@ void start_rtt_monitor_thread(ServerContext* ctx, const std::string& host, int i
                     ctx->service->emitChanged("RTT/Quality updated", /*counter*/0);
                 }
 
-                for (int i = 0; i < (intervalMs / 100) && ctx->running.load(); ++i)
+                for (int i = 0; i < (eff_interval / 100) && ctx->running.load(); ++i)
                     std::this_thread::sleep_for(100ms);
 
             } catch (const std::exception& e) {

@@ -763,15 +763,94 @@ public:
         return requestStringData(kMethodGetEbpfMonitorHealth, "eBPF 监控器健康状态", result, errorMsg);
     }
 
-    /**
-     * @brief 调用 GetHistory 查询历史监控数据
-     *
-     * D-Bus 调用：
-     *   - Method:  GetHistory
-     *   - Args:    STRING interface, STRING start, STRING end, INT32 limit
-     *   - Returns: STRING（JSON 数组）
-     *   - 超时：5000ms
-     */
+    /** @brief 调用 SetMonitorParam 运行时设置监控器参数 */
+    bool setMonitorParam(const std::string& key, const std::string& value,
+                         std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+
+        DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodSetMonitorParam);
+        if (!msg) {
+            errorMsg = "创建方法调用消息失败";
+            return false;
+        }
+
+        DBusMessageIter args;
+        dbus_message_iter_init_append(msg, &args);
+        const char* key_cstr = key.c_str();
+        const char* value_cstr = value.c_str();
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &key_cstr);
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &value_cstr);
+
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 5000, &err);
+        dbus_message_unref(msg);
+
+        if (dbus_error_is_set(&err)) {
+            errorMsg = "SetMonitorParam 失败: " + std::string(err.message);
+            dbus_error_free(&err);
+            return false;
+        }
+        if (!reply) {
+            errorMsg = "未收到 SetMonitorParam 应答";
+            return false;
+        }
+
+        // 解析回复（单个字符串 "ok"）
+        DBusMessageIter iter;
+        dbus_message_iter_init(reply, &iter);
+        if (dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING) {
+            const char* s = nullptr;
+            dbus_message_iter_get_basic(&iter, &s);
+            result = s ? s : "";
+        }
+        dbus_message_unref(reply);
+        return true;
+    }
+
+    /** @brief 调用 GetMonitorParam 查询监控器当前参数（返回 JSON） */
+    bool getMonitorParam(const std::string& monitor,
+                         std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+
+        DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodGetMonitorParam);
+        if (!msg) {
+            errorMsg = "创建方法调用消息失败";
+            return false;
+        }
+
+        DBusMessageIter args;
+        dbus_message_iter_init_append(msg, &args);
+        const char* monitor_cstr = monitor.c_str();
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &monitor_cstr);
+
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 5000, &err);
+        dbus_message_unref(msg);
+
+        if (dbus_error_is_set(&err)) {
+            errorMsg = "GetMonitorParam 失败: " + std::string(err.message);
+            dbus_error_free(&err);
+            return false;
+        }
+        if (!reply) {
+            errorMsg = "未收到 GetMonitorParam 应答";
+            return false;
+        }
+
+        DBusMessageIter iter;
+        dbus_message_iter_init(reply, &iter);
+        if (dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING) {
+            const char* s = nullptr;
+            dbus_message_iter_get_basic(&iter, &s);
+            result = s ? s : "";
+        }
+        dbus_message_unref(reply);
+        return true;
+    }
+
+    /** @brief 调用 GetHistory 查询历史监控数据 */
     bool getHistory(const std::string& iface, const std::string& start,
                     const std::string& end, int32_t limit,
                     std::string& result, std::string& errorMsg) {
@@ -1352,6 +1431,46 @@ extern "C" bool weaknet_get_ebpf_monitor_health(char* buffer, size_t buffer_size
     }
     std::string result, errorMsg;
     if (weaknet_dbus::g_client->getEbpfMonitorHealth(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    }
+    snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+    return false;
+}
+
+/** @brief C 接口包装：调用 SetMonitorParam 运行时设置监控器参数 */
+extern "C" bool weaknet_set_monitor_param(const char* key, const char* value,
+                                          char* error_buffer, size_t error_size) {
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    if (!key || !value) {
+        snprintf(error_buffer, error_size, "空的 key 或 value");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->setMonitorParam(key, value, result, errorMsg)) {
+        return true;
+    }
+    snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+    return false;
+}
+
+/** @brief C 接口包装：调用 GetMonitorParam 查询监控器当前参数（JSON） */
+extern "C" bool weaknet_get_monitor_param(const char* monitor,
+                                          char* buffer, size_t buffer_size,
+                                          char* error_buffer, size_t error_size) {
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    if (!monitor) {
+        snprintf(error_buffer, error_size, "空的 monitor 名称");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getMonitorParam(monitor, result, errorMsg)) {
         snprintf(buffer, buffer_size, "%s", result.c_str());
         return true;
     }

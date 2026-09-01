@@ -66,8 +66,8 @@ void start_rssi_monitor_thread(ServerContext* ctx, const std::string& ctrlDir) {
             if (changed && ctx->service) {
                 ctx->service->emitChanged("WiFi RSSI updated", /*counter*/0);
             }
-            // 固定 10s 周期：以 100ms 为单位睡眠，保证 ctx->running 能快速响应退出
-            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+            // 以 cfg.rssi.interval_ms 为周期：以 100ms 为单位睡眠，保证 ctx->running 能快速响应退出
+            for (int i = 0; i < static_cast<int>(ctx->cfg.rssi.interval_ms.load() / 100) && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);
         }
     });

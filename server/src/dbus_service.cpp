@@ -45,6 +45,7 @@
 #include "process_net_profiler.hpp"
 #include "tcp_retransmit_monitor.hpp"
 #include "tcp_conn_monitor.hpp"
+#include "weaknet_config.hpp"
 #include "utils/json_escape.hpp"
 #include "database_manager.hpp"
 #include <sstream>
@@ -118,6 +119,14 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetHistory)) {
         self->handleGetHistory(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodSetMonitorParam)) {
+        self->handleSetMonitorParam(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetMonitorParam)) {
+        self->handleGetMonitorParam(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -908,6 +917,106 @@ bool DbusService::handleGetHistory(DBusConnection* conn, DBusMessage* msg) {
     DBusMessageIter reply_args;
     dbus_message_iter_init_append(reply, &reply_args);
     const char* s = result.c_str();
+    dbus_message_iter_append_basic(&reply_args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+// ============================================================================
+// 运行时配置方法
+// ============================================================================
+
+bool DbusService::handleSetMonitorParam(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleSetMonitorParam called");
+
+    DBusError err;
+    dbus_error_init(&err);
+    const char* key = nullptr;
+    const char* value = nullptr;
+
+    if (!dbus_message_get_args(msg, &err, DBUS_TYPE_STRING, &key,
+                               DBUS_TYPE_STRING, &value, DBUS_TYPE_INVALID)) {
+        LOG_ERROR(LogModule::DBUS, "SetMonitorParam arg error: " << err.message);
+        dbus_error_free(&err);
+        DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", "Invalid arguments (expect: string key, string value)");
+        dbus_connection_send(conn, reply, nullptr);
+        dbus_message_unref(reply);
+        return false;
+    }
+    if (!key || !value) {
+        DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", "Null key or value");
+        dbus_connection_send(conn, reply, nullptr);
+        dbus_message_unref(reply);
+        return false;
+    }
+
+    LOG_INFO(LogModule::DBUS, "SetMonitorParam: " << key << " = " << value);
+    std::string cfg_err;
+    // ctx_->cfg 是线程安全配置，setMonitorParam 内部对目标字段做校验+原子写入
+    if (!setMonitorParam(&ctx_->cfg, key, value, &cfg_err)) {
+        LOG_ERROR(LogModule::DBUS, "SetMonitorParam rejected: " << cfg_err);
+        DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", cfg_err.c_str());
+        dbus_connection_send(conn, reply, nullptr);
+        dbus_message_unref(reply);
+        return false;
+    }
+
+    LOG_INFO(LogModule::DBUS, "SetMonitorParam applied: " << key << " = " << value);
+
+    // 返回成功
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    const char* status = "ok";
+    DBusMessageIter reply_args;
+    dbus_message_iter_init_append(reply, &reply_args);
+    dbus_message_iter_append_basic(&reply_args, DBUS_TYPE_STRING, &status);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+bool DbusService::handleGetMonitorParam(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetMonitorParam called");
+
+    DBusError err;
+    dbus_error_init(&err);
+    const char* monitor = nullptr;
+    if (!dbus_message_get_args(msg, &err, DBUS_TYPE_STRING, &monitor, DBUS_TYPE_INVALID)) {
+        LOG_ERROR(LogModule::DBUS, "GetMonitorParam arg error: " << err.message);
+        dbus_error_free(&err);
+        DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", "Invalid arguments (expect: string monitor)");
+        dbus_connection_send(conn, reply, nullptr);
+        dbus_message_unref(reply);
+        return false;
+    }
+    if (!monitor) {
+        DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", "Null monitor name");
+        dbus_connection_send(conn, reply, nullptr);
+        dbus_message_unref(reply);
+        return false;
+    }
+
+    LOG_INFO(LogModule::DBUS, "GetMonitorParam: " << monitor);
+    std::string cfg_err;
+    std::string json = serializeMonitorJson(ctx_->cfg, monitor, &cfg_err);
+    if (json.empty()) {
+        LOG_ERROR(LogModule::DBUS, "GetMonitorParam unknown monitor: " << monitor << " (" << cfg_err << ")");
+        DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", cfg_err.c_str());
+        dbus_connection_send(conn, reply, nullptr);
+        dbus_message_unref(reply);
+        return false;
+    }
+
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    const char* s = json.c_str();
+    DBusMessageIter reply_args;
+    dbus_message_iter_init_append(reply, &reply_args);
     dbus_message_iter_append_basic(&reply_args, DBUS_TYPE_STRING, &s);
     dbus_connection_send(conn, reply, nullptr);
     dbus_connection_flush(conn);

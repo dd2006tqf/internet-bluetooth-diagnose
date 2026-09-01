@@ -1,0 +1,73 @@
+# /etc/weaknet/config.yaml
+# WeakNet 运行时配置（所有键均有内置默认值，缺省即可运行）
+# 支持注释、两层缩进、时长后缀（ms/s/m），例如 "10s" "500ms" "2m"
+
+server:
+  dbus_name: com.example.WeakNet
+  data_dir: /home/radxa/weaknet/data    # 空则回落 WEAKNET_DATA_DIR / 默认路径
+  log_level: info                       # info / warning / error / fatal
+
+monitors:
+  rtt:
+    enabled: true
+    target: 223.5.5.5
+    interval: 10s
+    timeout: 800ms
+
+  jitter:
+    enabled: true
+    target: 223.5.5.5
+    interval: 2s
+    timeout: 800ms
+    window: 30
+
+  rssi:
+    enabled: true
+    interval: 10s
+
+  tcp_loss:
+    enabled: true
+    interval: 10s
+
+  traffic:
+    enabled: true
+    interval: 10s
+
+  quality:
+    enabled: true
+    interval: 15s
+
+  bluetooth:
+    enabled: true
+    interval: 3s
+    bpf_obj: build/a2dp_media.bpf.o
+
+  dns:
+    enabled: true
+    bpf_obj: build/dns_monitor.bpf.o
+    interval: 10s
+
+  wifi_loss:
+    enabled: true
+    bpf_obj: build/wifi_packet_loss.bpf.o
+    interval: 10s
+
+  http_latency:
+    enabled: true
+    bpf_obj: build/http_latency.bpf.o
+    interval: 10s
+
+  process_profiler:
+    enabled: true
+    bpf_obj: build/flow_rate.bpf.o
+    interval: 15s
+
+  tcp_retrans:
+    enabled: true
+    bpf_obj: build/tcp_retransmit.bpf.o
+    interval: 10s
+
+  tcp_conn:
+    enabled: true
+    bpf_obj: build/tcp_conn_stats.bpf.o
+    interval: 10s

@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/radxa/weaknet/server
-ExecStart=/home/radxa/weaknet/server/bin/weaknet-dbus-server
+ExecStart=/home/radxa/weaknet/server/bin/weaknet-dbus-server --config /etc/weaknet/config.yaml
 Restart=on-failure
 RestartSec=5
 Environment=LD_LIBRARY_PATH=/usr/local/lib

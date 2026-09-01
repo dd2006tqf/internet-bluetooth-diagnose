@@ -127,6 +127,10 @@ public:
     // 历史数据
     bool handleGetHistory(DBusConnection* conn, DBusMessage* msg);            ///< GetHistory: SQLite 历史查询
 
+    // 运行时配置
+    bool handleSetMonitorParam(DBusConnection* conn, DBusMessage* msg);       ///< SetMonitorParam: 校验+原子提交
+    bool handleGetMonitorParam(DBusConnection* conn, DBusMessage* msg);       ///< GetMonitorParam: 返回 JSON
+
 private:
     /**
      * @brief 内部辅助：向调用方回复字符串数组

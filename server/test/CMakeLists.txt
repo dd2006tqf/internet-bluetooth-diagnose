@@ -91,6 +91,10 @@ add_executable(test_ebpf_monitor_observability_gtest
     unit/test_ebpf_monitor_observability_gtest.cpp)
 target_link_libraries(test_ebpf_monitor_observability_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_weaknet_config_gtest
+    unit/test_weaknet_config_gtest.cpp)
+target_link_libraries(test_weaknet_config_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # ---- CTest 集成 ----
 # enable_testing() 已在根 CMakeLists.txt 中调用
 foreach(test_target
@@ -113,6 +117,7 @@ foreach(test_target
     test_jitter_monitor_gtest
     test_dns_monitor_gtest
     test_database_manager_gtest
-    test_ebpf_monitor_observability_gtest)
+    test_ebpf_monitor_observability_gtest
+    test_weaknet_config_gtest)
     add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()

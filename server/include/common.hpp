@@ -41,6 +41,8 @@ static constexpr const char kMethodGetHttpLatencyStats[]    = "GetHttpLatencySta
 static constexpr const char kMethodGetProcessProfiling[]    = "GetProcessProfiling";///< 查询 eBPF 进程网络画像（Top N 带宽进程）
 static constexpr const char kMethodGetEbpfMonitorHealth[]   = "GetEbpfMonitorHealth";///< 查询所有 eBPF 监控器健康状态（是否成功加载）
 static constexpr const char kMethodGetHistory[]              = "GetHistory";         ///< 查询 SQLite 历史快照（支持时间范围和网卡过滤）
+static constexpr const char kMethodSetMonitorParam[]         = "SetMonitorParam";   ///< 运行时设置监控器参数（白名单校验+原子提交）
+static constexpr const char kMethodGetMonitorParam[]         = "GetMonitorParam";   ///< 查询监控器当前参数（JSON 格式）
 
 // ==================== 信号名 ====================
 // 服务端主动向订阅客户端推送事件。客户端通过 dbus_bus_add_match 过滤感兴趣的信号
@@ -53,13 +55,18 @@ static constexpr const char kSignalBluetoothDeviceChanged[] = "BluetoothDeviceCh
 
 // ==================== 运行时路径常量 ====================
 
-/// SQLite 历史数据持久化路径
-/// 可通过 WEAKNET_DATA_DIR 环境变量覆盖（部署时灵活配置）
-/// 哨兵默认值 /home/radxa/weaknet/data 对应开发板上的实际路径
-inline const std::string kDatabasePath = []() {
-    const char* data_dir = std::getenv("WEAKNET_DATA_DIR");
-    return std::string(data_dir ? data_dir : "/home/radxa/weaknet/data") + "/history.db";
-}();
+/// SQLite 历史数据持久化路径解析函数。
+/// 见 kDatabasePath 注释。
+inline std::string resolveDatabasePath(const std::string& cfg_data_dir) {
+    if (!cfg_data_dir.empty()) {
+        return cfg_data_dir + "/history.db";
+    }
+    const char* env = std::getenv("WEAKNET_DATA_DIR");
+    if (env && *env) {
+        return std::string(env) + "/history.db";
+    }
+    return std::string("/home/radxa/weaknet/data") + "/history.db";
+}
 
 /// 默认流量分析接口名。空字符串 "" 表示自动选择当前活动接口
 /// 可通过 WEAKNET_TRAFFIC_IFACE 覆盖（如 WEAKNET_TRAFFIC_IFACE=eth1 强制分析指定网卡）

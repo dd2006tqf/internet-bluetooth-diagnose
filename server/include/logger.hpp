@@ -41,6 +41,9 @@ enum class LogLevel {
     FATAL = 3
 };
 
+/// 将字符串日志级别（"info"/"warning"/"error"/"fatal"）解析为 LogLevel；非法值返回 false
+bool parseLogLevel(const std::string& str, LogLevel* out);
+
 /// 日志模块标识常量：统一模块名，便于在 grep 时过滤
 namespace LogModule {
     constexpr const char* SERVER       = "server";

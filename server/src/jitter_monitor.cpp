@@ -108,8 +108,7 @@ void start_jitter_monitor_thread(ServerContext* ctx,
                                  int timeoutMs,
                                  int windowSize) {
     ctx->jitter_thread = std::thread([ctx, host, intervalMs, timeoutMs, windowSize]{
-        LOG_INFO(LogModule::NETWORK, "Jitter monitor thread started (host=" << host
-                 << ", interval=" << intervalMs << "ms, window=" << windowSize << ")");
+        LOG_INFO(LogModule::NETWORK, "Jitter monitor thread started");
         auto pinger = NetPing::getInstance();
 
         // 每个接口维护独立的 RTT 样本窗口（key = 接口名，value = 样本 deque）
@@ -118,6 +117,16 @@ void start_jitter_monitor_thread(ServerContext* ctx,
         int loopCount = 0;
         while (ctx->running.load()) {
             loopCount++;
+            // 每轮现读配置（D-Bus 调参立即生效）
+            std::string eff_host = ctx->cfg.jitter.target.get();
+            int eff_interval = ctx->cfg.jitter.interval_ms.load();
+            int eff_timeout = ctx->cfg.jitter.timeout_ms.load();
+            int eff_window = ctx->cfg.jitter.window_size.load();
+            if (eff_host.empty()) eff_host = host;
+            if (eff_interval <= 0) eff_interval = intervalMs;
+            if (eff_timeout <= 0) eff_timeout = timeoutMs;
+            if (eff_window <= 0) eff_window = windowSize;
+
             try {
                 // 获取当前接口列表（线程安全副本），仅用于遍历接口名
                 auto currentInterfaces = ctx->weak_mgr->getCurrentInterfaces();
@@ -130,11 +139,11 @@ void start_jitter_monitor_thread(ServerContext* ctx,
                     auto& window = sampleWindows[ifname];
 
                     // 发送 ICMP ping 采集 RTT 样本（负值表示超时）
-                    int rtt = pinger->ping(host, ifname, timeoutMs);
+                    int rtt = pinger->ping(eff_host, ifname, eff_timeout);
 
                     // 维护滑动窗口：新样本入队，超过窗口大小则丢弃最旧样本
                     window.push_back(rtt);
-                    while (static_cast<int>(window.size()) > windowSize) {
+                    while (static_cast<int>(window.size()) > eff_window) {
                         window.pop_front();
                     }
 
@@ -165,7 +174,7 @@ void start_jitter_monitor_thread(ServerContext* ctx,
                 LOG_ERROR(LogModule::NETWORK, "Jitter monitor thread unknown exception");
             }
 
-            for (int i = 0; i < (intervalMs / 100) && ctx->running.load(); ++i)
+            for (int i = 0; i < (eff_interval / 100) && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         LOG_INFO(LogModule::NETWORK, "Jitter monitor thread exiting");

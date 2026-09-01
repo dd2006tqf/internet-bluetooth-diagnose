@@ -121,9 +121,10 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    DatabaseManager db(kDatabasePath);
+    const std::string db_path = resolveDatabasePath("");  // 不读 cfg，与服务端默认行为一致
+    DatabaseManager db(db_path);
     if (!db.isOpen()) {
-        std::cerr << "错误: 无法打开数据库 " << kDatabasePath << "\n";
+        std::cerr << "错误: 无法打开数据库 " << db_path << "\n";
         std::cerr << "提示: 数据库文件由服务端首次运行时自动创建\n";
         return 1;
     }

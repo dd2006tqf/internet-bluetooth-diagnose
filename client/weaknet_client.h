@@ -521,6 +521,53 @@ bool weaknet_get_process_profiling(char* buffer, size_t buffer_size, char* error
  */
 bool weaknet_get_ebpf_monitor_health(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
 
+/* ============================== 运行时配置 API ============================== */
+
+/**
+ * @brief 运行时设置监控器参数
+ *
+ * 通过 D-Bus 调用 SetMonitorParam 方法，服务端校验白名单、类型、
+ * 区间，通过后原子提交到线程安全配置（仅内存态，不写回文件）。
+ * 配置键格式："monitor.field"，如 "rtt.interval"、"dns.bpf_obj"。
+ *
+ * D-Bus 调用：
+ *   - Method: SetMonitorParam
+ *   - Args: STRING key, STRING value
+ *   - Returns: STRING "ok"
+ *
+ * @param key            配置键（如 "rtt.interval"）
+ * @param value          字符串值（如 "5s"、"8.8.8.8"、"true"）
+ * @param error_buffer   错误信息缓冲区
+ * @param error_size     错误缓冲区大小
+ * @return true  - 成功
+ * @return false - D-Bus 调用失败或校验拒绝
+ */
+bool weaknet_set_monitor_param(const char* key, const char* value,
+                               char* error_buffer, size_t error_size);
+
+/**
+ * @brief 查询监控器当前参数（返回 JSON）
+ *
+ * 通过 D-Bus 调用 GetMonitorParam 方法，返回指定监控器的
+ * 完整参数 JSON。监控器名如 "rtt"、"dns"，或 "all" 返回全部。
+ *
+ * D-Bus 调用：
+ *   - Method: GetMonitorParam
+ *   - Args: STRING monitor
+ *   - Returns: STRING（JSON 格式）
+ *
+ * @param monitor        监控器名（如 "rtt"、"all"）
+ * @param buffer         结果缓冲区，存储 JSON
+ * @param buffer_size    缓冲区大小
+ * @param error_buffer   错误信息缓冲区
+ * @param error_size     错误缓冲区大小
+ * @return true  - 成功
+ * @return false - D-Bus 调用失败或未知监控器
+ */
+bool weaknet_get_monitor_param(const char* monitor,
+                               char* buffer, size_t buffer_size,
+                               char* error_buffer, size_t error_size);
+
 /* ============================== 历史数据 API ============================== */
 
 /**

@@ -1163,7 +1163,7 @@ void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** /*outMonitor*/) {
             // 若挂载失败则自动降级为纯 D-Bus 模式，不影响蓝牙监控基础功能
             // ================================================================
             try {
-                bool ebpfOk = monitor->initPhase2("build/a2dp_media.bpf.o");
+                bool ebpfOk = monitor->initPhase2(ctx->cfg.bluetooth.bpf_obj.get().c_str());
                 if (ebpfOk) {
                     LOG_INFO(LogModule::BLUETOOTH, "BT monitor: Phase 2 eBPF fusion enabled ("
                              << (monitor->isPhase2Available() ? "active" : "fallback") << ")");

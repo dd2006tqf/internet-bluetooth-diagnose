@@ -20,3 +20,9 @@ add_executable(test_client_bin test_client.cpp)
 target_link_libraries(test_client_bin PRIVATE weaknet PkgConfig::DBUS1 glog pthread)
 set_target_properties(test_client_bin PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin)
+
+# 运行时配置命令行工具（薄封装 D-Bus 调参）
+add_executable(weaknet_cli weaknet_cli.cpp)
+target_link_libraries(weaknet_cli PRIVATE weaknet PkgConfig::DBUS1 glog pthread)
+set_target_properties(weaknet_cli PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin)

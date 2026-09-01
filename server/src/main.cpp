@@ -13,6 +13,6 @@
 
 #include "server.hpp"
 
-int main() {
-    return weaknet_dbus::start_server();
+int main(int argc, char** argv) {
+    return weaknet_dbus::start_server(argc, argv);
 }

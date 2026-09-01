@@ -32,6 +32,7 @@
 
 #include "common.hpp"
 #include "serializer.hpp"
+#include "weaknet_config.hpp"
 #include "net_iface.h"
 #include "server.hpp"
 #include "dbus_service.hpp"
@@ -243,8 +244,8 @@ static void start_traffic_analysis_thread(ServerContext* ctx) {
         }
 
         LOG_INFO(LogModule::WEAK_MGR, "traffic analysis: using interface " << targetIface);
-        ctx->weak_mgr->startTrafficAnalysis(targetIface, 10);
-        
+        ctx->weak_mgr->startTrafficAnalysis(targetIface, ctx->cfg.traffic.interval_ms.load() / 1000);
+
         int loop_count = 0;
         while (ctx->running.load()) {
             loop_count++;
@@ -254,11 +255,11 @@ static void start_traffic_analysis_thread(ServerContext* ctx) {
                 LOG_INFO(LogModule::WEAK_MGR, "traffic analysis: calling updateTrafficAnalysisSafe");
                 bool changed = ctx->weak_mgr->updateTrafficAnalysisSafe();
                 LOG_INFO(LogModule::WEAK_MGR, "traffic analysis: updateTrafficAnalysisSafe completed, changed=" << changed);
-                
+
                 // 获取当前接口列表用于日志输出
                 auto current_interfaces = ctx->weak_mgr->getCurrentInterfaces();
                 LOG_INFO(LogModule::WEAK_MGR, "traffic analysis: current interfaces count=" << current_interfaces.size());
-                
+
                 if (changed && ctx->service) {
                     LOG_INFO(LogModule::WEAK_MGR, "Traffic analysis updated - emitting signal");
                     // 同步发射（内部有锁），不创建 detached 子线程
@@ -269,8 +270,8 @@ static void start_traffic_analysis_thread(ServerContext* ctx) {
             } catch (const std::exception& e) {
                 LOG_ERROR(LogModule::WEAK_MGR, "Traffic analysis error: " << e.what());
             }
-            
-            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+
+            for (int i = 0; i < static_cast<int>(ctx->cfg.traffic.interval_ms.load() / 100) && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         ctx->weak_mgr->stopTrafficAnalysis();
@@ -478,10 +479,10 @@ static void start_network_quality_thread(ServerContext* ctx) {
                           "Phase 2 audio fusion error: " << e.what());
             }
             
-            for (int i = 0; i < 150 && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.quality.interval_ms.load() / 100) && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);
         }
-        
+
         LOG_INFO(LogModule::WEAK_MGR, "network quality monitor thread stopped");
     });
 }
@@ -498,7 +499,7 @@ void start_dns_monitor_thread(ServerContext* ctx) {
         auto* monitor = ctx->dns_monitor.get();
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "DNS monitor thread started");
-        if (!monitor->init("build/dns_monitor.bpf.o")) {
+        if (!monitor->init(ctx->cfg.dns.bpf_obj.get().c_str())) {
             LOG_INFO(LogModule::NETWORK, "DNS monitor: BPF init failed, thread exiting");
             return;
         }
@@ -509,7 +510,7 @@ void start_dns_monitor_thread(ServerContext* ctx) {
                     << " avgLatency=" << stats.avgLatencyMs << "ms"
                     << " timeoutRate=" << stats.timeoutRate() << "%");
             }
-            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.dns.interval_ms.load() / 100) && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
@@ -522,7 +523,7 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx) {
         auto* monitor = ctx->wifi_loss_monitor.get();
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor thread started");
-        if (!monitor->init("build/wifi_packet_loss.bpf.o")) {
+        if (!monitor->init(ctx->cfg.wifi_loss.bpf_obj.get().c_str())) {
             LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor: BPF init failed, thread exiting");
             return;
         }
@@ -536,7 +537,7 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx) {
                         << " txDrops=" << s.txDrops << "/" << s.txPkts);
                 }
             }
-            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.wifi_loss.interval_ms.load() / 100) && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
@@ -549,7 +550,7 @@ void start_http_latency_monitor_thread(ServerContext* ctx) {
         auto* monitor = ctx->http_latency_monitor.get();
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "HTTP latency monitor thread started");
-        if (!monitor->init("build/http_latency.bpf.o")) {
+        if (!monitor->init(ctx->cfg.http_latency.bpf_obj.get().c_str())) {
             LOG_INFO(LogModule::NETWORK, "HTTP latency monitor: BPF init failed, thread exiting");
             return;
         }
@@ -561,7 +562,7 @@ void start_http_latency_monitor_thread(ServerContext* ctx) {
                     << " p99=" << (globalStats.p99Ns / 1000000) << "ms"
                     << " analysis=" << globalStats.analysis);
             }
-            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.http_latency.interval_ms.load() / 100) && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
@@ -574,7 +575,7 @@ void start_process_net_profiler_thread(ServerContext* ctx) {
         auto* profiler = ctx->process_net_profiler.get();
         if (!profiler) return;
         LOG_INFO(LogModule::NETWORK, "Process net profiler thread started");
-        if (!profiler->init("build/flow_rate.bpf.o")) {
+        if (!profiler->init(ctx->cfg.process_profiler.bpf_obj.get().c_str())) {
             LOG_INFO(LogModule::NETWORK, "Process net profiler: BPF init failed, thread exiting");
             return;
         }
@@ -597,7 +598,7 @@ void start_process_net_profiler_thread(ServerContext* ctx) {
                         << " txBytes=" << p.txBytes);
                 }
             }
-            for (int i = 0; i < 150 && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.process_profiler.interval_ms.load() / 100) && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         profiler->stop();
@@ -610,7 +611,7 @@ void start_tcp_retrans_monitor_thread(ServerContext* ctx) {
         auto* monitor = ctx->tcp_retrans_monitor.get();
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "TCP retransmit eBPF monitor thread started");
-        if (!monitor->init("build/tcp_retransmit.bpf.o")) {
+        if (!monitor->init(ctx->cfg.tcp_retrans.bpf_obj.get().c_str())) {
             LOG_INFO(LogModule::NETWORK, "TCP retransmit eBPF monitor unavailable");
             return;
         }
@@ -620,7 +621,7 @@ void start_tcp_retrans_monitor_thread(ServerContext* ctx) {
                 LOG_INFO(LogModule::NETWORK, "TCP retransmit tick: connections=" << stats.size()
                     << " lossRate=" << monitor->computeLossRate() << "%");
             }
-            for (int i = 0; i < 150 && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.tcp_retrans.interval_ms.load() / 100) && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
@@ -633,7 +634,7 @@ void start_tcp_conn_monitor_thread(ServerContext* ctx) {
         auto* monitor = ctx->tcp_conn_monitor.get();
         if (!monitor) return;
         LOG_INFO(LogModule::TCP_LOSS, "TCP conn monitor thread started");
-        if (!monitor->init("build/tcp_conn_stats.bpf.o")) {
+        if (!monitor->init(ctx->cfg.tcp_conn.bpf_obj.get().c_str())) {
             LOG_INFO(LogModule::TCP_LOSS, "TCP conn monitor unavailable, thread exiting");
             return;
         }
@@ -646,7 +647,7 @@ void start_tcp_conn_monitor_thread(ServerContext* ctx) {
                     << " acceptFailures=" << stats.totalAcceptFailures
                     << " avgDur=" << stats.avgDurationMs << "ms");
             }
-            for (int i = 0; i < 150 && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.tcp_conn.interval_ms.load() / 100) && ctx->running.load(); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
@@ -714,9 +715,25 @@ void start_history_persistence_thread(ServerContext* ctx) {
 }
 
 // 启动服务
-int start_server() {
+int start_server(int argc, char** argv) {
+    // 解析命令行参数：--config <path>（默认 /etc/weaknet/config.yaml）
+    std::string config_path = "/etc/weaknet/config.yaml";
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string(argv[i]) == "--config") {
+            config_path = argv[i + 1];
+            ++i;
+        }
+    }
+    // 配置失败 → 直接退出，不写日志（init 还没起）
+    // 注意：此函数内已有 ctx 之前不能 LOG_*
+    std::cerr << "Loading config from: " << config_path << std::endl;
+
+    // 解析日志级别（用于 Logger::init）
+    LogLevel log_level = LogLevel::INFO;
+    if (!parseLogLevel("info", &log_level)) log_level = LogLevel::INFO;
+
     // 初始化日志系统
-    if (!Logger::init("server", "./logs/server", LogLevel::INFO, true)) {
+    if (!Logger::init("server", "./logs/server", log_level, true)) {
         std::cerr << "Failed to initialize logger" << std::endl;
         return 1;
     }
@@ -735,6 +752,29 @@ int start_server() {
     std::signal(SIGTERM, Logger::signalHandler);
 
     ServerContext ctx;
+
+    // 加载配置文件（文件不存在 → 默认值；存在但语法错 → exit 1）
+    {
+        std::string cfg_err;
+        if (!loadWeakNetConfig(config_path, &ctx.cfg, &cfg_err)) {
+            std::cerr << "Configuration error in " << config_path << ": " << cfg_err << std::endl;
+            LOG_ERROR(LogModule::SYSTEM, "Configuration error in " << config_path << ": " << cfg_err);
+            return 2;
+        }
+        LOG_INFO(LogModule::SYSTEM, "Config loaded from: " << config_path
+            << " (dbus=" << ctx.cfg.dbus_name.get() << ")");
+
+        // 应用日志级别（配置文件覆盖默认）
+        LogLevel new_level;
+        if (parseLogLevel(ctx.cfg.log_level.get(), &new_level)) {
+            Logger::setLogLevel(new_level);
+            LOG_INFO(LogModule::SYSTEM, "Log level from config: " << ctx.cfg.log_level.get());
+        } else if (!ctx.cfg.log_level.get().empty()) {
+            LOG_WARNING(LogModule::SYSTEM,
+                "Unknown log_level '" << ctx.cfg.log_level.get() << "', keeping default INFO");
+        }
+    }
+
     if (!init_dbus(&ctx)) return 1;
 
     // 启动事件监控
@@ -747,8 +787,9 @@ int start_server() {
     UsingInterfaceManager::getInstance()->start();
 
     // 初始化历史数据持久化管理器（智能指针）
-    LOG_INFO(LogModule::SYSTEM, "initializing database manager (path=" << kDatabasePath << ")");
-    ctx.db_mgr = std::make_unique<DatabaseManager>(kDatabasePath);
+    const std::string db_path = resolveDatabasePath(ctx.cfg.data_dir.get());
+    LOG_INFO(LogModule::SYSTEM, "initializing database manager (path=" << db_path << ")");
+    ctx.db_mgr = std::make_unique<DatabaseManager>(db_path);
     if (ctx.db_mgr->isOpen()) {
         LOG_INFO(LogModule::SYSTEM, "database manager opened, records=" << ctx.db_mgr->getRecordCount());
     } else {
@@ -763,29 +804,59 @@ int start_server() {
 
     start_iface_monitor_thread(&ctx);
     start_using_iface_thread(&ctx);
-    // 启动 RTT 监控线程：使用阿里云 DNS 223.5.5.5 作为目标
-    LOG_INFO(LogModule::RTT, "starting monitor thread (target=223.5.5.5, interval=10s)");
-    start_rtt_monitor_thread(&ctx, "223.5.5.5", /*intervalMs*/10000, /*timeoutMs*/800);
+    // 启动 RTT 监控线程：目标/周期/超时走线程安全配置（默认 223.5.5.5 / 10s / 800ms）
+    if (ctx.cfg.rtt.enabled.load()) {
+        LOG_INFO(LogModule::RTT, "starting RTT monitor thread (target=" << ctx.cfg.rtt.target.get()
+            << ", interval=" << ctx.cfg.rtt.interval_ms.load() << "ms)");
+        start_rtt_monitor_thread(&ctx, ctx.cfg.rtt.target.get(), ctx.cfg.rtt.interval_ms.load(), ctx.cfg.rtt.timeout_ms.load());
+    } else {
+        LOG_INFO(LogModule::RTT, "RTT monitor disabled by config");
+    }
     // 启动网络抖动(Jitter)监控线程：基于 RTT 样本标准差评估延迟稳定性
-    LOG_INFO(LogModule::NETWORK, "starting jitter monitor thread (target=223.5.5.5, interval=2s, window=30)");
-    start_jitter_monitor_thread(&ctx, "223.5.5.5", /*intervalMs*/2000, /*timeoutMs*/800, /*windowSize*/30);
+    if (ctx.cfg.jitter.enabled.load()) {
+        LOG_INFO(LogModule::NETWORK, "starting jitter monitor thread (target=" << ctx.cfg.jitter.target.get()
+            << ", interval=" << ctx.cfg.jitter.interval_ms.load() << "ms, window=" << ctx.cfg.jitter.window_size.load() << ")");
+        start_jitter_monitor_thread(&ctx, ctx.cfg.jitter.target.get(), ctx.cfg.jitter.interval_ms.load(), ctx.cfg.jitter.timeout_ms.load(), ctx.cfg.jitter.window_size.load());
+    } else {
+        LOG_INFO(LogModule::NETWORK, "Jitter monitor disabled by config");
+    }
     // 启动 Wi-Fi RSSI 监控线程（wpa_supplicant ctrl 目录自动探测）
-    LOG_INFO(LogModule::RSSI, "starting RSSI monitor thread (interval=10s)");
-    start_rssi_monitor_thread(&ctx);
+    if (ctx.cfg.rssi.enabled.load()) {
+        LOG_INFO(LogModule::RSSI, "starting RSSI monitor thread (interval=10s)");
+        start_rssi_monitor_thread(&ctx);
+    } else {
+        LOG_INFO(LogModule::RSSI, "RSSI monitor disabled by config");
+    }
     // 启动 TCP 丢包率监控线程
-    LOG_INFO(LogModule::TCP_LOSS, "starting TCP loss rate monitor thread (interval=10s)");
-    start_tcp_loss_monitor_thread(&ctx);
+    if (ctx.cfg.tcp_loss.enabled.load()) {
+        LOG_INFO(LogModule::TCP_LOSS, "starting TCP loss rate monitor thread (interval=10s)");
+        start_tcp_loss_monitor_thread(&ctx);
+    } else {
+        LOG_INFO(LogModule::TCP_LOSS, "TCP loss monitor disabled by config");
+    }
     // 启动流量分析线程
-    LOG_INFO(LogModule::WEAK_MGR, "starting traffic analysis thread (interval=10s)");
-    start_traffic_analysis_thread(&ctx);
+    if (ctx.cfg.traffic.enabled.load()) {
+        LOG_INFO(LogModule::WEAK_MGR, "starting traffic analysis thread (interval=10s)");
+        start_traffic_analysis_thread(&ctx);
+    } else {
+        LOG_INFO(LogModule::WEAK_MGR, "Traffic analysis disabled by config");
+    }
     // 启动网络质量监控线程
-    LOG_INFO(LogModule::WEAK_MGR, "starting network quality monitor thread (interval=15s)");
-    start_network_quality_thread(&ctx);
+    if (ctx.cfg.quality.enabled.load()) {
+        LOG_INFO(LogModule::WEAK_MGR, "starting network quality monitor thread (interval=15s)");
+        start_network_quality_thread(&ctx);
+    } else {
+        LOG_INFO(LogModule::WEAK_MGR, "Network quality monitor disabled by config");
+    }
     // 启动蓝牙监测线程 (通过 BlueZ D-Bus API)
-    LOG_INFO(LogModule::BLUETOOTH, "starting bluetooth monitor thread");
-    // 蓝牙监测器（智能指针）
-    ctx.bt_monitor = std::make_unique<BtMonitor>();
-    start_bt_monitor_thread(&ctx, nullptr);
+    if (ctx.cfg.bluetooth.enabled.load()) {
+        LOG_INFO(LogModule::BLUETOOTH, "starting bluetooth monitor thread");
+        // 蓝牙监测器（智能指针）
+        ctx.bt_monitor = std::make_unique<BtMonitor>();
+        start_bt_monitor_thread(&ctx, nullptr);
+    } else {
+        LOG_INFO(LogModule::BLUETOOTH, "Bluetooth monitor disabled by config");
+    }
 
     // ================================================================
     // eBPF 监控器统一启动（智能指针管理生命周期）
@@ -800,29 +871,53 @@ int start_server() {
     ctx.tcp_conn_monitor = std::make_unique<TcpConnMonitor>();
 
     // DNS 监控器：挂载 kprobe/udp_sendmsg + kprobe/udp_recvmsg
-    LOG_INFO(LogModule::NETWORK, "starting DNS monitor thread (interval=10s)");
-    start_dns_monitor_thread(&ctx);
+    if (ctx.cfg.dns.enabled.load()) {
+        LOG_INFO(LogModule::NETWORK, "starting DNS monitor thread (interval=10s)");
+        start_dns_monitor_thread(&ctx);
+    } else {
+        LOG_INFO(LogModule::NETWORK, "DNS monitor disabled by config");
+    }
 
     // Wi-Fi 丢包归因：挂载 tracepoint/net/netif_receive_skb 等
-    LOG_INFO(LogModule::NETWORK, "starting Wi-Fi packet loss monitor thread (interval=10s)");
-    start_wifi_loss_monitor_thread(&ctx);
+    if (ctx.cfg.wifi_loss.enabled.load()) {
+        LOG_INFO(LogModule::NETWORK, "starting Wi-Fi packet loss monitor thread (interval=10s)");
+        start_wifi_loss_monitor_thread(&ctx);
+    } else {
+        LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor disabled by config");
+    }
 
     // HTTP 请求延迟：挂载 kprobe/tcp_sendmsg + kprobe/tcp_recvmsg
-    LOG_INFO(LogModule::NETWORK, "starting HTTP latency monitor thread (interval=10s)");
-    start_http_latency_monitor_thread(&ctx);
+    if (ctx.cfg.http_latency.enabled.load()) {
+        LOG_INFO(LogModule::NETWORK, "starting HTTP latency monitor thread (interval=10s)");
+        start_http_latency_monitor_thread(&ctx);
+    } else {
+        LOG_INFO(LogModule::NETWORK, "HTTP latency monitor disabled by config");
+    }
 
     // 进程网络画像：挂载 kprobe/tcp_retransmit_skb + kprobe/ip_queue_xmit + kprobe/udp_sendmsg
     // 同探针 tcp_retransmit_skb 双消费者之一（另一个在 TcpLossMonitor），各自独立加载，不合并
-    LOG_INFO(LogModule::NETWORK, "starting process net profiler thread (interval=15s)");
-    start_process_net_profiler_thread(&ctx);
+    if (ctx.cfg.process_profiler.enabled.load()) {
+        LOG_INFO(LogModule::NETWORK, "starting process net profiler thread (interval=15s)");
+        start_process_net_profiler_thread(&ctx);
+    } else {
+        LOG_INFO(LogModule::NETWORK, "Process net profiler disabled by config");
+    }
 
     // 启动 TCP 重传 eBPF 监控线程
-    LOG_INFO(LogModule::NETWORK, "starting TCP retransmit eBPF monitor thread (interval=15s)");
-    start_tcp_retrans_monitor_thread(&ctx);
+    if (ctx.cfg.tcp_retrans.enabled.load()) {
+        LOG_INFO(LogModule::NETWORK, "starting TCP retransmit eBPF monitor thread (interval=15s)");
+        start_tcp_retrans_monitor_thread(&ctx);
+    } else {
+        LOG_INFO(LogModule::NETWORK, "TCP retransmit monitor disabled by config");
+    }
 
     // TCP 连接生命周期：挂载 kretprobe/inet_csk_accept + kprobe/tcp_close
-    LOG_INFO(LogModule::NETWORK, "starting TCP conn monitor thread (interval=15s)");
-    start_tcp_conn_monitor_thread(&ctx);
+    if (ctx.cfg.tcp_conn.enabled.load()) {
+        LOG_INFO(LogModule::NETWORK, "starting TCP conn monitor thread (interval=15s)");
+        start_tcp_conn_monitor_thread(&ctx);
+    } else {
+        LOG_INFO(LogModule::NETWORK, "TCP conn monitor disabled by config");
+    }
 
     // 启动历史数据持久化线程（每 5 秒写入一轮）
     if (ctx.db_mgr && ctx.db_mgr->isOpen()) {

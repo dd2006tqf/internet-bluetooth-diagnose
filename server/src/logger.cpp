@@ -19,6 +19,7 @@
  */
 
 #include "logger.hpp"
+#include <cctype>
 #include <iostream>
 #include <filesystem>
 #include <chrono>
@@ -28,6 +29,16 @@
 #include <atomic>
 
 namespace weaknet_dbus {
+
+bool parseLogLevel(const std::string& str, LogLevel* out) {
+    std::string lower = str;
+    for (auto& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lower == "info") { *out = LogLevel::INFO; return true; }
+    if (lower == "warning" || lower == "warn") { *out = LogLevel::WARNING; return true; }
+    if (lower == "error") { *out = LogLevel::ERROR; return true; }
+    if (lower == "fatal") { *out = LogLevel::FATAL; return true; }
+    return false;
+}
 
 // ---- 静态成员定义 ----
 // 初始化标志，防止重复 InitGoogleLogging（glog 对多次初始化行为未定义）
