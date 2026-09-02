@@ -10,9 +10,13 @@
 #include <chrono>
 #include <thread>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <sys/stat.h>
 #include <sstream>
 #include <iomanip>
+#include <cstring>
 
 #include "net_traffic.h"
 #include "logger.hpp"
@@ -50,7 +54,8 @@ TestStats g_stats;
 bool testBpfObjectExists() {
     std::cout << "\n🧪 测试1: BPF 对象文件检查" << std::endl;
     
-    std::string bpfPath = "build/flow_rate.bpf.o";
+    // 开发板部署后的实际路径（相对测试脚本工作目录 /home/radxa/weaknet）
+    std::string bpfPath = "server/build/flow_rate.bpf.o";
     struct stat st;
     
     if (stat(bpfPath.c_str(), &st) == 0) {
@@ -93,7 +98,7 @@ bool testTrafficAnalyzerInit() {
     g_stats.addResult(true, "获取流量分析器实例");
     
     // 设置 BPF 对象路径
-    analyzer->setBpfObjectPath("build/flow_rate.bpf.o");
+    analyzer->setBpfObjectPath("server/build/flow_rate.bpf.o");
     g_stats.addResult(true, "设置 BPF 对象路径");
     
     // 设置异常检测参数
@@ -159,7 +164,25 @@ bool testTrafficSampling() {
     
     // 采样流量数据（采样间隔 2 秒，取前 10 个流）
     std::cout << "     🔍 正在采样流量数据（2秒）..." << std::endl;
+    // 产生可观测的 TCP/UDP 流量，避免空闲网络导致采样窗口为空
+    std::thread traffic([] {
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(9);
+        ::inet_pton(AF_INET, "192.168.137.1", &addr.sin_addr);
+        const std::string payload(1400, 'W');
+        int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd >= 0) {
+            for (int i = 0; i < 200; ++i) {
+                ::sendto(fd, payload.data(), payload.size(), MSG_NOSIGNAL,
+                         reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            ::close(fd);
+        }
+    });
     auto flows = analyzer->sampleTopFlows(2, 10);
+    traffic.join();
     
     if (flows.empty()) {
         g_stats.addResult(false, "未采集到流量数据");
