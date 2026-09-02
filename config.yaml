@@ -3,7 +3,6 @@
 # 支持注释、两层缩进、时长后缀（ms/s/m），例如 "10s" "500ms" "2m"
 
 server:
-  dbus_name: com.example.WeakNet
   data_dir: /home/radxa/weaknet/data    # 空则回落 WEAKNET_DATA_DIR / 默认路径
   log_level: info                       # info / warning / error / fatal
 
@@ -11,63 +10,63 @@ monitors:
   rtt:
     enabled: true
     target: 223.5.5.5
-    interval: 10s
-    timeout: 800ms
+    interval_ms: 10000
+    timeout_ms: 800
 
   jitter:
     enabled: true
     target: 223.5.5.5
-    interval: 2s
-    timeout: 800ms
-    window: 30
+    interval_ms: 2000
+    timeout_ms: 800
+    window_size: 30
 
   rssi:
     enabled: true
-    interval: 10s
+    interval_ms: 10000
 
   tcp_loss:
     enabled: true
-    interval: 10s
+    interval_ms: 10000
 
   traffic:
     enabled: true
-    interval: 10s
+    interval_ms: 10000
 
   quality:
     enabled: true
-    interval: 15s
+    interval_ms: 15000
 
   bluetooth:
     enabled: true
-    interval: 3s
+    interval_ms: 3000
     bpf_obj: build/a2dp_media.bpf.o
 
   dns:
     enabled: true
     bpf_obj: build/dns_monitor.bpf.o
-    interval: 10s
+    interval_ms: 10000
 
   wifi_loss:
     enabled: true
     bpf_obj: build/wifi_packet_loss.bpf.o
-    interval: 10s
+    interval_ms: 10000
 
   http_latency:
     enabled: true
     bpf_obj: build/http_latency.bpf.o
-    interval: 10s
+    interval_ms: 10000
 
   process_profiler:
     enabled: true
     bpf_obj: build/flow_rate.bpf.o
-    interval: 15s
+    interval_ms: 15000
 
   tcp_retrans:
     enabled: true
     bpf_obj: build/tcp_retransmit.bpf.o
-    interval: 10s
+    interval_ms: 10000
 
   tcp_conn:
     enabled: true
     bpf_obj: build/tcp_conn_stats.bpf.o
-    interval: 10s
+    interval_ms: 10000

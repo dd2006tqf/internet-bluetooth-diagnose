@@ -3,7 +3,9 @@
  * @brief 监控器插件静态注册表实现
  *
  * 内部用函数级静态变量持有注册表（构造时注册，跨编译单元安全）。
- * instantiateAllPlugins 按 order() 升序返回，停止时调用方逆序遍历。
+ * instantiateAllPlugins 按 order() 升序返回。
+ * 停止时由 server.cpp 在 join 全部线程后按 order() 逆序显式调用 stop()；
+ * 插件 vector 析构顺序为反向构造顺序，不保证与 order() 逆序一致。
  */
 
 #include "monitor_registry.hpp"

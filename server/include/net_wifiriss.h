@@ -19,6 +19,17 @@
 #include <memory>
 #include <mutex>
 
+namespace weaknet_dbus {
+
+/// Parse and validate a SIGNAL_POLL response; invalid driver values return -1000.
+int parseWifiRssiResponse(const std::string& response);
+
+/// Read Linux wireless statistics and return a plausible dBm estimate.
+/// Invalid driver level falls back to link-quality conversion; unavailable returns -1000.
+int readProcWirelessRssi(const std::string& iface,
+                         const std::string& procPath = "/proc/net/wireless");
+}  // namespace weaknet_dbus
+
 /**
  * @brief wpa_supplicant RSSI 查询客户端
  *

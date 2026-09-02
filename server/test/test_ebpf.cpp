@@ -173,10 +173,11 @@ bool testTrafficSampling() {
         const std::string payload(1400, 'W');
         int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
         if (fd >= 0) {
-            for (int i = 0; i < 200; ++i) {
-                ::sendto(fd, payload.data(), payload.size(), MSG_NOSIGNAL,
-                         reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+                for (int i = 0; i < 200; ++i) {
+                    ::send(fd, payload.data(), payload.size(), MSG_NOSIGNAL);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
             }
             ::close(fd);
         }

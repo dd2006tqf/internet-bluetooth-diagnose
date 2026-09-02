@@ -134,47 +134,47 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
     if (mon == "rtt") {
         if (field == "enabled") return setBoolField(cfg->rtt.enabled, val, error);
         if (field == "target") { cfg->rtt.target.set(trim(val)); return true; }
-        if (field == "interval") return setDurationField(cfg->rtt.interval_ms, val, error);
-        if (field == "timeout") return setDurationField(cfg->rtt.timeout_ms, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->rtt.interval_ms, val, error);
+        if (field == "timeout" || field == "timeout_ms") return setDurationField(cfg->rtt.timeout_ms, val, error);
         *error = "rtt: unknown field '" + field + "'";
         return false;
     }
     if (mon == "jitter") {
         if (field == "enabled") return setBoolField(cfg->jitter.enabled, val, error);
         if (field == "target") { cfg->jitter.target.set(trim(val)); return true; }
-        if (field == "interval") return setDurationField(cfg->jitter.interval_ms, val, error);
-        if (field == "timeout") return setDurationField(cfg->jitter.timeout_ms, val, error);
-        if (field == "window") return setDurationField(cfg->jitter.window_size, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->jitter.interval_ms, val, error);
+        if (field == "timeout" || field == "timeout_ms") return setDurationField(cfg->jitter.timeout_ms, val, error);
+        if (field == "window" || field == "window_size") return setDurationField(cfg->jitter.window_size, val, error);
         *error = "jitter: unknown field '" + field + "'";
         return false;
     }
     if (mon == "rssi") {
         if (field == "enabled") return setBoolField(cfg->rssi.enabled, val, error);
-        if (field == "interval") return setDurationField(cfg->rssi.interval_ms, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->rssi.interval_ms, val, error);
         *error = "rssi: unknown field '" + field + "'";
         return false;
     }
     if (mon == "tcp_loss") {
         if (field == "enabled") return setBoolField(cfg->tcp_loss.enabled, val, error);
-        if (field == "interval") return setDurationField(cfg->tcp_loss.interval_ms, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->tcp_loss.interval_ms, val, error);
         *error = "tcp_loss: unknown field '" + field + "'";
         return false;
     }
     if (mon == "traffic") {
         if (field == "enabled") return setBoolField(cfg->traffic.enabled, val, error);
-        if (field == "interval") return setDurationField(cfg->traffic.interval_ms, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->traffic.interval_ms, val, error);
         *error = "traffic: unknown field '" + field + "'";
         return false;
     }
     if (mon == "quality") {
         if (field == "enabled") return setBoolField(cfg->quality.enabled, val, error);
-        if (field == "interval") return setDurationField(cfg->quality.interval_ms, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->quality.interval_ms, val, error);
         *error = "quality: unknown field '" + field + "'";
         return false;
     }
     if (mon == "bluetooth") {
         if (field == "enabled") return setBoolField(cfg->bluetooth.enabled, val, error);
-        if (field == "interval") return setDurationField(cfg->bluetooth.interval_ms, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->bluetooth.interval_ms, val, error);
         if (field == "bpf_obj") { cfg->bluetooth.bpf_obj.set(trim(val)); return true; }
         *error = "bluetooth: unknown field '" + field + "'";
         return false;
@@ -182,42 +182,42 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
     if (mon == "dns") {
         if (field == "enabled") return setBoolField(cfg->dns.enabled, val, error);
         if (field == "bpf_obj") { cfg->dns.bpf_obj.set(trim(val)); return true; }
-        if (field == "interval") return setDurationField(cfg->dns.interval_ms, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->dns.interval_ms, val, error);
         *error = "dns: unknown field '" + field + "'";
         return false;
     }
     if (mon == "wifi_loss") {
         if (field == "enabled") return setBoolField(cfg->wifi_loss.enabled, val, error);
         if (field == "bpf_obj") { cfg->wifi_loss.bpf_obj.set(trim(val)); return true; }
-        if (field == "interval") return setDurationField(cfg->wifi_loss.interval_ms, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->wifi_loss.interval_ms, val, error);
         *error = "wifi_loss: unknown field '" + field + "'";
         return false;
     }
     if (mon == "http_latency") {
         if (field == "enabled") return setBoolField(cfg->http_latency.enabled, val, error);
         if (field == "bpf_obj") { cfg->http_latency.bpf_obj.set(trim(val)); return true; }
-        if (field == "interval") return setDurationField(cfg->http_latency.interval_ms, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->http_latency.interval_ms, val, error);
         *error = "http_latency: unknown field '" + field + "'";
         return false;
     }
     if (mon == "process_profiler") {
         if (field == "enabled") return setBoolField(cfg->process_profiler.enabled, val, error);
         if (field == "bpf_obj") { cfg->process_profiler.bpf_obj.set(trim(val)); return true; }
-        if (field == "interval") return setDurationField(cfg->process_profiler.interval_ms, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->process_profiler.interval_ms, val, error);
         *error = "process_profiler: unknown field '" + field + "'";
         return false;
     }
     if (mon == "tcp_retrans") {
         if (field == "enabled") return setBoolField(cfg->tcp_retrans.enabled, val, error);
         if (field == "bpf_obj") { cfg->tcp_retrans.bpf_obj.set(trim(val)); return true; }
-        if (field == "interval") return setDurationField(cfg->tcp_retrans.interval_ms, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->tcp_retrans.interval_ms, val, error);
         *error = "tcp_retrans: unknown field '" + field + "'";
         return false;
     }
     if (mon == "tcp_conn") {
         if (field == "enabled") return setBoolField(cfg->tcp_conn.enabled, val, error);
         if (field == "bpf_obj") { cfg->tcp_conn.bpf_obj.set(trim(val)); return true; }
-        if (field == "interval") return setDurationField(cfg->tcp_conn.interval_ms, val, error);
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->tcp_conn.interval_ms, val, error);
         *error = "tcp_conn: unknown field '" + field + "'";
         return false;
     }
@@ -229,7 +229,6 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
 
 bool applyServerField(WeakNetConfig* cfg, const std::string& field,
                       const std::string& val, std::string* error) {
-    if (field == "dbus_name") { cfg->dbus_name.set(trim(val)); return true; }
     if (field == "data_dir") { cfg->data_dir.set(trim(val)); return true; }
     if (field == "log_level") { cfg->log_level.set(trim(val)); return true; }
     *error = "server: unknown field '" + field + "'";
@@ -381,69 +380,68 @@ bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
     if (mon == "rtt") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "rtt.enabled: invalid bool"; return false; } cfg->rtt.enabled.store(b); return true; }
         if (field == "target") { if (!isValidIPv4(trim(value))) { if (error) *error = "rtt.target: invalid IPv4"; return false; } cfg->rtt.target.set(trim(value)); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 600000)) { if (error) *error = "rtt.interval: must be 100ms~600000ms"; return false; } cfg->rtt.interval_ms.store(ms); return true; }
-        if (field == "timeout") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 60000)) { if (error) *error = "rtt.timeout: must be 100ms~60000ms"; return false; } cfg->rtt.timeout_ms.store(ms); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 600000)) { if (error) *error = "rtt.interval: must be 100ms~600000ms"; return false; } cfg->rtt.interval_ms.store(ms); return true; }
+        if (field == "timeout" || field == "timeout_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 60000)) { if (error) *error = "rtt.timeout: must be 100ms~60000ms"; return false; } cfg->rtt.timeout_ms.store(ms); return true; }
     }
     if (mon == "jitter") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "jitter.enabled: invalid bool"; return false; } cfg->jitter.enabled.store(b); return true; }
         if (field == "target") { if (!isValidIPv4(trim(value))) { if (error) *error = "jitter.target: invalid IPv4"; return false; } cfg->jitter.target.set(trim(value)); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 600000)) { if (error) *error = "jitter.interval: must be 100ms~600000ms"; return false; } cfg->jitter.interval_ms.store(ms); return true; }
-        if (field == "timeout") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 60000)) { if (error) *error = "jitter.timeout: must be 100ms~60000ms"; return false; } cfg->jitter.timeout_ms.store(ms); return true; }
-        if (field == "window") { uint32_t w; if (!parseUint(value, &w) || !checkRange(w, 2, 1000)) { if (error) *error = "jitter.window: must be 2~1000"; return false; } cfg->jitter.window_size.store(w); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 600000)) { if (error) *error = "jitter.interval: must be 100ms~600000ms"; return false; } cfg->jitter.interval_ms.store(ms); return true; }
+        if (field == "timeout" || field == "timeout_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 60000)) { if (error) *error = "jitter.timeout: must be 100ms~60000ms"; return false; } cfg->jitter.timeout_ms.store(ms); return true; }
+        if (field == "window" || field == "window_size") { uint32_t w; if (!parseUint(value, &w) || !checkRange(w, 2, 1000)) { if (error) *error = "jitter.window: must be 2~1000"; return false; } cfg->jitter.window_size.store(w); return true; }
     }
     if (mon == "rssi") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "rssi.enabled: invalid bool"; return false; } cfg->rssi.enabled.store(b); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "rssi.interval: must be 1000ms~600000ms"; return false; } cfg->rssi.interval_ms.store(ms); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "rssi.interval: must be 1000ms~600000ms"; return false; } cfg->rssi.interval_ms.store(ms); return true; }
     }
     if (mon == "tcp_loss") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "tcp_loss.enabled: invalid bool"; return false; } cfg->tcp_loss.enabled.store(b); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "tcp_loss.interval: must be 1000ms~600000ms"; return false; } cfg->tcp_loss.interval_ms.store(ms); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "tcp_loss.interval: must be 1000ms~600000ms"; return false; } cfg->tcp_loss.interval_ms.store(ms); return true; }
     }
     if (mon == "traffic") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "traffic.enabled: invalid bool"; return false; } cfg->traffic.enabled.store(b); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "traffic.interval: must be 1000ms~600000ms"; return false; } cfg->traffic.interval_ms.store(ms); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "traffic.interval: must be 1000ms~600000ms"; return false; } cfg->traffic.interval_ms.store(ms); return true; }
     }
     if (mon == "quality") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "quality.enabled: invalid bool"; return false; } cfg->quality.enabled.store(b); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "quality.interval: must be 1000ms~600000ms"; return false; } cfg->quality.interval_ms.store(ms); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "quality.interval: must be 1000ms~600000ms"; return false; } cfg->quality.interval_ms.store(ms); return true; }
     }
     if (mon == "bluetooth") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "bluetooth.enabled: invalid bool"; return false; } cfg->bluetooth.enabled.store(b); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 60000)) { if (error) *error = "bluetooth.interval: must be 1000ms~60000ms"; return false; } cfg->bluetooth.interval_ms.store(ms); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 60000)) { if (error) *error = "bluetooth.interval: must be 1000ms~60000ms"; return false; } cfg->bluetooth.interval_ms.store(ms); return true; }
         if (field == "bpf_obj") { cfg->bluetooth.bpf_obj.set(trim(value)); return true; }
     }
     if (mon == "dns") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "dns.enabled: invalid bool"; return false; } cfg->dns.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->dns.bpf_obj.set(trim(value)); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "dns.interval: must be 1000ms~600000ms"; return false; } cfg->dns.interval_ms.store(ms); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "dns.interval: must be 1000ms~600000ms"; return false; } cfg->dns.interval_ms.store(ms); return true; }
     }
     if (mon == "wifi_loss") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "wifi_loss.enabled: invalid bool"; return false; } cfg->wifi_loss.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->wifi_loss.bpf_obj.set(trim(value)); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "wifi_loss.interval: must be 1000ms~600000ms"; return false; } cfg->wifi_loss.interval_ms.store(ms); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "wifi_loss.interval: must be 1000ms~600000ms"; return false; } cfg->wifi_loss.interval_ms.store(ms); return true; }
     }
     if (mon == "http_latency") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "http_latency.enabled: invalid bool"; return false; } cfg->http_latency.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->http_latency.bpf_obj.set(trim(value)); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "http_latency.interval: must be 1000ms~600000ms"; return false; } cfg->http_latency.interval_ms.store(ms); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "http_latency.interval: must be 1000ms~600000ms"; return false; } cfg->http_latency.interval_ms.store(ms); return true; }
     }
     if (mon == "process_profiler") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "process_profiler.enabled: invalid bool"; return false; } cfg->process_profiler.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->process_profiler.bpf_obj.set(trim(value)); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "process_profiler.interval: must be 1000ms~600000ms"; return false; } cfg->process_profiler.interval_ms.store(ms); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "process_profiler.interval: must be 1000ms~600000ms"; return false; } cfg->process_profiler.interval_ms.store(ms); return true; }
     }
     if (mon == "tcp_retrans") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "tcp_retrans.enabled: invalid bool"; return false; } cfg->tcp_retrans.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->tcp_retrans.bpf_obj.set(trim(value)); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "tcp_retrans.interval: must be 1000ms~600000ms"; return false; } cfg->tcp_retrans.interval_ms.store(ms); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "tcp_retrans.interval: must be 1000ms~600000ms"; return false; } cfg->tcp_retrans.interval_ms.store(ms); return true; }
     }
     if (mon == "tcp_conn") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "tcp_conn.enabled: invalid bool"; return false; } cfg->tcp_conn.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->tcp_conn.bpf_obj.set(trim(value)); return true; }
-        if (field == "interval") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "tcp_conn.interval: must be 1000ms~600000ms"; return false; } cfg->tcp_conn.interval_ms.store(ms); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "tcp_conn.interval: must be 1000ms~600000ms"; return false; } cfg->tcp_conn.interval_ms.store(ms); return true; }
     }
     if (mon == "server") {
-        if (field == "dbus_name") { cfg->dbus_name.set(trim(value)); return true; }
         if (field == "data_dir") { cfg->data_dir.set(trim(value)); return true; }
         if (field == "log_level") { cfg->log_level.set(trim(value)); return true; }
     }
@@ -480,7 +478,6 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
 
     if (monitor == "all" || monitor == "server") {
         json << "\"server\":{";
-        writeString("dbus_name", cfg.dbus_name.get());
         writeString("data_dir", cfg.data_dir.get());
         writeString("log_level", cfg.log_level.get());
         json.seekp(-1, std::ios_base::cur); json << "},";

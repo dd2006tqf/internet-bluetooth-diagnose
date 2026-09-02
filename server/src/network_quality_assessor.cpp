@@ -177,7 +177,9 @@ double NetworkQualityAssessor::calculateTcpLossScore(double lossRate) {
 }
 
 double NetworkQualityAssessor::calculateRssiScore(int rssiDbm) {
-    if (rssiDbm == 0) return 50.0;  // 无法测量RSSI时给中等分数
+    if (rssiDbm == -1000 || rssiDbm < -100 || rssiDbm > 0) {
+        return 50.0;  // 无法测量 RSSI 时不参与弱信号判定
+    }
     
     if (rssiDbm >= thresholds_.rssi_excellent) return 100.0;
     if (rssiDbm >= thresholds_.rssi_good) return 80.0;
@@ -232,8 +234,9 @@ std::vector<std::string> NetworkQualityAssessor::detectNetworkIssues(const NetIn
         issues.push_back("High packet loss: " + std::to_string(interface.tcpLossRate()) + "%");
     }
 
-    // RSSI问题检测
-    if (interface.rssiDbm() != 0 && interface.rssiDbm() < thresholds_.rssi_fair) {
+    // RSSI问题检测（未测量/超范围不产生误报）
+    if (interface.rssiDbm() != -1000 && interface.rssiDbm() >= -100 &&
+        interface.rssiDbm() < thresholds_.rssi_fair) {
         issues.push_back("Weak signal: " + std::to_string(interface.rssiDbm()) + "dBm");
     }
 
@@ -268,9 +271,11 @@ std::string NetworkQualityAssessor::generateMetricsJson(const NetInfo& interface
     json << "{";
     json << "\"interface\":\"" << interface.ifName() << "\",";
     json << "\"quality_score\":" << std::fixed << std::setprecision(1) << score << ",";
-    json << "\"rtt_ms\":" << interface.rttMs() << ",";
-    json << "\"tcp_loss_rate\":" << std::fixed << std::setprecision(2) << interface.tcpLossRate() << ",";
-    json << "\"rssi_dbm\":" << interface.rssiDbm() << ",";
+    json << "\"rtt_ms\":" << (interface.rttMs() >= 0 ? std::to_string(interface.rttMs()) : "null") << ",";
+    json << "\"tcp_loss_rate\":" << (interface.tcpLossRate() >= 0 ? std::to_string(interface.tcpLossRate()) : "null") << ",";
+    json << "\"rssi_dbm\":" << ((interface.rssiDbm() >= -100 && interface.rssiDbm() <= -30) ? std::to_string(interface.rssiDbm()) : "null") << ",";
+    json << "\"rssi_estimated\":" << (interface.rssiEstimated() ? "true" : "false") << ",";
+    json << "\"rssi_source\":\"" << interface.rssiSource() << "\",";
     json << "\"traffic_bps\":" << interface.trafficTotalBps() << ",";
     json << "\"traffic_pps\":" << interface.trafficTotalPps() << ",";
     json << "\"active_flows\":" << interface.trafficActiveFlows() << ",";

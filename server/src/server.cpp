@@ -661,9 +661,6 @@ void start_history_persistence_thread(ServerContext* ctx) {
     ctx->history_thread = std::thread([ctx](){
         LOG_INFO(LogModule::SYSTEM, "History persistence thread started");
 
-        auto last_cleanup = std::chrono::steady_clock::now();
-        const auto cleanup_interval = std::chrono::hours(24);
-
         while (ctx->running.load()) {
             // 每 5 秒持久化一轮（每秒检查 running 标志以便快速退出）
             for (int i = 0; i < 5 && ctx->running.load(); ++i) {
@@ -690,17 +687,8 @@ void start_history_persistence_thread(ServerContext* ctx) {
                 LOG_INFO(LogModule::SYSTEM, "History persistence: wrote " << written << " records");
             }
 
-            // 每天清理一次过期数据
+            // 每天清理一次过期日志文件
             auto now = std::chrono::steady_clock::now();
-            if (now - last_cleanup > cleanup_interval) {
-                int deleted = ctx->db_mgr->cleanup(7);
-                last_cleanup = now;
-                if (deleted > 0) {
-                    LOG_INFO(LogModule::SYSTEM, "History persistence: cleaned " << deleted << " expired records");
-                }
-            }
-
-            // 每天清理一次过期日志文件（与数据库清理同步）
             static auto last_log_cleanup = std::chrono::steady_clock::now();
             if (now - last_log_cleanup > std::chrono::hours(24)) {
                 int log_deleted = Logger::cleanOldLogs("./logs/server", 7);
@@ -763,7 +751,7 @@ int start_server(int argc, char** argv) {
             return 2;
         }
         LOG_INFO(LogModule::SYSTEM, "Config loaded from: " << config_path
-            << " (dbus=" << ctx.cfg.dbus_name.get() << ")");
+            << " (dbus name: " << kBusName << ")");
 
         // 应用日志级别（配置文件覆盖默认）
         LogLevel new_level;
@@ -849,9 +837,17 @@ int start_server(int argc, char** argv) {
     if (ctx.process_net_profiler_thread.joinable())     ctx.process_net_profiler_thread.join();
     if (ctx.tcp_retrans_monitor_thread.joinable())      ctx.tcp_retrans_monitor_thread.join();
     if (ctx.tcp_conn_monitor_thread.joinable())         ctx.tcp_conn_monitor_thread.join();
+    // 历史持久化线程：只读 weak_mgr 快照 + 写 DB，不依赖其他线程资源，最后 join 最安全。
+    // 此前缺失该 join，导致 ~ServerContext 析构时该线程可能仍持 ctx* 访问 → 悬垂/terminate。
+    if (ctx.history_thread.joinable())                  ctx.history_thread.join();
 
     LOG_INFO(LogModule::NETWORK, "all monitor threads joined");
-    // 插件实例在此析构（stop() 为空实现，资源由 ctx unique_ptr 统一释放）
+    // 插件 stop：按启动顺序逆序调用（依赖方先停）。当前各插件 stop 为空实现，
+    // 资源由 ctx 的 unique_ptr 统一回收；显式调用保证契约真实可验证，未来插件可在此释放自身资源。
+    for (auto it = plugins.rbegin(); it != plugins.rend(); ++it) {
+        (*it)->stop();
+    }
+    // 插件实例在此析构（资源由 ctx unique_ptr 统一释放）
 
     // 停止文件日志（在 glog 关闭之前）
     Logger::stopFileLog();

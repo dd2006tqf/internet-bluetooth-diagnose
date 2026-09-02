@@ -11,6 +11,12 @@
  *   iface TEXT NOT NULL,               -- 接口名
  *   rtt_ms INTEGER,                    -- RTT 延迟
  *   rssi_dbm INTEGER,                  -- Wi-Fi RSSI
+ *   rssi_source TEXT,                  -- RSSI source
+ *   rssi_estimated INTEGER,            -- whether RSSI is estimated
+ *   rssi_status TEXT,                  -- valid/unavailable/invalid
+ *   rtt_status TEXT,                   -- valid/unavailable/timeout
+ *   jitter_status TEXT,                -- valid/unavailable
+ *   tcp_loss_status TEXT,              -- valid/unavailable
  *   tcp_loss_rate REAL,                -- TCP 丢包率 %
  *   jitter_ms REAL,                    -- 抖动
  *   traffic_bps INTEGER,               -- 带宽

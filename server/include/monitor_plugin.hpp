@@ -42,7 +42,9 @@ public:
     /// @return true 成功；false 失败（不影响其他插件启动）
     virtual bool start(ServerContext* ctx) = 0;
 
-    /// 阶段3：停止线程、释放资源。停止顺序 = start 逆序。
+    /// 阶段3：停止线程、释放插件自身持有的资源。
+    /// 由 server.cpp 在 join 全部线程后、~ServerContext 前按 order() 逆序调用。
+    /// 当前各插件实现为空（资源由 ctx 的 unique_ptr 统一回收），预留给未来自管资源的插件使用。
     virtual void stop() = 0;
 };
 

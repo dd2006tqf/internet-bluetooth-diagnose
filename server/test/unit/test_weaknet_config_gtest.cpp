@@ -58,7 +58,6 @@ TEST(WeakNetConfigTest, ValidFileParsesAllSections) {
     WeakNetConfig cfg;
     bool ok = parse(
         "server:\n"
-        "  dbus_name: com.example.WeakNet\n"
         "  data_dir: /var/lib/weaknet\n"
         "  log_level: debug\n"
         "monitors:\n"
@@ -74,7 +73,6 @@ TEST(WeakNetConfigTest, ValidFileParsesAllSections) {
         "    bpf_obj: /usr/lib/weaknet/dns_monitor.bpf.o\n",
         &cfg);
     EXPECT_TRUE(ok);
-    EXPECT_EQ(cfg.dbus_name.get(), "com.example.WeakNet");
     EXPECT_EQ(cfg.data_dir.get(), "/var/lib/weaknet");
     EXPECT_EQ(cfg.log_level.get(), "debug");
     EXPECT_FALSE(cfg.rtt.enabled.load());
@@ -87,6 +85,35 @@ TEST(WeakNetConfigTest, ValidFileParsesAllSections) {
     // 未覆盖字段保持默认
     EXPECT_EQ(cfg.traffic.interval_ms.load(), 10000u);
     EXPECT_EQ(cfg.quality.enabled.load(), true);
+}
+
+// 新命名空间键（interval_ms/timeout_ms/window_size）同样可解析
+TEST(WeakNetConfigTest, NewNsKeysParseAlias) {
+    WeakNetConfig cfg;
+    bool ok = parse(
+        "monitors:\n"
+        "  rtt:\n"
+        "    interval_ms: 7000\n"
+        "    timeout_ms: 900\n"
+        "  jitter:\n"
+        "    window_size: 20\n",
+        &cfg);
+    EXPECT_TRUE(ok);
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 7000u);
+    EXPECT_EQ(cfg.rtt.timeout_ms.load(), 900u);
+    EXPECT_EQ(cfg.jitter.window_size.load(), 20u);
+}
+
+// setMonitorParam 新旧命名空间均可设置
+TEST(WeakNetConfigTest, SetMonitorParamNsAlias) {
+    WeakNetConfig cfg;
+    std::string err;
+    EXPECT_TRUE(setMonitorParam(&cfg, "rtt.interval_ms", "5s", &err));
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 5000u);
+    EXPECT_TRUE(setMonitorParam(&cfg, "rtt.interval", "3s", &err));
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 3000u);
+    EXPECT_TRUE(setMonitorParam(&cfg, "jitter.window_size", "40", &err));
+    EXPECT_EQ(cfg.jitter.window_size.load(), 40u);
 }
 
 // 时长后缀解析：裸整数=ms、s、m

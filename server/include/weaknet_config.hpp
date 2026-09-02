@@ -51,7 +51,6 @@ private:
 /// 运行时配置根结构。默认值 = 现有代码的硬编码（行为零变化基线）。
 struct WeakNetConfig {
     // ---------- 服务端 ----------
-    ConfigString dbus_name{"com.example.WeakNet"};
     ConfigString data_dir{""};        ///< 空 → 走 WEAKNET_DATA_DIR / 内置默认
     ConfigString log_level{"info"};
 

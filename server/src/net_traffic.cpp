@@ -142,6 +142,9 @@ bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName) {
         if (ifi > 0) {
             int zero = 0; unsigned val = ifi;
             bpf_map_update_elem(mapCfgFd_, &zero, &val, BPF_ANY);
+        } else {
+            LOG_WARNING(LogModule::NETWORK, "traffic BPF: interface '" << ifaceName
+                        << "' not found (if_nametoindex=0), cfg_iface filter stays disabled");
         }
     }
 

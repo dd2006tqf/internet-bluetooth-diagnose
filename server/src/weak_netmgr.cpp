@@ -124,6 +124,13 @@ bool WeakNetMgr::updateWifiRssi(std::vector<NetInfo>& list, const std::string& c
         int rssi = client->getRssi();
         if (rssi == -1000) {
             rssi = readProcWirelessRssi(x.ifName());
+            if (rssi != -1000) {
+                x.setRssiEstimated(true);
+                x.setRssiSource("proc_net_wireless_quality");
+            }
+        } else {
+            x.setRssiEstimated(false);
+            x.setRssiSource("wpa_supplicant");
         }
         LOG_INFO(LogModule::WEAK_MGR, "updateWifiRssi: got RSSI " << rssi << " for " << x.ifName());
         // 无效值仅表示本轮未测量，不覆盖已有有效 RSSI，避免瞬时控制通道/驱动异常污染快照。

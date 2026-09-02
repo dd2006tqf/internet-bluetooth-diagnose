@@ -8,7 +8,7 @@
  *
  * 哨兵值约定：
  *   rtt_ms_       = -1        表示未测量
- *   rssi_dbm_     = -1000     表示未测量（实际 RSSI 范围 -100 ~ -30）
+ *   rssi_dbm_     = -1000     表示未测量（有效 RSSI 范围 -100 ~ -30 dBm）
  *   tcp_loss_rate_= -1.0      表示未测量
  *   jitter_ms_    = -1.0      表示未测量
  *   bt_distance_  = -1.0      表示未测量
@@ -95,6 +95,10 @@ public:
     // ---------- Wi-Fi 信号强度（单位 dBm，仅对 WiFi 类型有意义）----------
     void setRssiDbm(int rssi) { rssi_dbm_ = rssi; }
     int rssiDbm() const { return rssi_dbm_; }
+    void setRssiEstimated(bool estimated) { rssi_estimated_ = estimated; }
+    bool rssiEstimated() const { return rssi_estimated_; }
+    void setRssiSource(const std::string& source) { rssi_source_ = source; }
+    const std::string& rssiSource() const { return rssi_source_; }
 
     /// 是否当前正在上网的接口（WeakNetMgr 通过默认路由判定）
     void setUsingNow(bool v) { using_now_ = v; }
@@ -164,7 +168,8 @@ public:
     bool equals(const NetInfo& other) const {
         return ifname_ == other.ifname_ && is_default_ == other.is_default_ && type_ == other.type_
             && rtt_ms_ == other.rtt_ms_ && state_ == other.state_
-            && rssi_dbm_ == other.rssi_dbm_ && tcp_loss_rate_ == other.tcp_loss_rate_
+            && rssi_dbm_ == other.rssi_dbm_ && rssi_estimated_ == other.rssi_estimated_
+            && rssi_source_ == other.rssi_source_ && tcp_loss_rate_ == other.tcp_loss_rate_
             && traffic_total_bps_ == other.traffic_total_bps_ && traffic_total_pps_ == other.traffic_total_pps_
             && traffic_active_flows_ == other.traffic_active_flows_
             && jitter_ms_ == other.jitter_ms_ && using_now_ == other.using_now_;
@@ -186,7 +191,7 @@ public:
     /// 各指标哨兵值检查：负值或极小值表示该指标尚未被对应监控器采集
     bool hasRtt() const { return rtt_ms_ >= 0; }
     bool hasTcpLoss() const { return tcp_loss_rate_ >= 0.0; }
-    bool hasRssi() const { return rssi_dbm_ > -1000; }
+    bool hasRssi() const { return rssi_dbm_ >= -100 && rssi_dbm_ <= -30; }
     bool hasTraffic() const { return traffic_total_bps_ > 0 || traffic_total_pps_ > 0 || traffic_active_flows_ > 0; }
     bool hasJitter() const { return jitter_ms_ >= 0.0; }
 
@@ -229,6 +234,8 @@ private:
     bool using_now_ = false;       ///< 当前是否被判定为"正在上网"（WeakNetMgr::updateCurrentUsing 更新）
     LinkQuality quality_ = LinkQuality::Unknown;
     int rssi_dbm_ = -1000;         ///< Wi-Fi RSSI (dBm)，-1000 表示未测量
+    bool rssi_estimated_ = false;  ///< 是否由链路质量估算
+    std::string rssi_source_;      ///< RSSI 来源（wpa_supplicant/proc_net_wireless）
 
     // 性能指标
     double tcp_loss_rate_ = -1.0;          ///< TCP 丢包率（%），-1.0 表示未测量

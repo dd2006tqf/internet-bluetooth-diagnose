@@ -282,8 +282,8 @@ bool NetInfo::isValid() const {
     // 丢包率：-1（未测量）或 [0, 100]
     if (tcp_loss_rate_ < -1.0 || tcp_loss_rate_ > 100.0) return false;
 
-    // RSSI：-1000（未测量/非 Wi-Fi）或 [-100, 0]
-    if (rssi_dbm_ != -1000 && (rssi_dbm_ < -100 || rssi_dbm_ > 0)) return false;
+    // RSSI：-1000（未测量/非 Wi-Fi）或真实 RSSI [-100, -30]
+    if (rssi_dbm_ != -1000 && (rssi_dbm_ < -100 || rssi_dbm_ > -30)) return false;
 
     // 抖动：-1（未测量）或非负值
     if (jitter_ms_ < -1.0) return false;
@@ -364,6 +364,8 @@ std::string NetInfo::toJson() const {
     json << "\"rtt_ms\":" << rtt_ms_ << ",";
     json << "\"prev_rtt_ms\":" << prev_rtt_ms_ << ",";
     json << "\"rssi_dbm\":" << rssi_dbm_ << ",";
+    json << "\"rssi_estimated\":" << (rssi_estimated_ ? "true" : "false") << ",";
+    json << "\"rssi_source\":\"" << weaknet_utils::escapeJsonString(rssi_source_) << "\",";
     json << "\"tcp_loss_rate\":" << std::fixed << std::setprecision(2) << tcp_loss_rate_ << ",";
     json << "\"tcp_loss_level\":\"" << weaknet_utils::escapeJsonString(tcp_loss_level_) << "\",";
     json << "\"traffic_bps\":" << traffic_total_bps_ << ",";
@@ -467,6 +469,10 @@ bool NetInfo::fromJson(const std::string& json) {
             tmp.prev_rtt_ms_ = safeStoi(value, -1);
         } else if (key == "rssi_dbm") {
             tmp.rssi_dbm_ = safeStoi(value, -1000);
+        } else if (key == "rssi_estimated") {
+            tmp.rssi_estimated_ = (value == "true");
+        } else if (key == "rssi_source") {
+            tmp.rssi_source_ = value;
         } else if (key == "tcp_loss_rate") {
             tmp.tcp_loss_rate_ = safeStod(value, -1.0);
         } else if (key == "tcp_loss_level") {
