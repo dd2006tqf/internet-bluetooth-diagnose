@@ -119,15 +119,16 @@ cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1
 
 echo "--- 编译服务端 + eBPF + 客户端 ---"
-cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet test_client_bin ebpf -j1 2>&1
+cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet test_client_bin test_ebpf ebpf -j1 2>&1
 
 echo "--- 打包 dist-arm64 ---"
 rm -rf dist-arm64
-mkdir -p dist-arm64/server/bin dist-arm64/server/build \
+mkdir -p dist-arm64/server/bin dist-arm64/server/build dist-arm64/server/test \
          dist-arm64/client/bin dist-arm64/client/lib dist-arm64/lib
 
 install -m 0755 build-arm64/server/weaknet-dbus-server dist-arm64/server/bin/
 install -m 0755 build-arm64/server/history_query_tool dist-arm64/server/bin/
+install -m 0755 build-arm64/server/test/test_ebpf dist-arm64/server/test/
 for f in build-arm64/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true; done
 install -m 0755 build-arm64/client/bin/test_client_bin dist-arm64/client/bin/test-client
 install -m 0755 build-arm64/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli

@@ -122,7 +122,15 @@ bool WeakNetMgr::updateWifiRssi(std::vector<NetInfo>& list, const std::string& c
         }
         LOG_INFO(LogModule::WEAK_MGR, "updateWifiRssi: connected to " << x.ifName() << ", getting RSSI");
         int rssi = client->getRssi();
+        if (rssi == -1000) {
+            rssi = readProcWirelessRssi(x.ifName());
+        }
         LOG_INFO(LogModule::WEAK_MGR, "updateWifiRssi: got RSSI " << rssi << " for " << x.ifName());
+        // 无效值仅表示本轮未测量，不覆盖已有有效 RSSI，避免瞬时控制通道/驱动异常污染快照。
+        if (rssi == -1000) {
+            LOG_WARNING(LogModule::RSSI, "RSSI unavailable for " << x.ifName() << "; retaining previous value");
+            continue;
+        }
         if (x.rssiDbm() != rssi) {
             x.setRssiDbm(rssi);
             anyChanged = true;

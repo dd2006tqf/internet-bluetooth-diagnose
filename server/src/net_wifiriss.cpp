@@ -40,6 +40,50 @@ using namespace weaknet_dbus;
 #include <cstdlib>
 #include <thread>
 #include <chrono>
+#include <fstream>
+#include <sstream>
+
+namespace weaknet_dbus {
+
+int readProcWirelessRssi(const std::string& iface, const std::string& procPath) {
+    std::ifstream in(procPath);
+    if (!in) return -1000;
+
+    std::string line;
+    while (std::getline(in, line)) {
+        const auto colon = line.find(':');
+        if (colon == std::string::npos || line.substr(0, colon).find(iface) == std::string::npos) continue;
+        std::istringstream fields(line.substr(colon + 1));
+        std::string status;
+        double link = 0.0;
+        double level = 0.0;
+        if (!(fields >> status >> link >> level)) return -1000;
+        const int rssi = static_cast<int>(level);
+        if (rssi >= -100 && rssi <= -30) return rssi;
+
+        // Some drivers expose only a valid link-quality value (0..70).
+        if (link >= 0.0 && link <= 70.0) {
+            return static_cast<int>(-100.0 + (link / 70.0) * 70.0);
+        }
+        return -1000;
+    }
+    return -1000;
+}
+
+int parseWifiRssiResponse(const std::string& resp) {
+    size_t pos = resp.find("RSSI=");
+    if (pos == std::string::npos) return -1000;
+
+    int rssi = 0;
+    if (std::sscanf(resp.c_str() + pos, "RSSI=%d", &rssi) != 1 || rssi < -100 || rssi > -30) {
+        LOG_WARNING(LogModule::RSSI, "invalid Wi-Fi RSSI returned by wpa_supplicant: " << rssi);
+        return -1000;
+    }
+    return rssi;
+}
+
+}  // namespace weaknet_dbus
+
 
 // ---------------------------------------------------------------------------
 // 匿名命名空间：辅助工具函数（文件存在性检测、目录创建、拉起 wpa_supplicant）
@@ -381,15 +425,5 @@ std::string WiFiRssiClient::sendCommand(const std::string& cmd) {
 int WiFiRssiClient::getRssi() {
     std::string resp = sendCommand("SIGNAL_POLL\n");
     if (resp.empty()) return -1000;
-
-    // 查找 "RSSI=" 子串位置
-    size_t pos = resp.find("RSSI=");
-    if (pos != std::string::npos) {
-        int rssi = 0;
-        // sscanf 从 "RSSI=" 后一位开始解析整数
-        if (std::sscanf(resp.c_str() + pos, "RSSI=%d", &rssi) == 1) {
-            return rssi;
-        }
-    }
-    return -1000;
+    return parseWifiRssiResponse(resp);
 }

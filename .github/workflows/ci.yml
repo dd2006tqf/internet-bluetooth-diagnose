@@ -24,7 +24,7 @@ jobs:
         run: cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
 
       - name: 编译
-        run: cmake --build build-x86 -j$(nproc) --target weaknet-dbus-server history_query_tool weaknet test_client_bin
+        run: cmake --build build-x86 -j$(nproc) --target weaknet-dbus-server history_query_tool weaknet test_client_bin test_ebpf test_net_wifiriss_gtest
 
       - name: 运行全部单元测试
         run: |
@@ -47,7 +47,12 @@ jobs:
                      build-x86/server/test/test_bt_monitor_extra_gtest \
                      build-x86/server/test/test_jitter_monitor_gtest \
                      build-x86/server/test/test_dns_monitor_gtest \
-                     build-x86/server/test/test_database_manager_gtest; do
+                     build-x86/server/test/test_database_manager_gtest \
+                     build-x86/server/test/test_weaknet_config_gtest \
+                     build-x86/server/test/test_monitor_registry_gtest \
+                     build-x86/server/test/test_ebpf_monitor_observability_gtest \
+                     build-x86/server/test/test_net_wifiriss_gtest \
+                     build-x86/server/test/test_ebpf; do
             if [ -f "$bin" ]; then
               name=$(basename "$bin")
               if timeout 30 "$bin" >/dev/null 2>&1; then
