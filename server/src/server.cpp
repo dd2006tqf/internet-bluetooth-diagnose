@@ -33,6 +33,7 @@
 #include "common.hpp"
 #include "serializer.hpp"
 #include "weaknet_config.hpp"
+#include "monitor_registry.hpp"
 #include "net_iface.h"
 #include "server.hpp"
 #include "dbus_service.hpp"
@@ -223,7 +224,7 @@ void start_iface_monitor_thread(ServerContext* ctx) {
 }
 
 // 独立接口：启动流量分析线程
-static void start_traffic_analysis_thread(ServerContext* ctx) {
+void start_traffic_analysis_thread(ServerContext* ctx) {
     ctx->traffic_analysis_thread = std::thread([ctx](){
         LOG_INFO(LogModule::WEAK_MGR, "traffic analysis thread started");
 
@@ -280,7 +281,7 @@ static void start_traffic_analysis_thread(ServerContext* ctx) {
 }
 
 // 独立接口：启动"当前上网网卡"监控线程（使用 UsingInterfaceManager）
-static void start_using_iface_thread(ServerContext* ctx) {
+void start_using_iface_thread(ServerContext* ctx) {
     ctx->using_thread = std::thread([ctx](){
         LOG_INFO(LogModule::WEAK_MGR, "monitor thread started");
 
@@ -322,7 +323,7 @@ static void start_using_iface_thread(ServerContext* ctx) {
 }
 
 // 独立接口：启动网络质量监控线程
-static void start_network_quality_thread(ServerContext* ctx) {
+void start_network_quality_thread(ServerContext* ctx) {
     ctx->network_quality_thread = std::thread([ctx](){
         LOG_INFO(LogModule::WEAK_MGR, "network quality monitor thread started");
         
@@ -802,124 +803,16 @@ int start_server(int argc, char** argv) {
     ctx.weak_mgr->updateInterfaces(initial_interfaces);
     LOG_INFO(LogModule::WEAK_MGR, "interface list initialized with " << initial_interfaces.size() << " interfaces");
 
-    start_iface_monitor_thread(&ctx);
-    start_using_iface_thread(&ctx);
-    // 启动 RTT 监控线程：目标/周期/超时走线程安全配置（默认 223.5.5.5 / 10s / 800ms）
-    if (ctx.cfg.rtt.enabled.load()) {
-        LOG_INFO(LogModule::RTT, "starting RTT monitor thread (target=" << ctx.cfg.rtt.target.get()
-            << ", interval=" << ctx.cfg.rtt.interval_ms.load() << "ms)");
-        start_rtt_monitor_thread(&ctx, ctx.cfg.rtt.target.get(), ctx.cfg.rtt.interval_ms.load(), ctx.cfg.rtt.timeout_ms.load());
-    } else {
-        LOG_INFO(LogModule::RTT, "RTT monitor disabled by config");
-    }
-    // 启动网络抖动(Jitter)监控线程：基于 RTT 样本标准差评估延迟稳定性
-    if (ctx.cfg.jitter.enabled.load()) {
-        LOG_INFO(LogModule::NETWORK, "starting jitter monitor thread (target=" << ctx.cfg.jitter.target.get()
-            << ", interval=" << ctx.cfg.jitter.interval_ms.load() << "ms, window=" << ctx.cfg.jitter.window_size.load() << ")");
-        start_jitter_monitor_thread(&ctx, ctx.cfg.jitter.target.get(), ctx.cfg.jitter.interval_ms.load(), ctx.cfg.jitter.timeout_ms.load(), ctx.cfg.jitter.window_size.load());
-    } else {
-        LOG_INFO(LogModule::NETWORK, "Jitter monitor disabled by config");
-    }
-    // 启动 Wi-Fi RSSI 监控线程（wpa_supplicant ctrl 目录自动探测）
-    if (ctx.cfg.rssi.enabled.load()) {
-        LOG_INFO(LogModule::RSSI, "starting RSSI monitor thread (interval=10s)");
-        start_rssi_monitor_thread(&ctx);
-    } else {
-        LOG_INFO(LogModule::RSSI, "RSSI monitor disabled by config");
-    }
-    // 启动 TCP 丢包率监控线程
-    if (ctx.cfg.tcp_loss.enabled.load()) {
-        LOG_INFO(LogModule::TCP_LOSS, "starting TCP loss rate monitor thread (interval=10s)");
-        start_tcp_loss_monitor_thread(&ctx);
-    } else {
-        LOG_INFO(LogModule::TCP_LOSS, "TCP loss monitor disabled by config");
-    }
-    // 启动流量分析线程
-    if (ctx.cfg.traffic.enabled.load()) {
-        LOG_INFO(LogModule::WEAK_MGR, "starting traffic analysis thread (interval=10s)");
-        start_traffic_analysis_thread(&ctx);
-    } else {
-        LOG_INFO(LogModule::WEAK_MGR, "Traffic analysis disabled by config");
-    }
-    // 启动网络质量监控线程
-    if (ctx.cfg.quality.enabled.load()) {
-        LOG_INFO(LogModule::WEAK_MGR, "starting network quality monitor thread (interval=15s)");
-        start_network_quality_thread(&ctx);
-    } else {
-        LOG_INFO(LogModule::WEAK_MGR, "Network quality monitor disabled by config");
-    }
-    // 启动蓝牙监测线程 (通过 BlueZ D-Bus API)
-    if (ctx.cfg.bluetooth.enabled.load()) {
-        LOG_INFO(LogModule::BLUETOOTH, "starting bluetooth monitor thread");
-        // 蓝牙监测器（智能指针）
-        ctx.bt_monitor = std::make_unique<BtMonitor>();
-        start_bt_monitor_thread(&ctx, nullptr);
-    } else {
-        LOG_INFO(LogModule::BLUETOOTH, "Bluetooth monitor disabled by config");
-    }
-
     // ================================================================
-    // eBPF 监控器统一启动（智能指针管理生命周期）
+    // 监控器插件化启动：注册内置插件 → 实例化（按 order 排序）→ init → start
     // ================================================================
+    registerBuiltinPlugins();
+    registerEbpfPlugins();
+    auto plugins = instantiateAllPlugins();
+    for (auto& p : plugins) p->init(&ctx);
+    for (auto& p : plugins) p->start(&ctx);
 
-    // 创建 eBPF 监控器实例（智能指针，必须在线程启动前完成）
-    ctx.dns_monitor = std::make_unique<DnsMonitor>();
-    ctx.wifi_loss_monitor = std::make_unique<WifiPacketLossMonitor>();
-    ctx.http_latency_monitor = std::make_unique<HttpLatencyMonitor>();
-    ctx.process_net_profiler = std::make_unique<ProcessNetProfiler>();
-    ctx.tcp_retrans_monitor = std::make_unique<TcpRetransMonitor>();
-    ctx.tcp_conn_monitor = std::make_unique<TcpConnMonitor>();
-
-    // DNS 监控器：挂载 kprobe/udp_sendmsg + kprobe/udp_recvmsg
-    if (ctx.cfg.dns.enabled.load()) {
-        LOG_INFO(LogModule::NETWORK, "starting DNS monitor thread (interval=10s)");
-        start_dns_monitor_thread(&ctx);
-    } else {
-        LOG_INFO(LogModule::NETWORK, "DNS monitor disabled by config");
-    }
-
-    // Wi-Fi 丢包归因：挂载 tracepoint/net/netif_receive_skb 等
-    if (ctx.cfg.wifi_loss.enabled.load()) {
-        LOG_INFO(LogModule::NETWORK, "starting Wi-Fi packet loss monitor thread (interval=10s)");
-        start_wifi_loss_monitor_thread(&ctx);
-    } else {
-        LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor disabled by config");
-    }
-
-    // HTTP 请求延迟：挂载 kprobe/tcp_sendmsg + kprobe/tcp_recvmsg
-    if (ctx.cfg.http_latency.enabled.load()) {
-        LOG_INFO(LogModule::NETWORK, "starting HTTP latency monitor thread (interval=10s)");
-        start_http_latency_monitor_thread(&ctx);
-    } else {
-        LOG_INFO(LogModule::NETWORK, "HTTP latency monitor disabled by config");
-    }
-
-    // 进程网络画像：挂载 kprobe/tcp_retransmit_skb + kprobe/ip_queue_xmit + kprobe/udp_sendmsg
-    // 同探针 tcp_retransmit_skb 双消费者之一（另一个在 TcpLossMonitor），各自独立加载，不合并
-    if (ctx.cfg.process_profiler.enabled.load()) {
-        LOG_INFO(LogModule::NETWORK, "starting process net profiler thread (interval=15s)");
-        start_process_net_profiler_thread(&ctx);
-    } else {
-        LOG_INFO(LogModule::NETWORK, "Process net profiler disabled by config");
-    }
-
-    // 启动 TCP 重传 eBPF 监控线程
-    if (ctx.cfg.tcp_retrans.enabled.load()) {
-        LOG_INFO(LogModule::NETWORK, "starting TCP retransmit eBPF monitor thread (interval=15s)");
-        start_tcp_retrans_monitor_thread(&ctx);
-    } else {
-        LOG_INFO(LogModule::NETWORK, "TCP retransmit monitor disabled by config");
-    }
-
-    // TCP 连接生命周期：挂载 kretprobe/inet_csk_accept + kprobe/tcp_close
-    if (ctx.cfg.tcp_conn.enabled.load()) {
-        LOG_INFO(LogModule::NETWORK, "starting TCP conn monitor thread (interval=15s)");
-        start_tcp_conn_monitor_thread(&ctx);
-    } else {
-        LOG_INFO(LogModule::NETWORK, "TCP conn monitor disabled by config");
-    }
-
-    // 启动历史数据持久化线程（每 5 秒写入一轮）
+    // 启动历史数据持久化线程（非监控器，server.cpp 单独管理）
     if (ctx.db_mgr && ctx.db_mgr->isOpen()) {
         LOG_INFO(LogModule::SYSTEM, "starting history persistence thread (interval=5s)");
         start_history_persistence_thread(&ctx);
@@ -939,6 +832,8 @@ int start_server(int argc, char** argv) {
     ctx.running = false;
 
     // join 全部监控线程（所有 *_thread 均为 joinable 句柄）
+    // 注意：插件只负责启动线程，join 序列仍在此集中管理（Phase A），
+    //       保证退出顺序与插件化改造前完全一致，避免 D-Bus/BPF 释放竞态。
     if (ctx.iface_thread.joinable())                    ctx.iface_thread.join();
     if (ctx.using_thread.joinable())                    ctx.using_thread.join();
     if (ctx.rtt_thread.joinable())                      ctx.rtt_thread.join();
@@ -956,6 +851,7 @@ int start_server(int argc, char** argv) {
     if (ctx.tcp_conn_monitor_thread.joinable())         ctx.tcp_conn_monitor_thread.join();
 
     LOG_INFO(LogModule::NETWORK, "all monitor threads joined");
+    // 插件实例在此析构（stop() 为空实现，资源由 ctx unique_ptr 统一释放）
 
     // 停止文件日志（在 glog 关闭之前）
     Logger::stopFileLog();

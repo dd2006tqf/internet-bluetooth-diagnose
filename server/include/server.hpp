@@ -127,86 +127,23 @@ struct ServerContext {
  */
 ::DBusConnection* init_dbus(ServerContext* ctx);
 
-/**
- * @brief 启动网卡列表监控线程
- *
- * 通过 netlink ROUTE 组播监听接口添加/删除事件，
- * 定期刷新 ctx->iface_list 并通过 D-Bus 发射 InterfaceChanged 信号。
- *
- * @param ctx 全局上下文（线程捕获裸指针，退出前必须 join）
- */
-void start_iface_monitor_thread(ServerContext* ctx);
+// ---- 传统监控线程启动函数（供插件 start() 调用；生命周期由插件管理）----
 
-/**
- * @brief 启动 DNS eBPF 监控线程
- *
- * 加载 dns_monitor.bpf.o（挂载 kprobe/udp_sendmsg + kprobe/udp_recvmsg），
- * 每 10 秒从 BPF map 读取 DNS 查询统计并输出日志。
- *
- * @param ctx 全局上下文
- */
-void start_dns_monitor_thread(ServerContext* ctx);
+void start_iface_monitor_thread(ServerContext* ctx);       ///< 网卡列表监控（netlink 事件驱动）
+void start_using_iface_thread(ServerContext* ctx);         ///< 当前上网网卡监控
+void start_traffic_analysis_thread(ServerContext* ctx);    ///< 流量分析（flow_rate 持有者）
+void start_network_quality_thread(ServerContext* ctx);     ///< 网络质量综合评估
 
-/**
- * @brief 启动 Wi-Fi 丢包归因 eBPF 监控线程
- *
- * 加载 wifi_packet_loss.bpf.o（挂载 tracepoint/netif_receive_skb 等），
- * 按 ifindex 区分收发方向丢包，识别是否 Wi-Fi 空口原因导致。
- *
- * @param ctx 全局上下文
- */
-void start_wifi_loss_monitor_thread(ServerContext* ctx);
+// ---- eBPF 监控线程启动函数（供插件 start() 调用）----
 
-/**
- * @brief 启动 HTTP 延迟 eBPF 监控线程
- *
- * 加载 http_latency.bpf.o（挂载 tcp_sendmsg + tcp_recvmsg），
- * 按 TCP 连接聚合事务，输出 p50/p99 TTFB 延迟和慢请求 Top N。
- *
- * @param ctx 全局上下文
- */
-void start_http_latency_monitor_thread(ServerContext* ctx);
+void start_dns_monitor_thread(ServerContext* ctx);             ///< DNS 解析延迟/超时（dns_monitor.bpf.o）
+void start_wifi_loss_monitor_thread(ServerContext* ctx);       ///< Wi-Fi 收发丢包归因（wifi_packet_loss.bpf.o）
+void start_http_latency_monitor_thread(ServerContext* ctx);    ///< HTTP TTFB 延迟（http_latency.bpf.o）
+void start_process_net_profiler_thread(ServerContext* ctx);    ///< 每进程带宽/重传（flow_rate.bpf.o 共享）
+void start_tcp_retrans_monitor_thread(ServerContext* ctx);     ///< TCP 连接级重传（tcp_retransmit.bpf.o）
+void start_tcp_conn_monitor_thread(ServerContext* ctx);        ///< TCP 连接生命周期（tcp_conn_stats.bpf.o）
 
-/**
- * @brief 启动进程网络画像 eBPF 监控线程
- *
- * 加载 flow_rate.bpf.o（同 tcp_retransmit_skb 探针的多消费者之一），
- * 按 PID 聚合 TX/RX 字节和重传次数，输出 Top N 带宽进程。
- *
- * @param ctx 全局上下文
- */
-void start_process_net_profiler_thread(ServerContext* ctx);
-
-/**
- * @brief 启动 TCP 重传监控线程
- *
- * 加载独立的 tcp_retransmit.bpf.o（也挂在 tcp_retransmit_skb 上），
- * 按连接（src/dst IP+port）聚合丢包率，与 ProcessNetProfiler 是同探针多消费者架构。
- *
- * @param ctx 全局上下文
- */
-void start_tcp_retrans_monitor_thread(ServerContext* ctx);
-
-/**
- * @brief 启动 TCP 连接生命周期监控线程
- *
- * 加载独立的 tcp_conn_stats.bpf.o（kretprobe/inet_csk_accept + kprobe/tcp_close），
- * 统计入向连接 accept/close、活跃连接数、连接时长分布与每端口计数，
- * 与 ProcessNetProfiler/TcpRetransMonitor 的流量/重传维度互不重叠。
- *
- * @param ctx 全局上下文
- */
-void start_tcp_conn_monitor_thread(ServerContext* ctx);
-
-/**
- * @brief 启动历史数据持久化线程
- *
- * 每 5 秒遍历 ctx->iface_list，将每个 usingNow 的 NetInfo 快照写入 SQLite。
- * 数据库路径由 WEAKNET_DATA_DIR 环境变量决定，默认 /home/radxa/weaknet/data/history.db。
- *
- * @param ctx 全局上下文
- */
-void start_history_persistence_thread(ServerContext* ctx);
+void start_history_persistence_thread(ServerContext* ctx);     ///< 历史数据持久化（非监控器，server.cpp 单独启动）
 
 /**
  * @brief 启动 WeakNet D-Bus 服务端主入口
