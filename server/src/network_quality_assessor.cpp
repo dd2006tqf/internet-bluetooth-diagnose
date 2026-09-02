@@ -279,7 +279,23 @@ std::string NetworkQualityAssessor::generateMetricsJson(const NetInfo& interface
     json << "\"traffic_bps\":" << interface.trafficTotalBps() << ",";
     json << "\"traffic_pps\":" << interface.trafficTotalPps() << ",";
     json << "\"active_flows\":" << interface.trafficActiveFlows() << ",";
-    json << "\"quality_level\":" << static_cast<int>(interface.quality()) << ",";
+    NetworkQualityLevel overallLevel = score >= 90 ? NetworkQualityLevel::EXCELLENT
+        : score >= 75 ? NetworkQualityLevel::GOOD
+        : score >= 50 ? NetworkQualityLevel::FAIR
+        : NetworkQualityLevel::POOR;
+    auto linkQualityName = [](LinkQuality quality) {
+        switch (quality) {
+            case LinkQuality::Good: return "GOOD";
+            case LinkQuality::Fair: return "FAIR";
+            case LinkQuality::Poor: return "POOR";
+            case LinkQuality::Bad: return "BAD";
+            default: return "UNKNOWN";
+        }
+    };
+    json << "\"quality_level\":" << static_cast<int>(overallLevel) << ",";
+    json << "\"link_quality\":\"" << linkQualityName(interface.quality()) << "\",";
+    json << "\"overall_quality\":\"" << getQualityLevelName(overallLevel) << "\",";
+    json << "\"overall_score\":" << std::fixed << std::setprecision(1) << score << ",";
     json << "\"using_now\":" << (interface.usingNow() ? "true" : "false") << ",";
     json << "\"issues\":[";
     

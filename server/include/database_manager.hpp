@@ -21,8 +21,10 @@
  *   jitter_ms REAL,                    -- 抖动
  *   traffic_bps INTEGER,               -- 带宽
  *   score REAL,                        -- 综合质量评分
- *   quality TEXT                       -- 质量等级字符串
- */
+ *   quality TEXT                       -- 兼容字段（综合质量）
+ *   link_quality TEXT,                 -- 接口链路质量
+ *   overall_quality TEXT,              -- 综合质量
+ *   overall_score REAL                 -- 综合质量评分 */
 
 #pragma once
 
@@ -35,6 +37,7 @@ struct sqlite3;  ///< 前置声明 SQLite 句柄类型
 namespace weaknet_dbus {
 
 class NetInfo;  ///< 前置声明
+struct NetworkQualityResult;  ///< 前置声明
 
 /**
  * @brief SQLite 历史数据持久化管理器
@@ -69,6 +72,8 @@ public:
      * @param info   完整 NetInfo 快照
      * @param score  综合质量评分（由 NetworkQualityAssessor 计算，0.0 表示未评分）
      */
+    bool insertSnapshot(const std::string& iface, const NetInfo& info,
+                        const NetworkQualityResult& overall);
     bool insertSnapshot(const std::string& iface, const NetInfo& info, double score = 0.0);
 
     /**

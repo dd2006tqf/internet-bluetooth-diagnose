@@ -678,7 +678,7 @@ void start_history_persistence_thread(ServerContext* ctx) {
             int written = 0;
             for (const auto& iface : snapshot) {
                 if (iface.usingNow()) {
-                    if (ctx->db_mgr->insertSnapshot(iface.ifName(), iface, qualityResult.score)) {
+                    if (ctx->db_mgr->insertSnapshot(iface.ifName(), iface, qualityResult)) {
                         written++;
                     }
                 }

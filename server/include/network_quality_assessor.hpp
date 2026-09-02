@@ -47,6 +47,8 @@ struct NetworkQualityResult {
     std::string details;             ///< JSON 格式的详细指标（用于 UI 展示）
     double score;                    ///< 0-100 的综合质量分数
     std::vector<std::string> issues; ///< 发现的问题列表（如 "RTT 过高"、"丢包率异常"）
+
+    std::string overallQualityName() const { return levelName; }
 };
 
 /**
