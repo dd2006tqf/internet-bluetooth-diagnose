@@ -29,6 +29,12 @@ using namespace weaknet_dbus;
 
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <linux/genetlink.h>
+#include <linux/nl80211.h>
+#include <linux/netlink.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
+#include <linux/wireless.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -42,8 +48,279 @@ using namespace weaknet_dbus;
 #include <chrono>
 #include <fstream>
 #include <sstream>
+#include <array>
+#include <algorithm>
 
 namespace weaknet_dbus {
+
+namespace {
+
+constexpr uint16_t kNlaFNested = NLA_F_NESTED;
+constexpr uint8_t kCtrlCmdGetFamily = CTRL_CMD_GETFAMILY;
+constexpr uint16_t kCtrlAttrFamilyId = CTRL_ATTR_FAMILY_ID;
+constexpr uint16_t kCtrlAttrFamilyName = CTRL_ATTR_FAMILY_NAME;
+constexpr uint16_t kNl80211AttrIfindex = NL80211_ATTR_IFINDEX;
+constexpr uint16_t kNl80211AttrMac = NL80211_ATTR_MAC;
+constexpr uint16_t kNl80211AttrStaInfo = NL80211_ATTR_STA_INFO;
+constexpr uint16_t kNl80211StaInfoSignal = NL80211_STA_INFO_SIGNAL;
+constexpr uint8_t kNl80211CmdGetStation = NL80211_CMD_GET_STATION;
+
+struct NlAttr {
+    uint16_t len;
+    uint16_t type;
+};
+
+size_t nlaAlign(size_t len) { return (len + 3U) & ~3U; }
+
+bool appendNlAttr(std::vector<uint8_t>& message, uint16_t type,
+                  const void* data, size_t length) {
+    const size_t offset = message.size();
+    const size_t total = nlaAlign(sizeof(NlAttr) + length);
+    message.resize(offset + total, 0);
+    auto* attr = reinterpret_cast<NlAttr*>(message.data() + offset);
+    attr->len = static_cast<uint16_t>(sizeof(NlAttr) + length);
+    attr->type = type;
+    if (length) std::memcpy(message.data() + offset + sizeof(NlAttr), data, length);
+    return true;
+}
+
+bool sendNetlinkMessage(int fd, const std::vector<uint8_t>& message) {
+    sockaddr_nl kernel{};
+    kernel.nl_family = AF_NETLINK;
+    return sendto(fd, message.data(), message.size(), 0,
+                  reinterpret_cast<sockaddr*>(&kernel), sizeof(kernel)) >= 0;
+}
+
+bool getNl80211FamilyId(int fd, uint16_t* familyId) {
+    char family[] = "nl80211";
+    std::vector<uint8_t> msg(NLMSG_SPACE(sizeof(genlmsghdr)), 0);
+    auto* header = reinterpret_cast<nlmsghdr*>(msg.data());
+    header->nlmsg_len = NLMSG_LENGTH(sizeof(genlmsghdr));
+    header->nlmsg_type = GENL_ID_CTRL;
+    header->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    header->nlmsg_seq = 1;
+    auto* gen = reinterpret_cast<genlmsghdr*>(NLMSG_DATA(header));
+    gen->cmd = kCtrlCmdGetFamily;
+    gen->version = 1;
+    gen->reserved = 0;
+    appendNlAttr(msg, kCtrlAttrFamilyName, family, sizeof(family));
+    header->nlmsg_len = static_cast<uint32_t>(msg.size());
+    if (!sendNetlinkMessage(fd, msg)) return false;
+
+    std::array<uint8_t, 8192> response{};
+    const ssize_t size = recv(fd, response.data(), response.size(), 0);
+    if (size < 0) {
+        LOG_WARNING(LogModule::RSSI, "nl80211: CTRL family receive failed: " << strerror(errno));
+        return false;
+    }
+    int remainingSize = static_cast<int>(size);
+    for (auto* nl = reinterpret_cast<nlmsghdr*>(response.data());
+         NLMSG_OK(nl, remainingSize); nl = NLMSG_NEXT(nl, remainingSize)) {
+        if (nl->nlmsg_type == NLMSG_ERROR) {
+            const auto* error = reinterpret_cast<const nlmsgerr*>(NLMSG_DATA(nl));
+            LOG_WARNING(LogModule::RSSI, "nl80211: CTRL_CMD_GETFAMILY errno=" << -error->error);
+            return false;
+        }
+        if (nl->nlmsg_type != GENL_ID_CTRL) {
+            LOG_WARNING(LogModule::RSSI, "nl80211: unexpected family reply type=" << nl->nlmsg_type);
+            continue;
+        }
+        auto* attrs = reinterpret_cast<NlAttr*>(reinterpret_cast<uint8_t*>(NLMSG_DATA(nl)) + GENL_HDRLEN);
+        int remaining = nl->nlmsg_len - NLMSG_HDRLEN - GENL_HDRLEN;
+        while (remaining >= static_cast<int>(sizeof(NlAttr))) {
+            if (attrs->len < sizeof(NlAttr) || attrs->len > remaining) break;
+            if (attrs->type == kCtrlAttrFamilyId && attrs->len >= sizeof(NlAttr) + sizeof(uint16_t)) {
+                std::memcpy(familyId, reinterpret_cast<uint8_t*>(attrs) + sizeof(NlAttr), sizeof(uint16_t));
+                return true;
+            }
+            const size_t step = nlaAlign(attrs->len);
+            remaining -= static_cast<int>(step);
+            attrs = reinterpret_cast<NlAttr*>(reinterpret_cast<uint8_t*>(attrs) + step);
+        }
+    }
+    return false;
+}
+
+bool getInterfaceBssid(const std::string& iface, uint8_t bssid[6]) {
+    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return false;
+    ifreq request{};
+    std::snprintf(request.ifr_name, IFNAMSIZ, "%s", iface.c_str());
+    const bool ok = ioctl(fd, SIOCGIWAP, &request) == 0;
+    if (ok) std::memcpy(bssid, request.ifr_addr.sa_data, 6);
+    close(fd);
+    return ok;
+}
+RssiSample readNl80211RssiWithBssid(const std::string& iface) {
+    RssiSample unavailable;
+    const int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_GENERIC);
+    if (fd < 0) return unavailable;
+    sockaddr_nl local{};
+    local.nl_family = AF_NETLINK;
+    if (bind(fd, reinterpret_cast<sockaddr*>(&local), sizeof(local)) < 0) {
+        close(fd); return unavailable;
+    }
+    timeval timeout{1, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    uint16_t familyId = 0;
+    if (!getNl80211FamilyId(fd, &familyId)) {
+        LOG_WARNING(LogModule::RSSI, "nl80211: family lookup failed");
+        close(fd); return unavailable;
+    }
+    const unsigned ifindex = if_nametoindex(iface.c_str());
+    if (ifindex == 0) {
+        LOG_WARNING(LogModule::RSSI, "nl80211: interface not found: " << iface);
+        close(fd); return unavailable;
+    }
+
+    std::vector<uint8_t> msg(NLMSG_LENGTH(sizeof(genlmsghdr)), 0);
+    auto* header = reinterpret_cast<nlmsghdr*>(msg.data());
+    header->nlmsg_len = NLMSG_LENGTH(sizeof(genlmsghdr));
+    header->nlmsg_type = familyId;
+    header->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK;
+    header->nlmsg_seq = 2;
+    auto* gen = reinterpret_cast<genlmsghdr*>(NLMSG_DATA(header));
+    gen->cmd = kNl80211CmdGetStation;
+    gen->version = 0;
+    appendNlAttr(msg, kNl80211AttrIfindex, &ifindex, sizeof(ifindex));
+    appendNlAttr(msg, kNl80211AttrMac, nullptr, 0);
+    header->nlmsg_len = static_cast<uint32_t>(msg.size());
+    if (!sendNetlinkMessage(fd, msg)) {
+        LOG_WARNING(LogModule::RSSI, "nl80211: GET_STATION send failed: " << strerror(errno));
+        close(fd); return unavailable;
+    }
+
+    std::array<uint8_t, 16384> response{};
+    const ssize_t size = recv(fd, response.data(), response.size(), 0);
+    close(fd);
+    if (size < 0) return unavailable;
+    int remainingSize = static_cast<int>(size);
+    for (auto* nl = reinterpret_cast<nlmsghdr*>(response.data());
+         NLMSG_OK(nl, remainingSize); nl = NLMSG_NEXT(nl, remainingSize)) {
+        if (nl->nlmsg_type == NLMSG_ERROR) return unavailable;
+        if (nl->nlmsg_type != familyId) continue;
+        auto* attrs = reinterpret_cast<NlAttr*>(reinterpret_cast<uint8_t*>(NLMSG_DATA(nl)) + GENL_HDRLEN);
+        int remaining = nl->nlmsg_len - NLMSG_HDRLEN - GENL_HDRLEN;
+        while (remaining >= static_cast<int>(sizeof(NlAttr))) {
+            if (attrs->len < sizeof(NlAttr) || attrs->len > remaining) break;
+            if ((attrs->type & ~kNlaFNested) == kNl80211AttrStaInfo) {
+                auto* nested = reinterpret_cast<NlAttr*>(reinterpret_cast<uint8_t*>(attrs) + sizeof(NlAttr));
+                int nestedRemaining = attrs->len - sizeof(NlAttr);
+                while (nestedRemaining >= static_cast<int>(sizeof(NlAttr))) {
+                    if (nested->len < sizeof(NlAttr) || nested->len > nestedRemaining) break;
+                    if ((nested->type & ~kNlaFNested) == kNl80211StaInfoSignal && nested->len >= sizeof(NlAttr) + 1) {
+                        const int dbm = *reinterpret_cast<uint8_t*>(reinterpret_cast<uint8_t*>(nested) + sizeof(NlAttr));
+                        if (dbm >= 30 && dbm <= 100) return { -dbm, true, false, "nl80211" };
+                    }
+                    const size_t step = nlaAlign(nested->len);
+                    nestedRemaining -= static_cast<int>(step);
+                    nested = reinterpret_cast<NlAttr*>(reinterpret_cast<uint8_t*>(nested) + step);
+                }
+            }
+            const size_t step = nlaAlign(attrs->len);
+            remaining -= static_cast<int>(step);
+            attrs = reinterpret_cast<NlAttr*>(reinterpret_cast<uint8_t*>(attrs) + step);
+        }
+    }
+    return unavailable;
+}
+
+}  // namespace
+
+RssiSample readNl80211RssiWithBssid(const std::string& iface, const std::array<uint8_t, 6>& bssid) {
+    RssiSample unavailable;
+    const int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_GENERIC);
+    if (fd < 0) {
+        LOG_WARNING(LogModule::RSSI, "nl80211: socket failed: " << strerror(errno));
+        return unavailable;
+    }
+    sockaddr_nl local{};
+    local.nl_family = AF_NETLINK;
+    if (bind(fd, reinterpret_cast<sockaddr*>(&local), sizeof(local)) < 0) {
+        LOG_WARNING(LogModule::RSSI, "nl80211: bind failed: " << strerror(errno));
+        close(fd); return unavailable;
+    }
+    timeval timeout{1, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    uint16_t familyId = 0;
+    if (!getNl80211FamilyId(fd, &familyId)) {
+        LOG_WARNING(LogModule::RSSI, "nl80211: family lookup failed");
+        close(fd); return unavailable;
+    }
+    const unsigned ifindex = if_nametoindex(iface.c_str());
+    if (ifindex == 0 || std::all_of(bssid.begin(), bssid.end(), [](uint8_t v) { return v == 0; })) {
+        LOG_WARNING(LogModule::RSSI, "nl80211: missing interface index or associated BSSID for " << iface);
+        close(fd); return unavailable;
+    }
+    LOG_INFO(LogModule::RSSI, "nl80211: querying station " << iface << " ifindex=" << ifindex
+             << " bssid=" << std::hex << static_cast<int>(bssid[0]) << ":"
+             << static_cast<int>(bssid[1]) << ":" << static_cast<int>(bssid[2]) << ":"
+             << static_cast<int>(bssid[3]) << ":" << static_cast<int>(bssid[4]) << ":"
+             << static_cast<int>(bssid[5]) << std::dec);
+    std::vector<uint8_t> msg(NLMSG_LENGTH(sizeof(genlmsghdr)), 0);
+    auto* header = reinterpret_cast<nlmsghdr*>(msg.data());
+    header->nlmsg_len = NLMSG_LENGTH(sizeof(genlmsghdr));
+    header->nlmsg_type = familyId;
+    header->nlmsg_flags = NLM_F_REQUEST;
+    header->nlmsg_seq = 2;
+    auto* gen = reinterpret_cast<genlmsghdr*>(NLMSG_DATA(header));
+    gen->cmd = NL80211_CMD_GET_STATION;
+    gen->version = 0;
+    appendNlAttr(msg, NL80211_ATTR_IFINDEX, &ifindex, sizeof(ifindex));
+    appendNlAttr(msg, NL80211_ATTR_MAC, bssid.data(), bssid.size());
+    header->nlmsg_len = static_cast<uint32_t>(msg.size());
+    if (!sendNetlinkMessage(fd, msg)) {
+        LOG_WARNING(LogModule::RSSI, "nl80211: GET_STATION send failed: " << strerror(errno));
+        close(fd); return unavailable;
+    }
+    std::array<uint8_t, 16384> response{};
+    ssize_t received = recv(fd, response.data(), response.size(), 0);
+    close(fd);
+    if (received < 0) {
+        LOG_WARNING(LogModule::RSSI, "nl80211: GET_STATION receive failed: " << strerror(errno));
+        return unavailable;
+    }
+    int remainingSize = static_cast<int>(received);
+    for (auto* nl = reinterpret_cast<nlmsghdr*>(response.data()); NLMSG_OK(nl, remainingSize); nl = NLMSG_NEXT(nl, remainingSize)) {
+        if (nl->nlmsg_type == NLMSG_ERROR) {
+            auto* error = reinterpret_cast<nlmsgerr*>(NLMSG_DATA(nl));
+            LOG_WARNING(LogModule::RSSI, "nl80211: GET_STATION returned errno=" << -error->error);
+            return unavailable;
+        }
+        if (nl->nlmsg_type != familyId) continue;
+        auto* attrs = reinterpret_cast<NlAttr*>(reinterpret_cast<uint8_t*>(NLMSG_DATA(nl)) + GENL_HDRLEN);
+        int remaining = nl->nlmsg_len - NLMSG_HDRLEN - GENL_HDRLEN;
+        while (remaining >= static_cast<int>(sizeof(NlAttr))) {
+            if (attrs->len < sizeof(NlAttr) || attrs->len > remaining) break;
+            if ((attrs->type & ~kNlaFNested) == NL80211_ATTR_STA_INFO) {
+                auto* nested = reinterpret_cast<NlAttr*>(reinterpret_cast<uint8_t*>(attrs) + sizeof(NlAttr));
+                int nestedRemaining = attrs->len - sizeof(NlAttr);
+                while (nestedRemaining >= static_cast<int>(sizeof(NlAttr))) {
+                    if (nested->len < sizeof(NlAttr) || nested->len > nestedRemaining) break;
+                    if ((nested->type & ~kNlaFNested) == NL80211_STA_INFO_SIGNAL && nested->len >= sizeof(NlAttr) + 1) {
+                        const int dbm = *reinterpret_cast<uint8_t*>(reinterpret_cast<uint8_t*>(nested) + sizeof(NlAttr));
+                        if (dbm >= 30 && dbm <= 100) return {-dbm, true, false, "nl80211"};
+                        LOG_WARNING(LogModule::RSSI, "nl80211: station signal out of range: " << -dbm);
+                    }
+                    const size_t step = nlaAlign(nested->len);
+                    nestedRemaining -= static_cast<int>(step);
+                    nested = reinterpret_cast<NlAttr*>(reinterpret_cast<uint8_t*>(nested) + step);
+                }
+            }
+            const size_t step = nlaAlign(attrs->len);
+            remaining -= static_cast<int>(step);
+            attrs = reinterpret_cast<NlAttr*>(reinterpret_cast<uint8_t*>(attrs) + step);
+        }
+    }
+    return unavailable;
+}
+
+RssiSample readNl80211Rssi(const std::string& iface) {
+    auto client = WiFiRssiClient::getInstance();
+    if (!client->connect(iface)) return {};
+    const auto bssid = client->getAssociatedBssid();
+    return readNl80211RssiWithBssid(iface, bssid);
+}
 
 int readProcWirelessRssi(const std::string& iface, const std::string& procPath) {
     std::ifstream in(procPath);
@@ -422,6 +699,25 @@ std::string WiFiRssiClient::sendCommand(const std::string& cmd) {
  * @return RSSI 值（单位 dBm，通常范围 [-100, 0]）；
  *         连接失败或非 Wi-Fi 接口返回 -1000（哨兵值）
  */
+std::array<uint8_t, 6> WiFiRssiClient::getAssociatedBssid() {
+    std::array<uint8_t, 6> bssid{};
+    const std::string status = sendCommand("STATUS\n");
+    const std::string key = "bssid=";
+    const size_t pos = status.find(key);
+    if (pos == std::string::npos) {
+        LOG_WARNING(LogModule::RSSI, "nl80211 RSSI: wpa STATUS has no associated BSSID for " << iface_);
+        return bssid;
+    }
+    const size_t end = status.find_first_of("\r\n", pos + key.size());
+    const std::string value = status.substr(pos + key.size(), end - (pos + key.size()));
+    unsigned int octets[6]{};
+    if (std::sscanf(value.c_str(), "%2x:%2x:%2x:%2x:%2x:%2x",
+                    &octets[0], &octets[1], &octets[2], &octets[3], &octets[4], &octets[5]) != 6) {
+        return bssid;
+    }
+    for (size_t i = 0; i < bssid.size(); ++i) bssid[i] = static_cast<uint8_t>(octets[i]);
+    return bssid;
+}
 int WiFiRssiClient::getRssi() {
     std::string resp = sendCommand("SIGNAL_POLL\n");
     if (resp.empty()) return -1000;

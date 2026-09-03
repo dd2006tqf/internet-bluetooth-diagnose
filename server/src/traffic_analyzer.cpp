@@ -104,7 +104,8 @@ void TrafficAnalyzer::stop() {
         thread_->join();
     }
     
-    // 清理历史数据
+    // 线程退出后才能关闭共享的 flow_rate BPF 对象和 links。
+    analyzer_->shutdown();
     analyzer_->clearHistory();
     
     LOG_INFO(LogModule::WEAK_MGR, "Traffic analyzer stopped");

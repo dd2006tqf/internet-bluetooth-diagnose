@@ -17,6 +17,7 @@
 #include "logger.hpp"
 
 #include "server.hpp"
+#include "weak_netmgr.hpp"
 #include "bt_monitor.hpp"
 #include "rtt_monitor.hpp"
 #include "jitter_monitor.hpp"
@@ -95,6 +96,7 @@ public:
         if (!ctx_) return;
         ctx_->rtt_stop.store(true);
         if (worker_.joinable()) worker_.join();
+        if (ctx_->weak_mgr) ctx_->weak_mgr->markMetricUnavailable("rtt");
     }
 };
 
@@ -126,6 +128,7 @@ public:
         if (!ctx_) return;
         ctx_->jitter_stop.store(true);
         if (worker_.joinable()) worker_.join();
+        if (ctx_->weak_mgr) ctx_->weak_mgr->markMetricUnavailable("jitter");
     }
 };
 
@@ -152,6 +155,7 @@ public:
         if (!ctx_) return;
         ctx_->rssi_stop.store(true);
         if (worker_.joinable()) worker_.join();
+        if (ctx_->weak_mgr) ctx_->weak_mgr->markMetricUnavailable("rssi");
     }
 };
 
@@ -178,6 +182,7 @@ public:
         if (!ctx_) return;
         ctx_->tcp_loss_stop.store(true);
         if (worker_.joinable()) worker_.join();
+        if (ctx_->weak_mgr) ctx_->weak_mgr->markMetricUnavailable("tcp_loss");
     }
 };
 
@@ -204,6 +209,7 @@ public:
         if (!ctx_) return;
         ctx_->traffic_stop.store(true);
         if (worker_.joinable()) worker_.join();
+        if (ctx_->weak_mgr) ctx_->weak_mgr->markMetricUnavailable("traffic");
     }
 };
 

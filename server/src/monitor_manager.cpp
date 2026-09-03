@@ -70,6 +70,11 @@ void MonitorManager::setOverridePath(std::string path) {
     override_path_ = std::move(path);
 }
 
+void MonitorManager::setDesiredOverride(const std::string& name, bool enabled) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    desired_overrides_[name] = enabled;
+}
+
 bool MonitorManager::saveOverrides(std::string* error) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (override_path_.empty()) {
@@ -133,8 +138,9 @@ bool MonitorManager::loadOverrides(std::string* error) {
             return false;
         }
         if (!setMonitorEnabled(ctx_ ? &ctx_->cfg : nullptr, name, enabled != 0)) {
-            if (error) *error = "unknown monitor in runtime override: " + name;
-            return false;
+            desired_overrides_[name] = enabled != 0;
+        } else {
+            desired_overrides_[name] = enabled != 0;
         }
     }
     return true;
@@ -171,7 +177,10 @@ bool MonitorManager::startConfigured() {
         }
         entry.status.state = MonitorState::Initialized;
         bool enabled = true;
-        if (ctx_ && !getMonitorEnabled(ctx_->cfg, entry.status.name, &enabled)) {
+        if (auto override_it = desired_overrides_.find(entry.status.name);
+            override_it != desired_overrides_.end()) {
+            enabled = override_it->second;
+        } else if (ctx_ && !getMonitorEnabled(ctx_->cfg, entry.status.name, &enabled)) {
             entry.status.state = MonitorState::Failed;
             entry.status.error = "missing monitor configuration";
             all_ok = false;

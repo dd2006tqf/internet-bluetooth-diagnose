@@ -21,9 +21,11 @@ find_package(PkgConfig REQUIRED)
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 pkg_check_modules(DBUS1 REQUIRED IMPORTED_TARGET dbus-1)
+pkg_check_modules(NL80211 QUIET IMPORTED_TARGET libnl-3.0 libnl-genl-3.0)
 find_library(SQLITE3_LIB sqlite3 REQUIRED)
 target_link_libraries(server_lib PUBLIC
-    PkgConfig::DBUS1 glog bpf pthread ${SQLITE3_LIB})
+    PkgConfig::DBUS1 glog bpf pthread ${SQLITE3_LIB}
+    $<$<BOOL:${NL80211_FOUND}>:PkgConfig::NL80211>)
 
 # ---- 服务端可执行文件 ----
 add_executable(weaknet-dbus-server src/main.cpp src/server.cpp)

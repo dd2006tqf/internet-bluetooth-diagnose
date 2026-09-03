@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -72,6 +73,7 @@ public:
 
     /// 设置运行时 override 文件路径；空路径表示不持久化。
     void setOverridePath(std::string path);
+    void setDesiredOverride(const std::string& name, bool enabled);
     /// 保存当前 desired_enabled；仅由显式配置持久化入口调用。
     bool saveOverrides(std::string* error) const;
     bool loadOverrides(std::string* error);
@@ -102,6 +104,7 @@ private:
     ServerContext* ctx_ = nullptr;  // non-owning; manager 不跨 context 生命周期
     std::vector<Entry> entries_;    // 已按插件 order 排列
     std::string override_path_;
+    std::map<std::string, bool> desired_overrides_;
     std::function<void(const std::string&, const std::string&)> state_change_cb_;
     mutable std::mutex mutex_;
     bool started_ = false;

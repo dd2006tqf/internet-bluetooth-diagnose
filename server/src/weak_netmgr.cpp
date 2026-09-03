@@ -122,16 +122,20 @@ bool WeakNetMgr::updateWifiRssi(std::vector<NetInfo>& list, const std::string& c
             continue;
         }
         LOG_INFO(LogModule::WEAK_MGR, "updateWifiRssi: connected to " << x.ifName() << ", getting RSSI");
-        int rssi = client->getRssi();
-        if (rssi == -1000) {
-            rssi = readProcWirelessRssi(x.ifName());
+        RssiSample sample = readNl80211Rssi(x.ifName());
+        if (!sample.valid) {
+            int rssi = client->getRssi();
             if (rssi != -1000) {
-                x.setRssiEstimated(true);
-                x.setRssiSource("proc_net_wireless_quality");
+                sample = {rssi, true, false, "wpa_supplicant"};
+            } else {
+                rssi = readProcWirelessRssi(x.ifName());
+                if (rssi != -1000) sample = {rssi, true, true, "proc_net_wireless_quality"};
             }
-        } else {
-            x.setRssiEstimated(false);
-            x.setRssiSource("wpa_supplicant");
+        }
+        const int rssi = sample.valid ? sample.dbm : -1000;
+        if (sample.valid) {
+            x.setRssiEstimated(sample.estimated);
+            x.setRssiSource(sample.source);
         }
         LOG_INFO(LogModule::WEAK_MGR, "updateWifiRssi: got RSSI " << rssi << " for " << x.ifName());
         // 无效值仅表示本轮未测量，不覆盖已有有效 RSSI，避免瞬时控制通道/驱动异常污染快照。
@@ -338,6 +342,23 @@ void WeakNetMgr::updateInterfaces(const std::vector<NetInfo>& new_interfaces) {
         std::chrono::system_clock::now().time_since_epoch()).count();
     for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
     LOG_INFO(LogModule::WEAK_MGR, "Updated interfaces list: " << current_interfaces_.size() << " interfaces");
+}
+
+bool WeakNetMgr::markMetricUnavailable(const std::string& metric) {
+    std::lock_guard<std::mutex> lock(iface_mutex_);
+    for (auto& iface : current_interfaces_) {
+        if (metric == "rtt") iface.setRttMs(-1);
+        else if (metric == "jitter") iface.setJitterMs(-1.0);
+        else if (metric == "rssi") { iface.setRssiDbm(-1000); iface.setRssiEstimated(false); }
+        else if (metric == "tcp_loss") iface.setTcpLossRate(-1.0);
+        else if (metric == "traffic") iface.setTrafficStats(0, 0, 0);
+        else return false;
+    }
+    ++snapshot_generation_;
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
+    return true;
 }
 
 bool WeakNetMgr::updateRttAndStateSafe(const std::string& host, int timeoutMs) {

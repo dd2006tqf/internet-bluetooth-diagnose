@@ -153,6 +153,7 @@ public:
     uint64_t snapshotGeneration() const { return snapshot_generation_; }
 
     bool updateRttAndStateSafe(const std::string& host, int timeoutMs = 800);
+    bool markMetricUnavailable(const std::string& metric);
     bool updateWifiRssiSafe(const std::string& ctrlDir = "");
     bool updateTcpLossRateSafe(const std::string& iface_name, double loss_rate, const std::string& loss_level);
     bool updateJitterSafe(const std::string& iface_name, double jitter_ms, const std::string& jitter_level);

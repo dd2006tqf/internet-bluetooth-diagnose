@@ -111,6 +111,8 @@ static int queryCallback(void* data, int argc, char** argv, char** /*colNames*/)
 struct HistoryRow {
     std::string ts, iface, quality, link_quality, overall_quality, rssi_source;
     std::string rssi_status, rtt_status, jitter_status, tcp_loss_status;
+    std::string snapshot_ts;
+    int64_t generation = 0, data_version = 1;
     int rtt_ms = -1, rssi_dbm = -1000, traffic_pps = 0, flows = 0;
     bool rtt_null = false, jitter_null = false, rssi_null = false, tcp_loss_null = false;
     bool rssi_estimated = false;
@@ -144,6 +146,9 @@ static int historyQueryCallback(void* data, int argc, char** argv, char** /*colN
     if (argv[17]) row.traffic_bps = atoll(argv[17]);
     if (argv[18]) row.traffic_pps = atoi(argv[18]);
     if (argv[19]) row.flows = atoi(argv[19]);
+    if (argv[20]) row.snapshot_ts = argv[20];
+    if (argv[21]) row.generation = atoll(argv[21]);
+    if (argv[22]) row.data_version = atoll(argv[22]);
     ctx->rows.push_back(std::move(row));
     return 0;
 }
@@ -362,7 +367,7 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
     if (!db_) return "[]";
 
     // 使用参数绑定防止 SQL 注入
-    std::string sql = "SELECT ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, rssi_status, rtt_status, jitter_status, tcp_loss_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows "
+    std::string sql = "SELECT ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, rssi_status, rtt_status, jitter_status, tcp_loss_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version "
                       "FROM network_history WHERE 1=1";
 
     std::vector<std::string> conditions;
@@ -432,6 +437,10 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
         row.traffic_bps = sqlite3_column_int64(stmt, 17);
         row.traffic_pps = sqlite3_column_int(stmt, 18);
         row.flows = sqlite3_column_int(stmt, 19);
+        const char* snapshot_ts = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 20));
+        if (snapshot_ts) row.snapshot_ts = snapshot_ts;
+        row.generation = sqlite3_column_int64(stmt, 21);
+        row.data_version = sqlite3_column_int64(stmt, 22);
         ctx.rows.push_back(std::move(row));
         rc = sqlite3_step(stmt);
     }
@@ -464,7 +473,11 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
              << "\"score\":" << std::fixed << std::setprecision(6) << row.score << ","
              << "\"traffic_bps\":" << row.traffic_bps << ","
              << "\"traffic_pps\":" << row.traffic_pps << ","
-             << "\"flows\":" << row.flows
+             << "\"flows\":" << row.flows << ","
+             << "\"snapshot_ts\":\"" << weaknet_utils::escapeJsonString(row.snapshot_ts) << "\","
+             << "\"generation\":" << row.generation << ","
+             << "\"data_version\":" << row.data_version << ","
+             << "\"legacy\":" << (row.data_version < 2 ? "true" : "false")
              << "}";
     }
     json << "]";
@@ -495,6 +508,7 @@ std::string DatabaseManager::getQualityReport() {
     std::ostringstream json;
     json << "{\"total\":" << values[0]
          << ",\"legacy_records\":" << values[1]
+         << ",\"legacy_ratio\":" << (values[0] ? static_cast<double>(values[1]) / values[0] : 0.0)
          << ",\"rssi_valid\":" << values[2]
          << ",\"rssi_unavailable\":" << values[3]
          << ",\"rssi_estimated\":" << values[4]

@@ -804,29 +804,25 @@ bool DbusService::handleGetProcessProfiling(DBusConnection* conn, DBusMessage* m
  */
 bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleGetEbpfMonitorHealth called");
-    // 预先检查所有必要组件，任何一个缺失都直接返回 DBus error，避免下游空指针崩溃
-    if (!ctx_ || !ctx_->dns_monitor || !ctx_->wifi_loss_monitor ||
-        !ctx_->http_latency_monitor || !ctx_->process_net_profiler ||
-        !ctx_->tcp_retrans_monitor || !ctx_->tcp_conn_monitor || !ctx_->bt_monitor) {
-        DBusMessage* error = dbus_message_new_error(msg, "com.example.WeakNet.Error", "eBPF monitor context unavailable");
-        if (error) {
-            dbus_connection_send(conn, error, nullptr);
-            dbus_connection_flush(conn);
-            dbus_message_unref(error);
-        }
+    if (!ctx_) {
+        DBusMessage* error = dbus_message_new_error(msg, "com.example.WeakNet.Error", "monitor context unavailable");
+        if (error) { dbus_connection_send(conn, error, nullptr); dbus_message_unref(error); }
         return false;
     }
 
-    // 蓝牙音频分析器可选：有就用真实实例；为空时在下方循环中输出占位条目（不崩溃）
-    const IEbpfMonitor* audioMonitor = ctx_->bt_monitor->audioAnalyzer();
-    const std::vector<const IEbpfMonitor*> monitors = {
-        static_cast<const IEbpfMonitor*>(ctx_->dns_monitor),
-        static_cast<const IEbpfMonitor*>(ctx_->wifi_loss_monitor),
-        static_cast<const IEbpfMonitor*>(ctx_->http_latency_monitor),
-        static_cast<const IEbpfMonitor*>(ctx_->process_net_profiler),
-        static_cast<const IEbpfMonitor*>(ctx_->tcp_retrans_monitor),
-        static_cast<const IEbpfMonitor*>(ctx_->tcp_conn_monitor),
-        audioMonitor
+    // 每个 monitor 独立输出；停止或初始化失败的对象以 unavailable 占位。
+    const auto monitorState = [this](const char* name) {
+        MonitorStatus status;
+        return ctx_->monitor_manager && ctx_->monitor_manager->status(name, &status)
+            ? std::string(monitorStateName(status.state)) : std::string("unavailable");
+    };
+    const std::vector<std::pair<const char*, const IEbpfMonitor*>> monitors = {
+        {"DnsMonitor", static_cast<const IEbpfMonitor*>(ctx_->dns_monitor)},
+        {"WifiPacketLossMonitor", static_cast<const IEbpfMonitor*>(ctx_->wifi_loss_monitor)},
+        {"HttpLatencyMonitor", static_cast<const IEbpfMonitor*>(ctx_->http_latency_monitor)},
+        {"ProcessNetProfiler", static_cast<const IEbpfMonitor*>(ctx_->process_net_profiler)},
+        {"TcpRetransMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_retrans_monitor)},
+        {"TcpConnMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_conn_monitor)}
     };
 
     // 手工拼接 JSON：项目不依赖 JSON 库，字段名和字符串值都要做 JSON 转义
@@ -834,17 +830,17 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
     json << "{\"monitors\":[";
     for (size_t i = 0; i < monitors.size(); ++i) {
         if (i > 0) json << ",";
-        if (!monitors[i]) {
-            // 音频分析器对象尚未创建时的占位条目（与 Uninitialized 状态的健康快照同构）
-            json << "{\"name\":\"BtAudioAnalyzer\",\"state\":\"uninitialized\",\"available\":false"
-                 << ",\"healthy\":false,\"last_successful_sample_ns\":0,\"consecutive_errors\":0"
+        if (!monitors[i].second) {
+            json << "{\"name\":\"" << weaknet_utils::escapeJsonString(monitors[i].first)
+                 << "\",\"state\":\"" << monitorState(monitors[i].first)
+                 << "\",\"available\":false,\"healthy\":false,\"last_successful_sample_ns\":0,\"consecutive_errors\":0"
                  << ",\"total_errors\":0,\"attached_probes\":0,\"map_reads\":0,\"map_read_errors\":0"
                  << ",\"samples\":0,\"total_read_time_us\":0,\"average_read_time_us\":0"
-                 << ",\"last_error\":\"\",\"status\":\"analyzer not created\"}";
+                 << ",\"last_error\":\"monitor not running\",\"status\":\"unavailable\"}";
             continue;
         }
-        const auto health = monitors[i]->health();
-        const auto metrics = monitors[i]->metrics();
+        const auto health = monitors[i].second->health();
+        const auto metrics = monitors[i].second->metrics();
         json << "{\"name\":\"" << weaknet_utils::escapeJsonString(health.name)
              << "\",\"state\":\"" << ebpfMonitorStateName(health.state)
              << "\",\"available\":" << (health.available ? "true" : "false")

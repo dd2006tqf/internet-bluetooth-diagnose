@@ -4,16 +4,35 @@
 
 #include <gtest/gtest.h>
 #include "traffic_anomaly_detector.h"
+#include "net_traffic.h"
 
 // Note: FlowRate / TrafficAnomalyDetector are in global namespace
+
+TEST(FlowTupleValidationTest, RejectsPartialTuple) {
+    FlowRate flow;
+    flow.src = "0.0.0.0";
+    flow.dst = "1.1.1.1";
+    flow.sport = 1234;
+    flow.dport = 443;
+    flow.proto = "UDP";
+    EXPECT_FALSE(NetTrafficAnalyzer::isValidFlowTuple(flow));
+}
+
+TEST(FlowTupleValidationTest, AcceptsCompleteTuple) {
+    FlowRate flow;
+    flow.src = "192.168.137.210";
+    flow.dst = "1.1.1.1";
+    flow.sport = 1234;
+    flow.dport = 443;
+    flow.proto = "UDP";
+    EXPECT_TRUE(NetTrafficAnalyzer::isValidFlowTuple(flow));
+}
 
 // ============================================================================
 // Test Fixture
 // ============================================================================
 class AnomalyDetectorTest : public ::testing::Test {
-protected:
-    // Helper: create FlowRate
-    FlowRate makeFlow(const std::string& src, int sport,
+protected:    FlowRate makeFlow(const std::string& src, int sport,
                       const std::string& dst, int dport,
                       const std::string& proto, uint64_t bps,
                       uint64_t pps, uint32_t pid = 0) {

@@ -18,8 +18,19 @@
 #include <string>
 #include <memory>
 #include <mutex>
+#include <array>
+#include <cstdint>
 
 namespace weaknet_dbus {
+
+struct RssiSample {
+    int dbm = -1000;
+    bool valid = false;
+    bool estimated = false;
+    std::string source;
+};
+
+RssiSample readNl80211Rssi(const std::string& iface);
 
 /// Parse and validate a SIGNAL_POLL response; invalid driver values return -1000.
 int parseWifiRssiResponse(const std::string& response);
@@ -62,6 +73,9 @@ public:
      * @return RSSI（dBm，如 -45）；失败返回哨兵值 -1000
      */
     int getRssi();
+
+    /// 读取当前关联 AP 的 BSSID；失败返回全零地址。
+    std::array<uint8_t, 6> getAssociatedBssid();
 
 private:
     int sockfd_ = -1;              ///< UNIX DGRAM socket fd（连接后有效）

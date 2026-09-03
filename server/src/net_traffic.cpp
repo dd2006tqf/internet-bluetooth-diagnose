@@ -77,7 +77,29 @@ std::shared_ptr<NetTrafficAnalyzer> NetTrafficAnalyzer::getInstance() {
     return s_instance;
 }
 
-/** @brief 设置 BPF 对象（.o 文件）的加载路径 */
+void NetTrafficAnalyzer::shutdown() {
+#if HAVE_LIBBPF
+    std::lock_guard<std::mutex> lock(mapMutex_);
+    if (linkTcp_) {
+        bpf_link__destroy(static_cast<bpf_link*>(linkTcp_));
+        linkTcp_ = nullptr;
+    }
+    if (linkUdp_) {
+        bpf_link__destroy(static_cast<bpf_link*>(linkUdp_));
+        linkUdp_ = nullptr;
+    }
+    if (bpfObj_) {
+        bpf_object__close(static_cast<bpf_object*>(bpfObj_));
+        bpfObj_ = nullptr;
+    }
+    mapCurrFd_ = -1;
+    mapCfgFd_ = -1;
+    mapProcessStatsFd_ = -1;
+    attached_ = false;
+    boundIface_.clear();
+#endif
+}
+
 void NetTrafficAnalyzer::setBpfObjectPath(const std::string& path) { bpfObjPath_ = path; }
 
 /**
@@ -226,7 +248,7 @@ std::vector<FlowRate> NetTrafficAnalyzer::sampleTopFlows(int intervalSec, int to
 	            fr.bps = val.bytes / (uint64_t)intervalSec;
 	            fr.pps = val.packets / (uint64_t)intervalSec;
 	            fr.pid = val.pid;
-	            out.push_back(fr);
+	            if (isValidFlowTuple(fr)) out.push_back(fr);
 	        }
 	        key = next_key;
 	        ret = bpf_map_get_next_key(mapCurrFd_, &key, &next_key);
@@ -239,7 +261,13 @@ std::vector<FlowRate> NetTrafficAnalyzer::sampleTopFlows(int intervalSec, int to
 	#endif
 	}
 
-// 新增功能实现
+bool NetTrafficAnalyzer::isValidFlowTuple(const FlowRate& flow) {
+    return flow.sport > 0 && flow.sport <= 65535 &&
+           flow.dport > 0 && flow.dport <= 65535 &&
+           flow.src != "0.0.0.0" && flow.dst != "0.0.0.0" &&
+           (flow.proto == "TCP" || flow.proto == "UDP");
+}
+
 
 /**
  * @brief 生成流的唯一标识字符串

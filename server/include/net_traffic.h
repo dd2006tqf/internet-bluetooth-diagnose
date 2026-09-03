@@ -127,8 +127,12 @@ public:
     };
     RealTimeStats getRealTimeStats();
 
+    void shutdown();
     /// 清空所有历史数据（适配器重启、周期性归零等场景）
     void clearHistory();
+
+    /// 判断流记录是否包含完整、可展示的 IPv4 五元组。
+    static bool isValidFlowTuple(const FlowRate& flow);
 
 private:
     NetTrafficAnalyzer() = default;
@@ -159,6 +163,8 @@ private:
     // ---- 内部辅助 ----
     /// 生成流唯一 key（src:sport→dst:dport proto）
     std::string generateFlowKey(const FlowRate& flow);
+
+
     /// 判断是否突发流量（当前 bps > burstMultiplier × 基线均值）
     bool isBurstTraffic(const TrafficHistory& history, uint64_t currentBps);
     /// 判断是否可疑流量（绝对阈值 + pid=0 等特征）
