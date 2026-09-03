@@ -185,20 +185,14 @@ bool MonitorManager::startConfigured() {
         if (entry.status.state != MonitorState::Initialized) continue;
         for (const auto& dependency : entry.plugin->dependencies()) {
             const auto* dependency_entry = findLocked(dependency);
-            if (!dependency_entry ||
-                (dependency_entry->status.state != MonitorState::Running &&
-                 dependency_entry->status.state != MonitorState::Initialized)) {
+            if (!dependency_entry || dependency_entry->status.state != MonitorState::Running) {
                 entry.status.state = MonitorState::Failed;
                 entry.status.error = "dependency is unavailable: " + dependency;
                 all_ok = false;
                 break;
             }
         }
-    }
-
-    for (auto& entry : entries_) {
         if (entry.status.state != MonitorState::Initialized) continue;
-        entry.status.state = MonitorState::Starting;
         if (!entry.plugin->start(ctx_)) {
             entry.status.state = MonitorState::Failed;
             entry.status.error = "plugin start failed";

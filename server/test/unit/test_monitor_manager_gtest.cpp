@@ -5,6 +5,8 @@
 
 #include <memory>
 #include <string>
+#include <atomic>
+#include <thread>
 
 #include "monitor_manager.hpp"
 
@@ -100,6 +102,54 @@ TEST(MonitorManagerTest, EnablingDependentPluginRequiresDependency) {
     std::string error;
     EXPECT_FALSE(manager.restart("dependent", &error));
     EXPECT_NE(error.find("dependency"), std::string::npos);
+}
+
+TEST(MonitorManagerTest, DependentDoesNotStartWhenDependencyStartFails) {
+    std::vector<std::unique_ptr<IMonitorPlugin>> plugins;
+    plugins.push_back(std::make_unique<FakePlugin>("base", 10, true, false));
+    plugins.push_back(std::make_unique<FakePlugin>("dependent", 20, true, true,
+                                                    std::vector<std::string>{"base"}));
+    MonitorManager manager(nullptr, std::move(plugins));
+    EXPECT_FALSE(manager.startConfigured());
+    MonitorStatus status;
+    ASSERT_TRUE(manager.status("dependent", &status));
+    EXPECT_EQ(status.state, MonitorState::Failed);
+    EXPECT_NE(status.error.find("dependency"), std::string::npos);
+}
+
+TEST(MonitorManagerTest, StateCallbackCanReenterManagerAfterTransition) {
+    std::vector<std::unique_ptr<IMonitorPlugin>> plugins;
+    plugins.push_back(std::make_unique<FakePlugin>("reentrant"));
+    MonitorManager manager(nullptr, std::move(plugins));
+    int callbacks = 0;
+    manager.setStateChangeCallback([&](const std::string& name, const std::string&) {
+        ++callbacks;
+        MonitorStatus status;
+        EXPECT_TRUE(manager.status(name, &status));
+    });
+    ASSERT_TRUE(manager.startConfigured());
+    std::string error;
+    EXPECT_TRUE(manager.disable("reentrant", &error));
+    EXPECT_GE(callbacks, 1);
+}
+
+TEST(MonitorManagerTest, ConcurrentLifecycleRequestsRemainSerialized) {
+    std::vector<std::unique_ptr<IMonitorPlugin>> plugins;
+    plugins.push_back(std::make_unique<FakePlugin>("concurrent"));
+    MonitorManager manager(nullptr, std::move(plugins));
+    ASSERT_TRUE(manager.startConfigured());
+    std::vector<std::thread> workers;
+    for (int i = 0; i < 8; ++i) {
+        workers.emplace_back([&manager] {
+            std::string error;
+            manager.restart("concurrent", &error);
+        });
+    }
+    for (auto& worker : workers) worker.join();
+    MonitorStatus status;
+    ASSERT_TRUE(manager.status("concurrent", &status));
+    EXPECT_EQ(status.state, MonitorState::Running);
+    EXPECT_EQ(status.generation, 9u);
 }
 
 TEST(MonitorManagerTest, StopAllIsIdempotentAndUnknownOperationsAreRejected) {
