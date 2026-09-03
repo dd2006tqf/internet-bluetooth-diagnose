@@ -2,21 +2,20 @@
  * @file monitor_plugin.hpp
  * @brief 监控器插件生命周期接口
  *
- * 将 13 个监控线程从 server.cpp 的硬编码启动序列，抽象为注册表驱动的插件。
+ * 将 15 个监控器线程从 server.cpp 的硬编码启动序列，抽象为注册表驱动的插件。
  * 每个插件实现 init / start / stop 三阶段生命周期：
  *   - init   阶段1：加载资源、解析配置（不开线程）
  *   - start  阶段2：启动线程（含 enabled 守卫）
- *   - stop   阶段3：停线程、释放资源（join 归属见实现约定）
+ *   - stop   阶段3：请求该插件停止并 join 其线程；服务级 join 仍由协调器负责
  *
- * 设计约束：
- *   - 不改监控器内部采集逻辑，只做生命周期包装（迁移成本最低）
- *   - 依赖顺序通过 order() 表达：共享 eBPF 资源（flow_rate）的持有者 order 小
- *   - 静态注册表（非 dlopen），接口形状为将来 dlopen 预留
+ * 当前阶段由 MonitorManager 长期持有插件实例；线程/资源的独立所有权迁移
+ * 在后续阶段完成。静态注册表不等于 dlopen 动态加载。
  */
 
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace weaknet_dbus {
 
@@ -33,7 +32,9 @@ public:
     /// 启动优先级：小者先启动（start 正序、stop 逆序）；默认 100
     virtual int order() const { return 100; }
 
-    /// 阶段1：加载资源、解析配置。不开线程。
+    /// 返回本插件依赖的其他插件名称；默认无依赖。
+    virtual std::vector<std::string> dependencies() const { return {}; }
+
     /// @param ctx 全局上下文（监控器实例、线程句柄、cfg）
     /// @return true 成功；false 失败（start 阶段将跳过该插件）
     virtual bool init(ServerContext* ctx) = 0;

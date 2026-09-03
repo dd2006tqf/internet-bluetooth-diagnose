@@ -43,6 +43,12 @@ static constexpr const char kMethodGetEbpfMonitorHealth[]   = "GetEbpfMonitorHea
 static constexpr const char kMethodGetHistory[]              = "GetHistory";         ///< 查询 SQLite 历史快照（支持时间范围和网卡过滤）
 static constexpr const char kMethodSetMonitorParam[]         = "SetMonitorParam";   ///< 运行时设置监控器参数（白名单校验+原子提交）
 static constexpr const char kMethodGetMonitorParam[]         = "GetMonitorParam";   ///< 查询监控器当前参数（JSON 格式）
+static constexpr const char kMethodListMonitors[]             = "ListMonitors";
+static constexpr const char kMethodGetMonitorStatus[]         = "GetMonitorStatus";
+static constexpr const char kMethodEnableMonitor[]            = "EnableMonitor";
+static constexpr const char kMethodDisableMonitor[]           = "DisableMonitor";
+static constexpr const char kMethodRestartMonitor[]           = "RestartMonitor";
+static constexpr const char kMethodSaveMonitorOverrides[]     = "SaveMonitorOverrides";
 
 // ==================== 信号名 ====================
 // 服务端主动向订阅客户端推送事件。客户端通过 dbus_bus_add_match 过滤感兴趣的信号
@@ -52,6 +58,7 @@ static constexpr const char kSignalInterfaceChanged[]       = "InterfaceChanged"
 static constexpr const char kSignalConnectionModeChanged[]  = "ConnectionModeChanged";  ///< 当前上网网卡切换事件
 static constexpr const char kSignalNetworkQualityChanged[]  = "NetworkQualityChanged";  ///< 综合网络质量（Excellent/Good/Fair/Poor）变化
 static constexpr const char kSignalBluetoothDeviceChanged[] = "BluetoothDeviceChanged"; ///< 蓝牙设备出现/消失/状态变化
+static constexpr const char kSignalMonitorStateChanged[]    = "MonitorStateChanged";
 
 // ==================== 运行时路径常量 ====================
 

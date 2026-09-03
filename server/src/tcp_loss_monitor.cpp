@@ -46,8 +46,8 @@ namespace weaknet_dbus {
  *
  * @param ctx ServerContext 指针，持有弱网管理器和 D-Bus 服务实例
  */
-void start_tcp_loss_monitor_thread(ServerContext* ctx) {
-    ctx->tcp_loss_thread = std::thread([ctx](){
+void start_tcp_loss_monitor_thread(ServerContext* ctx, std::thread* worker) {
+    *worker = std::thread([ctx](){
         LOG_INFO(LogModule::TCP_LOSS, "monitor thread started");
 
         auto tcpMonitor = TcpLossMonitor::getInstance();
@@ -55,7 +55,7 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
         bool hasPrevStats = false;   // 是否已有前一次采样值（首轮跳过丢包率计算）
 
         int loop_count = 0;
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->tcp_loss_stop.load())) {
             loop_count++;
 
             // 获取当前上网网卡信息
@@ -70,7 +70,7 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
 
             // 未找到活动网卡，等待 5s 后重试（保持原行为）
             if (currentIface.empty()) {
-                for (int i = 0; i < 50 && ctx->running.load(); ++i)
+                for (int i = 0; i < 50 && (ctx->running.load() && !ctx->tcp_loss_stop.load()); ++i)
                     std::this_thread::sleep_for(100ms);
                 continue;
             }
@@ -78,7 +78,7 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
             // 采样当前 TCP 统计信息（通过 NETLINK_SOCK_DIAG 查询）
             if (!tcpMonitor->sampleForInterface(currentIface, currStats)) {
                 LOG_ERROR(LogModule::TCP_LOSS, "failed to sample TCP stats for interface: " << currentIface);
-                for (int i = 0; i < 50 && ctx->running.load(); ++i)
+                for (int i = 0; i < 50 && (ctx->running.load() && !ctx->tcp_loss_stop.load()); ++i)
                     std::this_thread::sleep_for(100ms);
                 continue;
             }
@@ -112,7 +112,7 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx) {
             prevStats = currStats;
             hasPrevStats = true;
 
-            for (int i = 0; i < static_cast<int>(ctx->cfg.tcp_loss.interval_ms.load() / 100) && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.tcp_loss.interval_ms.load() / 100) && (ctx->running.load() && !ctx->tcp_loss_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
 

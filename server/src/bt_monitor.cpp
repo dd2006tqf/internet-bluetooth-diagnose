@@ -1137,15 +1137,15 @@ std::vector<std::string> BtMonitor::getStringArrayProperty(DBusConnection* conn,
 
 /**
  * @brief 启动蓝牙监测后台线程：初始化 → Phase 2 eBPF → 主循环（3s 轮询） → 事件转发 → 被动重试
- * @param ctx ServerContext 智能指针容器，线程通过 .get() 使用 monitor，ownership 由 ServerContext 持有
+ * @param ctx ServerContext 生命周期句柄，线程通过非 owning 指针使用 monitor；ownership 由 BluetoothPlugin 持有
  * @param outMonitor 输出参数（预留）
  */
-void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** /*outMonitor*/) {
-    // BtMonitor 由 ServerContext 持有 ownership（智能指针），线程通过 .get() 使用。
-    ctx->bt_thread = std::thread([ctx]() {
+void start_bt_monitor_thread(ServerContext* ctx, std::thread* worker, BtMonitor** /*outMonitor*/) {
+    // BtMonitor 由 BluetoothPlugin 持有 ownership，线程只借用 ServerContext 的查询视图。
+    *worker = std::thread([ctx]() {
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread started");
 
-        auto* monitor = ctx->bt_monitor.get();
+        auto* monitor = ctx->bt_monitor;
         if (!monitor) {
             LOG_ERROR(LogModule::BLUETOOTH, "BT monitor: ctx->bt_monitor is null");
             return;
@@ -1180,7 +1180,7 @@ void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** /*outMonitor*/) {
         int retryCount = 0;
         static constexpr int RETRY_INTERVAL = 30;  // 每 30 秒重试初始化
 
-        while (ctx->running.load()) {
+        while (ctx->running.load() && !ctx->bluetooth_stop.load()) {
             loopCount++;
 
             if (!monitor->isInitialized()) {
@@ -1270,7 +1270,7 @@ void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** /*outMonitor*/) {
 
         monitor->cleanup();
         monitor->stopPhase2();  // Phase 2: 释放 eBPF 内核资源
-        // bt_monitor 由 ServerContext 析构时删除，线程不负责 delete
+        // BtMonitor 由插件在 worker join 后释放，线程不负责 delete。
         LOG_INFO(LogModule::BLUETOOTH, "BT monitor thread stopped");
     });
 }

@@ -41,14 +41,14 @@ namespace weaknet_dbus {
  * @param intervalMs  采样周期（毫秒）
  * @param timeoutMs   单次 ping 超时时间（毫秒）
  */
-void start_rtt_monitor_thread(ServerContext* ctx, const std::string& host, int intervalMs, int timeoutMs) {
+void start_rtt_monitor_thread(ServerContext* ctx, std::thread* worker, const std::string& host, int intervalMs, int timeoutMs) {
     // 加入可 join 句柄，由主线程退出路径 join，避免 detached 线程在 ctx 析构后野访问。
     // 循环内每轮从线程安全配置现读 target/interval/timeout，
     // 支持 D-Bus SetMonitorParam 实时调参。start 参数仅作 cfg 为空时的兜底。
-    ctx->rtt_thread = std::thread([ctx, host, intervalMs, timeoutMs]{
+    *worker = std::thread([ctx, host, intervalMs, timeoutMs]{
         LOG_INFO(LogModule::RTT, "RTT monitor thread started");
         int loop_count = 0;
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->rtt_stop.load())) {
             loop_count++;
             try {
                 // 每轮现读配置（D-Bus 调参立即生效）
@@ -81,7 +81,7 @@ void start_rtt_monitor_thread(ServerContext* ctx, const std::string& host, int i
                     ctx->service->emitChanged("RTT/Quality updated", /*counter*/0);
                 }
 
-                for (int i = 0; i < (eff_interval / 100) && ctx->running.load(); ++i)
+                for (int i = 0; i < (eff_interval / 100) && (ctx->running.load() && !ctx->rtt_stop.load()); ++i)
                     std::this_thread::sleep_for(100ms);
 
             } catch (const std::exception& e) {

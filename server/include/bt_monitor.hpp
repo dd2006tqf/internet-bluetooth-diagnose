@@ -495,6 +495,6 @@ struct ServerContext;
  * @param ctx        ServerContext 生命周期句柄
  * @param outMonitor 可选输出；若非 nullptr，接收 BtMonitor* 指针
  */
-void start_bt_monitor_thread(ServerContext* ctx, BtMonitor** outMonitor = nullptr);
+void start_bt_monitor_thread(ServerContext* ctx, std::thread* worker, BtMonitor** outMonitor = nullptr);
 
 }  // namespace weaknet_dbus

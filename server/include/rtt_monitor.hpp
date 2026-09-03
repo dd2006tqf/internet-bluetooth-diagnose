@@ -11,6 +11,8 @@
 
 #pragma once
 
+#include <thread>
+
 #include <string>
 
 namespace weaknet_dbus {
@@ -28,6 +30,6 @@ class ServerContext;
  * @param intervalMs  采样间隔，默认 2000ms（2 秒一次）
  * @param timeoutMs   单次 ping 超时，默认 800ms（超过视为丢包）
  */
-void start_rtt_monitor_thread(ServerContext* ctx, const std::string& host, int intervalMs = 2000, int timeoutMs = 800);
+void start_rtt_monitor_thread(ServerContext* ctx, std::thread* worker, const std::string& host, int intervalMs = 2000, int timeoutMs = 800);
 
 }  // namespace weaknet_dbus

@@ -22,6 +22,7 @@
 #include <memory>
 
 #include "weaknet_config.hpp"
+#include "monitor_manager.hpp"
 
 // 前置声明，避免强依赖 dbus 头
 struct DBusConnection;
@@ -56,45 +57,52 @@ struct ServerContext {
 
     std::atomic<bool> running{true};          ///< 全局运行标志。设为 false 后所有监控线程在下一个周期退出
 
-    // ---------- 传统监控线程（非 eBPF）----------
-    std::thread iface_thread;                 ///< 网卡列表监控：netlink ROUTE 组播驱动，维护可用接口列表
-    std::thread using_thread;                 ///< 当前上网网卡监控：解析默认路由，标记 usingNow
-    std::thread rtt_thread;                   ///< RTT 延迟监控：ICMP Ping 到 223.5.5.5
-    std::thread jitter_thread;                ///< 网络抖动监控：基于 RTT 样本的标准差
-    std::thread rssi_thread;                  ///< Wi-Fi RSSI 监控：通过 wpa_supplicant ctrl_interface 获取信号强度
-    std::thread bt_thread;                    ///< 蓝牙监控：BlueZ D-Bus 系统总线轮询
-    std::thread tcp_loss_thread;              ///< TCP 丢包率监控：netlink SOCK_DIAG 或 eBPF tcp_retransmit
-    std::thread traffic_analysis_thread;      ///< 流量分析：/proc/net/dev + eBPF flow_rate
-    std::thread network_quality_thread;       ///< 综合网络质量评估：聚合 RTT + RSSI + 丢包 + 流量
+    // ---------- 服务级线程 ----------
+    // MonitorManager/各插件分别持有监控 worker；这里只保留历史持久化线程。
+    std::thread history_thread;                 ///< 每 5 秒将 iface_list 快照写入 DB
 
     // ---------- 共享数据 ----------
     std::mutex iface_mutex;                   ///< 保护 iface_list 的并发访问（多写多读场景）
     std::vector<NetInfo> iface_list;          ///< 当前所有具备上网能力的网卡列表（共享状态）
 
+    // ---------- 监控器插件生命周期 ----------
+    std::unique_ptr<MonitorManager> monitor_manager; ///< 静态插件实例与生命周期协调器
+
     // ---------- 服务对象（unique_ptr 管理生命周期）----------
     std::unique_ptr<DbusService> service;                ///< D-Bus 服务：导出方法 + 发射信号
     std::unique_ptr<WeakNetMgr> weak_mgr;                ///< 弱网管理器：聚合所有监控器的数据更新
-    std::unique_ptr<BtMonitor> bt_monitor;               ///< 蓝牙监测器实例
 
-    // ---------- eBPF 监控器（unique_ptr 管理 ownership）----------
-    std::unique_ptr<DnsMonitor> dns_monitor;             ///< DNS 解析延迟/超时监控
-    std::unique_ptr<WifiPacketLossMonitor> wifi_loss_monitor; ///< Wi-Fi 收发丢包归因
-    std::unique_ptr<HttpLatencyMonitor> http_latency_monitor; ///< HTTP 请求级 TTFB 延迟
-    std::unique_ptr<ProcessNetProfiler> process_net_profiler; ///< 每进程带宽/重传统计
-    std::unique_ptr<TcpRetransMonitor> tcp_retrans_monitor;   ///< TCP 连接级重传追踪
-    std::unique_ptr<TcpConnMonitor> tcp_conn_monitor;         ///< TCP 连接生命周期统计（accept/close/时长）
-
-    // ---------- eBPF 监控器线程 ----------
-    std::thread dns_monitor_thread;
-    std::thread wifi_loss_monitor_thread;
-    std::thread http_latency_monitor_thread;
-    std::thread process_net_profiler_thread;
-    std::thread tcp_retrans_monitor_thread;
-    std::thread tcp_conn_monitor_thread;
+    // 监控器对象由对应插件拥有；这些裸指针仅为现有查询/聚合调用提供
+    // non-owning 兼容视图，插件 stop 完成后必须清空。
+    BtMonitor* bt_monitor = nullptr;
+    DnsMonitor* dns_monitor = nullptr;
+    WifiPacketLossMonitor* wifi_loss_monitor = nullptr;
+    HttpLatencyMonitor* http_latency_monitor = nullptr;
+    ProcessNetProfiler* process_net_profiler = nullptr;
+    TcpRetransMonitor* tcp_retrans_monitor = nullptr;
+    TcpConnMonitor* tcp_conn_monitor = nullptr;
 
     // ---------- 历史数据持久化 ----------
     std::unique_ptr<DatabaseManager> db_mgr;   ///< SQLite 管理器，持有数据库连接
-    std::thread history_thread;                 ///< 每 5 秒将 iface_list 快照写入 DB
+
+    // ---------- per-monitor stop requests (阶段二) ----------
+    // These flags are separate from running: they stop one worker without
+    // affecting the service or any other monitor.
+    std::atomic<bool> iface_stop{false};
+    std::atomic<bool> using_iface_stop{false};
+    std::atomic<bool> rtt_stop{false};
+    std::atomic<bool> jitter_stop{false};
+    std::atomic<bool> rssi_stop{false};
+    std::atomic<bool> tcp_loss_stop{false};
+    std::atomic<bool> traffic_stop{false};
+    std::atomic<bool> quality_stop{false};
+    std::atomic<bool> bluetooth_stop{false};
+    std::atomic<bool> dns_stop{false};
+    std::atomic<bool> wifi_loss_stop{false};
+    std::atomic<bool> http_latency_stop{false};
+    std::atomic<bool> process_profiler_stop{false};
+    std::atomic<bool> tcp_retrans_stop{false};
+    std::atomic<bool> tcp_conn_stop{false};
 
     // ---------- 运行时配置 ----------
     WeakNetConfig cfg;                          ///< 线程安全配置（启动时构建一次，此后通过 D-Bus 运行时调参）
@@ -129,19 +137,19 @@ struct ServerContext {
 
 // ---- 传统监控线程启动函数（供插件 start() 调用；生命周期由插件管理）----
 
-void start_iface_monitor_thread(ServerContext* ctx);       ///< 网卡列表监控（netlink 事件驱动）
-void start_using_iface_thread(ServerContext* ctx);         ///< 当前上网网卡监控
-void start_traffic_analysis_thread(ServerContext* ctx);    ///< 流量分析（flow_rate 持有者）
-void start_network_quality_thread(ServerContext* ctx);     ///< 网络质量综合评估
+void start_iface_monitor_thread(ServerContext* ctx, std::thread* worker);       ///< 网卡列表监控（netlink 事件驱动）
+void start_using_iface_thread(ServerContext* ctx, std::thread* worker);         ///< 当前上网网卡监控
+void start_traffic_analysis_thread(ServerContext* ctx, std::thread* worker);    ///< 流量分析（flow_rate 持有者）
+void start_network_quality_thread(ServerContext* ctx, std::thread* worker);     ///< 网络质量综合评估
 
 // ---- eBPF 监控线程启动函数（供插件 start() 调用）----
 
-void start_dns_monitor_thread(ServerContext* ctx);             ///< DNS 解析延迟/超时（dns_monitor.bpf.o）
-void start_wifi_loss_monitor_thread(ServerContext* ctx);       ///< Wi-Fi 收发丢包归因（wifi_packet_loss.bpf.o）
-void start_http_latency_monitor_thread(ServerContext* ctx);    ///< HTTP TTFB 延迟（http_latency.bpf.o）
-void start_process_net_profiler_thread(ServerContext* ctx);    ///< 每进程带宽/重传（flow_rate.bpf.o 共享）
-void start_tcp_retrans_monitor_thread(ServerContext* ctx);     ///< TCP 连接级重传（tcp_retransmit.bpf.o）
-void start_tcp_conn_monitor_thread(ServerContext* ctx);        ///< TCP 连接生命周期（tcp_conn_stats.bpf.o）
+void start_dns_monitor_thread(ServerContext* ctx, std::thread* worker, DnsMonitor* monitor);             ///< DNS 解析延迟/超时（dns_monitor.bpf.o）
+void start_wifi_loss_monitor_thread(ServerContext* ctx, std::thread* worker, WifiPacketLossMonitor* monitor);       ///< Wi-Fi 收发丢包归因（wifi_packet_loss.bpf.o）
+void start_http_latency_monitor_thread(ServerContext* ctx, std::thread* worker, HttpLatencyMonitor* monitor);    ///< HTTP TTFB 延迟（http_latency.bpf.o）
+void start_process_net_profiler_thread(ServerContext* ctx, std::thread* worker, ProcessNetProfiler* monitor);    ///< 每进程带宽/重传（flow_rate.bpf.o 共享）
+void start_tcp_retrans_monitor_thread(ServerContext* ctx, std::thread* worker, TcpRetransMonitor* monitor);     ///< TCP 连接级重传（tcp_retransmit.bpf.o）
+void start_tcp_conn_monitor_thread(ServerContext* ctx, std::thread* worker, TcpConnMonitor* monitor);        ///< TCP 连接生命周期（tcp_conn_stats.bpf.o）
 
 void start_history_persistence_thread(ServerContext* ctx);     ///< 历史数据持久化（非监控器，server.cpp 单独启动）
 

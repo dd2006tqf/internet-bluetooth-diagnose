@@ -366,10 +366,49 @@ bool checkRange(uint32_t v, uint32_t min, uint32_t max) {
 
 }  // anonymous namespace
 
+bool getMonitorEnabled(const WeakNetConfig& cfg, const std::string& monitor, bool* enabled) {
+    if (!enabled) return false;
+    if (monitor == "iface" || monitor == "using_iface") *enabled = true;
+    else if (monitor == "rtt") *enabled = cfg.rtt.enabled.load();
+    else if (monitor == "jitter") *enabled = cfg.jitter.enabled.load();
+    else if (monitor == "rssi") *enabled = cfg.rssi.enabled.load();
+    else if (monitor == "tcp_loss") *enabled = cfg.tcp_loss.enabled.load();
+    else if (monitor == "traffic") *enabled = cfg.traffic.enabled.load();
+    else if (monitor == "quality") *enabled = cfg.quality.enabled.load();
+    else if (monitor == "bluetooth") *enabled = cfg.bluetooth.enabled.load();
+    else if (monitor == "dns") *enabled = cfg.dns.enabled.load();
+    else if (monitor == "wifi_loss") *enabled = cfg.wifi_loss.enabled.load();
+    else if (monitor == "http_latency") *enabled = cfg.http_latency.enabled.load();
+    else if (monitor == "process_profiler") *enabled = cfg.process_profiler.enabled.load();
+    else if (monitor == "tcp_retrans") *enabled = cfg.tcp_retrans.enabled.load();
+    else if (monitor == "tcp_conn") *enabled = cfg.tcp_conn.enabled.load();
+    else return false;
+    return true;
+}
+
+bool setMonitorEnabled(WeakNetConfig* cfg, const std::string& monitor, bool enabled) {
+    if (!cfg) return false;
+    if (monitor == "iface" || monitor == "using_iface") return true;
+    if (monitor == "rtt") cfg->rtt.enabled.store(enabled);
+    else if (monitor == "jitter") cfg->jitter.enabled.store(enabled);
+    else if (monitor == "rssi") cfg->rssi.enabled.store(enabled);
+    else if (monitor == "tcp_loss") cfg->tcp_loss.enabled.store(enabled);
+    else if (monitor == "traffic") cfg->traffic.enabled.store(enabled);
+    else if (monitor == "quality") cfg->quality.enabled.store(enabled);
+    else if (monitor == "bluetooth") cfg->bluetooth.enabled.store(enabled);
+    else if (monitor == "dns") cfg->dns.enabled.store(enabled);
+    else if (monitor == "wifi_loss") cfg->wifi_loss.enabled.store(enabled);
+    else if (monitor == "http_latency") cfg->http_latency.enabled.store(enabled);
+    else if (monitor == "process_profiler") cfg->process_profiler.enabled.store(enabled);
+    else if (monitor == "tcp_retrans") cfg->tcp_retrans.enabled.store(enabled);
+    else if (monitor == "tcp_conn") cfg->tcp_conn.enabled.store(enabled);
+    else return false;
+    return true;
+}
+
 bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
                      const std::string& value, std::string* error) {
     if (!cfg) return false;
-
     std::string mon, field;
     if (!splitMonitorKey(key, &mon, &field)) {
         if (error) *error = "invalid key format (expected 'monitor.field'): " + key;

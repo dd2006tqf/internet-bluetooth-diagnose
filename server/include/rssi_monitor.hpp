@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <thread>
+
 #include <string>
 
 namespace weaknet_dbus {
@@ -29,6 +31,6 @@ class ServerContext;
  * @param ctrlDir   wpa_supplicant 控制目录，默认 "/var/run/wpa_supplicant"；
  *                  传空字符串则使用默认值
  */
-void start_rssi_monitor_thread(ServerContext* ctx, const std::string& ctrlDir = "");
+void start_rssi_monitor_thread(ServerContext* ctx, std::thread* worker, const std::string& ctrlDir = "");
 
 }  // namespace weaknet_dbus

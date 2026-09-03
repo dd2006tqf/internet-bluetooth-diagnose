@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include <thread>
+
 #include "server.hpp"
 
 namespace weaknet_dbus {
@@ -27,6 +29,6 @@ namespace weaknet_dbus {
  *
  * @param ctx  ServerContext 生命周期句柄；线程内通过它访问 WeakNetMgr
  */
-void start_tcp_loss_monitor_thread(ServerContext* ctx);
+void start_tcp_loss_monitor_thread(ServerContext* ctx, std::thread* worker);
 
 } // namespace weaknet_dbus

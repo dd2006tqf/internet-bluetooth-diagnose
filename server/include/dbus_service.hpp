@@ -131,6 +131,17 @@ public:
     bool handleSetMonitorParam(DBusConnection* conn, DBusMessage* msg);       ///< SetMonitorParam: 校验+原子提交
     bool handleGetMonitorParam(DBusConnection* conn, DBusMessage* msg);       ///< GetMonitorParam: 返回 JSON
 
+    // 监控器生命周期控制
+    bool handleListMonitors(DBusConnection* conn, DBusMessage* msg);
+    bool handleGetMonitorStatus(DBusConnection* conn, DBusMessage* msg);
+    bool handleEnableMonitor(DBusConnection* conn, DBusMessage* msg);
+    bool handleDisableMonitor(DBusConnection* conn, DBusMessage* msg);
+    bool handleRestartMonitor(DBusConnection* conn, DBusMessage* msg);
+    bool handleSaveMonitorOverrides(DBusConnection* conn, DBusMessage* msg);
+
+    bool handleMonitorOperation(DBusConnection* conn, DBusMessage* msg,
+                                const char* operation);
+
 private:
     /**
      * @brief 内部辅助：向调用方回复字符串数组

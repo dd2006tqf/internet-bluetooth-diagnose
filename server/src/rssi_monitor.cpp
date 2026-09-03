@@ -39,12 +39,12 @@ namespace weaknet_dbus {
  * @param ctx     ServerContext 指针
  * @param ctrlDir wpa_supplicant 控制目录（为空时自动探测 /run/wpa_supplicant 等路径）
  */
-void start_rssi_monitor_thread(ServerContext* ctx, const std::string& ctrlDir) {
+void start_rssi_monitor_thread(ServerContext* ctx, std::thread* worker, const std::string& ctrlDir) {
     // 加入可 join 句柄，由主线程退出路径 join，避免 detached 线程在 ctx 析构后野访问
-    ctx->rssi_thread = std::thread([ctx, ctrlDir]{
+    *worker = std::thread([ctx, ctrlDir]{
         LOG_INFO(LogModule::RSSI, "RSSI monitor thread started");
         int loop_count = 0;
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->rssi_stop.load())) {
             loop_count++;
 
             // 直接调用线程安全的RSSI更新方法（内部通过 wpa_supplicant 控制 socket 查询）
@@ -67,7 +67,7 @@ void start_rssi_monitor_thread(ServerContext* ctx, const std::string& ctrlDir) {
                 ctx->service->emitChanged("WiFi RSSI updated", /*counter*/0);
             }
             // 以 cfg.rssi.interval_ms 为周期：以 100ms 为单位睡眠，保证 ctx->running 能快速响应退出
-            for (int i = 0; i < static_cast<int>(ctx->cfg.rssi.interval_ms.load() / 100) && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.rssi.interval_ms.load() / 100) && (ctx->running.load() && !ctx->rssi_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
     });

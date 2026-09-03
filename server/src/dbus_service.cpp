@@ -129,6 +129,30 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
         self->handleGetMonitorParam(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodListMonitors)) {
+        self->handleListMonitors(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetMonitorStatus)) {
+        self->handleGetMonitorStatus(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodEnableMonitor)) {
+        self->handleEnableMonitor(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodDisableMonitor)) {
+        self->handleDisableMonitor(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodRestartMonitor)) {
+        self->handleRestartMonitor(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodSaveMonitorOverrides)) {
+        self->handleSaveMonitorOverrides(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
     return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
 
@@ -537,7 +561,7 @@ bool DbusService::handlePing(DBusConnection* conn, DBusMessage* msg) {
 bool DbusService::handleGetBluetoothDevices(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleGetBluetoothDevices called");
 
-    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor.get() : nullptr;
+    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
     if (!monitor) {
         // 无蓝牙监测器 → 返回空数组。必须构造合法的空 DBus 数组容器，不能跳过 open_container
         DBusMessage* reply = dbus_message_new_method_return(msg);
@@ -588,7 +612,7 @@ bool DbusService::handleGetBluetoothAdapter(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor.get() : nullptr;
+    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
     if (monitor && monitor->isInitialized()) {
         auto state = monitor->getAdapterState();
         result = std::string("Powered:") + (state.powered ? "1" : "0")
@@ -628,7 +652,7 @@ bool DbusService::handleGetDnsStats(DBusConnection* conn, DBusMessage* msg) {
     if (!reply) return false;
 
     std::string result;
-    DnsMonitor* monitor = ctx_ ? ctx_->dns_monitor.get() : nullptr;
+    DnsMonitor* monitor = ctx_ ? ctx_->dns_monitor : nullptr;
     if (monitor && monitor->isAvailable()) {
         auto stats = monitor->getStats();
         result = "totalQueries:" + std::to_string(stats.totalQueries)
@@ -663,7 +687,7 @@ bool DbusService::handleGetWifiLossStats(DBusConnection* conn, DBusMessage* msg)
     if (!reply) return false;
 
     std::string result;
-    WifiPacketLossMonitor* monitor = ctx_ ? ctx_->wifi_loss_monitor.get() : nullptr;
+    WifiPacketLossMonitor* monitor = ctx_ ? ctx_->wifi_loss_monitor : nullptr;
     if (monitor && monitor->isAvailable()) {
         auto stats = monitor->getStats();
         for (auto& [ifindex, s] : stats) {
@@ -699,7 +723,7 @@ bool DbusService::handleGetHttpLatencyStats(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    HttpLatencyMonitor* monitor = ctx_ ? ctx_->http_latency_monitor.get() : nullptr;
+    HttpLatencyMonitor* monitor = ctx_ ? ctx_->http_latency_monitor : nullptr;
     if (monitor && monitor->isAvailable()) {
         auto stats = monitor->getGlobalStats();
         result = "totalTxns:" + std::to_string(stats.totalTxns)
@@ -734,7 +758,7 @@ bool DbusService::handleGetProcessProfiling(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    ProcessNetProfiler* monitor = ctx_ ? ctx_->process_net_profiler.get() : nullptr;
+    ProcessNetProfiler* monitor = ctx_ ? ctx_->process_net_profiler : nullptr;
     if (monitor && monitor->isAvailable()) {
         result += "=== Top Bandwidth ===|";
         auto topBw = monitor->getTopBandwidth(5);
@@ -796,12 +820,12 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
     // 蓝牙音频分析器可选：有就用真实实例；为空时在下方循环中输出占位条目（不崩溃）
     const IEbpfMonitor* audioMonitor = ctx_->bt_monitor->audioAnalyzer();
     const std::vector<const IEbpfMonitor*> monitors = {
-        static_cast<const IEbpfMonitor*>(ctx_->dns_monitor.get()),
-        static_cast<const IEbpfMonitor*>(ctx_->wifi_loss_monitor.get()),
-        static_cast<const IEbpfMonitor*>(ctx_->http_latency_monitor.get()),
-        static_cast<const IEbpfMonitor*>(ctx_->process_net_profiler.get()),
-        static_cast<const IEbpfMonitor*>(ctx_->tcp_retrans_monitor.get()),
-        static_cast<const IEbpfMonitor*>(ctx_->tcp_conn_monitor.get()),
+        static_cast<const IEbpfMonitor*>(ctx_->dns_monitor),
+        static_cast<const IEbpfMonitor*>(ctx_->wifi_loss_monitor),
+        static_cast<const IEbpfMonitor*>(ctx_->http_latency_monitor),
+        static_cast<const IEbpfMonitor*>(ctx_->process_net_profiler),
+        static_cast<const IEbpfMonitor*>(ctx_->tcp_retrans_monitor),
+        static_cast<const IEbpfMonitor*>(ctx_->tcp_conn_monitor),
         audioMonitor
     };
 
@@ -1018,6 +1042,157 @@ bool DbusService::handleGetMonitorParam(DBusConnection* conn, DBusMessage* msg) 
     DBusMessageIter reply_args;
     dbus_message_iter_init_append(reply, &reply_args);
     dbus_message_iter_append_basic(&reply_args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+// ============================================================================
+// 监控器生命周期方法
+// ============================================================================
+
+namespace {
+
+std::string monitorStatusJson(const MonitorStatus& status) {
+    return std::string("{\"name\":\"") + weaknet_utils::escapeJsonString(status.name)
+        + "\",\"state\":\"" + monitorStateName(status.state)
+        + "\",\"desired_enabled\":" + (status.desired_enabled ? "true" : "false")
+        + ",\"generation\":" + std::to_string(status.generation)
+        + ",\"changed_at\":\"" + weaknet_utils::escapeJsonString(status.changed_at)
+        + "\",\"error\":\"" + weaknet_utils::escapeJsonString(status.error) + "\"}";
+}
+
+bool monitorNameArg(DBusMessage* msg, const char** name, DBusError* err) {
+    return dbus_message_get_args(msg, err, DBUS_TYPE_STRING, name, DBUS_TYPE_INVALID)
+        && name && *name;
+}
+
+}
+
+bool DbusService::handleListMonitors(DBusConnection* conn, DBusMessage* msg) {
+    if (!ctx_ || !ctx_->monitor_manager) return false;
+    std::string result = "[";
+    bool first = true;
+    for (const auto& status : ctx_->monitor_manager->list()) {
+        if (!first) result += ",";
+        first = false;
+        result += monitorStatusJson(status);
+    }
+    result += "]";
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+    DBusMessageIter iter;
+    dbus_message_iter_init_append(reply, &iter);
+    const char* value = result.c_str();
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &value);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+bool DbusService::handleGetMonitorStatus(DBusConnection* conn, DBusMessage* msg) {
+    DBusError err;
+    dbus_error_init(&err);
+    const char* name = nullptr;
+    if (!monitorNameArg(msg, &name, &err)) {
+        const char* text = dbus_error_is_set(&err) ? err.message : "missing monitor name";
+        DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", text);
+        if (reply) { dbus_connection_send(conn, reply, nullptr); dbus_message_unref(reply); }
+        dbus_error_free(&err);
+        return false;
+    }
+    MonitorStatus status;
+    if (!ctx_ || !ctx_->monitor_manager || !ctx_->monitor_manager->status(name, &status)) {
+        DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", "unknown monitor");
+        if (reply) { dbus_connection_send(conn, reply, nullptr); dbus_message_unref(reply); }
+        return false;
+    }
+    std::string result = monitorStatusJson(status);
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+    DBusMessageIter iter;
+    dbus_message_iter_init_append(reply, &iter);
+    const char* value = result.c_str();
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &value);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+bool DbusService::handleEnableMonitor(DBusConnection* conn, DBusMessage* msg) {
+    return handleMonitorOperation(conn, msg, "enable");
+}
+
+bool DbusService::handleDisableMonitor(DBusConnection* conn, DBusMessage* msg) {
+    return handleMonitorOperation(conn, msg, "disable");
+}
+
+bool DbusService::handleRestartMonitor(DBusConnection* conn, DBusMessage* msg) {
+    return handleMonitorOperation(conn, msg, "restart");
+}
+
+
+// The lifecycle handlers share the same argument validation and reply contract.
+bool DbusService::handleMonitorOperation(DBusConnection* conn, DBusMessage* msg,
+                                         const char* operation) {
+    DBusError err;
+    dbus_error_init(&err);
+    const char* name = nullptr;
+    if (!monitorNameArg(msg, &name, &err)) {
+        const char* text = dbus_error_is_set(&err) ? err.message : "missing monitor name";
+        DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", text);
+        if (reply) { dbus_connection_send(conn, reply, nullptr); dbus_message_unref(reply); }
+        dbus_error_free(&err);
+        return false;
+    }
+    if (!ctx_ || !ctx_->monitor_manager) {
+        DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", "monitor manager unavailable");
+        if (reply) { dbus_connection_send(conn, reply, nullptr); dbus_message_unref(reply); }
+        return false;
+    }
+    std::string error;
+    bool ok = false;
+    if (std::string(operation) == "enable") ok = ctx_->monitor_manager->enable(name, &error);
+    else if (std::string(operation) == "disable") ok = ctx_->monitor_manager->disable(name, &error);
+    else ok = ctx_->monitor_manager->restart(name, &error);
+    if (!ok) {
+        DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", error.c_str());
+        if (reply) { dbus_connection_send(conn, reply, nullptr); dbus_message_unref(reply); }
+        return false;
+    }
+    MonitorStatus status;
+    ctx_->monitor_manager->status(name, &status);
+    std::string result = monitorStatusJson(status);
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+    DBusMessageIter iter;
+    dbus_message_iter_init_append(reply, &iter);
+    const char* value = result.c_str();
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &value);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+bool DbusService::handleSaveMonitorOverrides(DBusConnection* conn, DBusMessage* msg) {
+    std::string error;
+    if (!ctx_ || !ctx_->monitor_manager || !ctx_->monitor_manager->saveOverrides(&error)) {
+        DBusMessage* reply = dbus_message_new_error(
+            msg, "com.example.WeakNet.Error",
+            error.empty() ? "failed to save monitor overrides" : error.c_str());
+        if (reply) { dbus_connection_send(conn, reply, nullptr); dbus_message_unref(reply); }
+        return false;
+    }
+    const char* result = "ok";
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+    DBusMessageIter iter;
+    dbus_message_iter_init_append(reply, &iter);
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &result);
     dbus_connection_send(conn, reply, nullptr);
     dbus_connection_flush(conn);
     dbus_message_unref(reply);

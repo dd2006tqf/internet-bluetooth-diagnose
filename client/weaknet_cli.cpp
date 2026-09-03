@@ -29,6 +29,9 @@ static void printUsage(const char* prog) {
         "  %s get <monitor>              # 查询监控器参数（JSON）\n"
         "  %s set <key> <value>          # 设置参数（如 rtt.interval 5s）\n"
         "  %s list                       # 列出可用监控器\n"
+        "  %s monitor list|status [name]\n"
+        "  %s monitor enable|disable|restart <name>\n"
+        "  %s monitor save                # 保存运行时启停状态\n"
         "\n"
         "监控器名：rtt, jitter, rssi, tcp_loss, traffic, quality,\n"
         "        bluetooth, dns, wifi_loss, http_latency, process_profiler,\n"
@@ -37,7 +40,7 @@ static void printUsage(const char* prog) {
         "示例：\n"
         "  %s set rtt.interval 5s\n"
         "  %s get rtt\n"
-        "  %s list\n", prog, prog, prog, prog, prog, prog);
+        "  %s list\n", prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static bool callSet(const char* key, const char* value) {
@@ -50,11 +53,41 @@ static bool callSet(const char* key, const char* value) {
     return true;
 }
 
+static bool callLifecycle(const char* operation, const char* monitor) {
+    char buf[8192];
+    char err[256];
+    bool ok = false;
+    if (strcmp(operation, "status") == 0) {
+        ok = monitor ? weaknet_get_monitor_status(monitor, buf, sizeof(buf), err, sizeof(err))
+                     : weaknet_list_monitors(buf, sizeof(buf), err, sizeof(err));
+    } else if (strcmp(operation, "enable") == 0) {
+        ok = weaknet_enable_monitor(monitor, buf, sizeof(buf), err, sizeof(err));
+    } else if (strcmp(operation, "disable") == 0) {
+        ok = weaknet_disable_monitor(monitor, buf, sizeof(buf), err, sizeof(err));
+    } else if (strcmp(operation, "restart") == 0) {
+        ok = weaknet_restart_monitor(monitor, buf, sizeof(buf), err, sizeof(err));
+    }
+    if (ok) printf("%s\n", buf);
+    else fprintf(stderr, "Monitor operation failed: %s\n", err);
+    return ok;
+}
+
 static bool callGet(const char* monitor) {
     char buf[8192];
     char err[256];
     if (!weaknet_get_monitor_param(monitor, buf, sizeof(buf), err, sizeof(err))) {
         fprintf(stderr, "Get failed: %s\n", err);
+        return false;
+    }
+    printf("%s\n", buf);
+    return true;
+}
+
+static bool callSaveOverrides() {
+    char buf[8192];
+    char err[256];
+    if (!weaknet_save_monitor_overrides(buf, sizeof(buf), err, sizeof(err))) {
+        fprintf(stderr, "Save monitor overrides failed: %s\n", err);
         return false;
     }
     printf("%s\n", buf);
@@ -88,6 +121,28 @@ int main(int argc, char** argv) {
             return 1;
         }
         ok = callSet(argv[2], argv[3]);
+    } else if (strcmp(cmd, "monitor") == 0) {
+        if (argc < 3 || argc > 4) {
+            printUsage(argv[0]);
+            return 1;
+        }
+        const char* operation = argv[2];
+        const char* monitor = argc == 4 ? argv[3] : nullptr;
+        if (strcmp(operation, "list") == 0 || strcmp(operation, "status") == 0) {
+            if (strcmp(operation, "list") == 0 && monitor) {
+                printUsage(argv[0]);
+                return 1;
+            }
+            ok = callLifecycle(strcmp(operation, "list") == 0 ? "status" : operation, monitor);
+        } else if (strcmp(operation, "save") == 0 && !monitor) {
+            ok = callSaveOverrides();
+        } else if ((strcmp(operation, "enable") == 0 || strcmp(operation, "disable") == 0 ||
+                    strcmp(operation, "restart") == 0) && monitor) {
+            ok = callLifecycle(operation, monitor);
+        } else {
+            printUsage(argv[0]);
+            return 1;
+        }
     } else if (strcmp(cmd, "list") == 0) {
         printf("rtt\njitter\nrssi\ntcp_loss\ntraffic\nquality\n"
                "bluetooth\ndns\nwifi_loss\nhttp_latency\nprocess_profiler\n"

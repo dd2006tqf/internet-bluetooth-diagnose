@@ -102,12 +102,12 @@ static double calculateJitter(const std::deque<int>& samples) {
  * @param timeoutMs   单次 ping 超时时间（毫秒）
  * @param windowSize  RTT 样本滑动窗口大小（样本数），用于计算标准差
  */
-void start_jitter_monitor_thread(ServerContext* ctx,
+void start_jitter_monitor_thread(ServerContext* ctx, std::thread* worker,
                                  const std::string& host,
                                  int intervalMs,
                                  int timeoutMs,
                                  int windowSize) {
-    ctx->jitter_thread = std::thread([ctx, host, intervalMs, timeoutMs, windowSize]{
+    *worker = std::thread([ctx, host, intervalMs, timeoutMs, windowSize]{
         LOG_INFO(LogModule::NETWORK, "Jitter monitor thread started");
         auto pinger = NetPing::getInstance();
 
@@ -115,7 +115,7 @@ void start_jitter_monitor_thread(ServerContext* ctx,
         std::map<std::string, std::deque<int>> sampleWindows;
 
         int loopCount = 0;
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->jitter_stop.load())) {
             loopCount++;
             // 每轮现读配置（D-Bus 调参立即生效）
             std::string eff_host = ctx->cfg.jitter.target.get();
@@ -174,7 +174,7 @@ void start_jitter_monitor_thread(ServerContext* ctx,
                 LOG_ERROR(LogModule::NETWORK, "Jitter monitor thread unknown exception");
             }
 
-            for (int i = 0; i < (eff_interval / 100) && ctx->running.load(); ++i)
+            for (int i = 0; i < (eff_interval / 100) && (ctx->running.load() && !ctx->jitter_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         LOG_INFO(LogModule::NETWORK, "Jitter monitor thread exiting");

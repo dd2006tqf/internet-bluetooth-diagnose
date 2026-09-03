@@ -568,6 +568,22 @@ bool weaknet_get_monitor_param(const char* monitor,
                                char* buffer, size_t buffer_size,
                                char* error_buffer, size_t error_size);
 
+/* ============================== 监控器生命周期 API ============================== */
+bool weaknet_list_monitors(char* buffer, size_t buffer_size,
+                           char* error_buffer, size_t error_size);
+bool weaknet_get_monitor_status(const char* monitor, char* buffer, size_t buffer_size,
+                                char* error_buffer, size_t error_size);
+bool weaknet_enable_monitor(const char* monitor, char* buffer, size_t buffer_size,
+                            char* error_buffer, size_t error_size);
+bool weaknet_disable_monitor(const char* monitor, char* buffer, size_t buffer_size,
+                             char* error_buffer, size_t error_size);
+bool weaknet_restart_monitor(const char* monitor, char* buffer, size_t buffer_size,
+                             char* error_buffer, size_t error_size);
+bool weaknet_save_monitor_overrides(char* buffer, size_t buffer_size,
+                                    char* error_buffer, size_t error_size);
+
+/* Lifecycle commands are available through weaknet-cli monitor ... */
+
 /* ============================== 历史数据 API ============================== */
 
 /**

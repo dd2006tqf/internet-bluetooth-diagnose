@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include <thread>
+
 #include <string>
 
 namespace weaknet_dbus {
@@ -28,7 +30,7 @@ class ServerContext;
  * @param timeoutMs   单次 ping 超时，默认 800ms
  * @param windowSize  滑动窗口样本数，默认 30；值越大抖动计算越平滑但响应越慢
  */
-void start_jitter_monitor_thread(ServerContext* ctx,
+void start_jitter_monitor_thread(ServerContext* ctx, std::thread* worker,
                                  const std::string& host,
                                  int intervalMs = 2000,
                                  int timeoutMs = 800,

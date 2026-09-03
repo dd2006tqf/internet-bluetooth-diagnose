@@ -150,6 +150,10 @@ bool loadWeakNetConfig(const std::string& path, WeakNetConfig* out, std::string*
 /// 判定字段是否为监控器开关（以 .enabled 结尾）
 bool isEnabledKey(const std::string& key);
 
+/// 读取或更新指定监控器的 enabled 开关（供生命周期管理器同步运行意图）。
+bool getMonitorEnabled(const WeakNetConfig& cfg, const std::string& monitor, bool* enabled);
+bool setMonitorEnabled(WeakNetConfig* cfg, const std::string& monitor, bool enabled);
+
 /// 将 "monitor.param" 拆分；格式非法返回 false
 bool splitMonitorKey(const std::string& dotted, std::string* monitor, std::string* field);
 

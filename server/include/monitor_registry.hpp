@@ -2,7 +2,7 @@
  * @file monitor_registry.hpp
  * @brief 监控器插件静态注册表
  *
- * 编译期注册 + 运行期按 order 实例化的插件管理。
+ * 编译期注册 + 运行期由 MonitorManager 持有并按 order 实例化的插件管理。
  *
  * 用法（在每个插件 .cpp 末尾注册自己）：
  *   static const bool _rtt_registered =

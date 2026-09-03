@@ -141,6 +141,7 @@ DBusConnection* init_dbus(ServerContext* ctx) {
     }
     if (ret != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
         LOG_ERROR(LogModule::DBUS, "未能成为主拥有者，ret=" << ret);
+        dbus_connection_unref(conn);
         return nullptr;
     }
 
@@ -150,6 +151,7 @@ DBusConnection* init_dbus(ServerContext* ctx) {
     if (!ctx->service->register_on_connection(conn)) {
         LOG_ERROR(LogModule::DBUS, "注册对象路径失败");
         ctx->service.reset();
+        dbus_connection_unref(conn);
         return nullptr;
     }
     // 指针已保存至 ctx
@@ -160,13 +162,13 @@ DBusConnection* init_dbus(ServerContext* ctx) {
 }
 
 // 独立接口：启动网卡监控线程（使用 WeakNetMgr 与 NetInfo）
-void start_iface_monitor_thread(ServerContext* ctx) {
-    ctx->iface_thread = std::thread([ctx](){
+void start_iface_monitor_thread(ServerContext* ctx, std::thread* worker) {
+    *worker = std::thread([ctx](){
         LOG_INFO(LogModule::INTERFACE, "monitor thread started");
         std::vector<NetInfo> current;
         int32_t change_counter = 0;
 
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->iface_stop.load())) {
             LOG_INFO(LogModule::INTERFACE, "tick: collecting interfaces...");
             std::vector<NetInfo> latest = ctx->weak_mgr->collectCurrentInterfaces();
             LOG_INFO(LogModule::INTERFACE, "collected " << latest.size() << " interfaces");
@@ -217,15 +219,15 @@ void start_iface_monitor_thread(ServerContext* ctx) {
             } else {
                 LOG_INFO(LogModule::INTERFACE, "no changes detected");
             }
-            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+            for (int i = 0; i < 100 && (ctx->running.load() && !ctx->iface_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
     });
 }
 
 // 独立接口：启动流量分析线程
-void start_traffic_analysis_thread(ServerContext* ctx) {
-    ctx->traffic_analysis_thread = std::thread([ctx](){
+void start_traffic_analysis_thread(ServerContext* ctx, std::thread* worker) {
+    *worker = std::thread([ctx](){
         LOG_INFO(LogModule::WEAK_MGR, "traffic analysis thread started");
 
         // 动态选择接口：优先使用配置，否则取当前活动接口
@@ -248,7 +250,7 @@ void start_traffic_analysis_thread(ServerContext* ctx) {
         ctx->weak_mgr->startTrafficAnalysis(targetIface, ctx->cfg.traffic.interval_ms.load() / 1000);
 
         int loop_count = 0;
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->traffic_stop.load())) {
             loop_count++;
             LOG_INFO(LogModule::WEAK_MGR, "traffic analysis thread running, loop=" << loop_count);
             try {
@@ -272,7 +274,7 @@ void start_traffic_analysis_thread(ServerContext* ctx) {
                 LOG_ERROR(LogModule::WEAK_MGR, "Traffic analysis error: " << e.what());
             }
 
-            for (int i = 0; i < static_cast<int>(ctx->cfg.traffic.interval_ms.load() / 100) && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.traffic.interval_ms.load() / 100) && (ctx->running.load() && !ctx->traffic_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         ctx->weak_mgr->stopTrafficAnalysis();
@@ -281,12 +283,12 @@ void start_traffic_analysis_thread(ServerContext* ctx) {
 }
 
 // 独立接口：启动"当前上网网卡"监控线程（使用 UsingInterfaceManager）
-void start_using_iface_thread(ServerContext* ctx) {
-    ctx->using_thread = std::thread([ctx](){
+void start_using_iface_thread(ServerContext* ctx, std::thread* worker) {
+    *worker = std::thread([ctx](){
         LOG_INFO(LogModule::WEAK_MGR, "monitor thread started");
 
         int loop_count = 0;
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->using_iface_stop.load())) {
             loop_count++;
             LOG_INFO(LogModule::WEAK_MGR, "using iface thread running, loop=" << loop_count);
             
@@ -316,15 +318,15 @@ void start_using_iface_thread(ServerContext* ctx) {
             } else {
                 LOG_INFO(LogModule::WEAK_MGR, "unchanged (interfaces: " << current_interfaces.size() << ")");
             }
-            for (int i = 0; i < 100 && ctx->running.load(); ++i)
+            for (int i = 0; i < 100 && (ctx->running.load() && !ctx->using_iface_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
     });
 }
 
 // 独立接口：启动网络质量监控线程
-void start_network_quality_thread(ServerContext* ctx) {
-    ctx->network_quality_thread = std::thread([ctx](){
+void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
+    *worker = std::thread([ctx](){
         LOG_INFO(LogModule::WEAK_MGR, "network quality monitor thread started");
         
         NetworkQualityAssessor assessor;
@@ -332,7 +334,7 @@ void start_network_quality_thread(ServerContext* ctx) {
         lastQuality.level = NetworkQualityLevel::UNKNOWN;
         
         int loop_count = 0;
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->quality_stop.load())) {
             loop_count++;
             LOG_INFO(LogModule::WEAK_MGR, "network quality thread running, loop=" << loop_count);
             try {
@@ -398,7 +400,7 @@ void start_network_quality_thread(ServerContext* ctx) {
 
                 // 获取蓝牙 RSSI（取所有已连接设备的平均 RSSI）
                 int btRssi = -1000;
-                if (auto* mon = ctx->bt_monitor.get(); mon && mon->isInitialized()) {
+                if (auto* mon = ctx->bt_monitor; mon && mon->isInitialized()) {
                     auto rssiSnapshot = mon->getRssiSnapshot();
                     int sum = 0, count = 0;
                     for (const auto& [mac, rssi] : rssiSnapshot) {
@@ -443,7 +445,7 @@ void start_network_quality_thread(ServerContext* ctx) {
             // 可检测 "active 但卡顿" 状态，eBPF 不可用时自动降级
             // ================================================================
             try {
-                BtMonitor* mon = ctx->bt_monitor.get();
+                BtMonitor* mon = ctx->bt_monitor;
                 if (mon && mon->isInitialized()) {
                     auto connected = mon->getConnectedDevices();
                     for (const auto& dev : connected) {
@@ -480,7 +482,7 @@ void start_network_quality_thread(ServerContext* ctx) {
                           "Phase 2 audio fusion error: " << e.what());
             }
             
-            for (int i = 0; i < static_cast<int>(ctx->cfg.quality.interval_ms.load() / 100) && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.quality.interval_ms.load() / 100) && (ctx->running.load() && !ctx->quality_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
 
@@ -493,25 +495,25 @@ void start_network_quality_thread(ServerContext* ctx) {
 // 将此前孤立的 BPF 监控器纳入 ServerContext 统一生命周期
 // ====================================================================
 
-void start_dns_monitor_thread(ServerContext* ctx) {
+void start_dns_monitor_thread(ServerContext* ctx, std::thread* worker, DnsMonitor* monitor) {
     // 监控器由 ServerContext 持有 ownership（unique_ptr），线程仅通过 .get() 使用。
     // 这消除了旧方案中「线程销毁 unique_ptr 后、store(nullptr) 前」的悬垂指针窗口。
-    ctx->dns_monitor_thread = std::thread([ctx]() {
-        auto* monitor = ctx->dns_monitor.get();
+    *worker = std::thread([ctx, monitor]() {
+        // The plugin owns this monitor; the worker borrows it until join.
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "DNS monitor thread started");
         if (!monitor->init(ctx->cfg.dns.bpf_obj.get().c_str())) {
             LOG_INFO(LogModule::NETWORK, "DNS monitor: BPF init failed, thread exiting");
             return;
         }
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->dns_stop.load())) {
             auto stats = monitor->getStats();
             if (stats.totalQueries > 0) {
                 LOG_INFO(LogModule::NETWORK, "DNS tick: queries=" << stats.totalQueries
                     << " avgLatency=" << stats.avgLatencyMs << "ms"
                     << " timeoutRate=" << stats.timeoutRate() << "%");
             }
-            for (int i = 0; i < static_cast<int>(ctx->cfg.dns.interval_ms.load() / 100) && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.dns.interval_ms.load() / 100) && (ctx->running.load() && !ctx->dns_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
@@ -519,16 +521,16 @@ void start_dns_monitor_thread(ServerContext* ctx) {
     });
 }
 
-void start_wifi_loss_monitor_thread(ServerContext* ctx) {
-    ctx->wifi_loss_monitor_thread = std::thread([ctx]() {
-        auto* monitor = ctx->wifi_loss_monitor.get();
+void start_wifi_loss_monitor_thread(ServerContext* ctx, std::thread* worker, WifiPacketLossMonitor* monitor) {
+    *worker = std::thread([ctx, monitor]() {
+        // The plugin owns this monitor; the worker borrows it until join.
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor thread started");
         if (!monitor->init(ctx->cfg.wifi_loss.bpf_obj.get().c_str())) {
             LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor: BPF init failed, thread exiting");
             return;
         }
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->wifi_loss_stop.load())) {
             auto stats = monitor->getStats();
             for (auto& [ifindex, s] : stats) {
                 double txLoss = s.txLossRate();
@@ -538,7 +540,7 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx) {
                         << " txDrops=" << s.txDrops << "/" << s.txPkts);
                 }
             }
-            for (int i = 0; i < static_cast<int>(ctx->cfg.wifi_loss.interval_ms.load() / 100) && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.wifi_loss.interval_ms.load() / 100) && (ctx->running.load() && !ctx->wifi_loss_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
@@ -546,16 +548,16 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx) {
     });
 }
 
-void start_http_latency_monitor_thread(ServerContext* ctx) {
-    ctx->http_latency_monitor_thread = std::thread([ctx]() {
-        auto* monitor = ctx->http_latency_monitor.get();
+void start_http_latency_monitor_thread(ServerContext* ctx, std::thread* worker, HttpLatencyMonitor* monitor) {
+    *worker = std::thread([ctx, monitor]() {
+        // The plugin owns this monitor; the worker borrows it until join.
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "HTTP latency monitor thread started");
         if (!monitor->init(ctx->cfg.http_latency.bpf_obj.get().c_str())) {
             LOG_INFO(LogModule::NETWORK, "HTTP latency monitor: BPF init failed, thread exiting");
             return;
         }
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->http_latency_stop.load())) {
             auto globalStats = monitor->getGlobalStats();
             if (globalStats.totalTxns > 0) {
                 LOG_INFO(LogModule::NETWORK, "HTTP tick: txns=" << globalStats.totalTxns
@@ -563,7 +565,7 @@ void start_http_latency_monitor_thread(ServerContext* ctx) {
                     << " p99=" << (globalStats.p99Ns / 1000000) << "ms"
                     << " analysis=" << globalStats.analysis);
             }
-            for (int i = 0; i < static_cast<int>(ctx->cfg.http_latency.interval_ms.load() / 100) && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.http_latency.interval_ms.load() / 100) && (ctx->running.load() && !ctx->http_latency_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
@@ -571,16 +573,16 @@ void start_http_latency_monitor_thread(ServerContext* ctx) {
     });
 }
 
-void start_process_net_profiler_thread(ServerContext* ctx) {
-    ctx->process_net_profiler_thread = std::thread([ctx]() {
-        auto* profiler = ctx->process_net_profiler.get();
+void start_process_net_profiler_thread(ServerContext* ctx, std::thread* worker, ProcessNetProfiler* profiler) {
+    *worker = std::thread([ctx, profiler]() {
+        // The plugin owns this monitor; the worker borrows it until join.
         if (!profiler) return;
         LOG_INFO(LogModule::NETWORK, "Process net profiler thread started");
         if (!profiler->init(ctx->cfg.process_profiler.bpf_obj.get().c_str())) {
             LOG_INFO(LogModule::NETWORK, "Process net profiler: BPF init failed, thread exiting");
             return;
         }
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->process_profiler_stop.load())) {
             auto topBw = profiler->getTopBandwidth(5);
             for (auto& p : topBw) {
                 if (p.txBytes > 0) {
@@ -599,7 +601,7 @@ void start_process_net_profiler_thread(ServerContext* ctx) {
                         << " txBytes=" << p.txBytes);
                 }
             }
-            for (int i = 0; i < static_cast<int>(ctx->cfg.process_profiler.interval_ms.load() / 100) && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.process_profiler.interval_ms.load() / 100) && (ctx->running.load() && !ctx->process_profiler_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         profiler->stop();
@@ -607,22 +609,22 @@ void start_process_net_profiler_thread(ServerContext* ctx) {
     });
 }
 
-void start_tcp_retrans_monitor_thread(ServerContext* ctx) {
-    ctx->tcp_retrans_monitor_thread = std::thread([ctx]() {
-        auto* monitor = ctx->tcp_retrans_monitor.get();
+void start_tcp_retrans_monitor_thread(ServerContext* ctx, std::thread* worker, TcpRetransMonitor* monitor) {
+    *worker = std::thread([ctx, monitor]() {
+        // The plugin owns this monitor; the worker borrows it until join.
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "TCP retransmit eBPF monitor thread started");
         if (!monitor->init(ctx->cfg.tcp_retrans.bpf_obj.get().c_str())) {
             LOG_INFO(LogModule::NETWORK, "TCP retransmit eBPF monitor unavailable");
             return;
         }
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->tcp_retrans_stop.load())) {
             const auto stats = monitor->getStats();
             if (!stats.empty()) {
                 LOG_INFO(LogModule::NETWORK, "TCP retransmit tick: connections=" << stats.size()
                     << " lossRate=" << monitor->computeLossRate() << "%");
             }
-            for (int i = 0; i < static_cast<int>(ctx->cfg.tcp_retrans.interval_ms.load() / 100) && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.tcp_retrans.interval_ms.load() / 100) && (ctx->running.load() && !ctx->tcp_retrans_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
@@ -630,16 +632,16 @@ void start_tcp_retrans_monitor_thread(ServerContext* ctx) {
     });
 }
 
-void start_tcp_conn_monitor_thread(ServerContext* ctx) {
-    ctx->tcp_conn_monitor_thread = std::thread([ctx]() {
-        auto* monitor = ctx->tcp_conn_monitor.get();
+void start_tcp_conn_monitor_thread(ServerContext* ctx, std::thread* worker, TcpConnMonitor* monitor) {
+    *worker = std::thread([ctx, monitor]() {
+        // The plugin owns this monitor; the worker borrows it until join.
         if (!monitor) return;
         LOG_INFO(LogModule::TCP_LOSS, "TCP conn monitor thread started");
         if (!monitor->init(ctx->cfg.tcp_conn.bpf_obj.get().c_str())) {
             LOG_INFO(LogModule::TCP_LOSS, "TCP conn monitor unavailable, thread exiting");
             return;
         }
-        while (ctx->running.load()) {
+        while ((ctx->running.load() && !ctx->tcp_conn_stop.load())) {
             const auto stats = monitor->getStats();
             if (stats.totalAccepts > 0 || stats.totalAcceptFailures > 0) {
                 LOG_INFO(LogModule::TCP_LOSS, "TCP conn tick: accepts=" << stats.totalAccepts
@@ -648,7 +650,7 @@ void start_tcp_conn_monitor_thread(ServerContext* ctx) {
                     << " acceptFailures=" << stats.totalAcceptFailures
                     << " avgDur=" << stats.avgDurationMs << "ms");
             }
-            for (int i = 0; i < static_cast<int>(ctx->cfg.tcp_conn.interval_ms.load() / 100) && ctx->running.load(); ++i)
+            for (int i = 0; i < static_cast<int>(ctx->cfg.tcp_conn.interval_ms.load() / 100) && (ctx->running.load() && !ctx->tcp_conn_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
         monitor->stop();
@@ -796,9 +798,26 @@ int start_server(int argc, char** argv) {
     // ================================================================
     registerBuiltinPlugins();
     registerEbpfPlugins();
-    auto plugins = instantiateAllPlugins();
-    for (auto& p : plugins) p->init(&ctx);
-    for (auto& p : plugins) p->start(&ctx);
+    ctx.monitor_manager = std::make_unique<MonitorManager>(
+        &ctx, instantiateAllPlugins());
+    const std::string db_path_for_overrides = resolveDatabasePath(ctx.cfg.data_dir.get());
+    const std::string base_dir_for_overrides =
+        db_path_for_overrides.substr(0, db_path_for_overrides.size() - std::string("history.db").size());
+    ctx.monitor_manager->setOverridePath(base_dir_for_overrides + "runtime-overrides.bin");
+    // 生命周期状态变化 → D-Bus MonitorStateChanged 信号（携带 "name:state"）。
+    ctx.monitor_manager->setStateChangeCallback(
+        [&ctx](const std::string& name, const std::string& state) {
+            if (ctx.service) {
+                ctx.service->emitSpecificSignal(kSignalMonitorStateChanged, name + ":" + state, 0);
+            }
+        });
+    if (!ctx.monitor_manager->loadOverrides(nullptr)) {
+        LOG_WARNING(LogModule::SYSTEM, "runtime monitor overrides could not be loaded");
+    }
+    if (!ctx.monitor_manager->startConfigured()) {
+        LOG_WARNING(LogModule::NETWORK,
+                    "one or more monitor plugins failed to initialize or start");
+    }
 
     // 启动历史数据持久化线程（非监控器，server.cpp 单独管理）
     if (ctx.db_mgr && ctx.db_mgr->isOpen()) {
@@ -812,42 +831,21 @@ int start_server(int argc, char** argv) {
     lp->run(&ctx);
     // Looper::run() 退出后，按顺序收尾：
     // 1) 先置 running=false 让所有监控线程退出循环
-    // 2) join 全部捕获 ctx* 的线程（含蓝牙/RTT/Jitter/RSSI 及新增句柄），
-    //    确保它们完全结束、不再访问 ctx 后才释放资源
-    // 3) 各 worker 退出时已自行 stop() 其本地 make_unique 监控器并 store(nullptr)，
-    //    故不再在此显式 stop()（避免 worker 正读 map 时资源被销毁的竞态）
+    // 2) MonitorManager 逐插件请求停止并 join worker，确保不再访问 ctx
+    // 3) 之后仅 join 服务级历史持久化线程，再释放共享资源
     LOG_INFO(LogModule::NETWORK, "server shutting down, stopping monitor threads...");
     ctx.running = false;
 
-    // join 全部监控线程（所有 *_thread 均为 joinable 句柄）
-    // 注意：插件只负责启动线程，join 序列仍在此集中管理（Phase A），
-    //       保证退出顺序与插件化改造前完全一致，避免 D-Bus/BPF 释放竞态。
-    if (ctx.iface_thread.joinable())                    ctx.iface_thread.join();
-    if (ctx.using_thread.joinable())                    ctx.using_thread.join();
-    if (ctx.rtt_thread.joinable())                      ctx.rtt_thread.join();
-    if (ctx.jitter_thread.joinable())                   ctx.jitter_thread.join();
-    if (ctx.rssi_thread.joinable())                     ctx.rssi_thread.join();
-    if (ctx.tcp_loss_thread.joinable())                 ctx.tcp_loss_thread.join();
-    if (ctx.traffic_analysis_thread.joinable())         ctx.traffic_analysis_thread.join();
-    if (ctx.network_quality_thread.joinable())          ctx.network_quality_thread.join();
-    if (ctx.bt_thread.joinable())                       ctx.bt_thread.join();
-    if (ctx.dns_monitor_thread.joinable())              ctx.dns_monitor_thread.join();
-    if (ctx.wifi_loss_monitor_thread.joinable())        ctx.wifi_loss_monitor_thread.join();
-    if (ctx.http_latency_monitor_thread.joinable())     ctx.http_latency_monitor_thread.join();
-    if (ctx.process_net_profiler_thread.joinable())     ctx.process_net_profiler_thread.join();
-    if (ctx.tcp_retrans_monitor_thread.joinable())      ctx.tcp_retrans_monitor_thread.join();
-    if (ctx.tcp_conn_monitor_thread.joinable())         ctx.tcp_conn_monitor_thread.join();
+    // 先由每个插件请求停止并 join 自己的 worker；MonitorManager 是唯一插件停止入口。
+    // stop() 内部设置 per-monitor flag，避免全局 running=false 影响其他插件。
+    if (ctx.monitor_manager) {
+        ctx.monitor_manager->stopAll();
+    }
+
+    // 服务级历史线程仍由 ServerContext 统一 join；插件线程已由各自 stop() 完成。
     // 历史持久化线程：只读 weak_mgr 快照 + 写 DB，不依赖其他线程资源，最后 join 最安全。
     // 此前缺失该 join，导致 ~ServerContext 析构时该线程可能仍持 ctx* 访问 → 悬垂/terminate。
     if (ctx.history_thread.joinable())                  ctx.history_thread.join();
-
-    LOG_INFO(LogModule::NETWORK, "all monitor threads joined");
-    // 插件 stop：按启动顺序逆序调用（依赖方先停）。当前各插件 stop 为空实现，
-    // 资源由 ctx 的 unique_ptr 统一回收；显式调用保证契约真实可验证，未来插件可在此释放自身资源。
-    for (auto it = plugins.rbegin(); it != plugins.rend(); ++it) {
-        (*it)->stop();
-    }
-    // 插件实例在此析构（资源由 ctx unique_ptr 统一释放）
 
     // 停止文件日志（在 glog 关闭之前）
     Logger::stopFileLog();

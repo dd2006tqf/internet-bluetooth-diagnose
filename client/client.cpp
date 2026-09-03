@@ -763,7 +763,56 @@ public:
         return requestStringData(kMethodGetEbpfMonitorHealth, "eBPF 监控器健康状态", result, errorMsg);
     }
 
-    /** @brief 调用 SetMonitorParam 运行时设置监控器参数 */
+    /** @brief 调用监控器生命周期方法，返回状态 JSON */
+    bool monitorOperation(const char* method, const std::string& monitor,
+                          std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, method);
+        if (!msg) return fail("创建方法调用消息失败", errorMsg);
+        DBusMessageIter args;
+        dbus_message_iter_init_append(msg, &args);
+        const char* name = monitor.c_str();
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &name);
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 10000, &err);
+        dbus_message_unref(msg);
+        if (dbus_error_is_set(&err)) {
+            errorMsg = err.message ? err.message : "D-Bus lifecycle operation failed";
+            dbus_error_free(&err);
+            return false;
+        }
+        if (!reply) return fail("未收到监控器操作应答", errorMsg);
+        const char* value = nullptr;
+        bool ok = dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &value, DBUS_TYPE_INVALID);
+        if (ok) result = value ? value : "";
+        else errorMsg = "解析监控器操作应答失败";
+        dbus_error_free(&err);
+        dbus_message_unref(reply);
+        return ok;
+    }
+
+    bool listMonitors(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        return requestStringData(kMethodListMonitors, "监控器列表", result, errorMsg);
+    }
+    bool getMonitorStatus(const std::string& monitor, std::string& result, std::string& errorMsg) {
+        return monitorOperation(kMethodGetMonitorStatus, monitor, result, errorMsg);
+    }
+    bool enableMonitor(const std::string& monitor, std::string& result, std::string& errorMsg) {
+        return monitorOperation(kMethodEnableMonitor, monitor, result, errorMsg);
+    }
+    bool disableMonitor(const std::string& monitor, std::string& result, std::string& errorMsg) {
+        return monitorOperation(kMethodDisableMonitor, monitor, result, errorMsg);
+    }
+    bool restartMonitor(const std::string& monitor, std::string& result, std::string& errorMsg) {
+        return monitorOperation(kMethodRestartMonitor, monitor, result, errorMsg);
+    }
+    bool saveMonitorOverrides(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        return requestStringData(kMethodSaveMonitorOverrides, "保存监控器 override", result, errorMsg);
+    }
+
     bool setMonitorParam(const std::string& key, const std::string& value,
                          std::string& result, std::string& errorMsg) {
         if (!isConnected()) return fail("客户端未连接", errorMsg);
@@ -1477,6 +1526,76 @@ extern "C" bool weaknet_get_monitor_param(const char* monitor,
     snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
     return false;
 }
+
+
+// ============== Monitor lifecycle C API ==============
+
+template <typename F>
+static bool lifecycleResult(F&& call,
+                            char* buffer, size_t buffer_size,
+                            char* error_buffer, size_t error_size) {
+    if (!buffer || buffer_size == 0 || !error_buffer || error_size == 0) {
+        return false;
+    }
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, error;
+    if (call(result, error)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    }
+    snprintf(error_buffer, error_size, "%s", error.c_str());
+    return false;
+}
+
+extern "C" bool weaknet_list_monitors(char* buffer, size_t buffer_size,
+                                      char* error_buffer, size_t error_size) {
+    return lifecycleResult([](std::string& r, std::string& e) {
+        return weaknet_dbus::g_client->listMonitors(r, e);
+    }, buffer, buffer_size, error_buffer, error_size);
+}
+
+extern "C" bool weaknet_get_monitor_status(const char* monitor, char* buffer, size_t buffer_size,
+                                           char* error_buffer, size_t error_size) {
+    if (!monitor) { snprintf(error_buffer, error_size, "空的 monitor 名称"); return false; }
+    return lifecycleResult([monitor](std::string& r, std::string& e) {
+        return weaknet_dbus::g_client->getMonitorStatus(monitor, r, e);
+    }, buffer, buffer_size, error_buffer, error_size);
+}
+
+extern "C" bool weaknet_enable_monitor(const char* monitor, char* buffer, size_t buffer_size,
+                                        char* error_buffer, size_t error_size) {
+    if (!monitor) { snprintf(error_buffer, error_size, "空的 monitor 名称"); return false; }
+    return lifecycleResult([monitor](std::string& r, std::string& e) {
+        return weaknet_dbus::g_client->enableMonitor(monitor, r, e);
+    }, buffer, buffer_size, error_buffer, error_size);
+}
+
+extern "C" bool weaknet_disable_monitor(const char* monitor, char* buffer, size_t buffer_size,
+                                         char* error_buffer, size_t error_size) {
+    if (!monitor) { snprintf(error_buffer, error_size, "空的 monitor 名称"); return false; }
+    return lifecycleResult([monitor](std::string& r, std::string& e) {
+        return weaknet_dbus::g_client->disableMonitor(monitor, r, e);
+    }, buffer, buffer_size, error_buffer, error_size);
+}
+
+extern "C" bool weaknet_restart_monitor(const char* monitor, char* buffer, size_t buffer_size,
+                                         char* error_buffer, size_t error_size) {
+    if (!monitor) { snprintf(error_buffer, error_size, "空的 monitor 名称"); return false; }
+    return lifecycleResult([monitor](std::string& r, std::string& e) {
+        return weaknet_dbus::g_client->restartMonitor(monitor, r, e);
+    }, buffer, buffer_size, error_buffer, error_size);
+}
+
+extern "C" bool weaknet_save_monitor_overrides(char* buffer, size_t buffer_size,
+                                               char* error_buffer, size_t error_size) {
+    return lifecycleResult([](std::string& r, std::string& e) {
+        return weaknet_dbus::g_client->saveMonitorOverrides(r, e);
+    }, buffer, buffer_size, error_buffer, error_size);
+}
+
 
 // 注意: 此文件现在作为动态库使用，不包含main函数
 

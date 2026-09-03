@@ -60,9 +60,46 @@ weaknet-cli <command> [arguments...]
   get <monitor>          查询监控器当前参数（JSON）
   set <key> <value>      设置参数（白名单校验）
   list                   列出所有可用监控器名
+  monitor list           列出所有监控器运行状态（JSON）
+  monitor status [name]  查询监控器运行状态
+  monitor enable <name>  启用并启动监控器
+  monitor disable <name> 停止监控器
+  monitor restart <name> 重启监控器
+  monitor save           保存运行时启停状态到 override 文件
 ```
 
-### 3.2 `weaknet-cli list`
+### 3.2 `weaknet-cli monitor <command>`
+
+运行时监控器生命周期控制，与服务端 `MonitorManager` 直接关联：
+
+```bash
+# 查看全部监控器状态
+$ weaknet-cli monitor list
+[{"name":"rtt","state":"running","desired_enabled":true,"generation":3,"changed_at":"...","error":""},...]
+
+# 查询单个监控器
+$ weaknet-cli monitor status rtt
+{"name":"rtt","state":"running","desired_enabled":true,"generation":3,"changed_at":"...","error":""}
+
+# 停止 RTT（其他监控器不受影响）
+$ weaknet-cli monitor disable rtt
+{"name":"rtt","state":"stopped","desired_enabled":false,"generation":3,"error":""}
+
+# 重新启用
+$ weaknet-cli monitor enable rtt
+
+# 重启（generation 递增）
+$ weaknet-cli monitor restart rtt
+
+# 保存当前启停状态（服务重启后生效）
+$ weaknet-cli monitor save
+```
+
+依赖约束：`jitter` 依赖 `rtt`，`quality` 依赖 `rtt/jitter/rssi/tcp_loss/traffic`；
+停止仍被依赖的上游监控器会被拒绝，避免依赖方读取过期数据。
+
+
+### 3.3 `weaknet-cli list`
 
 列出所有可配置的监控器名称。
 
@@ -89,7 +126,7 @@ all
 
 ---
 
-### 3.3 `weaknet-cli get <monitor>`
+### 3.4 `weaknet-cli get <monitor>`
 
 查询指定监控器的完整当前参数（JSON 格式）。
 
@@ -123,7 +160,7 @@ $ weaknet-cli get all
 
 ---
 
-### 3.4 `weaknet-cli set <key> <value>`
+### 3.5 `weaknet-cli set <key> <value>`
 
 实时修改监控器参数。**立即生效**，无需重启服务。
 
