@@ -105,6 +105,11 @@ public:
     /// 数据库元信息（文件名、SQLite 版本、表行数、文件大小）
     std::string getDbInfo();
 
+    /// 数据质量统计（只读，不修改历史数据）
+    std::string getQualityReport();
+
+
+
 private:
     /**
      * @brief 内部执行原始 SQL（不支持参数绑定，用于 CREATE TABLE / PRAGMA）

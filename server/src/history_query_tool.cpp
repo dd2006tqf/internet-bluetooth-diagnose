@@ -73,7 +73,7 @@ static void printUsage() {
               << "  --end <timestamp>    结束时间 (ISO 8601)\n"
               << "  --limit <N>          最大行数 (默认: 100)\n"
               << "  --all                查询所有网卡\n"
-              << "  --info               显示数据库信息\n"
+              << "  --quality-report     输出只读数据质量统计 JSON\n"
               << "  --cleanup <days>     清理超过 N 天的数据\n"
               << "  --json               输出原始 JSON\n"
               << "\n"
@@ -89,6 +89,7 @@ int main(int argc, char* argv[]) {
     std::string start_time, end_time, last;
     int limit = 100;
     bool show_info = false;
+    bool quality_report = false;
     int cleanup_days = -1;
     bool json_output = false;
 
@@ -107,6 +108,8 @@ int main(int argc, char* argv[]) {
             iface = "";
         } else if (strcmp(argv[i], "--info") == 0) {
             show_info = true;
+        } else if (strcmp(argv[i], "--quality-report") == 0) {
+            quality_report = true;
         } else if (strcmp(argv[i], "--cleanup") == 0 && i + 1 < argc) {
             cleanup_days = std::stoi(argv[++i]);
         } else if (strcmp(argv[i], "--json") == 0) {
@@ -133,6 +136,12 @@ int main(int argc, char* argv[]) {
         std::cout << db.getDbInfo() << "\n";
         return 0;
     }
+
+    if (quality_report) {
+        std::cout << db.getQualityReport() << "\n";
+        return 0;
+    }
+
 
     if (cleanup_days >= 0) {
         int deleted = db.cleanup(cleanup_days);

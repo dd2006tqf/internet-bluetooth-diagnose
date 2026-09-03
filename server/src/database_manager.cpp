@@ -53,6 +53,7 @@
 #include <chrono>
 #include <ctime>
 #include <filesystem>
+#include <array>
 #include <sys/stat.h>
 
 namespace weaknet_dbus {
@@ -471,6 +472,41 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
     return json.str();
 }
 
+std::string DatabaseManager::getQualityReport() {
+    if (!db_) return "{\"error\":\"database not open\"}";
+    std::lock_guard<std::mutex> lock(write_mutex_);
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT COUNT(*), "
+        "SUM(data_version < 2), "
+        "SUM(rssi_status='valid'), SUM(rssi_status='unavailable'), SUM(rssi_estimated=1), "
+        "SUM(rtt_status='valid'), SUM(rtt_status='timeout'), SUM(rtt_status='unavailable'), "
+        "SUM(jitter_status='valid'), SUM(jitter_status='unavailable'), "
+        "SUM(tcp_loss_status='valid'), SUM(tcp_loss_status='unavailable') "
+        "FROM network_history";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return "{\"error\":\"quality report query failed\"}";
+    }
+    std::array<int64_t, 12> values{};
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        for (size_t i = 0; i < values.size(); ++i) values[i] = sqlite3_column_int64(stmt, static_cast<int>(i));
+    }
+    sqlite3_finalize(stmt);
+    std::ostringstream json;
+    json << "{\"total\":" << values[0]
+         << ",\"legacy_records\":" << values[1]
+         << ",\"rssi_valid\":" << values[2]
+         << ",\"rssi_unavailable\":" << values[3]
+         << ",\"rssi_estimated\":" << values[4]
+         << ",\"rtt_valid\":" << values[5]
+         << ",\"rtt_timeout\":" << values[6]
+         << ",\"rtt_unavailable\":" << values[7]
+         << ",\"jitter_valid\":" << values[8]
+         << ",\"jitter_unavailable\":" << values[9]
+         << ",\"tcp_loss_valid\":" << values[10]
+         << ",\"tcp_loss_unavailable\":" << values[11] << "}";
+    return json.str();
+}
 int DatabaseManager::cleanup(int retention_days) {
     if (!db_) return 0;
 
