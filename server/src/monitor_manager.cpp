@@ -181,27 +181,53 @@ bool MonitorManager::startConfigured() {
         if (!enabled) entry.status.state = MonitorState::ConfiguredDisabled;
     }
 
-    for (auto& entry : entries_) {
-        if (entry.status.state != MonitorState::Initialized) continue;
-        for (const auto& dependency : entry.plugin->dependencies()) {
-            const auto* dependency_entry = findLocked(dependency);
-            if (!dependency_entry || dependency_entry->status.state != MonitorState::Running) {
-                entry.status.state = MonitorState::Failed;
-                entry.status.error = "dependency is unavailable: " + dependency;
-                all_ok = false;
-                break;
+    bool progress = true;
+    while (progress) {
+        progress = false;
+        for (auto& entry : entries_) {
+            if (entry.status.state != MonitorState::Initialized) continue;
+            bool waiting = false;
+            bool unavailable = false;
+            std::string unavailable_dependency;
+            for (const auto& dependency : entry.plugin->dependencies()) {
+                const auto* dependency_entry = findLocked(dependency);
+                if (!dependency_entry || dependency_entry->status.state == MonitorState::ConfiguredDisabled ||
+                    dependency_entry->status.state == MonitorState::Failed ||
+                    dependency_entry->status.state == MonitorState::Stopped) {
+                    unavailable = true;
+                    unavailable_dependency = dependency;
+                    break;
+                }
+                if (dependency_entry->status.state != MonitorState::Running) waiting = true;
             }
+            if (unavailable) {
+                entry.status.state = MonitorState::Failed;
+                entry.status.error = "dependency is unavailable: " + unavailable_dependency;
+                all_ok = false;
+                progress = true;
+                continue;
+            }
+            if (waiting) continue;
+            entry.status.state = MonitorState::Starting;
+            if (!entry.plugin->start(ctx_)) {
+                entry.status.state = MonitorState::Failed;
+                entry.status.error = "plugin start failed";
+                all_ok = false;
+                progress = true;
+                continue;
+            }
+            entry.status.state = MonitorState::Running;
+            entry.status.changed_at = nowUtc();
+            ++entry.status.generation;
+            progress = true;
         }
-        if (entry.status.state != MonitorState::Initialized) continue;
-        if (!entry.plugin->start(ctx_)) {
+    }
+    for (auto& entry : entries_) {
+        if (entry.status.state == MonitorState::Initialized) {
             entry.status.state = MonitorState::Failed;
-            entry.status.error = "plugin start failed";
+            entry.status.error = "dependency cycle or unavailable dependency";
             all_ok = false;
-            continue;
         }
-        entry.status.state = MonitorState::Running;
-        entry.status.changed_at = nowUtc();
-        ++entry.status.generation;
     }
     started_ = true;
     return all_ok;
@@ -287,7 +313,16 @@ bool MonitorManager::enable(const std::string& name, std::string* error) {
         return false;
     }
     if (ctx_) {
-        setMonitorEnabled(&ctx_->cfg, name, true);
+        if (!setMonitorEnabled(&ctx_->cfg, name, true)) {
+            if (error) *error = "monitor has no configurable enabled flag: " + name;
+            return false;
+        }
+    }
+    if (entry->status.state == MonitorState::Failed && !entry->plugin->init(ctx_)) {
+        entry->status.error = "plugin re-initialization failed";
+        entry->status.changed_at = nowUtc();
+        if (error) *error = entry->status.error;
+        return false;
     }
     entry->status.desired_enabled = true;
     entry->status.state = MonitorState::Starting;
@@ -335,7 +370,12 @@ bool MonitorManager::disable(const std::string& name, std::string* error) {
             }
         }
     }
-    if (ctx_) setMonitorEnabled(&ctx_->cfg, name, false);
+    if (ctx_) {
+        if (!setMonitorEnabled(&ctx_->cfg, name, false)) {
+            if (error) *error = "monitor has no configurable enabled flag: " + name;
+            return false;
+        }
+    }
     entry->status.desired_enabled = false;
     entry->status.state = MonitorState::Stopping;
     entry->plugin->stop();
@@ -374,7 +414,12 @@ bool MonitorManager::restart(const std::string& name, std::string* error) {
         entry->plugin->stop();
         entry->status.state = MonitorState::Stopped;
     }
-    if (ctx_) setMonitorEnabled(&ctx_->cfg, name, true);
+    if (ctx_) {
+        if (!setMonitorEnabled(&ctx_->cfg, name, true)) {
+            if (error) *error = "monitor has no configurable enabled flag: " + name;
+            return false;
+        }
+    }
     entry->status.desired_enabled = true;
     entry->status.state = MonitorState::Starting;
     entry->status.error.clear();

@@ -42,6 +42,10 @@ public:
             return true;
         }
         monitor_ = std::make_unique<DnsMonitor>();
+        if (!monitor_->init(ctx->cfg.dns.bpf_obj.get().c_str())) {
+            monitor_.reset();
+            return false;
+        }
         ctx->dns_monitor = monitor_.get();
         ctx->dns_stop.store(false);
         start_dns_monitor_thread(ctx, &worker_, monitor_.get());
@@ -73,6 +77,10 @@ public:
             return true;
         }
         monitor_ = std::make_unique<WifiPacketLossMonitor>();
+        if (!monitor_->init(ctx->cfg.wifi_loss.bpf_obj.get().c_str())) {
+            monitor_.reset();
+            return false;
+        }
         ctx->wifi_loss_monitor = monitor_.get();
         ctx->wifi_loss_stop.store(false);
         start_wifi_loss_monitor_thread(ctx, &worker_, monitor_.get());
@@ -104,6 +112,10 @@ public:
             return true;
         }
         monitor_ = std::make_unique<HttpLatencyMonitor>();
+        if (!monitor_->init(ctx->cfg.http_latency.bpf_obj.get().c_str())) {
+            monitor_.reset();
+            return false;
+        }
         ctx->http_latency_monitor = monitor_.get();
         ctx->http_latency_stop.store(false);
         start_http_latency_monitor_thread(ctx, &worker_, monitor_.get());
@@ -136,6 +148,10 @@ public:
             return true;
         }
         monitor_ = std::make_unique<ProcessNetProfiler>();
+        if (!monitor_->init(ctx->cfg.process_profiler.bpf_obj.get().c_str())) {
+            monitor_.reset();
+            return false;
+        }
         ctx->process_net_profiler = monitor_.get();
         ctx->process_profiler_stop.store(false);
         start_process_net_profiler_thread(ctx, &worker_, monitor_.get());
@@ -167,6 +183,10 @@ public:
             return true;
         }
         monitor_ = std::make_unique<TcpRetransMonitor>();
+        if (!monitor_->init(ctx->cfg.tcp_retrans.bpf_obj.get().c_str())) {
+            monitor_.reset();
+            return false;
+        }
         ctx->tcp_retrans_monitor = monitor_.get();
         ctx->tcp_retrans_stop.store(false);
         start_tcp_retrans_monitor_thread(ctx, &worker_, monitor_.get());
@@ -198,6 +218,10 @@ public:
             return true;
         }
         monitor_ = std::make_unique<TcpConnMonitor>();
+        if (!monitor_->init(ctx->cfg.tcp_conn.bpf_obj.get().c_str())) {
+            monitor_.reset();
+            return false;
+        }
         ctx->tcp_conn_monitor = monitor_.get();
         ctx->tcp_conn_stop.store(false);
         start_tcp_conn_monitor_thread(ctx, &worker_, monitor_.get());

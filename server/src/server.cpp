@@ -502,10 +502,6 @@ void start_dns_monitor_thread(ServerContext* ctx, std::thread* worker, DnsMonito
         // The plugin owns this monitor; the worker borrows it until join.
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "DNS monitor thread started");
-        if (!monitor->init(ctx->cfg.dns.bpf_obj.get().c_str())) {
-            LOG_INFO(LogModule::NETWORK, "DNS monitor: BPF init failed, thread exiting");
-            return;
-        }
         while ((ctx->running.load() && !ctx->dns_stop.load())) {
             auto stats = monitor->getStats();
             if (stats.totalQueries > 0) {
@@ -526,10 +522,6 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx, std::thread* worker, Wif
         // The plugin owns this monitor; the worker borrows it until join.
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor thread started");
-        if (!monitor->init(ctx->cfg.wifi_loss.bpf_obj.get().c_str())) {
-            LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor: BPF init failed, thread exiting");
-            return;
-        }
         while ((ctx->running.load() && !ctx->wifi_loss_stop.load())) {
             auto stats = monitor->getStats();
             for (auto& [ifindex, s] : stats) {
@@ -553,10 +545,6 @@ void start_http_latency_monitor_thread(ServerContext* ctx, std::thread* worker, 
         // The plugin owns this monitor; the worker borrows it until join.
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "HTTP latency monitor thread started");
-        if (!monitor->init(ctx->cfg.http_latency.bpf_obj.get().c_str())) {
-            LOG_INFO(LogModule::NETWORK, "HTTP latency monitor: BPF init failed, thread exiting");
-            return;
-        }
         while ((ctx->running.load() && !ctx->http_latency_stop.load())) {
             auto globalStats = monitor->getGlobalStats();
             if (globalStats.totalTxns > 0) {
@@ -578,10 +566,6 @@ void start_process_net_profiler_thread(ServerContext* ctx, std::thread* worker, 
         // The plugin owns this monitor; the worker borrows it until join.
         if (!profiler) return;
         LOG_INFO(LogModule::NETWORK, "Process net profiler thread started");
-        if (!profiler->init(ctx->cfg.process_profiler.bpf_obj.get().c_str())) {
-            LOG_INFO(LogModule::NETWORK, "Process net profiler: BPF init failed, thread exiting");
-            return;
-        }
         while ((ctx->running.load() && !ctx->process_profiler_stop.load())) {
             auto topBw = profiler->getTopBandwidth(5);
             for (auto& p : topBw) {
@@ -614,10 +598,6 @@ void start_tcp_retrans_monitor_thread(ServerContext* ctx, std::thread* worker, T
         // The plugin owns this monitor; the worker borrows it until join.
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "TCP retransmit eBPF monitor thread started");
-        if (!monitor->init(ctx->cfg.tcp_retrans.bpf_obj.get().c_str())) {
-            LOG_INFO(LogModule::NETWORK, "TCP retransmit eBPF monitor unavailable");
-            return;
-        }
         while ((ctx->running.load() && !ctx->tcp_retrans_stop.load())) {
             const auto stats = monitor->getStats();
             if (!stats.empty()) {
@@ -637,10 +617,6 @@ void start_tcp_conn_monitor_thread(ServerContext* ctx, std::thread* worker, TcpC
         // The plugin owns this monitor; the worker borrows it until join.
         if (!monitor) return;
         LOG_INFO(LogModule::TCP_LOSS, "TCP conn monitor thread started");
-        if (!monitor->init(ctx->cfg.tcp_conn.bpf_obj.get().c_str())) {
-            LOG_INFO(LogModule::TCP_LOSS, "TCP conn monitor unavailable, thread exiting");
-            return;
-        }
         while ((ctx->running.load() && !ctx->tcp_conn_stop.load())) {
             const auto stats = monitor->getStats();
             if (stats.totalAccepts > 0 || stats.totalAcceptFailures > 0) {
@@ -680,7 +656,8 @@ void start_history_persistence_thread(ServerContext* ctx) {
             int written = 0;
             for (const auto& iface : snapshot) {
                 if (iface.usingNow()) {
-                    if (ctx->db_mgr->insertSnapshot(iface.ifName(), iface, qualityResult)) {
+                    if (ctx->db_mgr->insertSnapshot(iface.ifName(), iface, qualityResult,
+                                                               iface.generation(), iface.lastUpdatedMs())) {
                         written++;
                     }
                 }

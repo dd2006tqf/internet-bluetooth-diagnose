@@ -35,8 +35,7 @@ public:
     /// 返回本插件依赖的其他插件名称；默认无依赖。
     virtual std::vector<std::string> dependencies() const { return {}; }
 
-    /// @param ctx 全局上下文（监控器实例、线程句柄、cfg）
-    /// @return true 成功；false 失败（start 阶段将跳过该插件）
+    /// 阶段1：加载资源、解析配置；失败时 start 不得执行。
     virtual bool init(ServerContext* ctx) = 0;
 
     /// 阶段2：启动线程（内部应做 enabled 守卫）。

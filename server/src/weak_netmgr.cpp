@@ -37,6 +37,7 @@
 #include "iface_type.hpp"
 #include "logger.hpp"
 #include <algorithm>
+#include <chrono>
 #include <sys/stat.h>
 
 namespace weaknet_dbus {
@@ -332,6 +333,10 @@ std::vector<NetInfo> WeakNetMgr::getCurrentInterfaces() const {
 void WeakNetMgr::updateInterfaces(const std::vector<NetInfo>& new_interfaces) {
     std::lock_guard<std::mutex> lock(iface_mutex_);
     current_interfaces_ = new_interfaces;
+    ++snapshot_generation_;
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
     LOG_INFO(LogModule::WEAK_MGR, "Updated interfaces list: " << current_interfaces_.size() << " interfaces");
 }
 
@@ -340,6 +345,9 @@ bool WeakNetMgr::updateRttAndStateSafe(const std::string& host, int timeoutMs) {
     std::lock_guard<std::mutex> lock(iface_mutex_);
     LOG_DEBUG(LogModule::WEAK_MGR, "updateRttAndStateSafe: lock acquired, calling updateRttAndState");
     bool result = updateRttAndState(current_interfaces_, host, timeoutMs);
+    ++snapshot_generation_;
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
     LOG_DEBUG(LogModule::WEAK_MGR, "updateRttAndStateSafe: updateRttAndState completed, releasing lock");
     return result;
 }
@@ -349,6 +357,9 @@ bool WeakNetMgr::updateWifiRssiSafe(const std::string& ctrlDir) {
     std::lock_guard<std::mutex> lock(iface_mutex_);
     LOG_DEBUG(LogModule::WEAK_MGR, "updateWifiRssiSafe: lock acquired, calling updateWifiRssi");
     bool result = updateWifiRssi(current_interfaces_, ctrlDir);
+    if (result) ++snapshot_generation_;
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    if (result) for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
     LOG_DEBUG(LogModule::WEAK_MGR, "updateWifiRssiSafe: updateWifiRssi completed, releasing lock");
     return result;
 }
@@ -358,6 +369,9 @@ bool WeakNetMgr::updateTcpLossRateSafe(const std::string& iface_name, double los
     std::lock_guard<std::mutex> lock(iface_mutex_);
     LOG_DEBUG(LogModule::WEAK_MGR, "updateTcpLossRateSafe: lock acquired, calling updateTcpLossRate");
     bool result = updateTcpLossRate(current_interfaces_, iface_name, loss_rate, loss_level);
+    if (result) ++snapshot_generation_;
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    if (result) for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
     LOG_DEBUG(LogModule::WEAK_MGR, "updateTcpLossRateSafe: updateTcpLossRate completed, releasing lock");
     return result;
 }
@@ -367,6 +381,9 @@ bool WeakNetMgr::updateJitterSafe(const std::string& iface_name, double jitter_m
     std::lock_guard<std::mutex> lock(iface_mutex_);
     LOG_DEBUG(LogModule::WEAK_MGR, "updateJitterSafe: lock acquired, calling updateJitter");
     bool result = updateJitter(current_interfaces_, iface_name, jitter_ms, jitter_level);
+    if (result) ++snapshot_generation_;
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    if (result) for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
     LOG_DEBUG(LogModule::WEAK_MGR, "updateJitterSafe: updateJitter completed, releasing lock");
     return result;
 }

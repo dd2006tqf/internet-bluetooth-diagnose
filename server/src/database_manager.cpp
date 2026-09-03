@@ -136,11 +136,13 @@ static int historyQueryCallback(void* data, int argc, char** argv, char** /*colN
     if (argv[9]) row.jitter_status = argv[9];
     if (argv[10]) row.tcp_loss_status = argv[10];
     if (argv[11]) row.tcp_loss = atof(argv[11]);
-    if (argv[8]) row.quality = argv[8];
-    if (argv[9]) row.score = atof(argv[9]);
-    if (argv[10]) row.traffic_bps = atoll(argv[10]);
-    if (argv[11]) row.traffic_pps = atoi(argv[11]);
-    if (argv[12]) row.flows = atoi(argv[12]);
+    if (argv[12]) row.quality = argv[12];
+    if (argv[13]) row.link_quality = argv[13];
+    if (argv[14]) row.overall_quality = argv[14];
+    if (argv[15]) row.score = atof(argv[15]);
+    if (argv[17]) row.traffic_bps = atoll(argv[17]);
+    if (argv[18]) row.traffic_pps = atoi(argv[18]);
+    if (argv[19]) row.flows = atoi(argv[19]);
     ctx->rows.push_back(std::move(row));
     return 0;
 }
@@ -242,8 +244,10 @@ bool DatabaseManager::ensureSchema() {
             score       REAL    DEFAULT 0,
             traffic_bps INTEGER DEFAULT 0,
             traffic_pps INTEGER DEFAULT 0,
-            flows       INTEGER DEFAULT 0
-        );
+            flows       INTEGER DEFAULT 0,
+            snapshot_ts TEXT    DEFAULT '',
+            generation  INTEGER DEFAULT 0,
+            data_version INTEGER DEFAULT 1        );
         CREATE INDEX IF NOT EXISTS idx_history_ts ON network_history(ts);
         CREATE INDEX IF NOT EXISTS idx_history_iface ON network_history(iface);
     )";
@@ -267,19 +271,23 @@ bool DatabaseManager::ensureSchema() {
            ensureColumn("tcp_loss_status", "TEXT DEFAULT 'unavailable'") &&
            ensureColumn("link_quality", "TEXT DEFAULT ''") &&
            ensureColumn("overall_quality", "TEXT DEFAULT ''") &&
-           ensureColumn("overall_score", "REAL DEFAULT 0");
+           ensureColumn("overall_score", "REAL DEFAULT 0") &&
+           ensureColumn("snapshot_ts", "TEXT DEFAULT ''") &&
+           ensureColumn("generation", "INTEGER DEFAULT 0") &&
+           ensureColumn("data_version", "INTEGER DEFAULT 1");
 }
 
 bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& info,
-                                      const NetworkQualityResult& overall) {
+                                      const NetworkQualityResult& overall,
+                                      uint64_t generation, int64_t snapshot_ts_ms) {
     if (!db_) return false;
 
     std::lock_guard<std::mutex> lock(write_mutex_);
 
     // 使用参数绑定防止 SQL 注入
     const char* sql = "INSERT INTO network_history (ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, "
-                      "rssi_status, rtt_status, jitter_status, tcp_loss_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows) VALUES ("
-                      "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                      "rssi_status, rtt_status, jitter_status, tcp_loss_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version) VALUES ("
+                      "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -322,6 +330,10 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
     sqlite3_bind_int64(stmt, 18, info.trafficTotalBps());
     sqlite3_bind_int64(stmt, 19, info.trafficTotalPps());
     sqlite3_bind_int(stmt, 20, info.trafficActiveFlows());
+    const std::string snapshotTimestamp = snapshot_ts_ms > 0 ? std::to_string(snapshot_ts_ms) : timestamp;
+    sqlite3_bind_text(stmt, 21, snapshotTimestamp.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 22, static_cast<sqlite3_int64>(generation));
+    sqlite3_bind_int(stmt, 23, 2);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -339,7 +351,7 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
     overall.score = score;
     overall.level = NetworkQualityLevel::UNKNOWN;
     overall.levelName = "UNKNOWN";
-    return insertSnapshot(iface, info, overall);
+    return insertSnapshot(iface, info, overall, 0, 0);
 }
 
 std::string DatabaseManager::queryHistory(const std::string& interface,
@@ -447,6 +459,7 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
              << "\"quality\":\"" << weaknet_utils::escapeJsonString(row.quality) << "\","
              << "\"link_quality\":\"" << weaknet_utils::escapeJsonString(row.link_quality) << "\","
              << "\"overall_quality\":\"" << weaknet_utils::escapeJsonString(row.overall_quality) << "\","
+             << "\"overall_score\":" << std::fixed << std::setprecision(6) << row.score << ","
              << "\"score\":" << std::fixed << std::setprecision(6) << row.score << ","
              << "\"traffic_bps\":" << row.traffic_bps << ","
              << "\"traffic_pps\":" << row.traffic_pps << ","

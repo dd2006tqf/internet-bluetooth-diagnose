@@ -100,6 +100,14 @@ public:
     void setRssiSource(const std::string& source) { rssi_source_ = source; }
     const std::string& rssiSource() const { return rssi_source_; }
 
+    /// 采样一致性元数据：每次指标更新递增 generation 并记录 Unix 时间戳。
+    void markMetricUpdated(uint64_t generation, int64_t timestamp_ms) {
+        generation_ = generation;
+        last_updated_ms_ = timestamp_ms;
+    }
+    uint64_t generation() const { return generation_; }
+    int64_t lastUpdatedMs() const { return last_updated_ms_; }
+
     /// 是否当前正在上网的接口（WeakNetMgr 通过默认路由判定）
     void setUsingNow(bool v) { using_now_ = v; }
     bool usingNow() const { return using_now_; }
@@ -236,6 +244,8 @@ private:
     int rssi_dbm_ = -1000;         ///< Wi-Fi RSSI (dBm)，-1000 表示未测量
     bool rssi_estimated_ = false;  ///< 是否由链路质量估算
     std::string rssi_source_;      ///< RSSI 来源（wpa_supplicant/proc_net_wireless）
+    uint64_t generation_ = 0;      ///< 最近一次指标更新代次
+    int64_t last_updated_ms_ = 0;  ///< 最近一次指标更新时间（Unix ms）
 
     // 性能指标
     double tcp_loss_rate_ = -1.0;          ///< TCP 丢包率（%），-1.0 表示未测量

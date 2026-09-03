@@ -73,7 +73,9 @@ public:
      * @param score  综合质量评分（由 NetworkQualityAssessor 计算，0.0 表示未评分）
      */
     bool insertSnapshot(const std::string& iface, const NetInfo& info,
-                        const NetworkQualityResult& overall);
+                        const NetworkQualityResult& overall,
+                        uint64_t generation = 0,
+                        int64_t snapshot_ts_ms = 0);
     bool insertSnapshot(const std::string& iface, const NetInfo& info, double score = 0.0);
 
     /**

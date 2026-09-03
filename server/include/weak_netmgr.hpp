@@ -19,6 +19,8 @@
 #include <string>
 #include <memory>
 #include <mutex>
+#include <cstdint>
+#include <chrono>
 
 #include "net_info.hpp"
 #include "traffic_analyzer.hpp"
@@ -36,6 +38,7 @@ private:
     std::shared_ptr<TrafficAnalyzer> traffic_analyzer_;  ///< 流量分析器（可选，启动时可配置）
     mutable std::mutex iface_mutex_;                      ///< 保护接口列表的互斥锁
     std::vector<NetInfo> current_interfaces_;             ///< 当前接口列表
+    uint64_t snapshot_generation_ = 0;                    ///< 全局快照代次
 
 public:
     WeakNetMgr() : iface_mutex_(), current_interfaces_() {}
@@ -147,6 +150,7 @@ public:
 
     std::vector<NetInfo> getCurrentInterfaces() const;              ///< 读取最新快照（拷贝返回）
     void updateInterfaces(const std::vector<NetInfo>& new_interfaces); ///< 替换整个列表
+    uint64_t snapshotGeneration() const { return snapshot_generation_; }
 
     bool updateRttAndStateSafe(const std::string& host, int timeoutMs = 800);
     bool updateWifiRssiSafe(const std::string& ctrlDir = "");

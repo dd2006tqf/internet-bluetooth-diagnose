@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <mutex>
 
 #include "common.hpp"
 #include "serializer.hpp"
@@ -1073,11 +1074,13 @@ private:
 
 // ===== 全局单例客户端实例 =====
 static WeakNetClient* g_client = nullptr;
+static std::mutex g_client_mutex;
 
 // ========== C 接口实现（weaknet_client.h 中声明） ==========
 
 /** @brief 初始化 WeakNet 客户端库，建立 D-Bus Session 连接 */
 extern "C" bool weaknet_init() {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (g_client) {
         LOG_INFO(LogModule::CLIENT, "weaknet_init: already initialized, connected=" << g_client->isConnected());
         return g_client->isConnected();
@@ -1094,6 +1097,7 @@ extern "C" bool weaknet_init() {
 
 /** @brief 清理 WeakNet 客户端库资源 */
 extern "C" void weaknet_cleanup() {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     LOG_INFO(LogModule::CLIENT, "weaknet_cleanup: cleaning up");
     if (g_client) {
         g_client->disconnect();
@@ -1105,6 +1109,7 @@ extern "C" void weaknet_cleanup() {
 
 /** @brief C 接口包装：调用 GetInterfaces 方法 */
 extern "C" bool weaknet_get_interfaces(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!g_client || !g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_get_interfaces: client not connected");
         snprintf(error_buffer, error_size, "客户端未连接");
@@ -1125,6 +1130,7 @@ extern "C" bool weaknet_get_interfaces(char* buffer, size_t buffer_size, char* e
 
 /** @brief C 接口包装：非阻塞检查 Changed 信号 */
 extern "C" bool weaknet_check_changes(char* message_buffer, size_t message_size, int32_t* counter, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!g_client || !g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_check_changes: client not connected");
         snprintf(error_buffer, error_size, "客户端未连接");
@@ -1144,6 +1150,7 @@ extern "C" bool weaknet_check_changes(char* message_buffer, size_t message_size,
 
 /** @brief C 接口包装：调用 HealthCheck 方法 */
 extern "C" bool weaknet_health_check(char* result_buffer, size_t result_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!g_client || !g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_health_check: client not connected");
         snprintf(error_buffer, error_size, "客户端未连接");
@@ -1164,6 +1171,7 @@ extern "C" bool weaknet_health_check(char* result_buffer, size_t result_size, ch
 
 /** @brief C 接口包装：从序列化文件读取最新状态（离线模式，不发起 D-Bus 调用） */
 extern "C" bool weaknet_get_from_file(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!g_client) {
         snprintf(error_buffer, error_size, "客户端未初始化");
         return false;
@@ -1181,6 +1189,7 @@ extern "C" bool weaknet_get_from_file(char* buffer, size_t buffer_size, char* er
 
 /** @brief C 接口包装：调用 Ping 方法 */
 extern "C" bool weaknet_ping_host(const char* hostname, char* result_buffer, size_t result_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!g_client || !g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_ping_host: client not connected");
         snprintf(error_buffer, error_size, "客户端未连接");
@@ -1218,6 +1227,8 @@ using namespace weaknet_dbus;
  * @param callback   事件回调（当前 C 接口只注册 D-Bus 订阅，回调暂未在内部触发）
  */
 extern "C" bool weaknet_subscribe_event(const char* event_type, weaknet_event_callback_t callback) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+    if (!event_type) return false;
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_subscribe_event: client not connected");
         return false;
@@ -1228,6 +1239,7 @@ extern "C" bool weaknet_subscribe_event(const char* event_type, weaknet_event_ca
 
 /** @brief C 接口：取消订阅事件（简化实现，当前固定返回 true） */
 extern "C" bool weaknet_unsubscribe_event(const char* event_type) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     // 注意：这个简化实现只是返回成功，实际项目中可能需要更复杂的去订阅逻辑
     // 简化实现，不记录日志
     return true;
@@ -1235,6 +1247,7 @@ extern "C" bool weaknet_unsubscribe_event(const char* event_type) {
 
 /** @brief C 接口：获取支持的事件类型列表（本地拼接，不发起 D-Bus 调用） */
 extern "C" bool weaknet_get_event_types(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     snprintf(buffer, buffer_size, "%s,%s,%s,%s",
              weaknet_dbus::kSignalInterfaceChanged,
              weaknet_dbus::kSignalConnectionModeChanged,
@@ -1248,6 +1261,7 @@ extern "C" bool weaknet_check_events(char* event_type_buffer, size_t event_type_
                                    char* message_buffer, size_t message_size,
                                    int32_t* counter, char* source_buffer, size_t source_size,
                                    char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_check_events: client not connected");
         snprintf(error_buffer, error_size, "客户端未连接");
@@ -1269,17 +1283,20 @@ extern "C" bool weaknet_check_events(char* event_type_buffer, size_t event_type_
 
 /** @brief C 接口：检查客户端连接状态 */
 extern "C" bool weaknet_is_connected() {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     return weaknet_dbus::g_client && weaknet_dbus::g_client->isConnected();
 }
 
 /** @brief C 接口：返回硬编码版本字符串 "WeakNet Client Library v1.0.0"（不发起 D-Bus 调用） */
 extern "C" bool weaknet_get_version(char* buffer, size_t buffer_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     snprintf(buffer, buffer_size, "WeakNet Client Library v1.0.0");
     return true;
 }
 
 /** @brief C 接口：返回编译时间信息（使用 __DATE__ / __TIME__ 宏，不发起 D-Bus 调用） */
 extern "C" bool weaknet_get_build_info(char* buffer, size_t buffer_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     snprintf(buffer, buffer_size, "Built: %s %s | DBus-enabled | C++17", __DATE__, __TIME__);
     return true;
 }
@@ -1291,6 +1308,7 @@ extern "C" bool weaknet_get_build_info(char* buffer, size_t buffer_size) {
  * 传给 WeakNetClient::subscribeToNetworkQuality()。
  */
 extern "C" bool weaknet_subscribe_network_quality(weaknet_network_quality_callback_t callback) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_subscribe_network_quality: client not connected");
         return false;
@@ -1321,6 +1339,7 @@ extern "C" bool weaknet_subscribe_network_quality(weaknet_network_quality_callba
 extern "C" bool weaknet_check_network_quality(char* quality_buffer, size_t quality_size,
                                              char* details_buffer, size_t details_size, 
                                                      int32_t* counter, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
@@ -1361,6 +1380,7 @@ extern "C" bool weaknet_check_network_quality(char* quality_buffer, size_t quali
 
 /** @brief C 接口包装：调用 GetBluetoothDevices 方法 */
 extern "C" bool weaknet_get_bluetooth_devices(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
@@ -1377,6 +1397,7 @@ extern "C" bool weaknet_get_bluetooth_devices(char* buffer, size_t buffer_size, 
 
 /** @brief C 接口包装：调用 GetBluetoothAdapter 方法 */
 extern "C" bool weaknet_get_bluetooth_adapter(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
@@ -1398,6 +1419,7 @@ extern "C" bool weaknet_get_bluetooth_adapter(char* buffer, size_t buffer_size, 
  * 实际事件需通过 weaknet_check_events() 轮询。
  */
 extern "C" bool weaknet_subscribe_bluetooth_events(weaknet_event_callback_t callback) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         return false;
     }
@@ -1410,6 +1432,7 @@ extern "C" bool weaknet_subscribe_bluetooth_events(weaknet_event_callback_t call
 
 /** @brief C 接口包装：调用 GetDnsStats 方法 */
 extern "C" bool weaknet_get_dns_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
@@ -1426,6 +1449,7 @@ extern "C" bool weaknet_get_dns_stats(char* buffer, size_t buffer_size, char* er
 
 /** @brief C 接口包装：调用 GetWifiLossStats 方法 */
 extern "C" bool weaknet_get_wifi_loss_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
@@ -1442,6 +1466,7 @@ extern "C" bool weaknet_get_wifi_loss_stats(char* buffer, size_t buffer_size, ch
 
 /** @brief C 接口包装：调用 GetHttpLatencyStats 方法 */
 extern "C" bool weaknet_get_http_latency_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
@@ -1458,6 +1483,7 @@ extern "C" bool weaknet_get_http_latency_stats(char* buffer, size_t buffer_size,
 
 /** @brief C 接口包装：调用 GetProcessProfiling 方法 */
 extern "C" bool weaknet_get_process_profiling(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
@@ -1474,6 +1500,7 @@ extern "C" bool weaknet_get_process_profiling(char* buffer, size_t buffer_size, 
 
 /** @brief C 接口包装：调用 GetEbpfMonitorHealth 方法 */
 extern "C" bool weaknet_get_ebpf_monitor_health(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
@@ -1490,6 +1517,7 @@ extern "C" bool weaknet_get_ebpf_monitor_health(char* buffer, size_t buffer_size
 /** @brief C 接口包装：调用 SetMonitorParam 运行时设置监控器参数 */
 extern "C" bool weaknet_set_monitor_param(const char* key, const char* value,
                                           char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
@@ -1510,16 +1538,21 @@ extern "C" bool weaknet_set_monitor_param(const char* key, const char* value,
 extern "C" bool weaknet_get_monitor_param(const char* monitor,
                                           char* buffer, size_t buffer_size,
                                           char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+    if (!monitor) {
+        if (error_buffer && error_size > 0) snprintf(error_buffer, error_size, "空的 monitor 名称");
+        return false;
+    }
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
-        snprintf(error_buffer, error_size, "客户端未连接");
+        if (error_buffer && error_size > 0) snprintf(error_buffer, error_size, "客户端未连接");
         return false;
     }
     std::string result, errorMsg;
     if (weaknet_dbus::g_client->getMonitorParam(monitor, result, errorMsg)) {
-        snprintf(buffer, buffer_size, "%s", result.c_str());
+        if (buffer && buffer_size > 0) snprintf(buffer, buffer_size, "%s", result.c_str());
         return true;
     }
-    snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+    if (error_buffer && error_size > 0) snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
     return false;
 }
 
@@ -1548,6 +1581,7 @@ static bool lifecycleResult(F&& call,
 
 extern "C" bool weaknet_list_monitors(char* buffer, size_t buffer_size,
                                       char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     return lifecycleResult([](std::string& r, std::string& e) {
         return weaknet_dbus::g_client->listMonitors(r, e);
     }, buffer, buffer_size, error_buffer, error_size);
@@ -1567,6 +1601,7 @@ static bool lifecycleMonitorResult(const char* monitor, F&& call,
 
 extern "C" bool weaknet_get_monitor_status(const char* monitor, char* buffer, size_t buffer_size,
                                            char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     return lifecycleMonitorResult(monitor, [monitor](std::string& r, std::string& e) {
         return weaknet_dbus::g_client->getMonitorStatus(monitor, r, e);
     }, buffer, buffer_size, error_buffer, error_size);
@@ -1574,6 +1609,7 @@ extern "C" bool weaknet_get_monitor_status(const char* monitor, char* buffer, si
 
 extern "C" bool weaknet_enable_monitor(const char* monitor, char* buffer, size_t buffer_size,
                                         char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     return lifecycleMonitorResult(monitor, [monitor](std::string& r, std::string& e) {
         return weaknet_dbus::g_client->enableMonitor(monitor, r, e);
     }, buffer, buffer_size, error_buffer, error_size);
@@ -1581,6 +1617,7 @@ extern "C" bool weaknet_enable_monitor(const char* monitor, char* buffer, size_t
 
 extern "C" bool weaknet_disable_monitor(const char* monitor, char* buffer, size_t buffer_size,
                                          char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     return lifecycleMonitorResult(monitor, [monitor](std::string& r, std::string& e) {
         return weaknet_dbus::g_client->disableMonitor(monitor, r, e);
     }, buffer, buffer_size, error_buffer, error_size);
@@ -1588,6 +1625,7 @@ extern "C" bool weaknet_disable_monitor(const char* monitor, char* buffer, size_
 
 extern "C" bool weaknet_restart_monitor(const char* monitor, char* buffer, size_t buffer_size,
                                          char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     return lifecycleMonitorResult(monitor, [monitor](std::string& r, std::string& e) {
         return weaknet_dbus::g_client->restartMonitor(monitor, r, e);
     }, buffer, buffer_size, error_buffer, error_size);
@@ -1595,6 +1633,7 @@ extern "C" bool weaknet_restart_monitor(const char* monitor, char* buffer, size_
 
 extern "C" bool weaknet_save_monitor_overrides(char* buffer, size_t buffer_size,
                                                char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     return lifecycleResult([](std::string& r, std::string& e) {
         return weaknet_dbus::g_client->saveMonitorOverrides(r, e);
     }, buffer, buffer_size, error_buffer, error_size);
@@ -1607,6 +1646,7 @@ extern "C" bool weaknet_save_monitor_overrides(char* buffer, size_t buffer_size,
 extern "C" bool weaknet_get_history(const char* interface, const char* start, const char* end,
                                     int32_t limit, char* buffer, size_t buffer_size,
                                     char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
     if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
         snprintf(error_buffer, error_size, "客户端未连接");
         return false;
