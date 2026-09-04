@@ -282,8 +282,8 @@ bool NetInfo::isValid() const {
     // 丢包率：-1（未测量）或 [0, 100]
     if (tcp_loss_rate_ < -1.0 || tcp_loss_rate_ > 100.0) return false;
 
-    // RSSI：-1000（未测量/非 Wi-Fi）或真实 RSSI [-100, -30]
-    if (rssi_dbm_ != -1000 && (rssi_dbm_ < -100 || rssi_dbm_ > -30)) return false;
+    // RSSI：-1000（未测量/非 Wi-Fi）或物理合理 dBm [-100, 0]
+    if (rssi_dbm_ != -1000 && (rssi_dbm_ < -100 || rssi_dbm_ > 0)) return false;
 
     // 抖动：-1（未测量）或非负值
     if (jitter_ms_ < -1.0) return false;

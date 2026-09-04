@@ -199,7 +199,12 @@ public:
     /// 各指标哨兵值检查：负值或极小值表示该指标尚未被对应监控器采集
     bool hasRtt() const { return rtt_ms_ >= 0; }
     bool hasTcpLoss() const { return tcp_loss_rate_ >= 0.0; }
-    bool hasRssi() const { return rssi_dbm_ >= -100 && rssi_dbm_ <= -30; }
+    /// 是否有可信 RSSI：真实 nl80211 放开到 [-100, 0]；估算仅接受 [-100, -30]
+    bool hasRssi() const {
+        if (rssi_dbm_ < -100 || rssi_dbm_ > 0) return false;
+        if (rssi_estimated_ && rssi_dbm_ > -30) return false;
+        return true;
+    }
     bool hasTraffic() const { return traffic_total_bps_ > 0 || traffic_total_pps_ > 0 || traffic_active_flows_ > 0; }
     bool hasJitter() const { return jitter_ms_ >= 0.0; }
 

@@ -312,10 +312,13 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
     else sqlite3_bind_null(stmt, 3);
     if (info.jitterMs() >= 0) sqlite3_bind_double(stmt, 4, info.jitterMs());
     else sqlite3_bind_null(stmt, 4);
-    if (info.rssiDbm() >= -100 && info.rssiDbm() <= -30) sqlite3_bind_int(stmt, 5, info.rssiDbm());
+    const int rssiDbm = info.rssiDbm();
+    const bool rssiValid = rssiDbm >= -100 && rssiDbm <= 0 &&
+        (!info.rssiEstimated() || rssiDbm <= -30);
+    if (rssiValid) sqlite3_bind_int(stmt, 5, rssiDbm);
     else sqlite3_bind_null(stmt, 5);
     const std::string rssiSource = info.rssiSource();
-    const std::string rssiStatus = (info.rssiDbm() >= -100 && info.rssiDbm() <= -30) ? "valid" : "unavailable";
+    const std::string rssiStatus = rssiValid ? "valid" : "unavailable";
     const std::string rttStatus = info.rttMs() >= 0 ? "valid" : (info.rttMs() == -5 ? "timeout" : "unavailable");
     const std::string jitterStatus = info.jitterMs() >= 0 ? "valid" : "unavailable";
     const std::string tcpLossStatus = info.tcpLossRate() >= 0 ? "valid" : "unavailable";

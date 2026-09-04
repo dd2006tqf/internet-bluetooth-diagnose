@@ -180,7 +180,7 @@ double NetworkQualityAssessor::calculateRssiScore(int rssiDbm) {
     if (rssiDbm == -1000 || rssiDbm < -100 || rssiDbm > 0) {
         return 50.0;  // 无法测量 RSSI 时不参与弱信号判定
     }
-    
+
     if (rssiDbm >= thresholds_.rssi_excellent) return 100.0;
     if (rssiDbm >= thresholds_.rssi_good) return 80.0;
     if (rssiDbm >= thresholds_.rssi_fair) return 60.0;
@@ -273,7 +273,9 @@ std::string NetworkQualityAssessor::generateMetricsJson(const NetInfo& interface
     json << "\"quality_score\":" << std::fixed << std::setprecision(1) << score << ",";
     json << "\"rtt_ms\":" << (interface.rttMs() >= 0 ? std::to_string(interface.rttMs()) : "null") << ",";
     json << "\"tcp_loss_rate\":" << (interface.tcpLossRate() >= 0 ? std::to_string(interface.tcpLossRate()) : "null") << ",";
-    json << "\"rssi_dbm\":" << ((interface.rssiDbm() >= -100 && interface.rssiDbm() <= -30) ? std::to_string(interface.rssiDbm()) : "null") << ",";
+    const bool rssiValid = interface.rssiDbm() >= -100 && interface.rssiDbm() <= 0 &&
+        (!interface.rssiEstimated() || interface.rssiDbm() <= -30);
+    json << "\"rssi_dbm\":" << (rssiValid ? std::to_string(interface.rssiDbm()) : "null") << ",";
     json << "\"rssi_estimated\":" << (interface.rssiEstimated() ? "true" : "false") << ",";
     json << "\"rssi_source\":\"" << interface.rssiSource() << "\",";
     json << "\"traffic_bps\":" << interface.trafficTotalBps() << ",";
