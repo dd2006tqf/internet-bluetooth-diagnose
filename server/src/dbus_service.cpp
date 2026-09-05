@@ -299,8 +299,6 @@ bool DbusService::handleGet(DBusConnection* conn, DBusMessage* msg) {
     }
     dbus_connection_flush(conn);
     dbus_message_unref(reply);
-    std::string err;
-    serializeGetReplyToFile(reply_text, kGetReplySerializedFile, &err);
     return true;
 }
 

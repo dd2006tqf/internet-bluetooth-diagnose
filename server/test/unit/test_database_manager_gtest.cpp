@@ -160,6 +160,10 @@ TEST_F(DatabaseManagerTest, Cleanup) {
     int deleted = db.cleanup(365);
     EXPECT_EQ(deleted, 0);
     EXPECT_EQ(db.getRecordCount(), 1);
+
+    // 未打开的数据库实例调用 cleanup 应返回 -1
+    DatabaseManager unopenDb("/nonexistent_dir/impossible/path.db");
+    EXPECT_EQ(unopenDb.cleanup(7), -1);
 }
 
 TEST_F(DatabaseManagerTest, InsertWithScore) {

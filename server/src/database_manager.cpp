@@ -314,7 +314,7 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
                                       int64_t traffic_sample_ts) {
     if (!db_) return false;
 
-    std::lock_guard<std::mutex> lock(write_mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
 
     // 使用参数绑定防止 SQL 注入
     const char* sql = "INSERT INTO network_history (ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, "
@@ -436,6 +436,7 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
                                            const std::string& end,
                                                  int limit) {
     if (!db_) return "[]";
+    std::lock_guard<std::mutex> lock(mutex_);
 
     // 使用参数绑定防止 SQL 注入
     std::string sql = "SELECT ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts "
@@ -582,7 +583,7 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
 
 std::string DatabaseManager::getQualityReport() {
     if (!db_) return "{\"error\":\"database not open\"}";
-    std::lock_guard<std::mutex> lock(write_mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT iface, rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, rssi_estimated, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts FROM network_history ORDER BY iface";
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return "{\"error\":\"quality report query failed\"}";
@@ -633,9 +634,9 @@ std::string DatabaseManager::getQualityReport() {
     return json.str();
 }
 int DatabaseManager::cleanup(int retention_days) {
-    if (!db_) return 0;
+    if (!db_) return -1;
 
-    std::lock_guard<std::mutex> lock(write_mutex_);
+    std::lock_guard<std::mutex> lock(mutex_);
 
     std::ostringstream sql;
     sql << "DELETE FROM network_history WHERE ts < datetime('now', '-"
@@ -646,7 +647,7 @@ int DatabaseManager::cleanup(int retention_days) {
     if (rc != SQLITE_OK) {
         LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::cleanup error: " << (err ? err : "unknown"));
         sqlite3_free(err);
-        return 0;
+        return -1;
     }
 
     int deleted = sqlite3_changes(db_);
@@ -656,12 +657,16 @@ int DatabaseManager::cleanup(int retention_days) {
     return deleted;
 }
 
-int64_t DatabaseManager::getRecordCount() {
-    if (!db_) return 0;
-
+int64_t DatabaseManager::getRecordCountLocked() {
     int64_t count = 0;
     sqlite3_exec(db_, "SELECT COUNT(*) FROM network_history", countCallback, &count, nullptr);
     return count;
+}
+
+int64_t DatabaseManager::getRecordCount() {
+    if (!db_) return 0;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return getRecordCountLocked();
 }
 
 static int stringRangeCallback(void* data, int /*argc*/, char** argv, char** /*colNames*/) {
@@ -672,8 +677,9 @@ static int stringRangeCallback(void* data, int /*argc*/, char** argv, char** /*c
 
 std::string DatabaseManager::getDbInfo() {
     if (!db_) return "{\"error\":\"database not open\"}";
+    std::lock_guard<std::mutex> lock(mutex_);
 
-    int64_t count = getRecordCount();
+    int64_t count = getRecordCountLocked();
     int64_t page_size = 0, page_count = 0;
     sqlite3_exec(db_, "PRAGMA page_size", countCallback, &page_size, nullptr);
     sqlite3_exec(db_, "PRAGMA page_count", countCallback, &page_count, nullptr);

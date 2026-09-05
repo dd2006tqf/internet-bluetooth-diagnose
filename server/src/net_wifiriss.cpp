@@ -413,7 +413,6 @@ std::shared_ptr<WiFiRssiClient> WiFiRssiClient::getInstance() {
         s_instance = std::make_shared<WiFiRssiClient>();
         LOG_INFO(LogModule::NETWORK, "WiFiRssiClient instance created");
     });
-    LOG_INFO(LogModule::NETWORK, "Returning WiFiRssiClient instance");
     return s_instance;
 }
 

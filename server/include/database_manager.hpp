@@ -117,8 +117,11 @@ private:
      */
     bool ensureSchema();
 
+    /// 内部无锁获取总记录数，供已持有 mutex_ 的方法调用
+    int64_t getRecordCountLocked();
+
     sqlite3* db_ = nullptr;       ///< SQLite 数据库句柄
-    std::mutex write_mutex_;      ///< 保护所有写操作（SQLite 多线程安全的最简方案）
+    mutable std::mutex mutex_;    ///< 统一保护所有 SQLite 操作（读写操作全覆盖）
 };
 
 }  // namespace weaknet_dbus

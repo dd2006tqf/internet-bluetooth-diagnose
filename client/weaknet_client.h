@@ -5,7 +5,7 @@
  * 本文件定义了 WeakNet 客户端动态库对外暴露的 C 接口，
  * 用于让其他 C/C++ 程序方便地集成 WeakNet 网络监控功能。
  *
- * 客户端通过 D-Bus（Session 总线）连接到 WeakNet 服务端：
+ * 客户端通过 D-Bus 系统总线（System Bus）连接到 WeakNet 服务端：
  *   - 服务名 (Bus Name):   com.example.WeakNet
  *   - 对象路径 (ObjPath):  /com/example/WeakNet
  *   - 接口名 (Interface):  com.example.WeakNet
@@ -76,7 +76,7 @@ extern "C" {
  * 必须在调用其他任何 weaknet_* 函数之前调用此函数。
  * 该函数会：
  *   1. 初始化日志系统（输出到 ./logs/client 目录）
- *   2. 连接到 D-Bus Session 总线
+ *   2. 连接到 D-Bus System 总线
  *
  * @return true  - 初始化成功，已连接到 D-Bus 总线
  * @return false - 初始化失败（D-Bus 未运行或权限不足）

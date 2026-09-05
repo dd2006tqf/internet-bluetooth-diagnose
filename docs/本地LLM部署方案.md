@@ -61,7 +61,7 @@ Python RAG 服务             ~200MB        FAISS + LangChain
 │  └─────────┬───────────┘   │ 内存: ~3.5GB                  │     │
 │            │               └──────────────┬─────────────────┘     │
 │            │                              │                       │
-│            │    D-Bus Session Bus         │ HTTP (OpenAI API)     │
+│            │    D-Bus System Bus          │ HTTP (OpenAI API)     │
 │            │                              │                       │
 │  ┌─────────┴──────────────────────────────┴─────────────────┐    │
 │  │  Python RAG 分析服务 (weaknet-rag)                        │    │
