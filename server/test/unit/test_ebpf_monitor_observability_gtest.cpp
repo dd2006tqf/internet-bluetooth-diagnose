@@ -7,6 +7,7 @@
 #include "process_net_profiler.hpp"
 #include "tcp_retransmit_monitor.hpp"
 #include "tcp_conn_monitor.hpp"
+#include "skb_drop_monitor.hpp"
 #include "bt_audio_analyzer.hpp"
 
 using namespace weaknet_dbus;
@@ -73,12 +74,13 @@ TEST(EbpfMonitorInterfaceTest, AllMonitorsExposeCommonContract) {
     ProcessNetProfiler process;
     TcpRetransMonitor tcp;
     TcpConnMonitor tcpConn;
+    SkbDropMonitor skbDrop;
     BtAudioAnalyzer bt;
 
-    IEbpfMonitor* monitors[] = {&dns, &wifi, &http, &process, &tcp, &tcpConn, &bt};
+    IEbpfMonitor* monitors[] = {&dns, &wifi, &http, &process, &tcp, &tcpConn, &skbDrop, &bt};
     const char* names[] = {"DnsMonitor", "WifiPacketLossMonitor", "HttpLatencyMonitor",
                            "ProcessNetProfiler", "TcpRetransMonitor", "TcpConnMonitor",
-                           "BtAudioAnalyzer"};
+                           "SkbDropMonitor", "BtAudioAnalyzer"};
     for (size_t i = 0; i < sizeof(monitors) / sizeof(monitors[0]); ++i) {
         EXPECT_STREQ(monitors[i]->monitorName(), names[i]);
         EXPECT_EQ(monitors[i]->commonState(), EbpfMonitorState::Uninitialized);
@@ -100,4 +102,10 @@ TEST(EbpfMonitorInterfaceTest, FailedInitializationReportsFallbackOrError) {
     EXPECT_FALSE(tcpConn.isAvailable());
     EXPECT_TRUE(tcpConn.commonState() == EbpfMonitorState::Error ||
                 tcpConn.commonState() == EbpfMonitorState::Fallback);
+
+    SkbDropMonitor skbDrop;
+    EXPECT_FALSE(skbDrop.init("/nonexistent/skb_drop.bpf.o"));
+    EXPECT_FALSE(skbDrop.isAvailable());
+    EXPECT_TRUE(skbDrop.commonState() == EbpfMonitorState::Error ||
+                skbDrop.commonState() == EbpfMonitorState::Fallback);
 }

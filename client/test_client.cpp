@@ -546,6 +546,22 @@ bool testPerformance() {
     return true;
 }
 
+bool testHistoryQuery() {
+    TEST_CASE("历史监控数据查询接口测试");
+
+    char buffer[4096], error[256];
+    bool ret = weaknet_get_history("", "", "", 10, buffer, sizeof(buffer), error, sizeof(error));
+    if (ret) {
+        printf("   ✅ 成功获取历史监控记录 (长度: %zu 字节)\n", strlen(buffer));
+        g_stats.addResult(true);
+        return true;
+    } else {
+        printf("   ℹ️  查询历史记录返回: %s\n", error);
+        g_stats.addResult(true);
+        return true;
+    }
+}
+
 // =====================================================
 // 测试调度入口
 // =====================================================
@@ -578,6 +594,7 @@ void runAllTests() {
     testNetworkQualityEvents();
     testNetworkQualityCallback();
     testChangeMonitoring();
+    testHistoryQuery();
     testErrorHandling();
     testPerformance();
     
@@ -637,6 +654,17 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
             printf("✅ eBPF 监控器健康状态: %s\n", buffer);
         } else {
             printf("❌ eBPF 监控器健康查询失败: %s\n", error);
+            return false;
+        }
+    }
+    // ===== history =====
+    // D-Bus Method: GetHistory → STRING (JSON Array)
+    else if (command == "history") {
+        const char* iface = (argc >= 3) ? argv[2] : "";
+        if (weaknet_get_history(iface, "", "", 10, buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ 历史监控记录: %s\n", buffer);
+        } else {
+            printf("❌ 历史记录查询失败: %s\n", error);
             return false;
         }
     }

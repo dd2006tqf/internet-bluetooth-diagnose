@@ -50,14 +50,30 @@ struct TestStats {
 
 TestStats g_stats;
 
+// 探测并解析有效的 BPF 对象文件路径
+static std::string resolveBpfObjectPath(const std::string& bpfName = "flow_rate.bpf.o") {
+    const std::vector<std::string> candidatePaths = {
+        "server/build/" + bpfName,
+        "build/" + bpfName,
+        "/home/radxa/weaknet/server/build/" + bpfName,
+        "./" + bpfName
+    };
+    struct stat st;
+    for (const auto& path : candidatePaths) {
+        if (stat(path.c_str(), &st) == 0) {
+            return path;
+        }
+    }
+    return "server/build/" + bpfName;
+}
+
 // 测试1: 检查 BPF 对象文件是否存在
 bool testBpfObjectExists() {
     std::cout << "\n🧪 测试1: BPF 对象文件检查" << std::endl;
-    
-    // 开发板部署后的实际路径（相对测试脚本工作目录 /home/radxa/weaknet）
-    std::string bpfPath = "server/build/flow_rate.bpf.o";
+
+    std::string bpfPath = resolveBpfObjectPath("flow_rate.bpf.o");
     struct stat st;
-    
+
     if (stat(bpfPath.c_str(), &st) == 0) {
         g_stats.addResult(true, "BPF 对象文件存在: " + bpfPath);
         std::cout << "     📦 文件大小: " << st.st_size << " 字节" << std::endl;
@@ -97,8 +113,8 @@ bool testTrafficAnalyzerInit() {
     }
     g_stats.addResult(true, "获取流量分析器实例");
     
-    // 设置 BPF 对象路径
-    analyzer->setBpfObjectPath("server/build/flow_rate.bpf.o");
+    // 设置 BPF 对象路径（自动多路径容错解析）
+    analyzer->setBpfObjectPath(resolveBpfObjectPath("flow_rate.bpf.o"));
     g_stats.addResult(true, "设置 BPF 对象路径");
     
     // 设置异常检测参数
