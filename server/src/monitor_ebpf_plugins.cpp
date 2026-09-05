@@ -22,6 +22,7 @@
 #include "process_net_profiler.hpp"
 #include "tcp_retransmit_monitor.hpp"
 #include "tcp_conn_monitor.hpp"
+#include "skb_drop_monitor.hpp"
 
 namespace weaknet_dbus {
 
@@ -237,6 +238,33 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// SkbDropPlugin (skb_drop)
+// ---------------------------------------------------------------------------
+class SkbDropPlugin : public IMonitorPlugin {
+    ServerContext* ctx_ = nullptr;
+    std::unique_ptr<SkbDropMonitor> monitor_;
+public:
+    const char* name() const override { return "skb_drop"; }
+    int order() const override { return 160; }
+    bool init(ServerContext* ctx) override {
+        ctx_ = ctx;
+        monitor_ = std::make_unique<SkbDropMonitor>();
+        return true;
+    }
+    bool start(ServerContext* /*ctx*/) override {
+        if (!monitor_) return false;
+        monitor_->init("build/skb_drop.bpf.o");
+        return true;
+    }
+    void stop() override {
+        if (monitor_) {
+            monitor_->stop();
+            monitor_.reset();
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
 // eBPF 插件注册入口
 // ---------------------------------------------------------------------------
 void registerEbpfPlugins() {
@@ -246,6 +274,7 @@ void registerEbpfPlugins() {
     registerPlugin("process_profiler",[] { return std::make_unique<ProcessProfilerPlugin>(); });
     registerPlugin("tcp_retrans",     [] { return std::make_unique<TcpRetransPlugin>(); });
     registerPlugin("tcp_conn",        [] { return std::make_unique<TcpConnPlugin>(); });
+    registerPlugin("skb_drop",        [] { return std::make_unique<SkbDropPlugin>(); });
 }
 
 }  // namespace weaknet_dbus
