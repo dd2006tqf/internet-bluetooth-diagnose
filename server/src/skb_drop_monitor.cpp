@@ -9,9 +9,19 @@
 #include <unordered_map>
 #include "logger.hpp"
 
-#ifdef ENABLE_EBPF
+#if defined(__has_include)
+#  if __has_include(<linux/bpf.h>) && __has_include(<bpf/libbpf.h>) && __has_include(<bpf/bpf.h>)
+#    define HAVE_LIBBPF 1
+extern "C" {
+#include <linux/bpf.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
+}
+#  else
+#    define HAVE_LIBBPF 0
+#  endif
+#else
+#  define HAVE_LIBBPF 0
 #endif
 
 namespace weaknet_dbus {
@@ -58,7 +68,7 @@ struct SkbDropMonitor::Impl {
     uint64_t lastSampleNs = 0;
     std::string bpfPath;
 
-#ifdef ENABLE_EBPF
+#if HAVE_LIBBPF
     struct bpf_object* obj = nullptr;
     struct bpf_link* link = nullptr;
     int mapFd = -1;
@@ -78,7 +88,7 @@ bool SkbDropMonitor::init(const std::string& bpfObjPath) {
     impl_->bpfPath = bpfObjPath;
     impl_->state = EbpfMonitorState::Initializing;
 
-#ifdef ENABLE_EBPF
+#if HAVE_LIBBPF
     impl_->obj = bpf_object__open_file(bpfObjPath.c_str(), nullptr);
     if (!impl_->obj) {
         LOG_WARNING(LogModule::NETWORK, "SkbDropMonitor: failed to open BPF object: " << bpfObjPath);
@@ -136,7 +146,7 @@ bool SkbDropMonitor::init(const std::string& bpfObjPath) {
 
 void SkbDropMonitor::stop() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-#ifdef ENABLE_EBPF
+#if HAVE_LIBBPF
     if (impl_->link) {
         bpf_link__destroy(impl_->link);
         impl_->link = nullptr;
@@ -154,7 +164,7 @@ DropStatsSummary SkbDropMonitor::getDropStats() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     DropStatsSummary summary;
 
-#ifdef ENABLE_EBPF
+#if HAVE_LIBBPF
     if (impl_->state != EbpfMonitorState::Attached || impl_->mapFd < 0) {
         return impl_->cachedSummary;
     }

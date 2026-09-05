@@ -251,9 +251,16 @@ public:
         monitor_ = std::make_unique<SkbDropMonitor>();
         return true;
     }
-    bool start(ServerContext* /*ctx*/) override {
+    bool start(ServerContext* ctx) override {
         if (!monitor_) return false;
-        monitor_->init("build/skb_drop.bpf.o");
+        std::string path = "build/skb_drop.bpf.o";
+        if (ctx) {
+            path = ctx->cfg.skb_drop.bpf_obj.get();
+        }
+        if (!monitor_->init(path)) {
+            LOG_WARNING(LogModule::NETWORK, "SkbDropPlugin: failed to load BPF object from " << path);
+            return false;
+        }
         return true;
     }
     void stop() override {
