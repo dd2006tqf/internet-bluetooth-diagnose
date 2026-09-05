@@ -5,26 +5,15 @@
  * 负责将 NetInfo 快照定期写入 SQLite，供客户端通过 D-Bus 历史查询接口取回。
  * 使用 prepared statement 避免 SQL 注入；忙时等待（busy_timeout=5000ms）避免多线程并发写冲突。
  *
- * 表结构（单表 snapshots）：
- *   id INTEGER PRIMARY KEY AUTOINCREMENT,
- *   timestamp TEXT NOT NULL,           -- ISO 8601
+ * 表结构（单表 network_history）：
+ *   ts TEXT NOT NULL,                  -- ISO 8601 快照时间
  *   iface TEXT NOT NULL,               -- 接口名
- *   rtt_ms INTEGER,                    -- RTT 延迟
- *   rssi_dbm INTEGER,                  -- Wi-Fi RSSI
- *   rssi_source TEXT,                  -- RSSI source
- *   rssi_estimated INTEGER,            -- whether RSSI is estimated
- *   rssi_status TEXT,                  -- valid/unavailable/invalid
- *   rtt_status TEXT,                   -- valid/unavailable/timeout
- *   jitter_status TEXT,                -- valid/unavailable
- *   tcp_loss_status TEXT,              -- valid/unavailable
- *   tcp_loss_rate REAL,                -- TCP 丢包率 %
- *   jitter_ms REAL,                    -- 抖动
- *   traffic_bps INTEGER,               -- 带宽
- *   score REAL,                        -- 综合质量评分
- *   quality TEXT                       -- 兼容字段（综合质量）
- *   link_quality TEXT,                 -- 接口链路质量
- *   overall_quality TEXT,              -- 综合质量
- *   overall_score REAL                 -- 综合质量评分 */
+ *   rtt_ms/jitter_ms/rssi_dbm REAL,    -- 指标值；stale 时为 SQL NULL
+ *   rssi_status/rtt_status/jitter_status/tcp_loss_status/traffic_status TEXT,
+ *                                       -- valid/unavailable/timeout/stale
+ *   tcp_loss REAL, traffic_bps/pps/flows, -- 指标值
+ *   data_version INTEGER,              -- 数据格式版本；当前为 2
+ *   *_sample_ts INTEGER                -- 各指标 Unix 毫秒采样时间 */
 
 #pragma once
 
@@ -75,7 +64,12 @@ public:
     bool insertSnapshot(const std::string& iface, const NetInfo& info,
                         const NetworkQualityResult& overall,
                         uint64_t generation = 0,
-                        int64_t snapshot_ts_ms = 0);
+                        int64_t snapshot_ts_ms = 0,
+                        int64_t rtt_sample_ts = 0,
+                        int64_t rssi_sample_ts = 0,
+                        int64_t jitter_sample_ts = 0,
+                        int64_t tcp_loss_sample_ts = 0,
+                        int64_t traffic_sample_ts = 0);
     bool insertSnapshot(const std::string& iface, const NetInfo& info, double score = 0.0);
 
     /**

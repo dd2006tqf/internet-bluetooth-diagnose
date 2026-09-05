@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <chrono>
 
 namespace weaknet_dbus {
 
@@ -83,12 +84,21 @@ NetworkQualityResult NetworkQualityAssessor::assessQuality(const std::vector<Net
 
 NetworkQualityResult NetworkQualityAssessor::assessInterfaceQuality(const NetInfo& interface) {
     NetworkQualityResult result;
+    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    NetInfo fresh = interface;
+    if (fresh.metricStale(fresh.rttSampleTsMs(), now_ms)) fresh.setRttMs(-1);
+    if (fresh.metricStale(fresh.rssiSampleTsMs(), now_ms)) fresh.setRssiDbm(-1000);
+    if (fresh.metricStale(fresh.jitterSampleTsMs(), now_ms)) fresh.setJitterMs(-1.0);
+    if (fresh.metricStale(fresh.tcpLossSampleTsMs(), now_ms)) fresh.setTcpLossRate(-1.0);
+    if (fresh.metricStale(fresh.trafficSampleTsMs(), now_ms)) fresh.setTrafficStats(0, 0, 0);
+    const NetInfo& current = fresh;
     
     // 计算各项指标分数
-    double rttScore = calculateRttScore(interface.rttMs());
-    double tcpLossScore = calculateTcpLossScore(interface.tcpLossRate());
-    double rssiScore = calculateRssiScore(interface.rssiDbm());
-    double trafficScore = calculateTrafficScore(interface);
+    double rttScore = calculateRttScore(current.rttMs());
+    double tcpLossScore = calculateTcpLossScore(current.tcpLossRate());
+    double rssiScore = calculateRssiScore(current.rssiDbm());
+    double trafficScore = calculateTrafficScore(current);
     
     // 加权平均计算总分（权重可调整）
     double totalScore = (rttScore * 0.3 + tcpLossScore * 0.3 + rssiScore * 0.2 + trafficScore * 0.2);
@@ -108,10 +118,10 @@ NetworkQualityResult NetworkQualityAssessor::assessInterfaceQuality(const NetInf
     result.score = totalScore;
     
     // 检测网络问题
-    result.issues = detectNetworkIssues(interface, totalScore);
-    
+    result.issues = detectNetworkIssues(current, totalScore);
+
     // 生成详细质量信息
-    result.details = generateQualityDetails(interface, totalScore, result.issues);
+    result.details = generateQualityDetails(current, totalScore, result.issues);
     
     // 检查质量是否发生变化
     if (hasQualityChanged(result)) {

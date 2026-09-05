@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 #include "network_quality_assessor.hpp"
 #include "net_info.hpp"
+#include <chrono>
 
 using namespace weaknet_dbus;
 
@@ -22,6 +23,9 @@ protected:
         info.setTcpLossRate(loss);
         info.setRssiDbm(rssi);
         info.setTrafficStats(bps, pps, flows);
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        info.setMetricSampleTimes(now, now, now, now, now);
         info.setUsingNow(usingNow);
         return info;
     }
@@ -189,9 +193,18 @@ TEST_F(QualityAssessorTest, IssuesDetectionHighLatency) {
     EXPECT_TRUE(foundLatencyIssue);
 }
 
-// ============================================================================
-// main function
-// ============================================================================
+TEST_F(QualityAssessorTest, StaleMetricsAreExcluded) {
+    NetworkQualityAssessor a;
+    auto iface = makeIface("wlan0", 300, 5.0, -85, 10000, 100, 1);
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    iface.setMetricSampleTimes(now - 30001, now - 30001, now - 30001, now - 30001, now - 30001);
+    const auto result = a.assessInterfaceQuality(iface);
+    EXPECT_EQ(result.score, 50.0);
+    EXPECT_TRUE(result.issues.empty());
+    EXPECT_NE(result.details.find("\"rtt_ms\":null"), std::string::npos);
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

@@ -657,7 +657,10 @@ void start_history_persistence_thread(ServerContext* ctx) {
             for (const auto& iface : snapshot) {
                 if (iface.usingNow()) {
                     if (ctx->db_mgr->insertSnapshot(iface.ifName(), iface, qualityResult,
-                                                               iface.generation(), iface.lastUpdatedMs())) {
+                                                               iface.generation(), iface.lastUpdatedMs(),
+                                                               iface.rttSampleTsMs(), iface.rssiSampleTsMs(),
+                                                               iface.jitterSampleTsMs(), iface.tcpLossSampleTsMs(),
+                                                               iface.trafficSampleTsMs())) {
                         written++;
                     }
                 }

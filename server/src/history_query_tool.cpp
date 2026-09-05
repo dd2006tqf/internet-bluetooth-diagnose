@@ -177,10 +177,10 @@ int main(int argc, char* argv[]) {
     std::cout << "查询到 " << count << " 条记录\n\n";
 
     // 简单格式化输出（表格）
-    printf("%-20s %-8s %6s %8s %6s %6s %-8s %5s\n",
-           "时间", "网卡", "RTT", "Jitter", "RSSI", "丢包", "质量", "评分");
-    printf("%-20s %-8s %6s %8s %6s %6s %-8s %5s\n",
-           "----", "----", "---", "------", "----", "----", "----", "----");
+    printf("%-20s %-8s %-4s %-8s %8s %8s %8s %8s %-8s %8s\n",
+           "时间", "网卡", "版本", "标记", "RTT", "Jitter", "RSSI", "丢包", "质量", "评分");
+    printf("%-20s %-8s %-4s %-8s %8s %8s %8s %8s %-8s %8s\n",
+           "----", "----", "----", "----", "---", "------", "----", "----", "----", "----");
 
     // 逐行解析 JSON（简化：用字符串查找）
     size_t pos = 0;
@@ -213,14 +213,33 @@ int main(int argc, char* argv[]) {
         std::string tcp_loss = extract("tcp_loss");
         std::string quality = extract("quality");
         std::string score = extract("score");
+        std::string legacy = extract("legacy");
+        std::string rtt_status = extract("rtt_status");
+        std::string rssi_status = extract("rssi_status");
+        std::string jitter_status = extract("jitter_status");
+        std::string tcp_loss_status = extract("tcp_loss_status");
+        std::string traffic_status = extract("traffic_status");
+        std::string data_version = extract("data_version");
+
+        auto display = [](const std::string& value, const std::string& status, bool legacy) {
+            if (status == "timeout" || status == "stale") return status;
+            if (value == "null" || value.empty()) return legacy ? std::string("N/A") : std::string("N/A");
+            return value;
+        };
+        const bool legacy_record = legacy == "true";
+        rtt = display(rtt, rtt_status, legacy_record);
+        jitter = display(jitter, jitter_status, legacy_record);
+        rssi = display(rssi, rssi_status, legacy_record);
+        tcp_loss = display(tcp_loss, tcp_loss_status, legacy_record);
+        std::string version = data_version.empty() ? "N/A" : "v" + data_version;
+        std::string marker = legacy_record ? "legacy" : "";
 
         // 截取时间戳的最后部分（去掉日期）
         if (ts.size() > 11) ts = ts.substr(11, 8);
 
-        printf("%-20s %-8s %5sms %7sms %5sdB %5s%% %-8s %5s\n",
-               ts.c_str(), iface_name.c_str(),
-               rtt.c_str(), jitter.c_str(),
-               rssi.c_str(), tcp_loss.c_str(),
+        printf("%-20s %-8s %-4s %-8s %8s %8s %8s %8s %-8s %8s\n",
+               ts.c_str(), iface_name.c_str(), version.c_str(), marker.c_str(),
+               rtt.c_str(), jitter.c_str(), rssi.c_str(), tcp_loss.c_str(),
                quality.c_str(), score.c_str());
 
         pos = end + 1;

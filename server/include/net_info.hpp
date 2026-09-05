@@ -107,6 +107,25 @@ public:
     }
     uint64_t generation() const { return generation_; }
     int64_t lastUpdatedMs() const { return last_updated_ms_; }
+    void setMetricSampleTimes(int64_t rtt, int64_t rssi, int64_t jitter,
+                              int64_t tcpLoss, int64_t traffic) {
+        rtt_sample_ts_ms_ = rtt; rssi_sample_ts_ms_ = rssi;
+        jitter_sample_ts_ms_ = jitter; tcp_loss_sample_ts_ms_ = tcpLoss;
+        traffic_sample_ts_ms_ = traffic;
+    }
+    int64_t rttSampleTsMs() const { return rtt_sample_ts_ms_; }
+    int64_t rssiSampleTsMs() const { return rssi_sample_ts_ms_; }
+    int64_t jitterSampleTsMs() const { return jitter_sample_ts_ms_; }
+    int64_t tcpLossSampleTsMs() const { return tcp_loss_sample_ts_ms_; }
+    int64_t trafficSampleTsMs() const { return traffic_sample_ts_ms_; }
+    bool metricStale(int64_t sample_ts_ms, int64_t now_ms, int64_t max_age_ms = 30000) const {
+        return sample_ts_ms <= 0 || now_ms - sample_ts_ms > max_age_ms;
+    }
+    void setRttSampleTsMs(int64_t ts) { rtt_sample_ts_ms_ = ts; }
+    void setRssiSampleTsMs(int64_t ts) { rssi_sample_ts_ms_ = ts; }
+    void setJitterSampleTsMs(int64_t ts) { jitter_sample_ts_ms_ = ts; }
+    void setTcpLossSampleTsMs(int64_t ts) { tcp_loss_sample_ts_ms_ = ts; }
+    void setTrafficSampleTsMs(int64_t ts) { traffic_sample_ts_ms_ = ts; }
 
     /// 是否当前正在上网的接口（WeakNetMgr 通过默认路由判定）
     void setUsingNow(bool v) { using_now_ = v; }
@@ -251,6 +270,11 @@ private:
     std::string rssi_source_;      ///< RSSI 来源（wpa_supplicant/proc_net_wireless）
     uint64_t generation_ = 0;      ///< 最近一次指标更新代次
     int64_t last_updated_ms_ = 0;  ///< 最近一次指标更新时间（Unix ms）
+    int64_t rtt_sample_ts_ms_ = 0;
+    int64_t rssi_sample_ts_ms_ = 0;
+    int64_t jitter_sample_ts_ms_ = 0;
+    int64_t tcp_loss_sample_ts_ms_ = 0;
+    int64_t traffic_sample_ts_ms_ = 0;
 
     // 性能指标
     double tcp_loss_rate_ = -1.0;          ///< TCP 丢包率（%），-1.0 表示未测量

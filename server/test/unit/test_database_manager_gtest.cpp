@@ -5,9 +5,11 @@
 #include <gtest/gtest.h>
 #include "database_manager.hpp"
 #include "net_info.hpp"
+#include "network_quality_assessor.hpp"
 #include <cstdio>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <chrono>
 
 using namespace weaknet_dbus;
 
@@ -36,6 +38,10 @@ protected:
         info.setTcpLossRate(0.5);
         info.setQuality(LinkQuality::Fair);
         info.setUsingNow(true);
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        info.setMetricSampleTimes(now, now, now, now, now);
+        info.markMetricUpdated(1, now);
         return info;
     }
 
@@ -168,10 +174,41 @@ TEST_F(DatabaseManagerTest, InsertWithScore) {
     EXPECT_NE(result.find("72.5"), std::string::npos);  // score
 }
 
-// ============================================================================
-// Test Cases: 数据库信息
-// ============================================================================
-
+TEST_F(DatabaseManagerTest, StaleMetricsAreNullAndReported) {
+    DatabaseManager db(dbPath_);
+    ASSERT_TRUE(db.isOpen());
+    auto info = makeTestIface("wlan0", 50, 10.5, -55);
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    info.setMetricSampleTimes(now - 30001, now - 30001, now - 30001, now - 30001, now - 30001);
+    NetworkQualityResult overall;
+    overall.level = NetworkQualityLevel::GOOD;
+    overall.levelName = "GOOD";
+    overall.score = 80.0;
+    ASSERT_TRUE(db.insertSnapshot("wlan0", info, overall, 2, now,
+                                  info.rttSampleTsMs(), info.rssiSampleTsMs(),
+                                  info.jitterSampleTsMs(), info.tcpLossSampleTsMs(),
+                                  info.trafficSampleTsMs()));
+    const std::string result = db.queryHistory("wlan0", "", "", 1);
+    EXPECT_NE(result.find("\"rtt_ms\":null"), std::string::npos);
+    EXPECT_NE(result.find("\"rtt_status\":\"stale\""), std::string::npos);
+    EXPECT_NE(result.find("\"traffic_bps\":null"), std::string::npos);
+    EXPECT_NE(result.find("\"traffic_status\":\"stale\""), std::string::npos);
+}
+TEST_F(DatabaseManagerTest, QualityReportGroupsInterfaces) {
+    DatabaseManager db(dbPath_);
+    ASSERT_TRUE(db.isOpen());
+    auto wlan = makeTestIface("wlan0", 20, 1.0, -50);
+    auto eth = makeTestIface("eth0", 30, 2.0, -1000);
+    ASSERT_TRUE(db.insertSnapshot("wlan0", wlan));
+    ASSERT_TRUE(db.insertSnapshot("eth0", eth));
+    const std::string report = db.getQualityReport();
+    EXPECT_NE(report.find("\"interfaces\""), std::string::npos);
+    EXPECT_NE(report.find("\"wlan0\""), std::string::npos);
+    EXPECT_NE(report.find("\"eth0\""), std::string::npos);
+    EXPECT_NE(report.find("\"status_counts\""), std::string::npos);
+    EXPECT_NE(report.find("\"timestamp_zero_counts\""), std::string::npos);
+}
 TEST_F(DatabaseManagerTest, GetDbInfo) {
     DatabaseManager db(dbPath_);
     ASSERT_TRUE(db.isOpen());

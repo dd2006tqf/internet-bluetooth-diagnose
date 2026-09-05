@@ -366,6 +366,11 @@ std::string NetInfo::toJson() const {
     json << "\"rssi_dbm\":" << rssi_dbm_ << ",";
     json << "\"rssi_estimated\":" << (rssi_estimated_ ? "true" : "false") << ",";
     json << "\"rssi_source\":\"" << weaknet_utils::escapeJsonString(rssi_source_) << "\",";
+    json << "\"rtt_sample_ts\":" << rtt_sample_ts_ms_ << ",";
+    json << "\"rssi_sample_ts\":" << rssi_sample_ts_ms_ << ",";
+    json << "\"jitter_sample_ts\":" << jitter_sample_ts_ms_ << ",";
+    json << "\"tcp_loss_sample_ts\":" << tcp_loss_sample_ts_ms_ << ",";
+    json << "\"traffic_sample_ts\":" << traffic_sample_ts_ms_ << ",";
     json << "\"tcp_loss_rate\":" << std::fixed << std::setprecision(2) << tcp_loss_rate_ << ",";
     json << "\"tcp_loss_level\":\"" << weaknet_utils::escapeJsonString(tcp_loss_level_) << "\",";
     json << "\"traffic_bps\":" << traffic_total_bps_ << ",";
@@ -564,6 +569,11 @@ std::vector<uint8_t> NetInfo::toBinary() const {
     serializeString(bt_audio_quality_, buf);
     serializeInt32(band_conflict_ ? 1 : 0, buf);
     appendBytes(band_conflict_confidence_, buf);
+    appendBytes(rtt_sample_ts_ms_, buf);
+    appendBytes(rssi_sample_ts_ms_, buf);
+    appendBytes(jitter_sample_ts_ms_, buf);
+    appendBytes(tcp_loss_sample_ts_ms_, buf);
+    appendBytes(traffic_sample_ts_ms_, buf);
     return buf;
 }
 
@@ -644,6 +654,13 @@ bool NetInfo::fromBinary(const std::vector<uint8_t>& buffer) {
     if (!deserializeInt32(buffer, offset, band_conflict_val)) return false;
     tmp.band_conflict_ = (band_conflict_val != 0);
     if (!readBytes(buffer, offset, tmp.band_conflict_confidence_)) return false;
+    if (offset < buffer.size()) {
+        if (!readBytes(buffer, offset, tmp.rtt_sample_ts_ms_)) return false;
+        if (!readBytes(buffer, offset, tmp.rssi_sample_ts_ms_)) return false;
+        if (!readBytes(buffer, offset, tmp.jitter_sample_ts_ms_)) return false;
+        if (!readBytes(buffer, offset, tmp.tcp_loss_sample_ts_ms_)) return false;
+        if (!readBytes(buffer, offset, tmp.traffic_sample_ts_ms_)) return false;
+    }
 
     *this = std::move(tmp);
     return true;

@@ -42,6 +42,11 @@
 
 namespace weaknet_dbus {
 
+static int64_t metricTimestampMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
 std::vector<NetInfo> WeakNetMgr::collectCurrentInterfaces() {
     LOG_INFO(LogModule::WEAK_MGR, "collectCurrentInterfaces begin");
     std::vector<NetInfo> result;
@@ -91,8 +96,11 @@ bool WeakNetMgr::updateRttAndState(std::vector<NetInfo>& list, const std::string
         LOG_INFO(LogModule::WEAK_MGR, "updateRttAndState: calling ping for " << x.ifName());
         int r = pinger->ping(host, x.ifName(), timeoutMs);
         LOG_INFO(LogModule::WEAK_MGR, "updateRttAndState: ping returned " << r << " for " << x.ifName());
+        const bool rttChanged = x.rttMs() != r;
         x.setPrevRttMs(prev);
         x.setRttMs(r);
+        if (rttChanged) { anyChanged = true; }
+        x.setRttSampleTsMs(metricTimestampMs());
         LinkQuality q = classifyQualityFromRtt(r, prev);
         if (x.quality() != q) { x.setQuality(q); anyChanged = true; }
         // 状态根据 RTT 粗略判断（可扩展更多信号）
@@ -136,15 +144,18 @@ bool WeakNetMgr::updateWifiRssi(std::vector<NetInfo>& list, const std::string& c
         if (sample.valid) {
             x.setRssiEstimated(sample.estimated);
             x.setRssiSource(sample.source);
+            x.setRssiSampleTsMs(metricTimestampMs());
         }
         LOG_INFO(LogModule::WEAK_MGR, "updateWifiRssi: got RSSI " << rssi << " for " << x.ifName());
         // 无效值仅表示本轮未测量，不覆盖已有有效 RSSI，避免瞬时控制通道/驱动异常污染快照。
         if (rssi == -1000) {
             LOG_WARNING(LogModule::RSSI, "RSSI unavailable for " << x.ifName() << "; retaining previous value");
+            x.setRssiSampleTsMs(0);
             continue;
         }
-        if (x.rssiDbm() != rssi) {
+        if (x.rssiDbm() != rssi || x.rssiSource() != sample.source || x.rssiEstimated() != sample.estimated) {
             x.setRssiDbm(rssi);
+            x.setRssiSampleTsMs(metricTimestampMs());
             anyChanged = true;
             if (x.usingNow()) {
                 LOG_INFO(LogModule::RSSI, "using iface " << x.ifName() << " RSSI=" << rssi << " dBm");
@@ -205,15 +216,12 @@ bool WeakNetMgr::updateTcpLossRate(std::vector<NetInfo>& list,
     
     for (auto& x : list) {
         if (x.ifName() == iface_name) {
-            bool rateChanged = false, levelChanged = false;
-            if (x.tcpLossRate() != loss_rate) {
-                x.setTcpLossRate(loss_rate);
-                rateChanged = true;
-            }
-            if (x.tcpLossLevel() != loss_level) {
-                x.setTcpLossLevel(loss_level);
-                levelChanged = true;
-            }
+            const bool rateChanged = x.tcpLossRate() != loss_rate;
+            const bool levelChanged = x.tcpLossLevel() != loss_level;
+            x.setTcpLossRate(loss_rate);
+            x.setTcpLossLevel(loss_level);
+            // 时间戳表示最近一次成功采样，即使数值未变化也必须刷新。
+            x.setTcpLossSampleTsMs(metricTimestampMs());
             if (rateChanged || levelChanged) {
                 changed = true;
                 if (x.usingNow()) {
@@ -234,15 +242,12 @@ bool WeakNetMgr::updateJitter(std::vector<NetInfo>& list,
     bool changed = false;
     for (auto& x : list) {
         if (x.ifName() == iface_name) {
-            bool valueChanged = false, levelChanged = false;
-            if (x.jitterMs() != jitter_ms) {
-                x.setJitterMs(jitter_ms);
-                valueChanged = true;
-            }
-            if (x.jitterLevel() != jitter_level) {
-                x.setJitterLevel(jitter_level);
-                levelChanged = true;
-            }
+            const bool valueChanged = x.jitterMs() != jitter_ms;
+            const bool levelChanged = x.jitterLevel() != jitter_level;
+            x.setJitterMs(jitter_ms);
+            x.setJitterLevel(jitter_level);
+            // 时间戳表示最近一次成功采样，即使数值未变化也必须刷新。
+            x.setJitterSampleTsMs(metricTimestampMs());
             if (valueChanged || levelChanged) {
                 changed = true;
                 if (x.usingNow()) {
@@ -297,6 +302,7 @@ bool WeakNetMgr::updateTrafficAnalysis(std::vector<NetInfo>& list) {
             if (net.usingNow()) {
                 // 更新流量统计信息
                 net.setTrafficStats(stats.totalBps, stats.totalPps, stats.activeFlows);
+                net.setTrafficSampleTsMs(metricTimestampMs());
                 
                 // 如果有异常流量，记录日志
                 if (!anomalies.empty()) {
@@ -439,6 +445,7 @@ bool WeakNetMgr::updateTrafficAnalysisSafe() {
         for (auto& net : current_interfaces_) {
             if (net.usingNow()) {
                 net.setTrafficStats(stats.totalBps, stats.totalPps, stats.activeFlows);
+                net.setTrafficSampleTsMs(metricTimestampMs());
 
                 if (!anomalies.empty()) {
                     LOG_INFO(LogModule::WEAK_MGR, "Traffic anomalies detected on " << net.ifName()

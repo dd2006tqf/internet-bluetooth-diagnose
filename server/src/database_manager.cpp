@@ -54,6 +54,7 @@
 #include <ctime>
 #include <filesystem>
 #include <array>
+#include <map>
 #include <sys/stat.h>
 
 namespace weaknet_dbus {
@@ -110,11 +111,14 @@ static int queryCallback(void* data, int argc, char** argv, char** /*colNames*/)
 // 使用预定义列名的回调
 struct HistoryRow {
     std::string ts, iface, quality, link_quality, overall_quality, rssi_source;
-    std::string rssi_status, rtt_status, jitter_status, tcp_loss_status;
+    std::string rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status;
     std::string snapshot_ts;
     int64_t generation = 0, data_version = 1;
+    int64_t rtt_sample_ts = 0, rssi_sample_ts = 0, jitter_sample_ts = 0;
+    int64_t tcp_loss_sample_ts = 0, traffic_sample_ts = 0;
     int rtt_ms = -1, rssi_dbm = -1000, traffic_pps = 0, flows = 0;
     bool rtt_null = false, jitter_null = false, rssi_null = false, tcp_loss_null = false;
+    bool traffic_null = false;
     bool rssi_estimated = false;
     double jitter_ms = -1, tcp_loss = -1, score = 0;
     int64_t traffic_bps = 0;
@@ -138,17 +142,23 @@ static int historyQueryCallback(void* data, int argc, char** argv, char** /*colN
     if (argv[8]) row.rtt_status = argv[8];
     if (argv[9]) row.jitter_status = argv[9];
     if (argv[10]) row.tcp_loss_status = argv[10];
-    if (argv[11]) row.tcp_loss = atof(argv[11]);
-    if (argv[12]) row.quality = argv[12];
-    if (argv[13]) row.link_quality = argv[13];
-    if (argv[14]) row.overall_quality = argv[14];
-    if (argv[15]) row.score = atof(argv[15]);
-    if (argv[17]) row.traffic_bps = atoll(argv[17]);
-    if (argv[18]) row.traffic_pps = atoi(argv[18]);
-    if (argv[19]) row.flows = atoi(argv[19]);
-    if (argv[20]) row.snapshot_ts = argv[20];
-    if (argv[21]) row.generation = atoll(argv[21]);
-    if (argv[22]) row.data_version = atoll(argv[22]);
+    if (argv[11]) row.traffic_status = argv[11];
+    if (argv[12]) row.tcp_loss = atof(argv[12]);
+    if (argv[13]) row.quality = argv[13];
+    if (argv[14]) row.link_quality = argv[14];
+    if (argv[15]) row.overall_quality = argv[15];
+    if (argv[16]) row.score = atof(argv[16]);
+    if (argv[18]) row.traffic_bps = atoll(argv[18]);
+    if (argv[19]) row.traffic_pps = atoi(argv[19]);
+    if (argv[20]) row.flows = atoi(argv[20]);
+    if (argv[21]) row.snapshot_ts = argv[21];
+    if (argv[22]) row.generation = atoll(argv[22]);
+    if (argv[23]) row.data_version = atoll(argv[23]);
+    if (argv[24]) row.rtt_sample_ts = atoll(argv[24]);
+    if (argv[25]) row.rssi_sample_ts = atoll(argv[25]);
+    if (argv[26]) row.jitter_sample_ts = atoll(argv[26]);
+    if (argv[27]) row.tcp_loss_sample_ts = atoll(argv[27]);
+    if (argv[28]) row.traffic_sample_ts = atoll(argv[28]);
     ctx->rows.push_back(std::move(row));
     return 0;
 }
@@ -242,6 +252,7 @@ bool DatabaseManager::ensureSchema() {
             rtt_status TEXT DEFAULT 'unavailable',
             jitter_status TEXT DEFAULT 'unavailable',
             tcp_loss_status TEXT DEFAULT 'unavailable',
+            traffic_status TEXT DEFAULT 'unavailable',
             tcp_loss    REAL    DEFAULT -1,
             quality     TEXT    DEFAULT '',
             link_quality TEXT   DEFAULT '',
@@ -253,7 +264,13 @@ bool DatabaseManager::ensureSchema() {
             flows       INTEGER DEFAULT 0,
             snapshot_ts TEXT    DEFAULT '',
             generation  INTEGER DEFAULT 0,
-            data_version INTEGER DEFAULT 1        );
+            data_version INTEGER DEFAULT 1,
+            rtt_sample_ts INTEGER DEFAULT 0,
+            rssi_sample_ts INTEGER DEFAULT 0,
+            jitter_sample_ts INTEGER DEFAULT 0,
+            tcp_loss_sample_ts INTEGER DEFAULT 0,
+            traffic_sample_ts INTEGER DEFAULT 0
+        );
         CREATE INDEX IF NOT EXISTS idx_history_ts ON network_history(ts);
         CREATE INDEX IF NOT EXISTS idx_history_iface ON network_history(iface);
     )";
@@ -275,25 +292,34 @@ bool DatabaseManager::ensureSchema() {
            ensureColumn("rtt_status", "TEXT DEFAULT 'unavailable'") &&
            ensureColumn("jitter_status", "TEXT DEFAULT 'unavailable'") &&
            ensureColumn("tcp_loss_status", "TEXT DEFAULT 'unavailable'") &&
+           ensureColumn("traffic_status", "TEXT DEFAULT 'unavailable'") &&
            ensureColumn("link_quality", "TEXT DEFAULT ''") &&
            ensureColumn("overall_quality", "TEXT DEFAULT ''") &&
            ensureColumn("overall_score", "REAL DEFAULT 0") &&
            ensureColumn("snapshot_ts", "TEXT DEFAULT ''") &&
            ensureColumn("generation", "INTEGER DEFAULT 0") &&
-           ensureColumn("data_version", "INTEGER DEFAULT 1");
+           ensureColumn("data_version", "INTEGER DEFAULT 1") &&
+           ensureColumn("rtt_sample_ts", "INTEGER DEFAULT 0") &&
+           ensureColumn("rssi_sample_ts", "INTEGER DEFAULT 0") &&
+           ensureColumn("jitter_sample_ts", "INTEGER DEFAULT 0") &&
+           ensureColumn("tcp_loss_sample_ts", "INTEGER DEFAULT 0") &&
+           ensureColumn("traffic_sample_ts", "INTEGER DEFAULT 0");
 }
 
 bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& info,
                                       const NetworkQualityResult& overall,
-                                      uint64_t generation, int64_t snapshot_ts_ms) {
+                                      uint64_t generation, int64_t snapshot_ts_ms,
+                                      int64_t rtt_sample_ts, int64_t rssi_sample_ts,
+                                      int64_t jitter_sample_ts, int64_t tcp_loss_sample_ts,
+                                      int64_t traffic_sample_ts) {
     if (!db_) return false;
 
     std::lock_guard<std::mutex> lock(write_mutex_);
 
     // 使用参数绑定防止 SQL 注入
     const char* sql = "INSERT INTO network_history (ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, "
-                      "rssi_status, rtt_status, jitter_status, tcp_loss_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version) VALUES ("
-                      "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                      "rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts) VALUES ("
+                      "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )";
 
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -303,46 +329,84 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
     }
 
     std::string timestamp = currentTimestamp();
+
+    // stale 语义：以快照时间为基准，指标采样时间缺失(<=0)或超过 30 秒视为 stale；
+    // 陈旧指标值写 NULL，状态写 stale，避免把旧值当作当前采样。
+    const int64_t kStaleWindowMs = 30000;
+    const int64_t now = snapshot_ts_ms > 0 ? snapshot_ts_ms
+        : std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+    auto stale = [&](int64_t sample_ts) {
+        return sample_ts <= 0 || now < sample_ts || now - sample_ts > kStaleWindowMs;
+    };
+    const bool rttStale = stale(rtt_sample_ts);
+    const bool rssiStale = stale(rssi_sample_ts);
+    const bool jitterStale = stale(jitter_sample_ts);
+    const bool tcpLossStale = stale(tcp_loss_sample_ts);
+    const bool trafficStale = stale(traffic_sample_ts);
+
     std::string quality = overall.levelName;
     if (quality.empty()) quality = NetworkQualityAssessor::getQualityLevelName(overall.level);
 
     sqlite3_bind_text(stmt, 1, timestamp.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, iface.c_str(), -1, SQLITE_TRANSIENT);
-    if (info.rttMs() >= 0) sqlite3_bind_int(stmt, 3, info.rttMs());
+    if (info.rttMs() >= 0 && !rttStale) sqlite3_bind_int(stmt, 3, info.rttMs());
     else sqlite3_bind_null(stmt, 3);
-    if (info.jitterMs() >= 0) sqlite3_bind_double(stmt, 4, info.jitterMs());
+    if (info.jitterMs() >= 0 && !jitterStale) sqlite3_bind_double(stmt, 4, info.jitterMs());
     else sqlite3_bind_null(stmt, 4);
     const int rssiDbm = info.rssiDbm();
-    const bool rssiValid = rssiDbm >= -100 && rssiDbm <= 0 &&
+    const bool rssiValid = !rssiStale && rssiDbm >= -100 && rssiDbm <= 0 &&
         (!info.rssiEstimated() || rssiDbm <= -30);
     if (rssiValid) sqlite3_bind_int(stmt, 5, rssiDbm);
     else sqlite3_bind_null(stmt, 5);
     const std::string rssiSource = info.rssiSource();
-    const std::string rssiStatus = rssiValid ? "valid" : "unavailable";
-    const std::string rttStatus = info.rttMs() >= 0 ? "valid" : (info.rttMs() == -5 ? "timeout" : "unavailable");
-    const std::string jitterStatus = info.jitterMs() >= 0 ? "valid" : "unavailable";
-    const std::string tcpLossStatus = info.tcpLossRate() >= 0 ? "valid" : "unavailable";
+    const std::string rssiStatus = rssiStale ? "stale" : (rssiValid ? "valid" : "unavailable");
+    const std::string rttStatus = rttStale ? "stale"
+        : (info.rttMs() >= 0 ? "valid" : (info.rttMs() == -5 ? "timeout" : "unavailable"));
+    const std::string jitterStatus = jitterStale ? "stale"
+        : (info.jitterMs() >= 0 ? "valid" : "unavailable");
+    const std::string tcpLossStatus = tcpLossStale ? "stale"
+        : (info.tcpLossRate() >= 0 ? "valid" : "unavailable");
+    const std::string trafficStatus = trafficStale ? "stale"
+        : (info.trafficTotalBps() || info.trafficTotalPps() || info.trafficActiveFlows() ? "valid" : "unavailable");
     sqlite3_bind_text(stmt, 6, rssiSource.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 7, info.rssiEstimated() ? 1 : 0);
     sqlite3_bind_text(stmt, 8, rssiStatus.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 9, rttStatus.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 10, jitterStatus.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 11, tcpLossStatus.c_str(), -1, SQLITE_TRANSIENT);
-    if (info.tcpLossRate() >= 0) sqlite3_bind_double(stmt, 12, info.tcpLossRate());
-    else sqlite3_bind_null(stmt, 12);
-    sqlite3_bind_text(stmt, 13, quality.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 12, trafficStatus.c_str(), -1, SQLITE_TRANSIENT);
+    if (info.tcpLossRate() >= 0 && !tcpLossStale) sqlite3_bind_double(stmt, 13, info.tcpLossRate());
+    else sqlite3_bind_null(stmt, 13);
+    sqlite3_bind_text(stmt, 14, quality.c_str(), -1, SQLITE_TRANSIENT);
     const std::string linkQuality = qualityToString(info.quality());
-    sqlite3_bind_text(stmt, 14, linkQuality.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 15, quality.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_double(stmt, 16, overall.score);
+    sqlite3_bind_text(stmt, 15, linkQuality.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 16, quality.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_double(stmt, 17, overall.score);
-    sqlite3_bind_int64(stmt, 18, info.trafficTotalBps());
-    sqlite3_bind_int64(stmt, 19, info.trafficTotalPps());
-    sqlite3_bind_int(stmt, 20, info.trafficActiveFlows());
+    sqlite3_bind_double(stmt, 18, overall.score);
+    if (!trafficStale) {
+        sqlite3_bind_int64(stmt, 19, info.trafficTotalBps());
+        sqlite3_bind_int64(stmt, 20, info.trafficTotalPps());
+        sqlite3_bind_int(stmt, 21, info.trafficActiveFlows());
+    } else {
+        sqlite3_bind_null(stmt, 19);
+        sqlite3_bind_null(stmt, 20);
+        sqlite3_bind_null(stmt, 21);
+    }
     const std::string snapshotTimestamp = snapshot_ts_ms > 0 ? std::to_string(snapshot_ts_ms) : timestamp;
-    sqlite3_bind_text(stmt, 21, snapshotTimestamp.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 22, static_cast<sqlite3_int64>(generation));
-    sqlite3_bind_int(stmt, 23, 2);
+    sqlite3_bind_text(stmt, 22, snapshotTimestamp.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 23, static_cast<sqlite3_int64>(generation));
+    sqlite3_bind_int(stmt, 24, 2);
+    sqlite3_bind_int64(stmt, 25, rtt_sample_ts);
+    sqlite3_bind_int64(stmt, 26, rssi_sample_ts);
+    sqlite3_bind_int64(stmt, 27, jitter_sample_ts);
+    sqlite3_bind_int64(stmt, 28, tcp_loss_sample_ts);
+    sqlite3_bind_int64(stmt, 29, traffic_sample_ts);
+    LOG_INFO(LogModule::SYSTEM, "snapshot metadata: generation=" << generation
+             << " snapshot_ts=" << snapshot_ts_ms
+             << " rtt=" << rtt_sample_ts << " rssi=" << rssi_sample_ts
+             << " jitter=" << jitter_sample_ts << " tcp_loss=" << tcp_loss_sample_ts
+             << " traffic=" << traffic_sample_ts);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -360,7 +424,11 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
     overall.score = score;
     overall.level = NetworkQualityLevel::UNKNOWN;
     overall.levelName = "UNKNOWN";
-    return insertSnapshot(iface, info, overall, 0, 0);
+    return insertSnapshot(iface, info, overall,
+                           info.generation(), info.lastUpdatedMs(),
+                           info.rttSampleTsMs(), info.rssiSampleTsMs(),
+                           info.jitterSampleTsMs(), info.tcpLossSampleTsMs(),
+                           info.trafficSampleTsMs());
 }
 
 std::string DatabaseManager::queryHistory(const std::string& interface,
@@ -370,7 +438,7 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
     if (!db_) return "[]";
 
     // 使用参数绑定防止 SQL 注入
-    std::string sql = "SELECT ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, rssi_status, rtt_status, jitter_status, tcp_loss_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version "
+    std::string sql = "SELECT ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts "
                       "FROM network_history WHERE 1=1";
 
     std::vector<std::string> conditions;
@@ -428,22 +496,30 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
         if (jitter_status) row.jitter_status = jitter_status;
         const char* tcp_loss_status = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
         if (tcp_loss_status) row.tcp_loss_status = tcp_loss_status;
-        row.tcp_loss_null = sqlite3_column_type(stmt, 11) == SQLITE_NULL;
-        row.tcp_loss = row.tcp_loss_null ? -1 : sqlite3_column_double(stmt, 11);
-        const char* quality = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 12));
+        const char* traffic_status = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 11));
+        if (traffic_status) row.traffic_status = traffic_status;
+        row.tcp_loss_null = sqlite3_column_type(stmt, 12) == SQLITE_NULL;
+        row.tcp_loss = row.tcp_loss_null ? -1 : sqlite3_column_double(stmt, 12);
+        const char* quality = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 13));
         if (quality) row.quality = quality;
-        row.score = sqlite3_column_double(stmt, 15);
-        const char* link_quality = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 13));
+        row.score = sqlite3_column_double(stmt, 16);
+        const char* link_quality = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 14));
         if (link_quality) row.link_quality = link_quality;
-        const char* overall_quality = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 14));
+        const char* overall_quality = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 15));
         if (overall_quality) row.overall_quality = overall_quality;
-        row.traffic_bps = sqlite3_column_int64(stmt, 17);
-        row.traffic_pps = sqlite3_column_int(stmt, 18);
-        row.flows = sqlite3_column_int(stmt, 19);
-        const char* snapshot_ts = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 20));
+        row.traffic_null = sqlite3_column_type(stmt, 18) == SQLITE_NULL;
+        row.traffic_bps = row.traffic_null ? 0 : sqlite3_column_int64(stmt, 18);
+        row.traffic_pps = sqlite3_column_int(stmt, 19);
+        row.flows = sqlite3_column_int(stmt, 20);
+        const char* snapshot_ts = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 21));
         if (snapshot_ts) row.snapshot_ts = snapshot_ts;
-        row.generation = sqlite3_column_int64(stmt, 21);
-        row.data_version = sqlite3_column_int64(stmt, 22);
+        row.generation = sqlite3_column_int64(stmt, 22);
+        row.data_version = sqlite3_column_int64(stmt, 23);
+        row.rtt_sample_ts = sqlite3_column_int64(stmt, 24);
+        row.rssi_sample_ts = sqlite3_column_int64(stmt, 25);
+        row.jitter_sample_ts = sqlite3_column_int64(stmt, 26);
+        row.tcp_loss_sample_ts = sqlite3_column_int64(stmt, 27);
+        row.traffic_sample_ts = sqlite3_column_int64(stmt, 28);
         ctx.rows.push_back(std::move(row));
         rc = sqlite3_step(stmt);
     }
@@ -456,6 +532,15 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
     for (size_t i = 0; i < ctx.rows.size(); ++i) {
         const auto& row = ctx.rows[i];
         if (i > 0) json << ",";
+        std::string rssiAge = "null";
+        try {
+            const int64_t snapshotMs = std::stoll(row.snapshot_ts);
+            if (snapshotMs >= row.rssi_sample_ts && row.rssi_sample_ts > 0) {
+                rssiAge = std::to_string(snapshotMs - row.rssi_sample_ts);
+            }
+        } catch (const std::exception&) {
+            // Legacy rows use a formatted timestamp and have no reliable age.
+        }
         json << "{"
              << "\"ts\":\"" << weaknet_utils::escapeJsonString(row.ts) << "\","
              << "\"iface\":\"" << weaknet_utils::escapeJsonString(row.iface) << "\","
@@ -468,19 +553,26 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
              << "\"rtt_status\":\"" << weaknet_utils::escapeJsonString(row.rtt_status) << "\","
              << "\"jitter_status\":\"" << weaknet_utils::escapeJsonString(row.jitter_status) << "\","
              << "\"tcp_loss_status\":\"" << weaknet_utils::escapeJsonString(row.tcp_loss_status) << "\","
+             << "\"traffic_status\":\"" << weaknet_utils::escapeJsonString(row.traffic_status) << "\","
              << "\"tcp_loss\":" << (row.tcp_loss_null ? "null" : std::to_string(row.tcp_loss)) << ","
              << "\"quality\":\"" << weaknet_utils::escapeJsonString(row.quality) << "\","
              << "\"link_quality\":\"" << weaknet_utils::escapeJsonString(row.link_quality) << "\","
              << "\"overall_quality\":\"" << weaknet_utils::escapeJsonString(row.overall_quality) << "\","
              << "\"overall_score\":" << std::fixed << std::setprecision(6) << row.score << ","
              << "\"score\":" << std::fixed << std::setprecision(6) << row.score << ","
-             << "\"traffic_bps\":" << row.traffic_bps << ","
-             << "\"traffic_pps\":" << row.traffic_pps << ","
-             << "\"flows\":" << row.flows << ","
+             << "\"traffic_bps\":" << (row.traffic_null ? "null" : std::to_string(row.traffic_bps)) << ","
+             << "\"traffic_pps\":" << (row.traffic_null ? "null" : std::to_string(row.traffic_pps)) << ","
+             << "\"flows\":" << (row.traffic_null ? "null" : std::to_string(row.flows)) << ","
              << "\"snapshot_ts\":\"" << weaknet_utils::escapeJsonString(row.snapshot_ts) << "\","
              << "\"generation\":" << row.generation << ","
              << "\"data_version\":" << row.data_version << ","
-             << "\"legacy\":" << (row.data_version < 2 ? "true" : "false")
+             << "\"legacy\":" << (row.data_version < 2 ? "true" : "false") << ","
+             << "\"rtt_sample_ts\":" << row.rtt_sample_ts << ","
+             << "\"rssi_sample_ts\":" << row.rssi_sample_ts << ","
+             << "\"jitter_sample_ts\":" << row.jitter_sample_ts << ","
+             << "\"tcp_loss_sample_ts\":" << row.tcp_loss_sample_ts << ","
+             << "\"traffic_sample_ts\":" << row.traffic_sample_ts << ","
+             << "\"rssi_age_ms\":" << rssiAge
              << "}";
     }
     json << "]";
@@ -492,36 +584,52 @@ std::string DatabaseManager::getQualityReport() {
     if (!db_) return "{\"error\":\"database not open\"}";
     std::lock_guard<std::mutex> lock(write_mutex_);
     sqlite3_stmt* stmt = nullptr;
-    const char* sql =
-        "SELECT COUNT(*), "
-        "SUM(data_version < 2), "
-        "SUM(rssi_status='valid'), SUM(rssi_status='unavailable'), SUM(rssi_estimated=1), "
-        "SUM(rtt_status='valid'), SUM(rtt_status='timeout'), SUM(rtt_status='unavailable'), "
-        "SUM(jitter_status='valid'), SUM(jitter_status='unavailable'), "
-        "SUM(tcp_loss_status='valid'), SUM(tcp_loss_status='unavailable') "
-        "FROM network_history";
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return "{\"error\":\"quality report query failed\"}";
-    }
-    std::array<int64_t, 12> values{};
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        for (size_t i = 0; i < values.size(); ++i) values[i] = sqlite3_column_int64(stmt, static_cast<int>(i));
+    const char* sql = "SELECT iface, rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, rssi_estimated, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts FROM network_history ORDER BY iface";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return "{\"error\":\"quality report query failed\"}";
+    struct Stats { int64_t total = 0, legacy = 0, estimated = 0; std::map<std::string, int64_t> status[5]; int64_t zero[5] = {}; };
+    std::map<std::string, Stats> interfaces;
+    int64_t total = 0, legacy = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        if (!name) continue;
+        auto& stats = interfaces[name];
+        ++stats.total; ++total;
+        if (sqlite3_column_int64(stmt, 7) < 2) { ++stats.legacy; ++legacy; }
+        if (sqlite3_column_int(stmt, 6) != 0) ++stats.estimated;
+        for (int i = 0; i < 5; ++i) {
+            const char* status = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1 + i));
+            ++stats.status[i][status && *status ? status : "unavailable"];
+            if (sqlite3_column_int64(stmt, 8 + i) == 0) ++stats.zero[i];
+        }
     }
     sqlite3_finalize(stmt);
+    auto statuses = [](const std::map<std::string, int64_t>& counts) {
+        std::ostringstream out; out << "{"; bool first = true;
+        for (const auto& item : counts) { if (!first) out << ","; first = false; out << "\"" << item.first << "\":" << item.second; }
+        out << "}"; return out.str();
+    };
     std::ostringstream json;
-    json << "{\"total\":" << values[0]
-         << ",\"legacy_records\":" << values[1]
-         << ",\"legacy_ratio\":" << (values[0] ? static_cast<double>(values[1]) / values[0] : 0.0)
-         << ",\"rssi_valid\":" << values[2]
-         << ",\"rssi_unavailable\":" << values[3]
-         << ",\"rssi_estimated\":" << values[4]
-         << ",\"rtt_valid\":" << values[5]
-         << ",\"rtt_timeout\":" << values[6]
-         << ",\"rtt_unavailable\":" << values[7]
-         << ",\"jitter_valid\":" << values[8]
-         << ",\"jitter_unavailable\":" << values[9]
-         << ",\"tcp_loss_valid\":" << values[10]
-         << ",\"tcp_loss_unavailable\":" << values[11] << "}";
+    json << "{\"total\":" << total << ",\"legacy_records\":" << legacy
+         << ",\"legacy_ratio\":" << (total ? static_cast<double>(legacy) / total : 0.0)
+         << ",\"interfaces\":{";
+    bool first = true;
+    for (const auto& item : interfaces) {
+        if (!first) json << ",";
+        first = false;
+        const auto& name = item.first; const auto& s = item.second;
+        json << "\"" << weaknet_utils::escapeJsonString(name) << "\":{\"total\":" << s.total
+             << ",\"legacy_records\":" << s.legacy
+             << ",\"rssi_estimated_count\":" << s.estimated
+             << ",\"rssi_estimated_ratio\":" << (s.total ? static_cast<double>(s.estimated) / s.total : 0.0)
+             << ",\"status_counts\":{";
+        json << "\"rssi\":" << statuses(s.status[0]) << ",\"rtt\":" << statuses(s.status[1])
+             << ",\"jitter\":" << statuses(s.status[2]) << ",\"tcp_loss\":" << statuses(s.status[3])
+             << ",\"traffic\":" << statuses(s.status[4]) << "},\"timestamp_zero_counts\":{";
+        json << "\"rtt\":" << s.zero[1] << ",\"rssi\":" << s.zero[0]
+             << ",\"jitter\":" << s.zero[2] << ",\"tcp_loss\":" << s.zero[3]
+             << ",\"traffic\":" << s.zero[4] << "}}";
+    }
+    json << "}}";
     return json.str();
 }
 int DatabaseManager::cleanup(int retention_days) {
