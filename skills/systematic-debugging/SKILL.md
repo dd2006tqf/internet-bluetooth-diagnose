@@ -69,11 +69,11 @@ You MUST complete each phase before proceeding to the next.
    **BEFORE proposing fixes, add diagnostic instrumentation:**
    ```bash
    # For this project: check each component boundary
-   echo "=== Database state ==="
-   sqlite3 /tmp/weaknet/history.db ".tables"
+   echo "=== Database state (本地 / 开发板持久化路径) ==="
+   sqlite3 /home/radxa/weaknet/data/history.db ".tables" 2>/dev/null || sqlite3 data/history.db ".tables"
 
-   echo "=== Service logs ==="
-   journalctl -u weaknet-server --no-pager -n 50
+   echo "=== Service logs (本地日志目录与 systemd) ==="
+   tail -n 50 logs/server/*.log 2>/dev/null || journalctl -u weaknet-server --no-pager -n 50
 
    echo "=== eBPF program loaded ==="
    bpftool prog list

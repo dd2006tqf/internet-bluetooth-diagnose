@@ -60,11 +60,15 @@ Write one minimal test showing what should happen.
 **MANDATORY. Never skip.**
 
 ```bash
-# For C++/gtest projects:
-./build/server/test/test_database_manager_gtest --gtest_filter='TestName'
+# For C++/gtest projects (x86 本地编译目录为 build-x86):
+./build-x86/server/test/test_database_manager_gtest --gtest_filter='TestName'
 # Or for CTest:
-ctest --test-dir build -R "test_name"
+ctest --test-dir build-x86/server -R "test_name" --output-on-failure
 ```
+
+**Adaptation note for eBPF components:**
+- eBPF 探针程序（`*.bpf.c`）无法在 x86 裸机直接运行，必须在 ARM64 容器 `weaknet-arm64-dev` 内编译。
+- 涉及纯内核探针的 TDD，需在规划中声明 `unavailable_hardware` 或 `observability_only` 例外，严禁直接在 x86 上裸跑内核探针伪造 RED/GREEN 失败。
 
 Confirm:
 - Test fails (not errors)
@@ -87,9 +91,9 @@ Don't add features, refactor other code, or "improve" beyond the test.
 
 ```bash
 # For C++/gtest projects:
-./build/server/test/test_database_manager_gtest --gtest_filter='TestName'
+./build-x86/server/test/test_database_manager_gtest --gtest_filter='TestName'
 # Or for CTest:
-ctest --test-dir build -R "test_name"
+ctest --test-dir build-x86/server -R "test_name" --output-on-failure
 ```
 
 Confirm:

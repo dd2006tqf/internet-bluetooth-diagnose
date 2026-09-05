@@ -63,11 +63,11 @@ Subagent (general-purpose):
     - Documentation complete?
     - No obvious bugs?
 
-    **Project-specific checks:**
-    - eBPF programs load correctly?
-    - D-Bus interfaces match spec?
-    - Database schema compatible?
-    - ARM64 compilation verified?
+    **Project-specific checks (C++ / 系统级核心约束):**
+    - **内存安全与所有权**：智能指针（unique_ptr/shared_ptr）所有权是否清晰？是否存在悬垂引用（特别是 D-Bus 异步回调中的 lambda 捕获与生命周期）？
+    - **死锁与并发安全**：多线程访问共享数据（如 iface_list）是否有锁保护？锁粒度是否合理？是否存在多锁嵌套可能导致 ABBA 死锁？
+    - **系统资源与 RAII**：文件描述符、socket、D-Bus 消息对象、SQLite 句柄是否通过 RAII 严密释放？创建的 std::thread 是否有明确的 join/stop 退出路径？
+    - **内核与跨平台边界**：eBPF 程序 map 访问与 attach 探针生命周期是否受控？ARM64 与 x86 差异是否处理妥当？D-Bus 接口与配置策略是否双向对齐？
 
     ## Calibration
     Categorize issues by actual severity. Not everything is Critical.

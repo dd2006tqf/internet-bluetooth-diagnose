@@ -41,6 +41,10 @@ When in doubt between two paths, take the heavier one.
 2. Assess scope - flag if request covers multiple subsystems
 3. Ask questions one at a time
 4. Propose 2-3 different approaches with trade-offs
+   - **本项目专属方案评审维度（三道灵魂拷问）：**
+     a. **D-Bus 接口契约**：是否新增/修改 D-Bus 方法或信号？是否需要更新 `tools/com.example.WeakNet.conf` 系统总线策略？
+     b. **硬件与环境依赖**：是否依赖真实硬件/内核？x86 本地能否通过单元测试完全闭环，还是必须走 ARM64 Docker 交叉编译与 eBPF 探针？
+     c. **多线程并发安全**：新数据是否跨线程读写？是否受 `WeakNetMgr::iface_mutex_` 保护或属于 `MonitorManager` 插件生命周期管辖？
 5. Present design, ask after each section
 6. Write validated design to docs/superpowers/specs/ or OpenSpec design.md
 7. Self-review: placeholder scan, consistency, scope, ambiguity

@@ -15,7 +15,7 @@ Verify tests -> Detect environment -> Present options -> Execute choice -> Clean
 
 Run full test suite:
 ```bash
-ctest --test-dir build -R "test_net_info|test_quality|test_anomaly|test_audio|test_band|test_serializer|test_event|test_bt_full|test_bt_monitor$|test_iface|test_logger|test_traffic|test_database"
+cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server -R "test_net_info|test_quality|test_anomaly|test_audio|test_band|test_serializer|test_event|test_bt_full|test_bt_monitor$|test_iface|test_logger|test_traffic|test_database|test_weaknet_config|test_monitor" --output-on-failure
 ```
 
 If tests fail: Report failures and stop.
@@ -67,7 +67,7 @@ Which option?
 git checkout <base-branch>
 git pull
 git merge <feature-branch>
-cmake -B build && cmake --build build -j$(nproc) && ctest --test-dir build
+cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure
 ```
 If tests fail on merge: stop, leave branch/worktree in place, investigate.
 
