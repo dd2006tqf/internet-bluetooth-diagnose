@@ -408,6 +408,34 @@ bool weaknet_get_bluetooth_devices(char* buffer, size_t buffer_size, char* error
 bool weaknet_get_bluetooth_adapter(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
 
 /**
+ * @brief 获取指定蓝牙设备的音频质量与 eBPF 融合诊断 JSON
+ *
+ * 通过 D-Bus 调用 GetBluetoothAudioQuality 方法，返回 A2DP 音频状态、
+ * 有效传输速率、卡顿判定及综合质量评分。
+ *
+ * @param mac          设备 MAC 地址（传入空字符串或 NULL 则服务端自动选取首个设备）
+ * @param buffer       结果缓冲区（JSON 格式）
+ * @param buffer_size  缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size   错误信息缓冲区大小
+ * @return true 成功, false 失败
+ */
+bool weaknet_get_bluetooth_audio_quality(const char* mac, char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
+/**
+ * @brief 获取 Wi-Fi 与蓝牙 2.4GHz 共存干扰根因诊断 JSON
+ *
+ * 通过 D-Bus 调用 GetCoexistenceConflict 方法，获取当前频段冲突状态与建议。
+ *
+ * @param buffer       结果缓冲区（JSON 格式）
+ * @param buffer_size  缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size   错误信息缓冲区大小
+ * @return true 成功, false 失败
+ */
+bool weaknet_get_coexistence_conflict(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
+/**
  * @brief 订阅蓝牙设备变化事件
  *
  * 通过 D-Bus add_match 订阅 BluetoothDeviceChanged 信号。

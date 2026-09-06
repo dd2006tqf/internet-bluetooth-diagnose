@@ -41,3 +41,34 @@ TEST(BtAudioQualityTest, SetProperties) {
     EXPECT_DOUBLE_EQ(q.activeRatio, 0.95);
     EXPECT_EQ(q.issues.size(), 1u);
 }
+
+// ============================================================================
+// 测试套件：2.4GHz 共存冲突数据结构与序列化语义
+// ============================================================================
+
+#include "band_conflict_detector.hpp"
+
+TEST(BandConflictResultTest, StructFieldsAndDefaults) {
+    BandConflictResult res;
+    EXPECT_FALSE(res.detected);
+    EXPECT_DOUBLE_EQ(res.confidence, 0.0);
+    EXPECT_DOUBLE_EQ(res.correlation, 0.0);
+    EXPECT_EQ(res.wifiRssiDrop, 0);
+    EXPECT_EQ(res.btRssiDrop, 0);
+    EXPECT_EQ(res.wifiBand, "2.4GHz");
+    EXPECT_FALSE(res.btAudioActive);
+
+    res.detected = true;
+    res.confidence = 88.0;
+    res.wifiIface = "wlan0";
+    res.btMac = "AA:BB:CC:DD:EE:FF";
+    res.btAudioActive = true;
+    res.suggestion = "Switch Wi-Fi to 5GHz";
+
+    EXPECT_TRUE(res.detected);
+    EXPECT_DOUBLE_EQ(res.confidence, 88.0);
+    EXPECT_EQ(res.wifiIface, "wlan0");
+    EXPECT_EQ(res.btMac, "AA:BB:CC:DD:EE:FF");
+    EXPECT_TRUE(res.btAudioActive);
+}
+

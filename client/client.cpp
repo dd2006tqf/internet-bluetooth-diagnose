@@ -734,6 +734,47 @@ public:
         return true;
     }
 
+    /** @brief 调用 GetBluetoothAudioQuality 获取蓝牙音频质量与 eBPF 融合诊断 JSON */
+    bool getBluetoothAudioQuality(const std::string& mac, std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+
+        DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodGetBluetoothAudioQuality);
+        if (!msg) return fail("创建蓝牙音频质量查询消息失败", errorMsg);
+
+        const char* macStr = mac.c_str();
+        DBusMessageIter args;
+        dbus_message_iter_init_append(msg, &args);
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &macStr);
+
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 3000, &err);
+        dbus_message_unref(msg);
+
+        if (dbus_error_is_set(&err)) {
+            errorMsg = std::string("蓝牙音频质量查询失败: ") + err.message;
+            dbus_error_free(&err);
+            return false;
+        }
+        if (!reply) return fail("未收到蓝牙音频质量应答", errorMsg);
+
+        const char* respStr = nullptr;
+        if (!dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &respStr, DBUS_TYPE_INVALID)) {
+            errorMsg = "解析蓝牙音频质量结果失败";
+            dbus_message_unref(reply);
+            return false;
+        }
+        result = respStr ? respStr : "";
+        dbus_message_unref(reply);
+        return true;
+    }
+
+    /** @brief 调用 GetCoexistenceConflict 获取 Wi-Fi 与蓝牙共存冲突诊断 JSON */
+    bool getCoexistenceConflict(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        return requestStringData(kMethodGetCoexistenceConflict, "共存冲突诊断", result, errorMsg);
+    }
+
     /** @brief 调用 GetDnsStats 获取 DNS eBPF 监控统计 */
     bool getDnsStats(std::string& result, std::string& errorMsg) {
         if (!isConnected()) return fail("客户端未连接", errorMsg);
@@ -1404,6 +1445,41 @@ extern "C" bool weaknet_get_bluetooth_adapter(char* buffer, size_t buffer_size, 
     }
     std::string result, errorMsg;
     if (weaknet_dbus::g_client->getBluetoothAdapter(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    } else {
+        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+        return false;
+    }
+}
+
+/** @brief C 接口包装：调用 GetBluetoothAudioQuality 方法 */
+extern "C" bool weaknet_get_bluetooth_audio_quality(const char* mac, char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    std::string macStr = mac ? mac : "";
+    if (weaknet_dbus::g_client->getBluetoothAudioQuality(macStr, result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    } else {
+        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+        return false;
+    }
+}
+
+/** @brief C 接口包装：调用 GetCoexistenceConflict 方法 */
+extern "C" bool weaknet_get_coexistence_conflict(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getCoexistenceConflict(result, errorMsg)) {
         snprintf(buffer, buffer_size, "%s", result.c_str());
         return true;
     } else {

@@ -801,6 +801,27 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
             return false;
         }
     }
+    // ===== bt-audio =====
+    // D-Bus Method: GetBluetoothAudioQuality → JSON
+    else if (command == "bt-audio") {
+        std::string mac = (argc >= 3) ? argv[2] : "";
+        if (weaknet_get_bluetooth_audio_quality(mac.empty() ? nullptr : mac.c_str(), buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ 蓝牙音频质量与 eBPF 融合诊断:\n%s\n", buffer);
+        } else {
+            printf("❌ 获取蓝牙音频质量失败: %s\n", error);
+            return false;
+        }
+    }
+    // ===== coexistence =====
+    // D-Bus Method: GetCoexistenceConflict → JSON
+    else if (command == "coexistence") {
+        if (weaknet_get_coexistence_conflict(buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ Wi-Fi 与蓝牙 2.4GHz 共存诊断:\n%s\n", buffer);
+        } else {
+            printf("❌ 获取共存诊断失败: %s\n", error);
+            return false;
+        }
+    }
     // ===== bt-events =====
     // 订阅 BluetoothDeviceChanged 信号后持续监听（最多 60 秒）
     else if (command == "bt-events") {
@@ -952,6 +973,8 @@ int main(int argc, char* argv[]) {
         printf("\n蓝牙功能:\n");
         printf("  %s bt-devices             - 获取蓝牙设备列表\n", argv[0]);
         printf("  %s bt-adapter             - 获取蓝牙适配器信息\n", argv[0]);
+        printf("  %s bt-audio [MAC]         - 获取蓝牙音频质量与 eBPF 融合诊断\n", argv[0]);
+        printf("  %s coexistence            - 获取 Wi-Fi 与蓝牙 2.4GHz 共存诊断\n", argv[0]);
         printf("  %s bt-events              - 持续监听蓝牙设备变化\n", argv[0]);
         printf("\n测试模式:\n");
         printf("  %s test-basic             - 基础功能测试\n", argv[0]);

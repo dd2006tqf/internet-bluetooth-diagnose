@@ -39,6 +39,7 @@
 #include "net_ping.h"
 #include "bt_monitor.hpp"
 #include "bt_audio_analyzer.hpp"
+#include "bt_audio_fusion.hpp"
 #include "dns_monitor.hpp"
 #include "wifi_packet_loss_monitor.hpp"
 #include "http_latency_monitor.hpp"
@@ -95,6 +96,14 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetBluetoothAdapter)) {
         self->handleGetBluetoothAdapter(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetBluetoothAudioQuality)) {
+        self->handleGetBluetoothAudioQuality(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetCoexistenceConflict)) {
+        self->handleGetCoexistenceConflict(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetDnsStats)) {
@@ -626,6 +635,118 @@ bool DbusService::handleGetBluetoothAdapter(DBusConnection* conn, DBusMessage* m
     DBusMessageIter args;
     dbus_message_iter_init_append(reply, &args);
     const char* s = result.c_str();
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+/**
+ * @brief DBus 方法实现：GetBluetoothAudioQuality —— 返回指定设备音频质量与 eBPF 融合诊断 JSON
+ * @param conn DBus 连接
+ * @param msg  接收到的方法调用消息（可选参数 string: macAddress）
+ */
+bool DbusService::handleGetBluetoothAudioQuality(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetBluetoothAudioQuality called");
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    std::string targetMac;
+    DBusError err;
+    dbus_error_init(&err);
+    const char* reqMac = nullptr;
+    if (dbus_message_get_args(msg, &err, DBUS_TYPE_STRING, &reqMac, DBUS_TYPE_INVALID)) {
+        if (reqMac) targetMac = reqMac;
+    } else {
+        dbus_error_free(&err);
+    }
+
+    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
+    std::string jsonResult;
+
+    if (!monitor || !monitor->isInitialized()) {
+        jsonResult = "{\"error\":\"Bluetooth monitor not available or uninitialized\",\"mac\":\"" + targetMac + "\"}";
+    } else {
+        // 如果未指定 targetMac，则尝试寻找第一个已连接设备或已有的 transport 设备
+        if (targetMac.empty()) {
+            auto transports = monitor->getAudioTransports();
+            if (!transports.empty()) {
+                targetMac = transports.front().deviceMac;
+            } else {
+                auto connected = monitor->getConnectedDevices();
+                if (!connected.empty()) {
+                    targetMac = connected.front().macAddress;
+                }
+            }
+        }
+
+        if (targetMac.empty()) {
+            jsonResult = "{\"error\":\"No active Bluetooth device specified or found\",\"mac\":\"\"}";
+        } else {
+            BtAudioFusionResult fusion;
+            bool found = monitor->getAudioFusionResult(targetMac, &fusion);
+            if (!found) {
+                // 如果无 transport，仍尝试获取设备基本信息
+                BtDeviceInfo devInfo;
+                bool devFound = monitor->getDevice(targetMac, &devInfo);
+                jsonResult = "{\"mac\":\"" + targetMac + "\","
+                             "\"name\":\"" + (devFound ? (devInfo.name.empty() ? devInfo.alias : devInfo.name) : "unknown") + "\","
+                             "\"connected\":" + (devFound && devInfo.connected ? "true" : "false") + ","
+                             "\"audio_transport_active\":false,"
+                             "\"quality_score\":0.0,"
+                             "\"quality_level\":\"unknown\","
+                             "\"diagnostic\":\"No A2DP media transport detected for this device\"}";
+            } else {
+                std::ostringstream oss;
+                oss << "{"
+                    << "\"mac\":\"" << fusion.deviceMac << "\","
+                    << "\"active\":" << (fusion.isActive ? "true" : "false") << ","
+                    << "\"effective_active\":" << (fusion.effectiveActive ? "true" : "false") << ","
+                    << "\"suspected_stall\":" << (fusion.suspectedStall ? "true" : "false") << ","
+                    << "\"quality_score\":" << fusion.qualityScore << ","
+                    << "\"quality_level\":\"" << fusion.level << "\","
+                    << "\"active_ratio\":" << fusion.activeRatio << ","
+                    << "\"ebpf_correction\":" << fusion.ebpfCorrection << ","
+                    << "\"bytes_per_sec\":" << fusion.bytesPerSec << ","
+                    << "\"max_gap_ms\":" << fusion.maxGapMs << ","
+                    << "\"ebpf_available\":" << (fusion.ebpfAvailable ? "true" : "false") << ","
+                    << "\"diagnostic\":\"" << fusion.diagnostic << "\""
+                    << "}";
+                jsonResult = oss.str();
+            }
+        }
+    }
+
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = jsonResult.c_str();
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+/**
+ * @brief DBus 方法实现：GetCoexistenceConflict —— 返回 Wi-Fi 与蓝牙 2.4GHz 冲突诊断 JSON
+ */
+bool DbusService::handleGetCoexistenceConflict(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetCoexistenceConflict called");
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    std::string jsonResult;
+    if (ctx_) {
+        std::lock_guard<std::mutex> lock(ctx_->conflict_mutex);
+        jsonResult = ctx_->latest_conflict_json;
+    } else {
+        jsonResult = "{\"detected\":false,\"confidence\":0.0,\"reason\":\"Server context not available\"}";
+    }
+
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = jsonResult.c_str();
     dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
     dbus_connection_send(conn, reply, nullptr);
     dbus_connection_flush(conn);

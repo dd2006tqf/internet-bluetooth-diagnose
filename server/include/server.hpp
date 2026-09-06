@@ -104,6 +104,10 @@ struct ServerContext {
     std::atomic<bool> tcp_retrans_stop{false};
     std::atomic<bool> tcp_conn_stop{false};
 
+    // ---------- 频段冲突检测快照 ----------
+    std::mutex conflict_mutex;
+    std::string latest_conflict_json = "{\"detected\":false,\"confidence\":0.0,\"reason\":\"No 2.4GHz coexistence conflict detected\"}";
+
     // ---------- 运行时配置 ----------
     WeakNetConfig cfg;                          ///< 线程安全配置（启动时构建一次，此后通过 D-Bus 运行时调参）
 

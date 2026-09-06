@@ -38,6 +38,10 @@ struct BandConflictResult {
     double correlation = 0.0;       ///< Pearson 相关系数 [-1.0, 1.0]
     int wifiRssiDrop = 0;           ///< Wi-Fi RSSI 降幅 (dBm)，非负值
     int btRssiDrop = 0;             ///< 蓝牙 RSSI 降幅 (dBm)，非负值
+    std::string wifiIface;          ///< Wi-Fi 接口名（如 "wlan0"）
+    std::string wifiBand = "2.4GHz";///< Wi-Fi 频段（"2.4GHz" / "5GHz" / "Unknown"）
+    std::string btMac;              ///< 关联的蓝牙设备 MAC
+    bool btAudioActive = false;     ///< 是否伴随活跃蓝牙音频流
     std::string suggestion;         ///< 处置建议（如 "切换 Wi-Fi 到 5GHz"）
     std::chrono::system_clock::time_point timestamp;  ///< 检测时间戳
 };

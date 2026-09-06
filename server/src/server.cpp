@@ -420,6 +420,24 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                 }
 
                 auto conflictResult = conflictDetector.detect();
+                {
+                    std::lock_guard<std::mutex> lock(ctx->conflict_mutex);
+                    std::ostringstream oss;
+                    oss << "{"
+                        << "\"detected\":" << (conflictResult.detected ? "true" : "false") << ","
+                        << "\"confidence\":" << conflictResult.confidence << ","
+                        << "\"correlation\":" << conflictResult.correlation << ","
+                        << "\"wifi_rssi_drop\":" << conflictResult.wifiRssiDrop << ","
+                        << "\"bt_rssi_drop\":" << conflictResult.btRssiDrop << ","
+                        << "\"wifi_iface\":\"" << conflictResult.wifiIface << "\","
+                        << "\"wifi_band\":\"" << conflictResult.wifiBand << "\","
+                        << "\"bt_mac\":\"" << conflictResult.btMac << "\","
+                        << "\"bt_audio_active\":" << (conflictResult.btAudioActive ? "true" : "false") << ","
+                        << "\"suggestion\":\"" << conflictResult.suggestion << "\""
+                        << "}";
+                    ctx->latest_conflict_json = oss.str();
+                }
+
                 if (conflictResult.detected && conflictResult.confidence > 50.0) {
                     LOG_INFO(LogModule::WEAK_MGR,
                              "2.4GHz band conflict detected: confidence="

@@ -3,6 +3,7 @@
 // Tests: DNS monitor data structures and configuration
 
 #include <gtest/gtest.h>
+#include <chrono>
 #include "net_info.hpp"
 #include "network_quality_assessor.hpp"
 
@@ -24,6 +25,10 @@ protected:
         info.setState(NetState::Up);
         info.setType(NetType::WiFi);
         info.setDefaultRoute(true);
+        info.setUsingNow(true);
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        info.setMetricSampleTimes(now, now, now, now, now);
         return info;
     }
 };

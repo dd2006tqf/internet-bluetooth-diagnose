@@ -6,6 +6,7 @@
 // so we test the underlying NetInfo data structure and static utility functions.
 
 #include <gtest/gtest.h>
+#include <chrono>
 #include "net_info.hpp"
 
 using namespace weaknet_dbus;
@@ -274,6 +275,10 @@ TEST(NetworkQualityCrossTest, PerfectConditions) {
     info.setTcpLossRate(0.0);
     info.setRssiDbm(-40);
     info.setTrafficStats(5000000, 1000, 20);
+    info.setUsingNow(true);
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    info.setMetricSampleTimes(now, now, now, now, now);
 
     auto result = assessor.assessInterfaceQuality(info);
     EXPECT_EQ(result.level, NetworkQualityLevel::EXCELLENT);

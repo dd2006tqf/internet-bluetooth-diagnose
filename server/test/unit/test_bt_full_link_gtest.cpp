@@ -28,6 +28,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <dbus/dbus.h>
 
 // Test counter recorder (defined in mock_dbus_service.cpp) to verify D-Bus emit path
 namespace weaknet_dbus::test_recorder {
