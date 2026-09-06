@@ -349,16 +349,19 @@ bool BtMonitor::initialize() {
     // 刷新适配器状态
     refreshAdapterState();
 
-    // 添加 PropertiesChanged 信号匹配规则，用于实时接收设备属性变化
+    // 添加 BlueZ 信号匹配规则，用于实时接收设备增删与属性变化
     {
-        std::string matchRule = std::string("type='signal',sender='")
-            + BLUEZ_SERVICE + "',interface='" + DBUS_PROPS_IFACE
-            + "',member='PropertiesChanged'";
-        dbus_bus_add_match(sysConn_, matchRule.c_str(), &err);
-        if (dbus_error_is_set(&err)) {
-            LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: warning - failed to add signal match: " << err.message);
-            dbus_error_free(&err);
-            // 非致命，继续
+        const char* rules[] = {
+            "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
+            "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager',member='InterfacesAdded'",
+            "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager',member='InterfacesRemoved'"
+        };
+        for (const char* rule : rules) {
+            dbus_bus_add_match(sysConn_, rule, &err);
+            if (dbus_error_is_set(&err)) {
+                LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: warning - failed to add signal match (" << rule << "): " << err.message);
+                dbus_error_free(&err);
+            }
         }
     }
 
@@ -692,6 +695,172 @@ BtDeviceInfo BtMonitor::parseDeviceProperties(DBusConnection* conn,
 // ============================================================================
 // 设备状态刷新 (核心轮询逻辑)
 // ============================================================================
+
+// ============================================================================
+// 信号处理 (D-Bus 事件驱动增量更新)
+// ============================================================================
+
+void BtMonitor::processPendingSignals() {
+    if (!sysConn_) return;
+
+    // 读取总线上的未处理消息并分发
+    dbus_connection_read_write(sysConn_, 0);
+
+    while (DBusMessage* msg = dbus_connection_pop_message(sysConn_)) {
+        if (dbus_message_get_type(msg) == DBUS_MESSAGE_TYPE_SIGNAL) {
+            const char* iface = dbus_message_get_interface(msg);
+            const char* member = dbus_message_get_member(msg);
+            const char* path = dbus_message_get_path(msg);
+
+            if (iface && member) {
+                // 1. 属性变更 PropertiesChanged
+                if (std::strcmp(iface, DBUS_PROPS_IFACE) == 0 &&
+                    std::strcmp(member, "PropertiesChanged") == 0) {
+                    DBusMessageIter iter;
+                    if (dbus_message_iter_init(msg, &iter)) {
+                        const char* targetIface = nullptr;
+                        if (dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_STRING) {
+                            dbus_message_iter_get_basic(&iter, &targetIface);
+                            dbus_message_iter_next(&iter);
+                        }
+
+                        if (targetIface && std::strcmp(targetIface, BLUEZ_DEVICE_IFACE) == 0) {
+                            // 设备属性变更：解析 changed_properties 字典
+                            if (dbus_message_iter_get_arg_type(&iter) == DBUS_TYPE_ARRAY) {
+                                DBusMessageIter dictIter;
+                                dbus_message_iter_recurse(&iter, &dictIter);
+
+                                int16_t newRssi = -1000;
+                                bool hasNewRssi = false;
+                                bool newConnected = false;
+                                bool hasNewConnected = false;
+                                std::string newName;
+
+                                while (dbus_message_iter_get_arg_type(&dictIter) == DBUS_TYPE_DICT_ENTRY) {
+                                    DBusMessageIter entryIter;
+                                    dbus_message_iter_recurse(&dictIter, &entryIter);
+                                    const char* key = nullptr;
+                                    dbus_message_iter_get_basic(&entryIter, &key);
+                                    dbus_message_iter_next(&entryIter);
+
+                                    if (key) {
+                                        if (std::strcmp(key, "RSSI") == 0) {
+                                            if (extractInt16FromIter(&entryIter, &newRssi)) hasNewRssi = true;
+                                        } else if (std::strcmp(key, "Connected") == 0) {
+                                            if (extractBoolFromIter(&entryIter, &newConnected)) hasNewConnected = true;
+                                        } else if (std::strcmp(key, "Name") == 0 || std::strcmp(key, "Alias") == 0) {
+                                            extractStringFromIter(&entryIter, &newName);
+                                        }
+                                    }
+                                    dbus_message_iter_next(&dictIter);
+                                }
+
+                                // 根据 path 查找或更新对应设备
+                                if (path) {
+                                    std::lock_guard<std::mutex> lock(deviceMutex_);
+                                    for (auto& [mac, dev] : devices_) {
+                                        // 简单比对路径尾部特征或 MAC 转换
+                                        std::string expectedPath = "/dev_" + mac;
+                                        std::replace(expectedPath.begin(), expectedPath.end(), ':', '_');
+                                        if (std::string(path).find(expectedPath) != std::string::npos) {
+                                            auto now = std::chrono::system_clock::now();
+                                            dev.lastUpdated = now;
+                                            dev.lastSeen = now;
+                                            if (!newName.empty()) dev.name = newName;
+
+                                            if (hasNewConnected && dev.connected != newConnected) {
+                                                dev.connected = newConnected;
+                                                BtEvent ev;
+                                                ev.type = newConnected ? BtEvent::Type::DeviceConnected : BtEvent::Type::DeviceDisconnected;
+                                                ev.adapterMac = adapterState_.macAddress;
+                                                ev.deviceMac = dev.macAddress;
+                                                ev.deviceName = dev.name.empty() ? dev.alias : dev.name;
+                                                ev.message = (newConnected ? "Device connected (signal): " : "Device disconnected (signal): ") + ev.deviceName;
+                                                ev.timestamp = now;
+                                                {
+                                                    std::lock_guard<std::mutex> evLock(eventMutex_);
+                                                    pendingEvents_.push_back(ev);
+                                                }
+                                            }
+
+                                            if (hasNewRssi && newRssi != 0 && newRssi > -1000) {
+                                                dev.rssiDbm = newRssi;
+                                                dev.rssiHistory.push_back(newRssi);
+                                                if (dev.rssiHistory.size() > BtDeviceInfo::MAX_RSSI_HISTORY) {
+                                                    dev.rssiHistory.erase(dev.rssiHistory.begin());
+                                                }
+                                                dev.estimatedDistance = estimateDistance(newRssi);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else if (targetIface && std::strcmp(targetIface, BLUEZ_ADAPTER_IFACE) == 0) {
+                            refreshAdapterState();
+                        } else if (targetIface && std::strcmp(targetIface, BLUEZ_MEDIA_TRANSPORT_IFACE) == 0) {
+                            refreshAudioTransports();
+                        }
+                    }
+                }
+                // 2. 接口添加 InterfacesAdded (发现新设备)
+                else if (std::strcmp(iface, DBUS_OBJMGR_IFACE) == 0 &&
+                         std::strcmp(member, "InterfacesAdded") == 0) {
+                    if (path) {
+                        BtDeviceInfo dev = parseDeviceProperties(sysConn_, path);
+                        if (!dev.macAddress.empty()) {
+                            auto now = std::chrono::system_clock::now();
+                            std::lock_guard<std::mutex> lock(deviceMutex_);
+                            dev.lastSeen = now;
+                            dev.lastUpdated = now;
+                            devices_[dev.macAddress] = dev;
+
+                            BtEvent ev;
+                            ev.type = BtEvent::Type::DeviceFound;
+                            ev.adapterMac = adapterState_.macAddress;
+                            ev.deviceMac = dev.macAddress;
+                            ev.deviceName = dev.name.empty() ? dev.alias : dev.name;
+                            ev.rssiDbm = dev.rssiDbm;
+                            ev.message = "New device found (signal): " + ev.deviceName + " (" + dev.macAddress + ")";
+                            ev.timestamp = now;
+                            {
+                                std::lock_guard<std::mutex> evLock(eventMutex_);
+                                pendingEvents_.push_back(ev);
+                            }
+                        }
+                    }
+                }
+                // 3. 接口移除 InterfacesRemoved (设备离开)
+                else if (std::strcmp(iface, DBUS_OBJMGR_IFACE) == 0 &&
+                         std::strcmp(member, "InterfacesRemoved") == 0) {
+                    if (path) {
+                        std::lock_guard<std::mutex> lock(deviceMutex_);
+                        for (auto it = devices_.begin(); it != devices_.end(); ++it) {
+                            std::string expectedPath = "/dev_" + it->first;
+                            std::replace(expectedPath.begin(), expectedPath.end(), ':', '_');
+                            if (std::string(path).find(expectedPath) != std::string::npos) {
+                                BtEvent ev;
+                                ev.type = BtEvent::Type::DeviceLost;
+                                ev.adapterMac = adapterState_.macAddress;
+                                ev.deviceMac = it->second.macAddress;
+                                ev.deviceName = it->second.name.empty() ? it->second.alias : it->second.name;
+                                ev.message = "Device lost (signal): " + ev.deviceName + " (" + it->second.macAddress + ")";
+                                ev.timestamp = std::chrono::system_clock::now();
+                                {
+                                    std::lock_guard<std::mutex> evLock(eventMutex_);
+                                    pendingEvents_.push_back(ev);
+                                }
+                                devices_.erase(it);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        dbus_message_unref(msg);
+    }
+}
 
 /**
  * @brief 核心轮询函数：枚举所有已知设备、更新 RSSI/连接状态/距离估算、检测新设备/离站
@@ -1204,7 +1373,7 @@ void start_bt_monitor_thread(ServerContext* ctx, std::thread* worker, BtMonitor*
             monitor->refreshAdapterState();
 
             if (monitor->hasAdapter()) {
-                // 刷新设备状态 (核心操作)
+                // 周期刷新设备状态与 A2DP 音频状态
                 monitor->refreshDeviceStates();
 
                 // 获取事件并转发到 EventManager

@@ -87,6 +87,34 @@ public:
                              int limit = 100);
 
     /**
+     * @brief 写入蓝牙与音频时序快照
+     */
+    bool insertBtSnapshot(const std::string& adapter_mac,
+                          const std::string& device_mac,
+                          const std::string& device_name,
+                          bool connected,
+                          int16_t rssi_dbm,
+                          double distance_m,
+                          bool audio_active,
+                          double quality_score,
+                          bool suspected_stall,
+                          uint64_t bytes_per_sec = 0,
+                          uint64_t max_gap_ms = 0);
+
+    /**
+     * @brief 查询蓝牙历史时序数据，返回 JSON 数组字符串
+     * @param device_mac 设备 MAC 过滤，"" 表示所有设备
+     * @param start      起始时间（ISO 8601），"" 表示不限
+     * @param end        结束时间（ISO 8601），"" 表示不限
+     * @param limit      最大行数
+     * @return JSON 数组字符串
+     */
+    std::string queryBtHistory(const std::string& device_mac,
+                               const std::string& start,
+                               const std::string& end,
+                               int limit = 100);
+
+    /**
      * @brief 清理过期快照
      * @param retention_days 保留天数（默认 7）
      * @return 删除行数，失败返回 -1

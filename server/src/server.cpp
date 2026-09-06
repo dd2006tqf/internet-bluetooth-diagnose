@@ -687,6 +687,37 @@ void start_history_persistence_thread(ServerContext* ctx) {
                 LOG_INFO(LogModule::SYSTEM, "History persistence: wrote " << written << " records");
             }
 
+            // 持久化蓝牙设备与音频质量快照
+            if (ctx->bt_monitor && ctx->bt_monitor->isInitialized()) {
+                auto adapter = ctx->bt_monitor->getAdapterState();
+                auto devices = ctx->bt_monitor->getDevices();
+                int bt_written = 0;
+                for (const auto& dev : devices) {
+                    // 仅记录已连接设备，或信号较强/活跃设备，避免周围瞬态广播垃圾数据占满 DB
+                    if (dev.connected || dev.rssiDbm > -75) {
+                        BtAudioFusionResult fusion;
+                        bool hasAudio = ctx->bt_monitor->getAudioFusionResult(dev.macAddress, &fusion);
+                        if (ctx->db_mgr->insertBtSnapshot(
+                                adapter.macAddress,
+                                dev.macAddress,
+                                dev.name.empty() ? dev.alias : dev.name,
+                                dev.connected,
+                                dev.rssiDbm,
+                                dev.estimatedDistance,
+                                hasAudio && fusion.isActive,
+                                hasAudio ? fusion.qualityScore : 0.0,
+                                hasAudio && fusion.suspectedStall,
+                                hasAudio ? fusion.bytesPerSec : 0,
+                                hasAudio ? fusion.maxGapMs : 0)) {
+                            bt_written++;
+                        }
+                    }
+                }
+                if (bt_written > 0) {
+                    LOG_INFO(LogModule::SYSTEM, "History persistence: wrote " << bt_written << " Bluetooth records");
+                }
+            }
+
             // 每天清理一次过期日志文件
             auto now = std::chrono::steady_clock::now();
             static auto last_log_cleanup = std::chrono::steady_clock::now();

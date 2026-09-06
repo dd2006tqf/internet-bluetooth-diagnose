@@ -226,3 +226,29 @@ TEST_F(DatabaseManagerTest, GetDbInfo) {
     EXPECT_NE(dbInfo.find("\"earliest\""), std::string::npos);
     EXPECT_NE(dbInfo.find("\"latest\""), std::string::npos);
 }
+
+TEST_F(DatabaseManagerTest, InsertAndQueryBtSnapshot) {
+    DatabaseManager db(dbPath_);
+    ASSERT_TRUE(db.isOpen());
+
+    bool ok1 = db.insertBtSnapshot("9C:04:B6:84:0B:57", "AA:BB:CC:11:22:33", "MyHeadset",
+                                   true, -55, 1.2, true, 88.5, false, 42000, 35);
+    EXPECT_TRUE(ok1);
+
+    bool ok2 = db.insertBtSnapshot("9C:04:B6:84:0B:57", "AA:BB:CC:44:55:66", "OtherPhone",
+                                   false, -80, 5.4, false, 0.0, false, 0, 0);
+    EXPECT_TRUE(ok2);
+
+    // 查询所有蓝牙设备
+    std::string allRes = db.queryBtHistory("", "", "", 10);
+    EXPECT_NE(allRes.find("AA:BB:CC:11:22:33"), std::string::npos);
+    EXPECT_NE(allRes.find("AA:BB:CC:44:55:66"), std::string::npos);
+    EXPECT_NE(allRes.find("\"quality_score\":88.5"), std::string::npos);
+    EXPECT_NE(allRes.find("\"audio_active\":true"), std::string::npos);
+
+    // 按设备 MAC 单独过滤
+    std::string singleRes = db.queryBtHistory("AA:BB:CC:11:22:33", "", "", 10);
+    EXPECT_NE(singleRes.find("MyHeadset"), std::string::npos);
+    EXPECT_EQ(singleRes.find("OtherPhone"), std::string::npos);
+}
+

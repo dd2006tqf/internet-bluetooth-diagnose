@@ -68,6 +68,7 @@ static void printUsage() {
               << "\n"
               << "用法:\n"
               << "  --iface <name>       指定网卡 (默认: wlan0)\n"
+              << "  --bt [MAC]           查询蓝牙历史时序 (可指定设备 MAC 地址)\n"
               << "  --last <duration>    查询最近时间 (1h/30m/7d)\n"
               << "  --start <timestamp>  起始时间 (ISO 8601)\n"
               << "  --end <timestamp>    结束时间 (ISO 8601)\n"
@@ -79,6 +80,8 @@ static void printUsage() {
               << "\n"
               << "示例:\n"
               << "  ./history_query_tool --iface wlan0 --last 1h\n"
+              << "  ./history_query_tool --bt --last 1h\n"
+              << "  ./history_query_tool --bt AA:BB:CC:DD:EE:FF\n"
               << "  ./history_query_tool --all --last 30m\n"
               << "  ./history_query_tool --info\n"
               << "  ./history_query_tool --cleanup 7\n";
@@ -86,6 +89,8 @@ static void printUsage() {
 
 int main(int argc, char* argv[]) {
     std::string iface = "wlan0";
+    std::string bt_mac;
+    bool query_bt = false;
     std::string start_time, end_time, last;
     int limit = 100;
     bool show_info = false;
@@ -96,6 +101,11 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--iface") == 0 && i + 1 < argc) {
             iface = argv[++i];
+        } else if (strcmp(argv[i], "--bt") == 0) {
+            query_bt = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                bt_mac = argv[++i];
+            }
         } else if (strcmp(argv[i], "--last") == 0 && i + 1 < argc) {
             last = argv[++i];
         } else if (strcmp(argv[i], "--start") == 0 && i + 1 < argc) {
@@ -152,6 +162,20 @@ int main(int argc, char* argv[]) {
     // 解析 --last 参数
     if (!last.empty() && start_time.empty()) {
         start_time = parseLastTime(last);
+    }
+
+    if (query_bt) {
+        std::string result = db.queryBtHistory(bt_mac, start_time, end_time, limit);
+        if (json_output) {
+            std::cout << result << "\n";
+            return 0;
+        }
+        if (result == "[]" || result.empty()) {
+            std::cout << "没有查询到蓝牙历史数据\n";
+            return 0;
+        }
+        std::cout << "蓝牙历史监控数据 (JSON):\n" << result << "\n";
+        return 0;
     }
 
     // 查询数据

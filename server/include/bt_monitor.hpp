@@ -370,7 +370,10 @@ public:
     /// eBPF 融合层是否可用（至少一个挂点成功）
     bool isPhase2Available() const;
 
-    // ----- 周期刷新 (由工作线程调用) -----
+    // ----- 信号处理与周期刷新 (由工作线程调用) -----
+
+    /// 处理来自 BlueZ 的挂起信号（InterfacesAdded / InterfacesRemoved / PropertiesChanged）
+    void processPendingSignals();
 
     /// 执行一轮设备状态刷新：listDevicePaths → 逐设备 parseDeviceProperties
     void refreshDeviceStates();

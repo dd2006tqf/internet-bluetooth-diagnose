@@ -273,6 +273,24 @@ bool DatabaseManager::ensureSchema() {
         );
         CREATE INDEX IF NOT EXISTS idx_history_ts ON network_history(ts);
         CREATE INDEX IF NOT EXISTS idx_history_iface ON network_history(iface);
+
+        CREATE TABLE IF NOT EXISTS bt_history (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts                 TEXT    NOT NULL,
+            adapter_mac        TEXT    DEFAULT '',
+            device_mac         TEXT    NOT NULL,
+            device_name        TEXT    DEFAULT '',
+            connected          INTEGER DEFAULT 0,
+            rssi_dbm           REAL    DEFAULT -1000,
+            distance_m         REAL    DEFAULT -1.0,
+            audio_active       INTEGER DEFAULT 0,
+            quality_score      REAL    DEFAULT 0,
+            suspected_stall    INTEGER DEFAULT 0,
+            bytes_per_sec      INTEGER DEFAULT 0,
+            max_gap_ms         INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_bt_history_ts ON bt_history(ts);
+        CREATE INDEX IF NOT EXISTS idx_bt_history_dev ON bt_history(device_mac);
     )";
     if (!exec(schema)) return false;
 
@@ -654,7 +672,159 @@ int DatabaseManager::cleanup(int retention_days) {
     if (deleted > 0) {
         LOG_INFO(LogModule::SYSTEM, "DatabaseManager::cleanup deleted " << deleted << " rows older than " << retention_days << " days");
     }
+
+    // 同时清理过期的蓝牙历史记录
+    std::ostringstream bt_sql;
+    bt_sql << "DELETE FROM bt_history WHERE ts < datetime('now', '-"
+           << retention_days << " days')";
+    char* bt_err = nullptr;
+    sqlite3_exec(db_, bt_sql.str().c_str(), nullptr, nullptr, &bt_err);
+    if (bt_err) {
+        sqlite3_free(bt_err);
+    }
+
     return deleted;
+}
+
+bool DatabaseManager::insertBtSnapshot(const std::string& adapter_mac,
+                                      const std::string& device_mac,
+                                      const std::string& device_name,
+                                      bool connected,
+                                      int16_t rssi_dbm,
+                                      double distance_m,
+                                      bool audio_active,
+                                      double quality_score,
+                                      bool suspected_stall,
+                                      uint64_t bytes_per_sec,
+                                      uint64_t max_gap_ms) {
+    if (!db_) return false;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    const char* sql = R"(
+        INSERT INTO bt_history (
+            ts, adapter_mac, device_mac, device_name,
+            connected, rssi_dbm, distance_m, audio_active,
+            quality_score, suspected_stall, bytes_per_sec, max_gap_ms
+        ) VALUES (
+            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?, ?
+        );
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::insertBtSnapshot prepare failed: " << sqlite3_errmsg(db_));
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, adapter_mac.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, device_mac.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, device_name.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 4, connected ? 1 : 0);
+    sqlite3_bind_double(stmt, 5, static_cast<double>(rssi_dbm));
+    sqlite3_bind_double(stmt, 6, distance_m);
+    sqlite3_bind_int(stmt, 7, audio_active ? 1 : 0);
+    sqlite3_bind_double(stmt, 8, quality_score);
+    sqlite3_bind_int(stmt, 9, suspected_stall ? 1 : 0);
+    sqlite3_bind_int64(stmt, 10, static_cast<int64_t>(bytes_per_sec));
+    sqlite3_bind_int64(stmt, 11, static_cast<int64_t>(max_gap_ms));
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::insertBtSnapshot step failed: " << sqlite3_errmsg(db_));
+        return false;
+    }
+    return true;
+}
+
+std::string DatabaseManager::queryBtHistory(const std::string& device_mac,
+                                            const std::string& start,
+                                            const std::string& end,
+                                            int limit) {
+    if (!db_) return "[]";
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    std::ostringstream sql;
+    sql << "SELECT ts, adapter_mac, device_mac, device_name, connected, "
+        << "rssi_dbm, distance_m, audio_active, quality_score, suspected_stall, "
+        << "bytes_per_sec, max_gap_ms FROM bt_history WHERE 1=1";
+
+    if (!device_mac.empty()) {
+        sql << " AND device_mac = ?";
+    }
+    if (!start.empty()) {
+        sql << " AND ts >= ?";
+    }
+    if (!end.empty()) {
+        sql << " AND ts <= ?";
+    }
+    sql << " ORDER BY ts DESC LIMIT ?";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql.str().c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::queryBtHistory prepare failed: " << sqlite3_errmsg(db_));
+        return "[]";
+    }
+
+    int bindIdx = 1;
+    if (!device_mac.empty()) {
+        sqlite3_bind_text(stmt, bindIdx++, device_mac.c_str(), -1, SQLITE_STATIC);
+    }
+    if (!start.empty()) {
+        sqlite3_bind_text(stmt, bindIdx++, start.c_str(), -1, SQLITE_STATIC);
+    }
+    if (!end.empty()) {
+        sqlite3_bind_text(stmt, bindIdx++, end.c_str(), -1, SQLITE_STATIC);
+    }
+    sqlite3_bind_int(stmt, bindIdx++, limit > 0 ? limit : 100);
+
+    std::ostringstream json;
+    json << "[";
+    bool first = true;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (!first) json << ",";
+        first = false;
+
+        const char* ts = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        const char* adapterMac = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        const char* devMac = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* devName = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+        int connected = sqlite3_column_int(stmt, 4);
+        double rssiDbm = sqlite3_column_double(stmt, 5);
+        double distanceM = sqlite3_column_double(stmt, 6);
+        int audioActive = sqlite3_column_int(stmt, 7);
+        double qualityScore = sqlite3_column_double(stmt, 8);
+        int suspectedStall = sqlite3_column_int(stmt, 9);
+        int64_t bytesPerSec = sqlite3_column_int64(stmt, 10);
+        int64_t maxGapMs = sqlite3_column_int64(stmt, 11);
+
+        json << "{"
+             << "\"ts\":\"" << (ts ? weaknet_utils::escapeJsonString(ts) : "") << "\","
+             << "\"adapter_mac\":\"" << (adapterMac ? weaknet_utils::escapeJsonString(adapterMac) : "") << "\","
+             << "\"device_mac\":\"" << (devMac ? weaknet_utils::escapeJsonString(devMac) : "") << "\","
+             << "\"device_name\":\"" << (devName ? weaknet_utils::escapeJsonString(devName) : "") << "\","
+             << "\"connected\":" << (connected ? "true" : "false") << ","
+             << "\"rssi_dbm\":" << rssiDbm << ","
+             << "\"distance_m\":" << distanceM << ","
+             << "\"audio_active\":" << (audioActive ? "true" : "false") << ","
+             << "\"quality_score\":" << qualityScore << ","
+             << "\"suspected_stall\":" << (suspectedStall ? "true" : "false") << ","
+             << "\"bytes_per_sec\":" << bytesPerSec << ","
+             << "\"max_gap_ms\":" << maxGapMs
+             << "}";
+    }
+
+    sqlite3_finalize(stmt);
+    json << "]";
+    return json.str();
 }
 
 int64_t DatabaseManager::getRecordCountLocked() {
