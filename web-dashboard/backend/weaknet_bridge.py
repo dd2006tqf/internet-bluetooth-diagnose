@@ -269,14 +269,43 @@ class WeakNetBridge:
                 return res
         return res
 
+    def _control_via_cli(self, action: str, name: str) -> Dict[str, Any]:
+        """通过 weaknet-cli 子进程安全隔离执行监控器生命周期切换，规避主进程长期连接死锁"""
+        import subprocess
+        cli_candidates = [
+            "/home/radxa/weaknet/client/bin/weaknet-cli",
+            os.path.abspath("./dist-arm64/client/bin/weaknet-cli"),
+            os.path.abspath("./build-x86/client/bin/weaknet_cli"),
+            os.path.abspath("../build-x86/client/bin/weaknet_cli"),
+            "weaknet-cli"
+        ]
+        cli_path = None
+        for c in cli_candidates:
+            if os.path.exists(c):
+                cli_path = c
+                break
+        if not cli_path:
+            return self._call_string_api(f"weaknet_{action}_monitor", 4096, name.encode("utf-8"))
+
+        try:
+            res = subprocess.run([cli_path, "monitor", action, name], capture_output=True, text=True, timeout=8)
+            output = res.stdout.strip()
+            if res.returncode == 0:
+                return {"success": True, "data": output}
+            else:
+                err = res.stderr.strip() or output
+                return {"success": False, "error": err}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def restart_monitor(self, name: str) -> Dict[str, Any]:
-        return self._call_string_api("weaknet_restart_monitor", 4096, name.encode("utf-8"))
+        return self._control_via_cli("restart", name)
 
     def enable_monitor(self, name: str) -> Dict[str, Any]:
-        return self._call_string_api("weaknet_enable_monitor", 4096, name.encode("utf-8"))
+        return self._control_via_cli("enable", name)
 
     def disable_monitor(self, name: str) -> Dict[str, Any]:
-        return self._call_string_api("weaknet_disable_monitor", 4096, name.encode("utf-8"))
+        return self._control_via_cli("disable", name)
 
     def get_dns_stats(self) -> Dict[str, Any]:
         return self._call_string_api("weaknet_get_dns_stats", 4096)

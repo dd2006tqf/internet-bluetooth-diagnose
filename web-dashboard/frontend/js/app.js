@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initCharts();
   initWebSocket();
   fetchAllData();
+  fetchBackendLogs();
 
   // 周期全量轮询（保底：每 5 秒刷新静态组件与表格）
   setInterval(fetchPeriodicData, 5000);
@@ -41,6 +42,8 @@ function initWebSocket() {
       if (msg.type === 'METRICS_UPDATE') {
         if (msg.health) updateHealthUI(msg.health);
         if (msg.conflict) updateConflictUI(msg.conflict);
+      } else if (msg.type === 'LOG_ENTRY') {
+        appendConsoleLog(msg.entry);
       }
     } catch (e) {
       console.error('WS Parse Error', e);
@@ -213,6 +216,13 @@ function openMonitorModal(monitor) {
   selectedMonitor = monitor;
   document.getElementById('ctrl-modal-name').innerText = monitor.name;
 
+  appendConsoleLog({
+    time: new Date().toTimeString().split(' ')[0],
+    level: 'INFO',
+    module: 'UI',
+    message: `User inspected monitor card '${monitor.name}' (State: ${monitor.state})`
+  });
+
   const stateTag = document.getElementById('ctrl-modal-state');
   const isRunning = monitor.state.toLowerCase() === 'running';
   stateTag.innerText = monitor.state.toUpperCase();
@@ -251,18 +261,42 @@ async function executeMonitorAction(name, action) {
     disable: '停止'
   };
   const label = actionNames[action] || action;
+  appendConsoleLog({
+    time: new Date().toTimeString().split(' ')[0],
+    level: 'INFO',
+    module: 'USER',
+    message: `User clicked [${label}] on monitor '${name}'`
+  });
 
   try {
     const res = await fetch(`/api/monitors/${name}/${action}`, { method: 'POST' });
     const json = await res.json();
     if (json.success) {
-      alert(`监控器 [${name}] ${label}成功！`);
+      appendConsoleLog({
+        time: new Date().toTimeString().split(' ')[0],
+        level: 'SUCCESS',
+        module: 'D-BUS',
+        message: `Monitor '${name}' action [${label}] completed successfully`
+      });
       closeMonitorModal();
       fetchMonitors();
     } else {
-      alert(`${label}失败: ${json.detail || json.error || '依赖限制或未知错误'}`);
+      const err = json.detail || json.error || '依赖限制或未知错误';
+      appendConsoleLog({
+        time: new Date().toTimeString().split(' ')[0],
+        level: 'ERROR',
+        module: 'D-BUS',
+        message: `Failed to [${label}] monitor '${name}': ${err}`
+      });
+      alert(`${label}失败: ${err}`);
     }
   } catch (e) {
+    appendConsoleLog({
+      time: new Date().toTimeString().split(' ')[0],
+      level: 'ERROR',
+      module: 'HTTP',
+      message: `Request error during [${label}] on '${name}': ${e}`
+    });
     alert(`${label}请求异常: ` + e);
   }
 }
@@ -408,4 +442,46 @@ async function triggerAiDiagnosis() {
 
 function closeAiModal() {
   document.getElementById('ai-modal').classList.remove('show');
+}
+
+// ============================================================================
+// 实时操作与系统控制台日志 (Log Console)
+// ============================================================================
+function appendConsoleLog(entry) {
+  const consoleDom = document.getElementById('log-console');
+  if (!consoleDom || !entry) return;
+
+  const div = document.createElement('div');
+  div.className = `log-row log-level-${entry.level || 'INFO'}`;
+  div.innerHTML = `
+    <span class="log-time">[${entry.time || '--:--:--'}]</span>
+    <span class="log-mod">[${entry.module || 'SYS'}]</span>
+    <span class="log-msg">${entry.message}</span>
+  `;
+  consoleDom.appendChild(div);
+
+  // 超过 150 条清理最老一条，并始终滚到底部
+  if (consoleDom.children.length > 150) {
+    consoleDom.removeChild(consoleDom.firstChild);
+  }
+  consoleDom.scrollTop = consoleDom.scrollHeight;
+}
+
+async function fetchBackendLogs() {
+  try {
+    const res = await fetch('/api/logs');
+    const json = await res.json();
+    if (json.success && json.logs) {
+      const consoleDom = document.getElementById('log-console');
+      consoleDom.innerHTML = '';
+      json.logs.forEach(appendConsoleLog);
+    }
+  } catch (e) {
+    console.error('Fetch logs failed', e);
+  }
+}
+
+function clearLocalLogs() {
+  const consoleDom = document.getElementById('log-console');
+  if (consoleDom) consoleDom.innerHTML = '';
 }

@@ -20,12 +20,40 @@ from weaknet_bridge import WeakNetBridge
 from db_service import DbService
 from ai_service import AiDiagnosisService
 
-# 日志配置
+# 日志基础配置
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
 )
 logger = logging.getLogger("weaknet.app")
+
+# 日志缓存：在内存中保存最近 200 条操作与系统日志
+import collections
+from datetime import datetime
+
+log_buffer = collections.deque(maxlen=200)
+
+def record_log(level: str, module: str, message: str):
+    entry = {
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "level": level.upper(),
+        "module": module,
+        "message": message
+    }
+    log_buffer.append(entry)
+    logger.info("[%s] [%s] %s", level, module, message)
+    # 尝试实时通过 WebSocket 广播日志给前端
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(ws_manager.broadcast({
+                "type": "LOG_ENTRY",
+                "entry": entry
+            }))
+    except Exception:
+        pass
+
+record_log("INFO", "SYSTEM", "WeakNet Web Gateway started")
 
 app = FastAPI(
     title="WeakNet Network & Bluetooth Diagnostics",
@@ -132,34 +160,56 @@ async def api_interfaces():
 @app.get("/api/monitors")
 async def api_monitors():
     """获取 16 个监控插件生命周期运行状态矩阵"""
-    return bridge.list_monitors()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bridge.list_monitors)
 
 
 @app.post("/api/monitors/{name}/restart")
 async def api_restart_monitor(name: str):
     """动态重启指定监控器插件"""
-    res = bridge.restart_monitor(name)
+    record_log("INFO", "MONITOR", f"Triggered restart for monitor plugin '{name}'")
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, bridge.restart_monitor, name)
     if not res.get("success"):
-        raise HTTPException(status_code=500, detail=res.get("error", "Failed to restart monitor"))
+        err = res.get("error", "Failed to restart monitor")
+        record_log("ERROR", "MONITOR", f"Failed to restart '{name}': {err}")
+        raise HTTPException(status_code=500, detail=err)
+    record_log("SUCCESS", "MONITOR", f"Successfully restarted monitor '{name}'")
     return res
 
 
 @app.post("/api/monitors/{name}/enable")
 async def api_enable_monitor(name: str):
     """启动/开启指定监控器插件（从 stopped 状态恢复）"""
-    res = bridge.enable_monitor(name)
+    record_log("INFO", "MONITOR", f"Triggered start/enable for monitor plugin '{name}'")
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, bridge.enable_monitor, name)
     if not res.get("success"):
-        raise HTTPException(status_code=500, detail=res.get("error", "Failed to enable monitor"))
+        err = res.get("error", "Failed to enable monitor")
+        record_log("ERROR", "MONITOR", f"Failed to start '{name}': {err}")
+        raise HTTPException(status_code=500, detail=err)
+    record_log("SUCCESS", "MONITOR", f"Successfully started monitor '{name}'")
     return res
 
 
 @app.post("/api/monitors/{name}/disable")
 async def api_disable_monitor(name: str):
     """停止/禁用指定监控器插件"""
-    res = bridge.disable_monitor(name)
+    record_log("INFO", "MONITOR", f"Triggered stop/disable for monitor plugin '{name}'")
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, bridge.disable_monitor, name)
     if not res.get("success"):
-        raise HTTPException(status_code=500, detail=res.get("error", "Failed to disable monitor"))
+        err = res.get("error", "Failed to disable monitor")
+        record_log("ERROR", "MONITOR", f"Failed to stop '{name}': {err}")
+        raise HTTPException(status_code=500, detail=err)
+    record_log("SUCCESS", "MONITOR", f"Successfully stopped monitor '{name}'")
     return res
+
+
+@app.get("/api/logs")
+async def api_get_logs():
+    """获取最近内存中的系统与操作审计日志"""
+    return {"success": True, "logs": list(log_buffer)}
 
 
 @app.get("/api/ebpf/health")
@@ -238,6 +288,7 @@ async def api_history_distribution():
 @app.post("/api/ai/diagnose")
 async def api_ai_diagnose():
     """基于当前实时指标与 2.4GHz 射频共存情况，触发 RAG 知识库大模型专家诊断"""
+    record_log("INFO", "AI", "User triggered AI-assisted root-cause diagnosis")
     health_res = bridge.get_health()
     conflict_res = bridge.get_coexistence_conflict()
 
@@ -245,6 +296,7 @@ async def api_ai_diagnose():
     conflict_data = conflict_res.get("data", {}) if conflict_res.get("success") else {}
 
     report = ai.diagnose_current_state(health_data, conflict_data)
+    record_log("SUCCESS", "AI", f"Diagnosis generated with severity: {report.get('severity')}")
     return {"success": True, "report": report}
 
 

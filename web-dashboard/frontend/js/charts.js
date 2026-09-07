@@ -19,56 +19,53 @@ function initCharts() {
           endAngle: 0,
           min: 0,
           max: 100,
-          splitNumber: 5,
+          splitNumber: 4,
           itemStyle: {
-            color: '#10b981',
-            shadowColor: 'rgba(0,138,255,0.45)',
-            shadowBlur: 10,
-            shadowOffsetX: 2,
-            shadowOffsetY: 2
+            color: '#3b82f6'
           },
           progress: {
             show: true,
-            roundCap: true,
-            width: 14
+            roundCap: false,
+            width: 8
           },
           pointer: {
             icon: 'path://M12.8,0.7l12,40.1H0.7L12.8,0.7z',
-            length: '12%',
-            width: 12,
-            offsetCenter: [0, '-50%'],
+            length: '10%',
+            width: 8,
+            offsetCenter: [0, '-45%'],
             itemStyle: {
-              color: 'auto'
+              color: '#e5e7eb'
             }
           },
           axisLine: {
-            roundCap: true,
+            roundCap: false,
             lineStyle: {
-              width: 14,
+              width: 8,
               color: [
-                [0.5, '#ef4444'],
-                [0.75, '#f59e0b'],
-                [0.9, '#3b82f6'],
-                [1, '#10b981']
+                [0.5, 'rgba(239, 68, 68, 0.6)'],
+                [0.75, 'rgba(245, 158, 11, 0.6)'],
+                [0.9, 'rgba(59, 130, 246, 0.7)'],
+                [1, 'rgba(16, 185, 129, 0.8)']
               ]
             }
           },
           axisTick: { show: false },
           splitLine: { show: false },
           axisLabel: {
-            distance: 20,
-            color: '#9ca3af',
+            distance: 14,
+            color: '#64748b',
             fontSize: 10
           },
           title: {
             show: true,
-            offsetCenter: [0, '25%'],
-            fontSize: 13,
-            color: '#9ca3af'
+            offsetCenter: [0, '20%'],
+            fontSize: 12,
+            color: '#94a3b8'
           },
           detail: {
             valueAnimation: true,
-            fontSize: 28,
+            fontSize: 26,
+            fontWeight: '600',
             offsetCenter: [0, '-10%'],
             formatter: '{value}',
             color: '#f3f4f6'
