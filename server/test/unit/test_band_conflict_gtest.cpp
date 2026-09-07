@@ -115,6 +115,32 @@ TEST_F(BandConflictTest, GenerateSuggestion) {
     EXPECT_FALSE(suggestion.empty());
 }
 
+// Test 7b: 5GHz/6GHz Wi-Fi band should never report 2.4GHz band conflict
+TEST_F(BandConflictTest, Non24GhzBandExemption) {
+    // 构造典型 2.4GHz 会触发冲突的双侧同步大幅下降样本
+    for (int i = 0; i < 20; i++) {
+        detector_->feedSample(-50, -60);
+    }
+    for (int i = 0; i < 10; i++) {
+        detector_->feedSample(-75, -85);
+    }
+
+    // 在 2.4GHz 下应确认为冲突
+    auto r24 = detector_->detect("2.4GHz");
+    EXPECT_TRUE(r24.detected);
+
+    // 在 5GHz 下物理正交隔离，必须强制为 false
+    auto r5 = detector_->detect("5GHz");
+    EXPECT_FALSE(r5.detected);
+    EXPECT_EQ(r5.confidence, 0.0);
+    EXPECT_NE(r5.suggestion.find("5GHz"), std::string::npos);
+
+    // 在 6GHz 下也必须强制为 false
+    auto r6 = detector_->detect("6GHz");
+    EXPECT_FALSE(r6.detected);
+    EXPECT_EQ(r6.confidence, 0.0);
+}
+
 // Test 8: Sample limit 30 (excess auto-discards oldest)
 TEST_F(BandConflictTest, MaxHistoryLimit) {
     for (int i = 0; i < 40; i++) {

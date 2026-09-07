@@ -659,6 +659,23 @@ std::array<uint8_t, 6> WiFiRssiClient::getAssociatedBssid() {
     for (size_t i = 0; i < bssid.size(); ++i) bssid[i] = static_cast<uint8_t>(octets[i]);
     return bssid;
 }
+
+int WiFiRssiClient::getFrequency() {
+    const std::string status = sendCommand("STATUS\n");
+    const std::string key = "freq=";
+    const size_t pos = status.find(key);
+    if (pos == std::string::npos) {
+        return 0;
+    }
+    const size_t end = status.find_first_of("\r\n", pos + key.size());
+    const std::string value = status.substr(pos + key.size(), end - (pos + key.size()));
+    try {
+        return std::stoi(value);
+    } catch (...) {
+        return 0;
+    }
+}
+
 int WiFiRssiClient::getRssi() {
     std::string resp = sendCommand("SIGNAL_POLL\n");
     if (resp.empty()) return -1000;

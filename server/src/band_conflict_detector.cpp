@@ -84,8 +84,18 @@ void BandConflictDetector::feedSample(int wifiRssi, int btRssi) {
 // detect
 // ============================================================================
 
-BandConflictResult BandConflictDetector::detect() const {
+BandConflictResult BandConflictDetector::detect(const std::string& wifiBand) const {
     BandConflictResult result;
+    result.wifiBand = wifiBand;
+
+    // 频段防误报核心逻辑：若当前 Wi-Fi 工作在 5GHz 或 6GHz 频段，
+    // 物理上与 2.4GHz 蓝牙频段正交隔离，绝不可能产生射频共存冲突，直接返回未检测到
+    if (wifiBand == "5GHz" || wifiBand == "6GHz") {
+        result.detected = false;
+        result.confidence = 0.0;
+        result.suggestion = "Wi-Fi 当前工作在 " + wifiBand + " 频段，与蓝牙 (2.4GHz) 物理正交，无同频射频干扰";
+        return result;
+    }
 
     // 取有效样本数（两者取较小值）
     size_t n = std::min(wifiHistory_.size(), btHistory_.size());

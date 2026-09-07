@@ -77,6 +77,9 @@ public:
     /// 读取当前关联 AP 的 BSSID；失败返回全零地址。
     std::array<uint8_t, 6> getAssociatedBssid();
 
+    /// 读取当前关联 AP 的频率（MHz，如 2462、5180）；失败返回 0。
+    int getFrequency();
+
 private:
     int sockfd_ = -1;              ///< UNIX DGRAM socket fd（连接后有效）
     std::string iface_;            ///< 当前绑定的网卡名

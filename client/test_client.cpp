@@ -667,6 +667,46 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
             return false;
         }
     }
+    // ===== dns-stats =====
+    // D-Bus Method: GetDnsStats → STRING
+    else if (command == "dns-stats") {
+        if (weaknet_get_dns_stats(buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ DNS 解析统计: %s\n", buffer);
+        } else {
+            printf("❌ DNS 统计查询失败: %s\n", error);
+            return false;
+        }
+    }
+    // ===== wifi-loss =====
+    // D-Bus Method: GetWifiLossStats → STRING
+    else if (command == "wifi-loss") {
+        if (weaknet_get_wifi_loss_stats(buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ Wi-Fi 协议丢包归因: %s\n", buffer);
+        } else {
+            printf("❌ Wi-Fi 丢包统计查询失败: %s\n", error);
+            return false;
+        }
+    }
+    // ===== http-latency =====
+    // D-Bus Method: GetHttpLatencyStats → STRING
+    else if (command == "http-latency") {
+        if (weaknet_get_http_latency_stats(buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ HTTP 请求延迟指标 (TTFB): %s\n", buffer);
+        } else {
+            printf("❌ HTTP 延迟统计查询失败: %s\n", error);
+            return false;
+        }
+    }
+    // ===== profiling =====
+    // D-Bus Method: GetProcessProfiling → STRING
+    else if (command == "profiling") {
+        if (weaknet_get_process_profiling(buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ 进程网络流量画像: %s\n", buffer);
+        } else {
+            printf("❌ 进程网络画像查询失败: %s\n", error);
+            return false;
+        }
+    }
     // ===== history =====
     // D-Bus Method: GetHistory → STRING (JSON Array)
     else if (command == "history") {
@@ -972,6 +1012,10 @@ int main(int argc, char* argv[]) {
         printf("  %s health                 - 网络健康检查\n", argv[0]);
         printf("  %s ebpf-health            - eBPF 监控器健康与性能状态\n", argv[0]);
         printf("  %s skb-drop               - 获取 Socket/skb 丢包归因快照\n", argv[0]);
+        printf("  %s dns-stats              - 获取 DNS 解析与延迟统计\n", argv[0]);
+        printf("  %s wifi-loss              - 获取 Wi-Fi 协议丢包归因统计\n", argv[0]);
+        printf("  %s http-latency           - 获取 HTTP 事务延迟统计 (TTFB)\n", argv[0]);
+        printf("  %s profiling              - 获取进程网络流量画像\n", argv[0]);
         printf("  %s history [IFACE]        - 查询网络历史监控记录\n", argv[0]);
         printf("  %s file                   - 从文件读取最新状态\n", argv[0]);
         printf("  %s ping HOSTNAME          - Ping指定主机\n", argv[0]);

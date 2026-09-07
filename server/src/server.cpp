@@ -59,6 +59,7 @@
 #include "bt_audio_analyzer.hpp"
 #include "database_manager.hpp"
 #include "using_iface.h"
+#include "net_wifiriss.h"
 #include <iomanip>
 
 using namespace std::chrono_literals;
@@ -377,13 +378,15 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                 // 使用 thread_local 确保检测器状态在循环间保持
                 static thread_local BandConflictDetector conflictDetector;
 
-                // 获取当前上网接口的 Wi-Fi RSSI
+                // 获取当前上网接口的 Wi-Fi RSSI 与频段感知
                 int wifiRssi = -1000;
+                std::string activeWifiIface;
                 {
                     auto interfaces = ctx->weak_mgr->getCurrentInterfaces();
                     for (const auto& iface : interfaces) {
                         if (iface.usingNow() && iface.hasRssi()) {
                             wifiRssi = iface.rssiDbm();
+                            activeWifiIface = iface.ifName();
                             break;
                         }
                     }
@@ -392,8 +395,25 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                         for (const auto& iface : interfaces) {
                             if (iface.hasRssi()) {
                                 wifiRssi = iface.rssiDbm();
+                                activeWifiIface = iface.ifName();
                                 break;
                             }
+                        }
+                    }
+                }
+
+                // 探测当前 Wi-Fi 工作频段（2.4GHz / 5GHz / 6GHz）
+                std::string wifiBand = "2.4GHz";
+                if (!activeWifiIface.empty()) {
+                    auto wifiClient = WiFiRssiClient::getInstance();
+                    if (wifiClient) {
+                        int freq = wifiClient->getFrequency();
+                        if (freq >= 5000 && freq <= 5900) {
+                            wifiBand = "5GHz";
+                        } else if (freq >= 5925 && freq <= 7125) {
+                            wifiBand = "6GHz";
+                        } else if (freq >= 2400 && freq <= 2500) {
+                            wifiBand = "2.4GHz";
                         }
                     }
                 }
@@ -419,7 +439,8 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     conflictDetector.feedSample(wifiRssi, btRssi);
                 }
 
-                auto conflictResult = conflictDetector.detect();
+                auto conflictResult = conflictDetector.detect(wifiBand);
+                conflictResult.wifiIface = activeWifiIface;
                 {
                     std::lock_guard<std::mutex> lock(ctx->conflict_mutex);
                     std::ostringstream oss;

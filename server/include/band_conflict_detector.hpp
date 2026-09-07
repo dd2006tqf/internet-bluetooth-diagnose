@@ -73,13 +73,10 @@ public:
 
     /**
      * @brief 基于当前历史计算冲突检测结果
-     *
-     * @return 检测结果。样本不足 MIN_SAMPLES（5 个）时返回 detected=false 的空结果。
-     *
-     * @note 该方法是 const 的，线程安全前提是调用方保证在 detect() 期间
-     *       没有其他线程同时调用 feedSample()。若需多线程安全，外层加锁。
+     * @param wifiBand 当前 Wi-Fi 频段（如 "2.4GHz", "5GHz", "6GHz"），默认为 "2.4GHz"
+     * @return 检测结果。样本不足 MIN_SAMPLES（5 个）或频段为非 2.4GHz 时返回 detected=false。
      */
-    BandConflictResult detect() const;
+    BandConflictResult detect(const std::string& wifiBand = "2.4GHz") const;
 
     /**
      * @brief 根据检测结果生成处置建议文本

@@ -139,6 +139,10 @@ run_client_test "check" "check"
 run_client_test "event-types" "event-types"
 run_client_test "ebpf-health" "ebpf-health"
 run_client_test "skb-drop" "skb-drop"
+run_client_test "dns-stats" "dns-stats"
+run_client_test "wifi-loss" "wifi-loss"
+run_client_test "http-latency" "http-latency"
+run_client_test "profiling" "profiling"
 run_client_test "history" "history"
 
 # ==============================================
