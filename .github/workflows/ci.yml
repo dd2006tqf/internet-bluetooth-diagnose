@@ -16,8 +16,14 @@ jobs:
       - name: 检查行尾与非法字符
         run: |
           echo "检查是否有 Windows CRLF 换行符..."
-          if grep -rU $'\r' --exclude-dir={.git,build*,dist*,logs} .; then
-            echo "❌ 发现 CRLF 换行符，请使用 LF"
+          cr_files=$(git ls-files | grep -v -E '^(ci-reports|board-assets)/' | while IFS= read -r file; do
+            if [ -f "$file" ] && grep -qP '\r$' "$file" 2>/dev/null; then
+              echo "$file"
+            fi
+          done)
+          if [ -n "$cr_files" ]; then
+            echo "❌ 发现 CRLF 换行符，请使用 LF:"
+            echo "$cr_files"
             exit 1
           fi
           echo "✅ 代码换行符检查通过"
