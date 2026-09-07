@@ -549,6 +549,25 @@ bool weaknet_get_process_profiling(char* buffer, size_t buffer_size, char* error
  */
 bool weaknet_get_ebpf_monitor_health(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
 
+/**
+ * @brief 获取 Socket/skb 丢包原因精确归因统计（JSON）
+ *
+ * 通过 D-Bus 调用 GetSkbDropStats 方法，返回由 tracepoint/skb/kfree_skb
+ * 采集的各类丢包原因（如 NETFILTER_DROP、NO_SOCKET、CSUM 错误等）聚合数据。
+ *
+ * D-Bus 调用：
+ *   - Method: GetSkbDropStats
+ *   - Returns: STRING (JSON 格式丢包归因快照)
+ *
+ * @param buffer       结果缓冲区
+ * @param buffer_size  缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size   错误信息缓冲区大小
+ * @return true  - 成功
+ * @return false - D-Bus 调用失败
+ */
+bool weaknet_get_skb_drop_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
 /* ============================== 运行时配置 API ============================== */
 
 /**

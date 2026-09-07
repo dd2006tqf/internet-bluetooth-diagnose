@@ -261,9 +261,15 @@ public:
             LOG_WARNING(LogModule::NETWORK, "SkbDropPlugin: failed to load BPF object from " << path);
             return false;
         }
+        if (ctx) {
+            ctx->skb_drop_monitor = monitor_.get();
+        }
         return true;
     }
     void stop() override {
+        if (ctx_) {
+            ctx_->skb_drop_monitor = nullptr;
+        }
         if (monitor_) {
             monitor_->stop();
             monitor_.reset();

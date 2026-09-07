@@ -46,6 +46,7 @@
 #include "process_net_profiler.hpp"
 #include "tcp_retransmit_monitor.hpp"
 #include "tcp_conn_monitor.hpp"
+#include "skb_drop_monitor.hpp"
 #include "weaknet_config.hpp"
 #include "utils/json_escape.hpp"
 #include "database_manager.hpp"
@@ -120,6 +121,10 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetProcessProfiling)) {
         self->handleGetProcessProfiling(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetSkbDropStats)) {
+        self->handleGetSkbDropStats(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetEbpfMonitorHealth)) {
@@ -308,6 +313,11 @@ bool DbusService::handleGet(DBusConnection* conn, DBusMessage* msg) {
     }
     dbus_connection_flush(conn);
     dbus_message_unref(reply);
+
+    // 契约保证：将回复持久化到离线序列化文件，供 weaknet_get_from_file 读取
+    std::string err;
+    serializeGetReplyToFile(reply_text, kGetReplySerializedFile, &err);
+
     return true;
 }
 
@@ -913,13 +923,55 @@ bool DbusService::handleGetProcessProfiling(DBusConnection* conn, DBusMessage* m
 }
 
 /**
+ * @brief DBus 方法实现：GetSkbDropStats —— 查询 Socket/skb 丢包原因精确归因统计（JSON）
+ */
+bool DbusService::handleGetSkbDropStats(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetSkbDropStats called");
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) {
+        LOG_ERROR(LogModule::DBUS, "handleGetSkbDropStats: failed to create reply");
+        return false;
+    }
+
+    std::ostringstream json;
+    if (ctx_ && ctx_->skb_drop_monitor) {
+        auto summary = ctx_->skb_drop_monitor->getDropStats();
+        json << "{\"total_drops\":" << summary.totalDrops
+             << ",\"top_reasons\":[";
+        for (size_t i = 0; i < summary.topReasons.size(); ++i) {
+            if (i > 0) json << ",";
+            const auto& item = summary.topReasons[i];
+            json << "{\"reason_code\":" << item.reasonCode
+                 << ",\"reason_name\":\"" << weaknet_utils::escapeJsonString(item.reasonName)
+                 << "\",\"description\":\"" << weaknet_utils::escapeJsonString(item.humanDesc)
+                 << "\",\"protocol\":\"" << weaknet_utils::escapeJsonString(item.protocol)
+                 << "\",\"count\":" << item.count
+                 << ",\"last_timestamp_ns\":" << item.lastTimestampNs << "}";
+        }
+        json << "]}";
+    } else {
+        json << "{\"total_drops\":0,\"top_reasons\":[],\"error\":\"skb_drop monitor unavailable\"}";
+    }
+
+    std::string result = json.str();
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = result.c_str();
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+/**
  * @brief DBus 方法实现：GetEbpfMonitorHealth —— 返回所有 eBPF monitor 健康状态（JSON）
  * @return JSON 字符串,结构: {"monitors":[{name,state,available,healthy,map_reads,map_read_errors,samples,average_read_time_us,status}, ...]}
  *
- * 遍历 7 个实现了 IEbpfMonitor 接口的组件（DNS/Wi-Fi 丢包/HTTP 延迟/进程 profiling/
- * TCP 重传/TCP 连接统计/蓝牙音频），每个采集 health() 和 metrics()。
+ * 遍历 8 个实现了 IEbpfMonitor 接口的组件（DNS/Wi-Fi 丢包/HTTP 延迟/进程 profiling/
+ * TCP 重传/TCP 连接统计/Socket 丢包/蓝牙音频），每个采集 health() 和 metrics()。
  * 蓝牙音频分析器为可选项：对象未创建时输出一份 "uninitialized" 占位条目，
- * 保证 JSON 始终包含全部 7 项且不出现空指针解引用。
+ * 保证 JSON 始终包含全部项且不出现空指针解引用。
  */
 bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleGetEbpfMonitorHealth called");
@@ -935,13 +987,20 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
         return ctx_->monitor_manager && ctx_->monitor_manager->status(name, &status)
             ? std::string(monitorStateName(status.state)) : std::string("unavailable");
     };
+    const IEbpfMonitor* bt_audio = nullptr;
+    if (ctx_->bt_monitor) {
+        bt_audio = ctx_->bt_monitor->audioAnalyzer();
+    }
+
     const std::vector<std::pair<const char*, const IEbpfMonitor*>> monitors = {
         {"DnsMonitor", static_cast<const IEbpfMonitor*>(ctx_->dns_monitor)},
         {"WifiPacketLossMonitor", static_cast<const IEbpfMonitor*>(ctx_->wifi_loss_monitor)},
         {"HttpLatencyMonitor", static_cast<const IEbpfMonitor*>(ctx_->http_latency_monitor)},
         {"ProcessNetProfiler", static_cast<const IEbpfMonitor*>(ctx_->process_net_profiler)},
         {"TcpRetransMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_retrans_monitor)},
-        {"TcpConnMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_conn_monitor)}
+        {"TcpConnMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_conn_monitor)},
+        {"SkbDropMonitor", static_cast<const IEbpfMonitor*>(ctx_->skb_drop_monitor)},
+        {"BtAudioAnalyzer", bt_audio}
     };
 
     // 手工拼接 JSON：项目不依赖 JSON 库，字段名和字符串值都要做 JSON 转义

@@ -7,7 +7,7 @@ WeakNet客户端动态库 (`libweaknet.so`) 提供了一个C接口，供其他�
 - **动态库**: `build-x86/client/lib/libweaknet.so`（ARM64 部署包对应 `dist-arm64/client/lib/libweaknet.so`）
 - **头文件**: `client/weaknet_client.h`
 - **测试程序**: `build-x86/client/bin/test_client_bin`（ARM64 部署包对应 `dist-arm64/client/bin/test-client`）
-- **示例程序**: `client/example_usage.cpp`（源码示例，暂不作为默认构建目标）
+- **示例程序**: `client/example_usage.cpp`（构建为 `build-x86/client/bin/example_usage`）
 
 ## 🚀 快速开始
 

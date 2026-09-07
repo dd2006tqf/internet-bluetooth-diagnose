@@ -137,6 +137,9 @@ echo ""
 echo "===== Phase 10: 单项命令验证 ====="
 run_client_test "check" "check"
 run_client_test "event-types" "event-types"
+run_client_test "ebpf-health" "ebpf-health"
+run_client_test "skb-drop" "skb-drop"
+run_client_test "history" "history"
 
 # ==============================================
 # Phase 11: 单元测试（不依赖服务端）

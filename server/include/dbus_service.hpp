@@ -124,6 +124,7 @@ public:
     bool handleGetWifiLossStats(DBusConnection* conn, DBusMessage* msg);      ///< GetWifiLossStats: Wi-Fi 丢包归因
     bool handleGetHttpLatencyStats(DBusConnection* conn, DBusMessage* msg);  ///< GetHttpLatencyStats: HTTP TTFB 统计
     bool handleGetProcessProfiling(DBusConnection* conn, DBusMessage* msg);  ///< GetProcessProfiling: 进程画像
+    bool handleGetSkbDropStats(DBusConnection* conn, DBusMessage* msg);      ///< GetSkbDropStats: Socket/skb 丢包归因
     bool handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* msg);  ///< GetEbpfMonitorHealth: 各监控器健康状态
 
     // 历史数据

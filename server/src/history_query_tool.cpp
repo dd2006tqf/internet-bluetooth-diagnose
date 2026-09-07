@@ -10,10 +10,12 @@
  *
  * 命令行参数：
  *   --iface <name>       指定网卡（默认 wlan0，--all 忽略此项）
+ *   --bt [MAC]           查询蓝牙历史时序（可指定设备 MAC 地址）
  *   --all                查询所有网卡
  *   --last <duration>    相对时间：数字+单位（h/m/d），如 1h、30m、7d
  *   --start / --end      绝对时间范围（ISO8601），与 --last 互斥
  *   --limit <N>          最大返回行数（默认 100）
+ *   --quality-report     输出只读数据质量统计 JSON
  *   --info               仅打印数据库元信息后退出
  *   --cleanup <days>     删除超过 N 天的记录后退出
  *   --json               输出原始 JSON 数组
@@ -75,6 +77,7 @@ static void printUsage() {
               << "  --limit <N>          最大行数 (默认: 100)\n"
               << "  --all                查询所有网卡\n"
               << "  --quality-report     输出只读数据质量统计 JSON\n"
+              << "  --info               打印数据库元信息\n"
               << "  --cleanup <days>     清理超过 N 天的数据\n"
               << "  --json               输出原始 JSON\n"
               << "\n"

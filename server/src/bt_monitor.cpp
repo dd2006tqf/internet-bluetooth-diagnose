@@ -1365,7 +1365,9 @@ void start_bt_monitor_thread(ServerContext* ctx, std::thread* worker, BtMonitor*
                         monitor->cleanup();
                     }
                 }
-                std::this_thread::sleep_for(3000ms);
+                uint32_t retry_interval = ctx->cfg.bluetooth.interval_ms.load(std::memory_order_relaxed);
+                if (retry_interval < 500) retry_interval = 500;
+                std::this_thread::sleep_for(std::chrono::milliseconds(retry_interval));
                 continue;
             }
 
@@ -1434,7 +1436,10 @@ void start_bt_monitor_thread(ServerContext* ctx, std::thread* worker, BtMonitor*
                 }
             }
 
-            std::this_thread::sleep_for(3000ms);
+            // 动态按配置间隔睡眠（兜底不少于 500ms）
+            uint32_t interval_ms = ctx->cfg.bluetooth.interval_ms.load(std::memory_order_relaxed);
+            if (interval_ms < 500) interval_ms = 500;
+            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
         }
 
         monitor->cleanup();

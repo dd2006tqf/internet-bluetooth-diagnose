@@ -39,6 +39,7 @@ class HttpLatencyMonitor;   // 前置声明：HTTP 请求延迟（eBPF）
 class ProcessNetProfiler;   // 前置声明：进程网络画像（eBPF）
 class TcpRetransMonitor;    // 前置声明：TCP 重传监控（eBPF）
 class TcpConnMonitor;       // 前置声明：TCP 连接生命周期监控（eBPF）
+class SkbDropMonitor;       // 前置声明：Socket 丢包归因监控（eBPF）
 class DatabaseManager;      // 前置声明：SQLite 历史数据持久化
 
 /**
@@ -81,6 +82,7 @@ struct ServerContext {
     ProcessNetProfiler* process_net_profiler = nullptr;
     TcpRetransMonitor* tcp_retrans_monitor = nullptr;
     TcpConnMonitor* tcp_conn_monitor = nullptr;
+    SkbDropMonitor* skb_drop_monitor = nullptr;
 
     // ---------- 历史数据持久化 ----------
     std::unique_ptr<DatabaseManager> db_mgr;   ///< SQLite 管理器，持有数据库连接

@@ -799,6 +799,12 @@ public:
         return requestStringData(kMethodGetProcessProfiling, "进程网络画像", result, errorMsg);
     }
 
+    /** @brief 调用 GetSkbDropStats 获取丢包归因快照 */
+    bool getSkbDropStats(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        return requestStringData(kMethodGetSkbDropStats, "Socket丢包归因统计", result, errorMsg);
+    }
+
     /** @brief 调用 GetEbpfMonitorHealth 获取 eBPF 监控器健康快照 */
     bool getEbpfMonitorHealth(std::string& result, std::string& errorMsg) {
         if (!isConnected()) return fail("客户端未连接", errorMsg);
@@ -1583,6 +1589,22 @@ extern "C" bool weaknet_get_ebpf_monitor_health(char* buffer, size_t buffer_size
     }
     std::string result, errorMsg;
     if (weaknet_dbus::g_client->getEbpfMonitorHealth(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    }
+    snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+    return false;
+}
+
+/** @brief C 接口包装：调用 GetSkbDropStats 方法 */
+extern "C" bool weaknet_get_skb_drop_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getSkbDropStats(result, errorMsg)) {
         snprintf(buffer, buffer_size, "%s", result.c_str());
         return true;
     }

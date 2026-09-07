@@ -39,6 +39,21 @@ cmake --build build-x86 -j$(nproc)
 
 # 从文件读取最新状态
 ./build-x86/client/bin/test_client_bin file
+
+# 获取蓝牙设备列表
+./build-x86/client/bin/test_client_bin bt-devices
+
+# 获取蓝牙适配器信息
+./build-x86/client/bin/test_client_bin bt-adapter
+
+# 获取蓝牙音频质量与 eBPF 融合诊断（缺省自动选首个设备，可指定 MAC）
+./build-x86/client/bin/test_client_bin bt-audio [MAC]
+
+# 获取 Wi-Fi 与蓝牙 2.4GHz 共存干扰根因诊断
+./build-x86/client/bin/test_client_bin coexistence
+
+# 持续监听蓝牙设备变化（最多 60 秒）
+./build-x86/client/bin/test_client_bin bt-events
 ```
 
 ### C/C++ 库接口
@@ -73,6 +88,23 @@ bool weaknet_health_check(char* result_buffer, size_t result_size,
 // 从文件读取状态（离线模式）
 bool weaknet_get_from_file(char* buffer, size_t buffer_size,
                           char* error_buffer, size_t error_size);
+
+// 获取蓝牙设备列表（返回 "MAC|Name|RSSI|Connected|Type|Level" 数组）
+bool weaknet_get_bluetooth_devices(char* buffer, size_t buffer_size,
+                                   char* error_buffer, size_t error_size);
+
+// 获取蓝牙适配器状态（返回 "Powered:0/1|Name:...|Address:..."）
+bool weaknet_get_bluetooth_adapter(char* buffer, size_t buffer_size,
+                                   char* error_buffer, size_t error_size);
+
+// 获取蓝牙 A2DP 音频质量与 eBPF 融合诊断（JSON，mac 可为空字符串自动选首个设备）
+bool weaknet_get_bluetooth_audio_quality(const char* mac, char* buffer,
+                                         size_t buffer_size, char* error_buffer,
+                                         size_t error_size);
+
+// 获取 Wi-Fi 与蓝牙 2.4GHz 共存干扰根因诊断（JSON）
+bool weaknet_get_coexistence_conflict(char* buffer, size_t buffer_size,
+                                      char* error_buffer, size_t error_size);
 ```
 
 #### C++示例
@@ -131,10 +163,9 @@ weaknet_cleanup();
 
 ```python
 import subprocess
-import struct
 
-# 通过C API调用
-subprocess.run(['./weaknet-client', 'get'])
+# 通过命令行工具调用
+subprocess.run(['./build-x86/client/bin/test_client_bin', 'get'])
 ```
 
 ### Shell脚本集成
@@ -143,11 +174,11 @@ subprocess.run(['./weaknet-client', 'get'])
 #!/bin/bash
 
 # 检查网络接口
-INTERFACES=$(./weaknet-client get)
+INTERFACES=$(./build-x86/client/bin/test_client_bin get)
 echo "当前接口: $INTERFACES"
 
 # 监控网络变化
-./weaknet-client subscribe &
+./build-x86/client/bin/test_client_bin subscribe &
 CLIENT_PID=$!
 
 # 捕获信号时停止客户端

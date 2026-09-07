@@ -70,3 +70,8 @@ monitors:
     enabled: true
     bpf_obj: build/tcp_conn_stats.bpf.o
     interval_ms: 10000
+
+  skb_drop:
+    enabled: true
+    bpf_obj: build/skb_drop.bpf.o
+    interval_ms: 5000

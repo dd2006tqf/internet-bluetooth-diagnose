@@ -657,6 +657,16 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
             return false;
         }
     }
+    // ===== skb-drop =====
+    // D-Bus Method: GetSkbDropStats → STRING (JSON)
+    else if (command == "skb-drop") {
+        if (weaknet_get_skb_drop_stats(buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ Socket丢包归因统计: %s\n", buffer);
+        } else {
+            printf("❌ 丢包归因统计查询失败: %s\n", error);
+            return false;
+        }
+    }
     // ===== history =====
     // D-Bus Method: GetHistory → STRING (JSON Array)
     else if (command == "history") {
@@ -960,7 +970,9 @@ int main(int argc, char* argv[]) {
         printf("  %s all                    - 运行所有接口验证测试\n", argv[0]);
         printf("  %s get                    - 获取当前网络接口\n", argv[0]);
         printf("  %s health                 - 网络健康检查\n", argv[0]);
-    printf("  %s ebpf-health            - eBPF 监控器健康与性能状态\n", argv[0]);
+        printf("  %s ebpf-health            - eBPF 监控器健康与性能状态\n", argv[0]);
+        printf("  %s skb-drop               - 获取 Socket/skb 丢包归因快照\n", argv[0]);
+        printf("  %s history [IFACE]        - 查询网络历史监控记录\n", argv[0]);
         printf("  %s file                   - 从文件读取最新状态\n", argv[0]);
         printf("  %s ping HOSTNAME          - Ping指定主机\n", argv[0]);
         printf("  %s check                  - 单次检查变化\n", argv[0]);

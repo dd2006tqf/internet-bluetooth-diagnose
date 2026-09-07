@@ -50,8 +50,13 @@ Testing/
 vmlinux.h
 server/vmlinux.h
 
-# AI 助手个人配置
+# 客户端构建副产物
+client/test_client
+
+# AI 助手个人配置与临时会话文件
 .claude/
+claude-progress.txt
+session-state.md
 
 # 测试二进制文件
 server/test/net_info
