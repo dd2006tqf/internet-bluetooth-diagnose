@@ -1,13 +1,37 @@
-# CI: push 后的最终安全网
-# 本地已验证通过，push 后跑 CI 作为二次保障
 name: CI
 
 on:
   push:
     branches: [main, dev/**]
+  pull_request:
+    branches: [main, dev/**]
 
 jobs:
+  lint-and-check:
+    name: 静态规范检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查行尾与非法字符
+        run: |
+          echo "检查是否有 Windows CRLF 换行符..."
+          if grep -rU $'\r' --exclude-dir={.git,build*,dist*,logs} .; then
+            echo "❌ 发现 CRLF 换行符，请使用 LF"
+            exit 1
+          fi
+          echo "✅ 代码换行符检查通过"
+
+      - name: 检查敏感配置或二进制提交
+        run: |
+          echo "检查仓库中是否有不当提交的大文件或二进制..."
+          git ls-files | grep -E '\.(bin|so|o|a|log)$' | grep -v 'board-assets' && {
+            echo "❌ 发现受限二进制/日志文件被跟踪提交"
+            exit 1
+          } || echo "✅ 仓库卫生检查通过"
+
   build-and-test:
+    name: x86 编译与全量单元测试
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,44 +51,4 @@ jobs:
         run: cmake --build build-x86 -j$(nproc)
 
       - name: 运行全部单元测试
-        run: |
-          PASS=0; FAIL=0
-          for bin in build-x86/server/test/test_net_info \
-                     build-x86/server/test/test_quality_assessor_gtest \
-                     build-x86/server/test/test_anomaly_detector_gtest \
-                     build-x86/server/test/test_audio_fusion_gtest \
-                     build-x86/server/test/test_band_conflict_gtest \
-                     build-x86/server/test/test_serializer_gtest \
-                     build-x86/server/test/test_event_manager_gtest \
-                     build-x86/server/test/test_bt_full_link_gtest \
-                     build-x86/server/test/test_bt_monitor \
-                     build-x86/server/test/test_iface_type_gtest \
-                     build-x86/server/test/test_logger_gtest \
-                     build-x86/server/test/test_traffic_analyzer_gtest \
-                     build-x86/server/test/test_weak_netmgr_gtest \
-                     build-x86/server/test/test_net_iface_gtest \
-                     build-x86/server/test/test_rtt_monitor_gtest \
-                     build-x86/server/test/test_bt_monitor_extra_gtest \
-                     build-x86/server/test/test_jitter_monitor_gtest \
-                     build-x86/server/test/test_dns_monitor_gtest \
-                     build-x86/server/test/test_database_manager_gtest \
-                     build-x86/server/test/test_weaknet_config_gtest \
-                     build-x86/server/test/test_monitor_registry_gtest \
-                     build-x86/server/test/test_monitor_manager_gtest \
-                     build-x86/server/test/test_ebpf_monitor_observability_gtest \
-                     build-x86/server/test/test_net_wifiriss_gtest \
-                     build-x86/client/test_lifecycle_api; do
-            if [ -f "$bin" ]; then
-              name=$(basename "$bin")
-              if timeout 30 "$bin" >/dev/null 2>&1; then
-                echo "✅ $name"
-                PASS=$((PASS + 1))
-              else
-                echo "❌ $name"
-                FAIL=$((FAIL + 1))
-              fi
-            fi
-          done
-          echo "---"
-          echo "通过: $PASS / $((PASS + FAIL))"
-          if [ "$FAIL" -gt 0 ]; then exit 1; fi
+        run: ctest --test-dir build-x86 --output-on-failure

@@ -33,6 +33,17 @@ jobs:
 
       - name: 启动 ARM64 构建容器
         run: |
+          # 优先尝试从 GitHub Container Registry 拉取预编译好的 arm64-builder 镜像以节省 10+ 分钟的依赖构建时间
+          IMAGE_NAME="ghcr.io/${{ github.repository_owner }}/weaknet-builder:bullseye-arm64"
+          if ! docker pull "$IMAGE_NAME" 2>/dev/null; then
+            echo "ℹ️ GHCR 预构建镜像不可用，回退至 debian:11-slim 基础镜像"
+            IMAGE_NAME="debian:11-slim"
+            NEED_INSTALL=true
+          else
+            echo "⚡ 成功使用预编译构建镜像 $IMAGE_NAME"
+            NEED_INSTALL=false
+          fi
+
           docker run -d \
             --name ${{ env.CONTAINER }} \
             --platform linux/arm64 \
@@ -40,25 +51,26 @@ jobs:
             -e HOME=/tmp \
             -v "$PWD":/src:Z \
             -w /src \
-            debian:11-slim \
+            "$IMAGE_NAME" \
             sleep infinity
 
-      - name: 安装编译依赖
-        run: |
-          docker exec ${{ env.CONTAINER }} bash -c '
-          apt-get update -qq && apt-get install -y -qq \
-            build-essential g++ make cmake pkg-config \
-            clang llvm git ca-certificates \
-            libdbus-1-dev libgoogle-glog-dev libelf-dev \
-            zlib1g-dev libcap-dev libnl-3-dev libnl-genl-3-dev \
-            libsqlite3-dev libgtest-dev
+          if [ "$NEED_INSTALL" = "true" ]; then
+            echo "--- 安装依赖 ---"
+            docker exec ${{ env.CONTAINER }} bash -c '
+            apt-get update -qq && apt-get install -y -qq \
+              build-essential g++ make cmake pkg-config \
+              clang llvm git ca-certificates \
+              libdbus-1-dev libgoogle-glog-dev libelf-dev \
+              zlib1g-dev libcap-dev libnl-3-dev libnl-genl-3-dev \
+              libsqlite3-dev libgtest-dev
 
-          git clone --depth 1 --branch v1.3.0 https://github.com/libbpf/libbpf.git /tmp/libbpf
-          make -C /tmp/libbpf/src -j1
-          make -C /tmp/libbpf/src install PREFIX=/usr/local LIBDIR=/usr/local/lib
-          echo "/usr/local/lib" > /etc/ld.so.conf.d/local-libbpf.conf
-          ldconfig
-          '
+            git clone --depth 1 --branch v1.3.0 https://github.com/libbpf/libbpf.git /tmp/libbpf
+            make -C /tmp/libbpf/src -j1
+            make -C /tmp/libbpf/src install PREFIX=/usr/local LIBDIR=/usr/local/lib
+            echo "/usr/local/lib" > /etc/ld.so.conf.d/local-libbpf.conf
+            ldconfig
+            '
+          fi
 
       - name: CMake 编译
         run: |
@@ -72,27 +84,7 @@ jobs:
         run: |
           docker exec ${{ env.CONTAINER }} bash -c '
           cd /src
-          for bin in build-arm64/server/test/test_database_manager_gtest \
-                     build-arm64/server/test/test_net_info \
-                     build-arm64/server/test/test_quality_assessor_gtest \
-                     build-arm64/server/test/test_serializer_gtest \
-                     build-arm64/server/test/test_event_manager_gtest \
-                     build-arm64/server/test/test_iface_type_gtest \
-                     build-arm64/server/test/test_logger_gtest \
-                     build-arm64/server/test/test_weaknet_config_gtest \
-                     build-arm64/server/test/test_monitor_registry_gtest \
-                     build-arm64/server/test/test_ebpf_monitor_observability_gtest \
-                     build-arm64/server/test/test_net_wifiriss_gtest \
-                     build-arm64/server/test/test_ebpf; do
-            if [ -f "$bin" ]; then
-              name=$(basename "$bin")
-              if timeout 30 "$bin" >/dev/null 2>&1; then
-                echo "✅ $name"
-              else
-                echo "❌ $name"
-              fi
-            fi
-          done
+          ctest --test-dir build-arm64 --output-on-failure
           '
 
       - name: 打包 dist-arm64

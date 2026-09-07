@@ -135,10 +135,14 @@ foreach(test_target
     test_dns_monitor_gtest
     test_database_manager_gtest
     test_net_wifiriss_gtest
-    test_ebpf
     test_ebpf_monitor_observability_gtest
     test_weaknet_config_gtest
     test_monitor_registry_gtest
     test_monitor_manager_gtest)
     add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()
+
+# test_ebpf 需要内核挂载权限及 BPF 对象，仅在启用 eBPF 编译且有硬件支持时注册到 CTest
+if(BUILD_EBPF)
+    add_test(NAME test_ebpf COMMAND test_ebpf)
+endif()
