@@ -144,6 +144,24 @@ async def api_restart_monitor(name: str):
     return res
 
 
+@app.post("/api/monitors/{name}/enable")
+async def api_enable_monitor(name: str):
+    """启动/开启指定监控器插件（从 stopped 状态恢复）"""
+    res = bridge.enable_monitor(name)
+    if not res.get("success"):
+        raise HTTPException(status_code=500, detail=res.get("error", "Failed to enable monitor"))
+    return res
+
+
+@app.post("/api/monitors/{name}/disable")
+async def api_disable_monitor(name: str):
+    """停止/禁用指定监控器插件"""
+    res = bridge.disable_monitor(name)
+    if not res.get("success"):
+        raise HTTPException(status_code=500, detail=res.get("error", "Failed to disable monitor"))
+    return res
+
+
 @app.get("/api/ebpf/health")
 async def api_ebpf_health():
     """获取 8 大内核 eBPF 探针的加载状态、探针数及微秒级性能读写指标"""

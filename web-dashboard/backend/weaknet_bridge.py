@@ -125,6 +125,14 @@ class WeakNetBridge:
         lib.weaknet_restart_monitor.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
         lib.weaknet_restart_monitor.restype = ctypes.c_bool
 
+        # bool weaknet_enable_monitor(const char* name, char* buffer, size_t buffer_size, char* error_buffer, size_t error_size)
+        lib.weaknet_enable_monitor.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+        lib.weaknet_enable_monitor.restype = ctypes.c_bool
+
+        # bool weaknet_disable_monitor(const char* name, char* buffer, size_t buffer_size, char* error_buffer, size_t error_size)
+        lib.weaknet_disable_monitor.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+        lib.weaknet_disable_monitor.restype = ctypes.c_bool
+
         # bool weaknet_get_dns_stats(...)
         lib.weaknet_get_dns_stats.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
         lib.weaknet_get_dns_stats.restype = ctypes.c_bool
@@ -263,6 +271,12 @@ class WeakNetBridge:
 
     def restart_monitor(self, name: str) -> Dict[str, Any]:
         return self._call_string_api("weaknet_restart_monitor", 4096, name.encode("utf-8"))
+
+    def enable_monitor(self, name: str) -> Dict[str, Any]:
+        return self._call_string_api("weaknet_enable_monitor", 4096, name.encode("utf-8"))
+
+    def disable_monitor(self, name: str) -> Dict[str, Any]:
+        return self._call_string_api("weaknet_disable_monitor", 4096, name.encode("utf-8"))
 
     def get_dns_stats(self) -> Dict[str, Any]:
         return self._call_string_api("weaknet_get_dns_stats", 4096)

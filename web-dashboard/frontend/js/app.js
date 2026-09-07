@@ -191,7 +191,7 @@ async function fetchMonitors() {
 
         const div = document.createElement('div');
         div.className = 'monitor-item';
-        div.onclick = () => restartMonitor(m.name);
+        div.onclick = () => openMonitorModal(m);
         div.innerHTML = `
           <div class="monitor-name" title="${m.name}">${m.name}</div>
           <span class="monitor-tag ${isRunning ? 'running' : 'failed'}">${m.state}</span>
@@ -206,19 +206,64 @@ async function fetchMonitors() {
   }
 }
 
-async function restartMonitor(name) {
-  if (!confirm(`确定要重启监控器插件 ${name} 吗？`)) return;
+// 监控器卡片弹窗控制逻辑
+let selectedMonitor = null;
+
+function openMonitorModal(monitor) {
+  selectedMonitor = monitor;
+  document.getElementById('ctrl-modal-name').innerText = monitor.name;
+
+  const stateTag = document.getElementById('ctrl-modal-state');
+  const isRunning = monitor.state.toLowerCase() === 'running';
+  stateTag.innerText = monitor.state.toUpperCase();
+  stateTag.className = `monitor-tag ${isRunning ? 'running' : 'failed'}`;
+
+  const btnStart = document.getElementById('btn-modal-start');
+  const btnStop = document.getElementById('btn-modal-stop');
+  const btnRestart = document.getElementById('btn-modal-restart');
+
+  // 根据当前运行状态智能置灰或高亮
+  if (isRunning) {
+    btnStart.style.display = 'none';
+    btnStop.style.display = 'inline-flex';
+    btnRestart.style.display = 'inline-flex';
+  } else {
+    btnStart.style.display = 'inline-flex';
+    btnStop.style.display = 'none';
+    btnRestart.style.display = 'none';
+  }
+
+  btnRestart.onclick = () => executeMonitorAction(monitor.name, 'restart');
+  btnStart.onclick = () => executeMonitorAction(monitor.name, 'enable');
+  btnStop.onclick = () => executeMonitorAction(monitor.name, 'disable');
+
+  document.getElementById('monitor-control-modal').classList.add('show');
+}
+
+function closeMonitorModal() {
+  document.getElementById('monitor-control-modal').classList.remove('show');
+}
+
+async function executeMonitorAction(name, action) {
+  const actionNames = {
+    restart: '重启',
+    enable: '启动',
+    disable: '停止'
+  };
+  const label = actionNames[action] || action;
+
   try {
-    const res = await fetch(`/api/monitors/${name}/restart`, { method: 'POST' });
+    const res = await fetch(`/api/monitors/${name}/${action}`, { method: 'POST' });
     const json = await res.json();
     if (json.success) {
-      alert(`插件 ${name} 重启成功！`);
+      alert(`监控器 [${name}] ${label}成功！`);
+      closeMonitorModal();
       fetchMonitors();
     } else {
-      alert(`重启失败: ${json.error || '未知错误'}`);
+      alert(`${label}失败: ${json.detail || json.error || '依赖限制或未知错误'}`);
     }
   } catch (e) {
-    alert('重启请求异常: ' + e);
+    alert(`${label}请求异常: ` + e);
   }
 }
 
