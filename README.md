@@ -80,6 +80,7 @@ AI-powered-Network-Diagnostics/
 ### 客户端功能
 - **C/C++ API**: 提供完整的C和C++接口
 - **动态库**: 可链接的动态库 `libweaknet.so`
+- **Web 可视化仪表盘**: 现代暗黑风 SPA 态势感知大屏（FastAPI + ECharts + AI 一键根因诊断）
 - **命令行工具**: 命令行测试工具
 - **事件订阅**: 支持多种网络事件订阅
 - **健康检查**: 网络健康状态检查
@@ -113,6 +114,10 @@ AI-powered-Network-Diagnostics/
 
 # 历史数据查询
 ./build-x86/server/history_query_tool --iface wlan0 --last 1h
+
+# 启动 Web 可视化仪表盘 (开发板或本地)
+python3 -m uvicorn web-dashboard.backend.app:app --host 0.0.0.0 --port 8080
+# 浏览器访问: http://radxa-cubie-a7a.local:8080 (同局域网) 或 http://localhost:8080 (SSH隧道)
 ```
 
 ### C/C++ 编程接口

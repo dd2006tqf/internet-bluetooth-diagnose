@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WeakNet AI 智能网络与蓝牙诊断仪表盘</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+  <script src="/static/js/echarts.min.js"></script>
+</head>
+<body>
+
+  <!-- 顶部导航 -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span class="brand-title">WeakNet</span>
+          <span class="brand-badge">ARM64 eBPF Edition</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="header-status">
+      <div class="status-badge">
+        <div id="ws-indicator" class="status-dot offline"></div>
+        <span id="ws-status-text">连接中...</span>
+      </div>
+      <div class="status-badge" style="border-left: 1px solid var(--border-color); padding-left: 14px;">
+        <span>主网卡: </span><strong id="header-iface" style="color: var(--color-cyan); margin-left: 4px;">-</strong>
+      </div>
+      <button class="btn btn-primary" id="btn-ai-diagnose">
+        <span>✨ 一键 AI 智能诊断</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- 主体内容 -->
+  <main>
+
+    <!-- 告警与诊断提示横幅 -->
+    <div id="alert-box" class="alert-banner" style="display: none;">
+      <span style="font-size: 16px;">⚠️</span>
+      <span id="alert-text">检测到网络异常</span>
+    </div>
+
+    <!-- 顶层：健康表盘 + 4 大 KPI 卡片 -->
+    <div class="grid-2">
+      <!-- 综合健康分表盘 -->
+      <div class="card" style="align-items: center; justify-content: center; min-height: 260px;">
+        <div class="card-header" style="width: 100%;">
+          <div class="card-title">🌐 综合网络健康评级</div>
+          <span id="badge-quality-level" class="monitor-tag" style="font-size: 12px;">FAIR</span>
+        </div>
+        <div id="chart-gauge" style="width: 100%; height: 210px;"></div>
+      </div>
+
+      <!-- 4 大核心 KPI 卡片网格 -->
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div class="grid-4" style="height: 100%;">
+          <div class="kpi-card">
+            <div class="kpi-label">往返延迟 (RTT)</div>
+            <div class="kpi-val" id="kpi-rtt">-- <span style="font-size: 14px;">ms</span></div>
+            <div class="kpi-sub" id="kpi-rtt-sub">ICMP ping 探测</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">延迟抖动 (Jitter)</div>
+            <div class="kpi-val" id="kpi-jitter">-- <span style="font-size: 14px;">ms</span></div>
+            <div class="kpi-sub">RTT 动态离散方差</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">Wi-Fi 信号 (RSSI)</div>
+            <div class="kpi-val" id="kpi-rssi">-- <span style="font-size: 14px;">dBm</span></div>
+            <div class="kpi-sub" id="kpi-rssi-source">内核 nl80211 驱动</div>
+          </div>
+          <div class="kpi-card">
+            <div class="kpi-label">内核 TCP 丢包率</div>
+            <div class="kpi-val" id="kpi-tcp-loss">0.00 <span style="font-size: 14px;">%</span></div>
+            <div class="kpi-sub">eBPF 内核重传监测</div>
+          </div>
+        </div>
+
+        <!-- 频段共存感知状态条 -->
+        <div class="card" style="padding: 12px 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 13px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <span style="font-size: 16px;">📡</span>
+              <span>Wi-Fi 频段感知: <strong id="val-wifi-band" style="color: var(--color-cyan);">2.4GHz</strong></span>
+              <span id="tag-band-status" class="monitor-tag running" style="margin-left: 8px;">正交免干扰</span>
+            </div>
+            <div style="color: var(--text-muted);" id="val-conflict-desc">暂无同频微波冲突</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 中层：时序历史多维走势图 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">📈 网络健康时序趋势 (SQLite WAL 持久化分析)</div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn" onclick="fetchHistory(60)">最近 1 小时</button>
+          <button class="btn" onclick="fetchHistory(300)">最近 5 小时</button>
+          <button class="btn" onclick="fetchHistory(1440)">过去 24 小时</button>
+        </div>
+      </div>
+      <div id="chart-history" style="width: 100%; height: 280px;"></div>
+    </div>
+
+    <!-- 底层三列：16 监控器矩阵 + 8 大 eBPF 探针体检 + 周边蓝牙雷达 -->
+    <div class="grid-3">
+      <!-- 16 监控器矩阵 -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🧩 16 大监控器插件态势</div>
+          <span style="font-size: 12px; color: var(--text-dim);" id="monitors-count">16/16 运行中</span>
+        </div>
+        <div class="monitors-grid" id="monitors-list">
+          <!-- 动态注入 -->
+        </div>
+      </div>
+
+      <!-- 8 大 eBPF 探针健康与微秒读写性能 -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🔬 8 大 eBPF 内核探针体检</div>
+          <span class="brand-badge" style="font-size: 10px;">微秒级低开销</span>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>探针名称</th>
+                <th>挂载点</th>
+                <th>采样次数</th>
+                <th>平均读取耗时</th>
+              </tr>
+            </thead>
+            <tbody id="ebpf-table-body">
+              <!-- 动态注入 -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 蓝牙设备与信号感知 -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">📶 周边蓝牙与音频拓扑</div>
+          <span style="font-size: 12px; color: var(--color-cyan);" id="bt-count">扫描中...</span>
+        </div>
+        <div class="table-container" style="max-height: 240px; overflow-y: auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>设备名称 / MAC</th>
+                <th>RSSI</th>
+                <th>类型</th>
+                <th>状态</th>
+              </tr>
+            </thead>
+            <tbody id="bt-table-body">
+              <!-- 动态注入 -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- AI 一键智能诊断弹窗 -->
+  <div class="modal-backdrop" id="ai-modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 18px;">✨</span>
+          <span style="font-weight: 700; font-size: 16px;">AI 网络故障知识库智能归因报告</span>
+        </div>
+        <button class="modal-close" onclick="closeAiModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="ai-modal-body">
+        <div style="text-align: center; padding: 30px; color: var(--text-muted);">
+          正在检索本地专家知识库并分析多维度时序指标...
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    WeakNet: AI-powered Network & Bluetooth Diagnostics System | Powered by eBPF & D-Bus on Radxa Cubie A7A
+  </footer>
+
+  <script src="/static/js/charts.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
