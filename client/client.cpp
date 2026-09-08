@@ -648,7 +648,7 @@ public:
 
         DBusError err;
         dbus_error_init(&err);
-        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 3000, &err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 8000, &err);
         dbus_message_unref(msg);
 
         if (dbus_error_is_set(&err)) {
@@ -709,7 +709,7 @@ public:
 
         DBusError err;
         dbus_error_init(&err);
-        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 3000, &err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 8000, &err);
         dbus_message_unref(msg);
 
         if (dbus_error_is_set(&err)) {
@@ -748,7 +748,7 @@ public:
 
         DBusError err;
         dbus_error_init(&err);
-        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 3000, &err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 8000, &err);
         dbus_message_unref(msg);
 
         if (dbus_error_is_set(&err)) {
@@ -1028,7 +1028,7 @@ private:
         }
         DBusError err;
         dbus_error_init(&err);
-        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 3000, &err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 8000, &err);
         dbus_message_unref(msg);
         if (dbus_error_is_set(&err)) {
             errorMsg = std::string(label) + "查询失败: " + err.message;

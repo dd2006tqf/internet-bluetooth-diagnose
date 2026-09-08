@@ -124,21 +124,22 @@ async def startup_event():
 
 
 async def background_metrics_emitter():
-    """后台协程：每 2 秒采集一次核心健康数据并广播推送给前端 WebSocket 连接"""
+    """后台协程：每 3 秒非阻塞采集一次核心健康数据并广播推送给前端 WebSocket 连接"""
+    loop = asyncio.get_event_loop()
     while True:
         try:
             if ws_manager.active_connections:
-                health = bridge.get_health()
-                conflict = bridge.get_coexistence_conflict()
+                health = await loop.run_in_executor(None, bridge.get_health)
+                conflict = await loop.run_in_executor(None, bridge.get_coexistence_conflict)
                 await ws_manager.broadcast({
                     "type": "METRICS_UPDATE",
-                    "timestamp": asyncio.get_event_loop().time(),
+                    "timestamp": loop.time(),
                     "health": health.get("data") if health.get("success") else None,
                     "conflict": conflict.get("data") if conflict.get("success") else None
                 })
         except Exception as e:
             logger.debug("Broadcast error: %s", e)
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(3.0)
 
 
 # ============================================================================
@@ -148,13 +149,15 @@ async def background_metrics_emitter():
 @app.get("/api/health")
 async def api_health():
     """获取当前网络质量健康快照（质量评分、RTT、信号强度、TCP丢包率、issues等）"""
-    return bridge.get_health()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bridge.get_health)
 
 
 @app.get("/api/interfaces")
 async def api_interfaces():
     """获取系统可用网络接口列表"""
-    return bridge.get_interfaces()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bridge.get_interfaces)
 
 
 @app.get("/api/monitors")
@@ -215,55 +218,64 @@ async def api_get_logs():
 @app.get("/api/ebpf/health")
 async def api_ebpf_health():
     """获取 8 大内核 eBPF 探针的加载状态、探针数及微秒级性能读写指标"""
-    return bridge.get_ebpf_health()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bridge.get_ebpf_health)
 
 
 @app.get("/api/ebpf/skb-drop")
 async def api_skb_drop():
     """获取内核 Socket 丢包原因精确归因统计快照"""
-    return bridge.get_skb_drop_stats()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bridge.get_skb_drop_stats)
 
 
 @app.get("/api/ebpf/dns")
 async def api_dns_stats():
     """获取 DNS eBPF 监控解析统计"""
-    return bridge.get_dns_stats()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bridge.get_dns_stats)
 
 
 @app.get("/api/ebpf/wifi-loss")
 async def api_wifi_loss_stats():
     """获取 Wi-Fi 协议链路层丢包统计"""
-    return bridge.get_wifi_loss_stats()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bridge.get_wifi_loss_stats)
 
 
 @app.get("/api/ebpf/http-latency")
 async def api_http_latency():
     """获取 HTTP 事务延迟统计指标"""
-    return bridge.get_http_latency_stats()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bridge.get_http_latency_stats)
 
 
 @app.get("/api/ebpf/profiling")
 async def api_process_profiling():
     """获取进程级网络流量与重传画像"""
-    return bridge.get_process_profiling()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bridge.get_process_profiling)
 
 
 @app.get("/api/bluetooth/adapter")
 async def api_bluetooth_adapter():
     """获取蓝牙适配器状态"""
-    return bridge.get_bluetooth_adapter()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bridge.get_bluetooth_adapter)
 
 
 @app.get("/api/bluetooth/devices")
 async def api_bluetooth_devices():
     """获取周围发现的蓝牙设备列表与信号评级"""
-    return bridge.get_bluetooth_devices()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bridge.get_bluetooth_devices)
 
 
 @app.get("/api/coexistence")
 async def api_coexistence():
     """获取 Wi-Fi 与蓝牙 2.4GHz 射频共存与干扰分析"""
-    return bridge.get_coexistence_conflict()
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bridge.get_coexistence_conflict)
 
 
 @app.get("/api/history")

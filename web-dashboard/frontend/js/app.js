@@ -138,21 +138,21 @@ function updateConflictUI(conflict) {
 }
 
 // ============================================================================
-// 数据请求拉取
+// 数据请求拉取（并发请求，互不阻塞）
 // ============================================================================
-async function fetchAllData() {
-  await fetchHealth();
-  await fetchMonitors();
-  await fetchEbpfHealth();
-  await fetchBluetooth();
-  await fetchCoexistence();
-  await fetchHistory(60);
+function fetchAllData() {
+  fetchHealth();
+  fetchMonitors();
+  fetchEbpfHealth();
+  fetchBluetooth();
+  fetchCoexistence();
+  fetchHistory(60);
 }
 
-async function fetchPeriodicData() {
-  await fetchMonitors();
-  await fetchEbpfHealth();
-  await fetchBluetooth();
+function fetchPeriodicData() {
+  fetchMonitors();
+  fetchEbpfHealth();
+  fetchBluetooth();
 }
 
 async function fetchHealth() {
