@@ -34,7 +34,7 @@ function initCharts() {
             width: 8,
             offsetCenter: [0, '-45%'],
             itemStyle: {
-              color: '#e5e7eb'
+              color: '#334155'
             }
           },
           axisLine: {
@@ -42,10 +42,10 @@ function initCharts() {
             lineStyle: {
               width: 8,
               color: [
-                [0.5, 'rgba(239, 68, 68, 0.6)'],
-                [0.75, 'rgba(245, 158, 11, 0.6)'],
-                [0.9, 'rgba(59, 130, 246, 0.7)'],
-                [1, 'rgba(16, 185, 129, 0.8)']
+                [0.5, '#dc2626'],
+                [0.75, '#d97706'],
+                [0.9, '#0284c7'],
+                [1, '#059669']
               ]
             }
           },
@@ -60,7 +60,7 @@ function initCharts() {
             show: true,
             offsetCenter: [0, '20%'],
             fontSize: 12,
-            color: '#94a3b8'
+            color: '#64748b'
           },
           detail: {
             valueAnimation: true,
@@ -68,7 +68,7 @@ function initCharts() {
             fontWeight: '600',
             offsetCenter: [0, '-10%'],
             formatter: '{value}',
-            color: '#f3f4f6'
+            color: '#0f172a'
           },
           data: [
             {
@@ -90,13 +90,14 @@ function initCharts() {
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'axis',
-        backgroundColor: '#111823',
-        borderColor: 'rgba(255,255,255,0.08)',
-        textStyle: { color: '#f1f5f9', fontSize: 12 }
+        backgroundColor: '#ffffff',
+        borderColor: '#e2e8f0',
+        textStyle: { color: '#0f172a', fontSize: 12 },
+        extraCssText: 'box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);'
       },
       legend: {
         data: ['RTT 延迟 (ms)', 'Wi-Fi 信号 (dBm)', '综合得分'],
-        textStyle: { color: '#94a3b8' },
+        textStyle: { color: '#64748b' },
         right: 10
       },
       grid: {
@@ -109,16 +110,16 @@ function initCharts() {
         type: 'category',
         boundaryGap: false,
         data: [],
-        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
-        axisLabel: { color: '#94a3b8', fontSize: 11 }
+        axisLine: { lineStyle: { color: '#cbd5e1' } },
+        axisLabel: { color: '#64748b', fontSize: 11 }
       },
       yAxis: [
         {
           type: 'value',
           name: 'ms / 分数',
-          axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
-          splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
-          axisLabel: { color: '#94a3b8' }
+          axisLine: { lineStyle: { color: '#cbd5e1' } },
+          splitLine: { lineStyle: { color: '#f1f5f9' } },
+          axisLabel: { color: '#64748b' }
         },
         {
           type: 'value',
@@ -126,9 +127,9 @@ function initCharts() {
           min: -100,
           max: 0,
           position: 'right',
-          axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
+          axisLine: { lineStyle: { color: '#cbd5e1' } },
           splitLine: { show: false },
-          axisLabel: { color: '#94a3b8' }
+          axisLabel: { color: '#64748b' }
         }
       ],
       series: [
@@ -137,11 +138,11 @@ function initCharts() {
           type: 'line',
           smooth: true,
           showSymbol: false,
-          lineStyle: { width: 2, color: '#38bdf8' },
+          lineStyle: { width: 2, color: '#0284c7' },
           areaStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: 'rgba(56, 189, 248, 0.2)' },
-              { offset: 1, color: 'rgba(56, 189, 248, 0.0)' }
+              { offset: 0, color: 'rgba(2, 132, 199, 0.15)' },
+              { offset: 1, color: 'rgba(2, 132, 199, 0.01)' }
             ])
           },
           data: []
@@ -152,7 +153,7 @@ function initCharts() {
           yAxisIndex: 1,
           smooth: true,
           showSymbol: false,
-          lineStyle: { width: 2, color: '#10b981' },
+          lineStyle: { width: 2, color: '#059669' },
           data: []
         },
         {
@@ -160,7 +161,7 @@ function initCharts() {
           type: 'line',
           smooth: true,
           showSymbol: false,
-          lineStyle: { width: 2, color: '#f59e0b', type: 'dashed' },
+          lineStyle: { width: 2, color: '#d97706', type: 'dashed' },
           data: []
         }
       ]

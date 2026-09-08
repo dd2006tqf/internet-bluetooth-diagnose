@@ -1,37 +1,37 @@
 /* ==========================================================================
-   WeakNet Dashboard — 极简商务工程风暗色主题 (Refined & Minimalist)
+   WeakNet Dashboard — 简约严谨专业明亮主题 (Clean & Rigorous Light Theme)
    ========================================================================== */
 
 :root {
-  /* 背景层级：低饱和自然暗夜色系，微偏冷蓝灰，更加通透柔和 */
-  --bg-base: #0b0f17;
-  --bg-surface: #111823;
-  --bg-card: #172130;
-  --bg-card-hover: #1e2a3c;
-  --bg-input: #0e141f;
+  /* 背景层级：高质感浅色体系，白灰层次分明，干净素雅 */
+  --bg-base: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f1f5f9;
+  --bg-input: #ffffff;
 
-  /* 边框色：微量半透明光晕与分层边框 */
-  --border-color: rgba(255, 255, 255, 0.07);
-  --border-subtle: rgba(255, 255, 255, 0.035);
-  --border-focus: #3b82f6;
+  /* 边框色：细腻微灰线条，严谨规整 */
+  --border-color: #e2e8f0;
+  --border-subtle: #f1f5f9;
+  --border-focus: #2563eb;
 
-  /* 文字配色体系：对比度适中、抗眼疲劳 */
-  --text-main: #f1f5f9;
-  --text-muted: #94a3b8;
-  --text-dim: #64748b;
+  /* 文字配色体系：深沉内敛，高可读性 */
+  --text-main: #0f172a;
+  --text-muted: #64748b;
+  --text-dim: #94a3b8;
 
-  /* 功能语义强调色（精选自然和谐色调） */
-  --color-brand: #38bdf8;
-  --color-cyan: #38bdf8;
-  --color-success: #10b981;
-  --color-warning: #f59e0b;
-  --color-danger: #f43f5e;
-  --color-info: #0ea5e9;
+  /* 功能语义强调色（工程严谨稳重色系） */
+  --color-brand: #0284c7;
+  --color-cyan: #0284c7;
+  --color-success: #059669;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
+  --color-info: #2563eb;
 
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 }
 
 * {
@@ -62,6 +62,7 @@ header {
   position: sticky;
   top: 0;
   z-index: 100;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
 }
 
 .brand {
@@ -78,16 +79,18 @@ header {
 .brand-title {
   font-size: 16px;
   font-weight: 600;
-  letter-spacing: 0.5px;
+  color: var(--text-main);
+  letter-spacing: 0.3px;
 }
 
 .brand-badge {
   font-size: 11px;
-  background-color: rgba(255, 255, 255, 0.05);
+  background-color: #f1f5f9;
   color: var(--text-muted);
   border: 1px solid var(--border-color);
   padding: 1px 6px;
   border-radius: var(--radius-sm);
+  font-weight: 500;
 }
 
 .header-status {
@@ -110,7 +113,7 @@ header {
 }
 
 .iface-select {
-  background-color: var(--bg-card);
+  background-color: #f8fafc;
   color: var(--color-brand);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
@@ -123,8 +126,8 @@ header {
 }
 
 .iface-select:hover {
-  background-color: var(--bg-card-hover);
-  border-color: rgba(255, 255, 255, 0.2);
+  background-color: #f1f5f9;
+  border-color: #cbd5e1;
 }
 
 .iface-select:focus {
@@ -146,9 +149,9 @@ header {
   background-color: var(--color-danger);
 }
 
-/* 极简按钮 */
+/* 极简严谨按钮 */
 .btn {
-  background-color: var(--bg-card);
+  background-color: var(--bg-surface);
   color: var(--text-main);
   border: 1px solid var(--border-color);
   padding: 5px 12px;
@@ -163,18 +166,18 @@ header {
 }
 
 .btn:hover {
-  background-color: var(--bg-card-hover);
-  border-color: rgba(255, 255, 255, 0.2);
+  background-color: #f8fafc;
+  border-color: #cbd5e1;
 }
 
 .btn-primary {
-  background-color: #2563eb;
-  border-color: #1d4ed8;
+  background-color: #0284c7;
+  border-color: #0369a1;
   color: #fff;
 }
 
 .btn-primary:hover {
-  background-color: #1d4ed8;
+  background-color: #0369a1;
 }
 
 /* 主视图布局 */
@@ -213,7 +216,7 @@ main {
   }
 }
 
-/* 简约卡片 */
+/* 简约白底卡片 */
 .card {
   background-color: var(--bg-surface);
   border: 1px solid var(--border-color);
@@ -221,11 +224,12 @@ main {
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02), 0 1px 2px rgba(0, 0, 0, 0.03);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .card:hover {
-  border-color: rgba(255, 255, 255, 0.12);
+  border-color: #cbd5e1;
 }
 
 .card-header {
@@ -246,19 +250,20 @@ main {
 
 /* KPI 指标卡片 */
 .kpi-card {
-  background: linear-gradient(180deg, var(--bg-card) 0%, rgba(23, 33, 48, 0.6) 100%);
+  background: #ffffff;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
   transition: transform 0.15s ease, border-color 0.15s ease;
 }
 
 .kpi-card:hover {
   transform: translateY(-1px);
-  border-color: rgba(56, 189, 248, 0.25);
+  border-color: #94a3b8;
 }
 
 .kpi-label {
@@ -269,6 +274,7 @@ main {
 .kpi-val {
   font-size: 22px;
   font-weight: 600;
+  color: var(--text-main);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
@@ -279,20 +285,22 @@ main {
 
 /* 告警横幅 */
 .alert-banner {
-  background: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.25);
+  background: #fffbeb;
+  border: 1px solid #fef3c7;
+  border-left: 3px solid #f59e0b;
   border-radius: var(--radius-sm);
   padding: 8px 12px;
-  color: #f59e0b;
+  color: #b45309;
   font-size: 12px;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 .alert-banner.danger {
-  background: rgba(239, 68, 68, 0.08);
-  border-color: rgba(239, 68, 68, 0.25);
-  color: #ef4444;
+  background: #fef2f2;
+  border: 1px solid #fee2e2;
+  border-left-color: #ef4444;
+  color: #b91c1c;
 }
 
 /* 16 监控器矩阵 */
@@ -303,7 +311,7 @@ main {
 }
 
 .monitor-item {
-  background-color: var(--bg-card);
+  background-color: #f8fafc;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   padding: 8px 10px;
@@ -311,16 +319,18 @@ main {
   flex-direction: column;
   gap: 4px;
   cursor: pointer;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, background-color 0.15s;
 }
 
 .monitor-item:hover {
-  border-color: var(--border-focus);
+  background-color: #f1f5f9;
+  border-color: #94a3b8;
 }
 
 .monitor-name {
   font-size: 11px;
   font-weight: 600;
+  color: var(--text-main);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -331,10 +341,11 @@ main {
   padding: 1px 5px;
   border-radius: 3px;
   width: fit-content;
+  font-weight: 500;
 }
-.monitor-tag.running { background: rgba(16, 185, 129, 0.12); color: #10b981; }
-.monitor-tag.failed { background: rgba(239, 68, 68, 0.12); color: #ef4444; }
-.monitor-tag.stopped { background: rgba(148, 163, 184, 0.12); color: #94a3b8; }
+.monitor-tag.running { background: #dcfce7; color: #15803d; }
+.monitor-tag.failed { background: #fee2e2; color: #b91c1c; }
+.monitor-tag.stopped { background: #f1f5f9; color: #64748b; }
 
 /* 紧凑表格 */
 .table-container {
@@ -350,24 +361,26 @@ table {
 
 th {
   color: var(--text-muted);
+  background-color: #f8fafc;
   border-bottom: 1px solid var(--border-color);
   padding: 6px 8px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 td {
   padding: 6px 8px;
-  border-bottom: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-main);
 }
 
 tr:hover td {
-  background-color: rgba(255, 255, 255, 0.015);
+  background-color: #f8fafc;
 }
 
 /* 实时终端审计日志控制台 (Log Terminal) */
 .log-console {
-  background-color: #0b0f17;
-  border: 1px solid var(--border-color);
+  background-color: #0f172a;
+  border: 1px solid #1e293b;
   border-radius: var(--radius-sm);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
@@ -385,9 +398,9 @@ tr:hover td {
   line-height: 1.4;
 }
 
-.log-time { color: var(--text-dim); }
+.log-time { color: #64748b; }
 .log-mod { color: #38bdf8; font-weight: 500; }
-.log-msg { color: var(--text-main); word-break: break-all; }
+.log-msg { color: #f1f5f9; word-break: break-all; }
 .log-level-INFO { color: #94a3b8; }
 .log-level-SUCCESS { color: #34d399; }
 .log-level-ERROR { color: #f87171; }
@@ -397,7 +410,7 @@ tr:hover td {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(15, 23, 42, 0.4);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -413,7 +426,7 @@ tr:hover td {
 }
 
 .modal-content {
-  background-color: var(--bg-surface);
+  background-color: #ffffff;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
   width: 90%;
@@ -421,7 +434,7 @@ tr:hover td {
   max-height: 88vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
 }
 
 .modal-header {
@@ -430,6 +443,7 @@ tr:hover td {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  background-color: #f8fafc;
 }
 
 .modal-body {
@@ -450,7 +464,7 @@ tr:hover td {
 
 /* 监控器参数配置抽屉与表单 */
 .config-section {
-  background: var(--bg-card);
+  background: #f8fafc;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   padding: 12px;
@@ -493,18 +507,19 @@ tr:hover td {
 }
 
 .config-input {
-  background: var(--bg-surface);
-  border: 1px solid var(--border-color);
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
   color: var(--text-main);
   padding: 6px 10px;
   border-radius: var(--radius-sm);
   font-size: 12px;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .config-input:focus {
   border-color: var(--color-cyan);
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.1);
 }
 
 .config-actions {
@@ -519,15 +534,18 @@ tr:hover td {
   display: flex;
   align-items: center;
 }
-.config-status-msg.success { color: #34d399; }
-.config-status-msg.error { color: #f87171; }
+.config-status-msg.success { color: #059669; }
+.config-status-msg.error { color: #dc2626; }
 .config-status-msg.loading { color: var(--color-cyan); }
 
 .finding-card {
-  background: var(--bg-card);
-  border-left: 3px solid #3b82f6;
+  background: #f8fafc;
+  border-left: 3px solid #2563eb;
   border-radius: var(--radius-sm);
   padding: 10px;
+  border-top: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
 }
 .finding-card.CRITICAL { border-left-color: var(--color-danger); }
 .finding-card.HIGH { border-left-color: var(--color-warning); }
