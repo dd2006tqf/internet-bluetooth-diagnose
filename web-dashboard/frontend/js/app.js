@@ -138,8 +138,17 @@ function updateConflictUI(conflict) {
 }
 
 // ============================================================================
-// 数据请求拉取（并发请求，互不阻塞）
+// 数据请求拉取（并发请求 + 防重入锁，防网络抖动导致的请求积压与乱序覆盖）
 // ============================================================================
+const fetchFlags = {
+  health: false,
+  coexistence: false,
+  monitors: false,
+  ebpf: false,
+  bluetooth: false,
+  history: false
+};
+
 function fetchAllData() {
   fetchHealth();
   fetchMonitors();
@@ -156,6 +165,8 @@ function fetchPeriodicData() {
 }
 
 async function fetchHealth() {
+  if (fetchFlags.health) return;
+  fetchFlags.health = true;
   try {
     const res = await fetch('/api/health');
     const json = await res.json();
@@ -164,10 +175,14 @@ async function fetchHealth() {
     }
   } catch (e) {
     console.error('Fetch health failed', e);
+  } finally {
+    fetchFlags.health = false;
   }
 }
 
 async function fetchCoexistence() {
+  if (fetchFlags.coexistence) return;
+  fetchFlags.coexistence = true;
   try {
     const res = await fetch('/api/coexistence');
     const json = await res.json();
@@ -176,10 +191,14 @@ async function fetchCoexistence() {
     }
   } catch (e) {
     console.error('Fetch coexistence failed', e);
+  } finally {
+    fetchFlags.coexistence = false;
   }
 }
 
 async function fetchMonitors() {
+  if (fetchFlags.monitors) return;
+  fetchFlags.monitors = true;
   try {
     const res = await fetch('/api/monitors');
     const json = await res.json();
@@ -206,6 +225,8 @@ async function fetchMonitors() {
     }
   } catch (e) {
     console.error('Fetch monitors failed', e);
+  } finally {
+    fetchFlags.monitors = false;
   }
 }
 
@@ -302,6 +323,8 @@ async function executeMonitorAction(name, action) {
 }
 
 async function fetchEbpfHealth() {
+  if (fetchFlags.ebpf) return;
+  fetchFlags.ebpf = true;
   try {
     const res = await fetch('/api/ebpf/health');
     const json = await res.json();
@@ -321,10 +344,14 @@ async function fetchEbpfHealth() {
     }
   } catch (e) {
     console.error('Fetch ebpf failed', e);
+  } finally {
+    fetchFlags.ebpf = false;
   }
 }
 
 async function fetchBluetooth() {
+  if (fetchFlags.bluetooth) return;
+  fetchFlags.bluetooth = true;
   try {
     const res = await fetch('/api/bluetooth/devices');
     const json = await res.json();
@@ -349,10 +376,14 @@ async function fetchBluetooth() {
     }
   } catch (e) {
     console.error('Fetch bluetooth failed', e);
+  } finally {
+    fetchFlags.bluetooth = false;
   }
 }
 
 async function fetchHistory(limit = 60) {
+  if (fetchFlags.history) return;
+  fetchFlags.history = true;
   try {
     const res = await fetch(`/api/history?iface=${currentIface}&limit=${limit}`);
     const json = await res.json();
@@ -361,6 +392,8 @@ async function fetchHistory(limit = 60) {
     }
   } catch (e) {
     console.error('Fetch history failed', e);
+  } finally {
+    fetchFlags.history = false;
   }
 }
 

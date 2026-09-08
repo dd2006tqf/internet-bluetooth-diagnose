@@ -30,8 +30,32 @@ logger = logging.getLogger("weaknet.app")
 # 日志缓存：在内存中保存最近 200 条操作与系统日志
 import collections
 from datetime import datetime
+import time
 
 log_buffer = collections.deque(maxlen=200)
+
+# ============================================================================
+# 实时指标快照缓存（Snapshot Cache）
+# 缓存 D-Bus 周期性拉取的数据，避免前端高频并发请求直接击穿到 D-Bus 造成 IPC 阻塞
+# ============================================================================
+class MetricsSnapshotCache:
+    def __init__(self, ttl_seconds: float = 3.5):
+        self.ttl = ttl_seconds
+        self.cache: Dict[str, Any] = {}
+        self.last_updated: Dict[str, float] = {}
+
+    def get(self, key: str) -> Optional[Any]:
+        now = time.time()
+        if key in self.cache:
+            if now - self.last_updated.get(key, 0) <= self.ttl:
+                return self.cache[key]
+        return None
+
+    def set(self, key: str, value: Any):
+        self.cache[key] = value
+        self.last_updated[key] = time.time()
+
+snapshot_cache = MetricsSnapshotCache(ttl_seconds=4.0)
 
 def record_log(level: str, module: str, message: str):
     entry = {
@@ -124,13 +148,16 @@ async def startup_event():
 
 
 async def background_metrics_emitter():
-    """后台协程：每 3 秒非阻塞采集一次核心健康数据并广播推送给前端 WebSocket 连接"""
+    """后台协程：每 2.5 秒非阻塞采集一次核心健康数据与关键状态，刷新缓存并广播推送给前端 WebSocket 连接"""
     loop = asyncio.get_event_loop()
     while True:
         try:
+            health = await loop.run_in_executor(None, bridge.get_health)
+            conflict = await loop.run_in_executor(None, bridge.get_coexistence_conflict)
+            snapshot_cache.set("health", health)
+            snapshot_cache.set("conflict", conflict)
+
             if ws_manager.active_connections:
-                health = await loop.run_in_executor(None, bridge.get_health)
-                conflict = await loop.run_in_executor(None, bridge.get_coexistence_conflict)
                 await ws_manager.broadcast({
                     "type": "METRICS_UPDATE",
                     "timestamp": loop.time(),
@@ -139,7 +166,20 @@ async def background_metrics_emitter():
                 })
         except Exception as e:
             logger.debug("Broadcast error: %s", e)
-        await asyncio.sleep(3.0)
+        await asyncio.sleep(2.5)
+
+
+# ============================================================================
+# 辅助函数：优先读取内存快照，无缓存时退避至线程池拉取并回填
+# ============================================================================
+async def get_cached_or_fetch(cache_key: str, fetch_func, *args):
+    cached = snapshot_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, fetch_func, *args)
+    snapshot_cache.set(cache_key, res)
+    return res
 
 
 # ============================================================================
@@ -149,22 +189,19 @@ async def background_metrics_emitter():
 @app.get("/api/health")
 async def api_health():
     """获取当前网络质量健康快照（质量评分、RTT、信号强度、TCP丢包率、issues等）"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, bridge.get_health)
+    return await get_cached_or_fetch("health", bridge.get_health)
 
 
 @app.get("/api/interfaces")
 async def api_interfaces():
     """获取系统可用网络接口列表"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, bridge.get_interfaces)
+    return await get_cached_or_fetch("interfaces", bridge.get_interfaces)
 
 
 @app.get("/api/monitors")
 async def api_monitors():
     """获取 16 个监控插件生命周期运行状态矩阵"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, bridge.list_monitors)
+    return await get_cached_or_fetch("monitors", bridge.list_monitors)
 
 
 @app.post("/api/monitors/{name}/restart")
@@ -177,6 +214,8 @@ async def api_restart_monitor(name: str):
         err = res.get("error", "Failed to restart monitor")
         record_log("ERROR", "MONITOR", f"Failed to restart '{name}': {err}")
         raise HTTPException(status_code=500, detail=err)
+    # 状态发生变更，立即失效 monitors 缓存，使下次获取为最新状态
+    snapshot_cache.set("monitors", None)
     record_log("SUCCESS", "MONITOR", f"Successfully restarted monitor '{name}'")
     return res
 
@@ -191,6 +230,7 @@ async def api_enable_monitor(name: str):
         err = res.get("error", "Failed to enable monitor")
         record_log("ERROR", "MONITOR", f"Failed to start '{name}': {err}")
         raise HTTPException(status_code=500, detail=err)
+    snapshot_cache.set("monitors", None)
     record_log("SUCCESS", "MONITOR", f"Successfully started monitor '{name}'")
     return res
 
@@ -205,6 +245,7 @@ async def api_disable_monitor(name: str):
         err = res.get("error", "Failed to disable monitor")
         record_log("ERROR", "MONITOR", f"Failed to stop '{name}': {err}")
         raise HTTPException(status_code=500, detail=err)
+    snapshot_cache.set("monitors", None)
     record_log("SUCCESS", "MONITOR", f"Successfully stopped monitor '{name}'")
     return res
 
@@ -218,64 +259,55 @@ async def api_get_logs():
 @app.get("/api/ebpf/health")
 async def api_ebpf_health():
     """获取 8 大内核 eBPF 探针的加载状态、探针数及微秒级性能读写指标"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, bridge.get_ebpf_health)
+    return await get_cached_or_fetch("ebpf_health", bridge.get_ebpf_health)
 
 
 @app.get("/api/ebpf/skb-drop")
 async def api_skb_drop():
     """获取内核 Socket 丢包原因精确归因统计快照"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, bridge.get_skb_drop_stats)
+    return await get_cached_or_fetch("skb_drop", bridge.get_skb_drop_stats)
 
 
 @app.get("/api/ebpf/dns")
 async def api_dns_stats():
     """获取 DNS eBPF 监控解析统计"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, bridge.get_dns_stats)
+    return await get_cached_or_fetch("dns_stats", bridge.get_dns_stats)
 
 
 @app.get("/api/ebpf/wifi-loss")
 async def api_wifi_loss_stats():
     """获取 Wi-Fi 协议链路层丢包统计"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, bridge.get_wifi_loss_stats)
+    return await get_cached_or_fetch("wifi_loss", bridge.get_wifi_loss_stats)
 
 
 @app.get("/api/ebpf/http-latency")
 async def api_http_latency():
     """获取 HTTP 事务延迟统计指标"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, bridge.get_http_latency_stats)
+    return await get_cached_or_fetch("http_latency", bridge.get_http_latency_stats)
 
 
 @app.get("/api/ebpf/profiling")
 async def api_process_profiling():
     """获取进程级网络流量与重传画像"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, bridge.get_process_profiling)
+    return await get_cached_or_fetch("process_profiling", bridge.get_process_profiling)
 
 
 @app.get("/api/bluetooth/adapter")
 async def api_bluetooth_adapter():
     """获取蓝牙适配器状态"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, bridge.get_bluetooth_adapter)
+    return await get_cached_or_fetch("bt_adapter", bridge.get_bluetooth_adapter)
 
 
 @app.get("/api/bluetooth/devices")
 async def api_bluetooth_devices():
     """获取周围发现的蓝牙设备列表与信号评级"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, bridge.get_bluetooth_devices)
+    return await get_cached_or_fetch("bt_devices", bridge.get_bluetooth_devices)
 
 
 @app.get("/api/coexistence")
 async def api_coexistence():
     """获取 Wi-Fi 与蓝牙 2.4GHz 射频共存与干扰分析"""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, bridge.get_coexistence_conflict)
+    return await get_cached_or_fetch("coexistence", bridge.get_coexistence_conflict)
 
 
 @app.get("/api/history")
