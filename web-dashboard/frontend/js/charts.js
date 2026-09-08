@@ -60,7 +60,8 @@ function initCharts() {
             show: true,
             offsetCenter: [0, '20%'],
             fontSize: 12,
-            color: '#64748b'
+            fontWeight: '600',
+            color: '#000000'
           },
           detail: {
             valueAnimation: true,
