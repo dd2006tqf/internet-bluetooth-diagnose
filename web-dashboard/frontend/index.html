@@ -26,8 +26,12 @@
         <div id="ws-indicator" class="status-dot offline"></div>
         <span id="ws-status-text">连接中...</span>
       </div>
-      <div class="status-badge" style="border-left: 1px solid var(--border-color); padding-left: 14px;">
-        <span>主网卡: </span><strong id="header-iface" style="color: var(--color-cyan); margin-left: 4px;">-</strong>
+      <div class="status-badge iface-selector-wrap">
+        <span style="font-size: 13px;">🌐</span>
+        <label for="iface-select" style="font-size: 12px; color: var(--text-muted);">网络接口:</label>
+        <select id="iface-select" class="iface-select" title="点击切换当前监控网卡">
+          <option value="wlan0">wlan0 (无线)</option>
+        </select>
       </div>
       <button class="btn btn-primary" id="btn-ai-diagnose">
         <span>✨ 一键 AI 智能诊断</span>

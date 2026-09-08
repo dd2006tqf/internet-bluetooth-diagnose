@@ -9,6 +9,7 @@ let currentIface = 'wlan0';
 document.addEventListener('DOMContentLoaded', () => {
   initCharts();
   initWebSocket();
+  initIfaceSelector();
   fetchAllData();
   fetchBackendLogs();
 
@@ -18,6 +19,75 @@ document.addEventListener('DOMContentLoaded', () => {
   // 绑定 AI 诊断按钮
   document.getElementById('btn-ai-diagnose').addEventListener('click', triggerAiDiagnosis);
 });
+
+// ============================================================================
+// 网卡下拉选择与动态切换
+// ============================================================================
+async function initIfaceSelector() {
+  const selector = document.getElementById('iface-select');
+  if (!selector) return;
+
+  selector.addEventListener('change', (e) => {
+    const newIface = e.target.value;
+    if (!newIface || newIface === currentIface) return;
+    currentIface = newIface;
+
+    appendConsoleLog({
+      time: new Date().toTimeString().split(' ')[0],
+      level: 'INFO',
+      module: 'IFACE',
+      message: `User switched target interface to: '${currentIface}'`
+    });
+
+    // 切换网卡后，重置历史走势图并以新网卡拉取
+    fetchHistory(60);
+  });
+
+  // 初次加载拉取可用网络接口列表
+  try {
+    const res = await fetch('/api/interfaces');
+    const json = await res.json();
+    if (json.success && json.interfaces && json.interfaces.length > 0) {
+      updateIfaceOptions(json.interfaces);
+    }
+  } catch (e) {
+    console.error('Init iface list failed', e);
+  }
+}
+
+function updateIfaceOptions(interfaces) {
+  const selector = document.getElementById('iface-select');
+  if (!selector || !interfaces) return;
+
+  // 检查是否列表完全一致，避免频繁重置选中状态
+  const existing = Array.from(selector.options).map(o => o.value);
+  const isSame = interfaces.length === existing.length && interfaces.every(val => existing.includes(val));
+  if (isSame) {
+    if (interfaces.includes(currentIface) && selector.value !== currentIface) {
+      selector.value = currentIface;
+    }
+    return;
+  }
+
+  selector.innerHTML = '';
+  interfaces.forEach(iface => {
+    const opt = document.createElement('option');
+    opt.value = iface;
+    let label = iface;
+    if (iface.startsWith('wl')) label += ' (无线 Wi-Fi)';
+    else if (iface.startsWith('eth') || iface.startsWith('en')) label += ' (有线 Ethernet)';
+    else if (iface === 'lo') label += ' (回环 Loopback)';
+    opt.innerText = label;
+    selector.appendChild(opt);
+  });
+
+  if (interfaces.includes(currentIface)) {
+    selector.value = currentIface;
+  } else if (interfaces.length > 0) {
+    selector.value = interfaces[0];
+    currentIface = interfaces[0];
+  }
+}
 
 // ============================================================================
 // WebSocket 实时推送与重连
@@ -69,8 +139,11 @@ function updateHealthUI(data) {
 
   // 1. 顶部网卡
   if (data.interface) {
-    currentIface = data.interface;
-    document.getElementById('header-iface').innerText = data.interface;
+    const selector = document.getElementById('iface-select');
+    if (selector && !selector.value) {
+      currentIface = data.interface;
+      selector.value = data.interface;
+    }
   }
 
   // 2. 表盘与等级标签

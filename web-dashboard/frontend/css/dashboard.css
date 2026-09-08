@@ -3,34 +3,35 @@
    ========================================================================== */
 
 :root {
-  /* 背景层级：低对比度、统一深灰暗调，去除杂色 */
-  --bg-base: #0f141c;
-  --bg-surface: #161d28;
-  --bg-card: #1c2433;
-  --bg-card-hover: #232d3f;
-  --bg-input: #121822;
+  /* 背景层级：低饱和自然暗夜色系，微偏冷蓝灰，更加通透柔和 */
+  --bg-base: #0b0f17;
+  --bg-surface: #111823;
+  --bg-card: #172130;
+  --bg-card-hover: #1e2a3c;
+  --bg-input: #0e141f;
 
-  /* 边框色：微光浅灰，干净克制 */
-  --border-color: rgba(255, 255, 255, 0.08);
-  --border-subtle: rgba(255, 255, 255, 0.04);
+  /* 边框色：微量半透明光晕与分层边框 */
+  --border-color: rgba(255, 255, 255, 0.07);
+  --border-subtle: rgba(255, 255, 255, 0.035);
   --border-focus: #3b82f6;
 
-  /* 文字配色体系 */
-  --text-main: #e5e7eb;
+  /* 文字配色体系：对比度适中、抗眼疲劳 */
+  --text-main: #f1f5f9;
   --text-muted: #94a3b8;
   --text-dim: #64748b;
 
-  /* 功能语义强调色（去饱和，沉稳不花哨） */
-  --color-brand: #3b82f6;
+  /* 功能语义强调色（精选自然和谐色调） */
+  --color-brand: #38bdf8;
+  --color-cyan: #38bdf8;
   --color-success: #10b981;
   --color-warning: #f59e0b;
-  --color-danger: #ef4444;
+  --color-danger: #f43f5e;
   --color-info: #0ea5e9;
 
   --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
 }
 
 * {
@@ -101,6 +102,38 @@ header {
   gap: 6px;
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.iface-selector-wrap {
+  border-left: 1px solid var(--border-color);
+  padding-left: 14px;
+}
+
+.iface-select {
+  background-color: var(--bg-card);
+  color: var(--color-brand);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+
+.iface-select:hover {
+  background-color: var(--bg-card-hover);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.iface-select:focus {
+  border-color: var(--border-focus);
+}
+
+.iface-select option {
+  background-color: var(--bg-surface);
+  color: var(--text-main);
 }
 
 .status-dot {
@@ -188,6 +221,11 @@ main {
   padding: 14px 16px;
   display: flex;
   flex-direction: column;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card:hover {
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .card-header {
@@ -208,13 +246,19 @@ main {
 
 /* KPI 指标卡片 */
 .kpi-card {
-  background-color: var(--bg-card);
+  background: linear-gradient(180deg, var(--bg-card) 0%, rgba(23, 33, 48, 0.6) 100%);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.kpi-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(56, 189, 248, 0.25);
 }
 
 .kpi-label {

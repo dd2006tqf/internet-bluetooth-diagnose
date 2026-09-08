@@ -90,13 +90,13 @@ function initCharts() {
       backgroundColor: 'transparent',
       tooltip: {
         trigger: 'axis',
-        backgroundColor: '#1f2937',
-        borderColor: 'rgba(255,255,255,0.1)',
-        textStyle: { color: '#f3f4f6' }
+        backgroundColor: '#111823',
+        borderColor: 'rgba(255,255,255,0.08)',
+        textStyle: { color: '#f1f5f9', fontSize: 12 }
       },
       legend: {
         data: ['RTT 延迟 (ms)', 'Wi-Fi 信号 (dBm)', '综合得分'],
-        textStyle: { color: '#9ca3af' },
+        textStyle: { color: '#94a3b8' },
         right: 10
       },
       grid: {
@@ -109,16 +109,16 @@ function initCharts() {
         type: 'category',
         boundaryGap: false,
         data: [],
-        axisLine: { lineStyle: { color: '#374151' } },
-        axisLabel: { color: '#9ca3af', fontSize: 11 }
+        axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
+        axisLabel: { color: '#94a3b8', fontSize: 11 }
       },
       yAxis: [
         {
           type: 'value',
           name: 'ms / 分数',
-          axisLine: { lineStyle: { color: '#374151' } },
-          splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } },
-          axisLabel: { color: '#9ca3af' }
+          axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
+          splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+          axisLabel: { color: '#94a3b8' }
         },
         {
           type: 'value',
@@ -126,9 +126,9 @@ function initCharts() {
           min: -100,
           max: 0,
           position: 'right',
-          axisLine: { lineStyle: { color: '#374151' } },
+          axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
           splitLine: { show: false },
-          axisLabel: { color: '#9ca3af' }
+          axisLabel: { color: '#94a3b8' }
         }
       ],
       series: [
@@ -137,7 +137,13 @@ function initCharts() {
           type: 'line',
           smooth: true,
           showSymbol: false,
-          lineStyle: { width: 2, color: '#3b82f6' },
+          lineStyle: { width: 2, color: '#38bdf8' },
+          areaStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(56, 189, 248, 0.2)' },
+              { offset: 1, color: 'rgba(56, 189, 248, 0.0)' }
+            ])
+          },
           data: []
         },
         {
