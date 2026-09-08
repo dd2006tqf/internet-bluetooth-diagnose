@@ -379,8 +379,8 @@ tr:hover td {
 
 /* 实时终端审计日志控制台 (Log Terminal) */
 .log-console {
-  background-color: #0f172a;
-  border: 1px solid #1e293b;
+  background-color: #ffffff;
+  border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 11px;
@@ -399,12 +399,12 @@ tr:hover td {
 }
 
 .log-time { color: #64748b; }
-.log-mod { color: #38bdf8; font-weight: 500; }
-.log-msg { color: #f1f5f9; word-break: break-all; }
-.log-level-INFO { color: #94a3b8; }
-.log-level-SUCCESS { color: #34d399; }
-.log-level-ERROR { color: #f87171; }
-.log-level-WARNING { color: #fbbf24; }
+.log-mod { color: #0284c7; font-weight: 500; }
+.log-msg { color: #0f172a; word-break: break-all; }
+.log-level-INFO { color: #64748b; }
+.log-level-SUCCESS { color: #059669; }
+.log-level-ERROR { color: #dc2626; }
+.log-level-WARNING { color: #d97706; }
 
 /* 弹窗模态框 */
 .modal-backdrop {

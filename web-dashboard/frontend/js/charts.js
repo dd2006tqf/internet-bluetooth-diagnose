@@ -64,11 +64,11 @@ function initCharts() {
           },
           detail: {
             valueAnimation: true,
-            fontSize: 26,
-            fontWeight: '600',
+            fontSize: 30,
+            fontWeight: '700',
             offsetCenter: [0, '-10%'],
             formatter: '{value}',
-            color: '#0f172a'
+            color: '#000000'
           },
           data: [
             {
