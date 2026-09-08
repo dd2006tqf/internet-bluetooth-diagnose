@@ -303,6 +303,8 @@ async def api_set_monitor_config(name: str, payload: ConfigParamUpdate):
         applied.append({k: v_str})
         record_log("SUCCESS", "CONFIG", f"Successfully tuned {k} to '{v_str}'")
 
+    # 参数发生变更，立即失效 monitors 缓存，使下次获取为最新状态
+    snapshot_cache.set("monitors", None)
     return {"success": True, "message": f"成功更新 {len(applied)} 项配置", "applied": applied}
 
 
@@ -317,6 +319,7 @@ async def api_save_monitor_overrides():
         record_log("ERROR", "CONFIG", f"Failed to save overrides: {err}")
         raise HTTPException(status_code=500, detail=err)
     record_log("SUCCESS", "CONFIG", f"Monitor overrides successfully persisted to disk: {res.get('data')}")
+    snapshot_cache.set("monitors", None)
     return res
 
 

@@ -7,6 +7,17 @@ let ws = null;
 let currentIface = 'wlan0';
 let currentHistoryLimit = 60;
 
+// 转义嵌入 innerHTML 的文本，防止外部数据（如蓝牙设备名、服务端错误信息）注入 HTML/脚本
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[c]));
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   initCharts();
   initWebSocket();
@@ -294,8 +305,8 @@ async function fetchMonitors() {
         div.className = 'monitor-item';
         div.onclick = () => openMonitorModal(m);
         div.innerHTML = `
-          <div class="monitor-name" title="${m.name}">${m.name}</div>
-          <span class="monitor-tag ${isRunning ? 'running' : 'failed'}">${m.state}</span>
+          <div class="monitor-name" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</div>
+          <span class="monitor-tag ${isRunning ? 'running' : 'failed'}">${escapeHtml(m.state)}</span>
         `;
         container.appendChild(div);
       });
@@ -365,7 +376,7 @@ async function loadMonitorConfig(name) {
   const statusMsg = document.getElementById('config-status-msg');
   if (!container) return;
 
-  container.innerHTML = `<div style="color: var(--text-dim); font-size: 12px; text-align: center; padding: 10px;">读取 '${name}' 参数中...</div>`;
+  container.innerHTML = `<div style="color: var(--text-dim); font-size: 12px; text-align: center; padding: 10px;">读取 '${escapeHtml(name)}' 参数中...</div>`;
   if (statusMsg) {
     statusMsg.className = 'config-status-msg';
     statusMsg.innerText = '';
@@ -375,14 +386,14 @@ async function loadMonitorConfig(name) {
     const res = await fetch(`/api/monitors/${name}/config`);
     const json = await res.json();
     if (!json.success || !json.config) {
-      container.innerHTML = `<div style="color: var(--color-danger); font-size: 12px; padding: 8px;">加载配置失败: ${json.error || json.detail || '未知错误'}</div>`;
+      container.innerHTML = `<div style="color: var(--color-danger); font-size: 12px; padding: 8px;">加载配置失败: ${escapeHtml(json.error || json.detail || '未知错误')}</div>`;
       return;
     }
 
     currentMonitorConfig = json.config;
     renderConfigForm(name, json.config);
   } catch (e) {
-    container.innerHTML = `<div style="color: var(--color-danger); font-size: 12px; padding: 8px;">网络异常: ${e}</div>`;
+    container.innerHTML = `<div style="color: var(--color-danger); font-size: 12px; padding: 8px;">网络异常: ${escapeHtml(e)}</div>`;
   }
 }
 
@@ -433,7 +444,7 @@ function renderConfigForm(name, config) {
         <label for="${fieldId}"><strong>${field}</strong></label>
         <span class="field-hint">${hint}</span>
       </div>
-      <input type="text" id="${fieldId}" class="config-input" data-field="${field}" value="${val !== undefined && val !== null ? val : ''}" placeholder="${placeholder}">
+      <input type="text" id="${fieldId}" class="config-input" data-field="${escapeHtml(field)}" value="${val !== undefined && val !== null ? escapeHtml(val) : ''}" placeholder="${placeholder}">
     `;
     container.appendChild(row);
   });
@@ -609,7 +620,7 @@ async function fetchEbpfHealth() {
         tr.title = `点击查看 ${m.name} 内核深度诊断数据`;
         tr.onclick = () => openEbpfModal(m);
         tr.innerHTML = `
-          <td><strong>${m.name}</strong> <span style="font-size: 10px; color: var(--color-cyan);">🔍</span></td>
+          <td><strong>${escapeHtml(m.name)}</strong> <span style="font-size: 10px; color: var(--color-cyan);">🔍</span></td>
           <td><span class="monitor-tag running">${m.attached_probes} 探针</span></td>
           <td>${m.samples}</td>
           <td><code style="color: var(--color-cyan);">${displayTime}</code></td>
@@ -644,19 +655,22 @@ async function fetchBluetooth() {
         const isFair = dev.rssi >= -80;
         const color = isStrong ? '#059669' : (isFair ? '#d97706' : '#dc2626');
         const isNamed = dev.name && dev.name !== '未知设备' && !dev.name.includes(dev.mac);
+        const safeName = escapeHtml(dev.name || '未知设备');
+        const safeMac = escapeHtml(dev.mac);
+        const safeType = escapeHtml(dev.type);
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td>
             <div style="font-weight: 600; color: ${isNamed ? 'var(--text-main)' : 'var(--text-muted)'};">
-              ${dev.name || '未知设备'}
+              ${safeName}
             </div>
-            <div style="font-size: 10px; color: var(--text-dim); font-family: monospace;">${dev.mac}</div>
+            <div style="font-size: 10px; color: var(--text-dim); font-family: monospace;">${safeMac}</div>
           </td>
           <td>
             <span style="color: ${color}; font-weight: 700; font-family: ui-monospace, monospace;">${dev.rssi} dBm</span>
           </td>
-          <td><span style="font-size: 11px; color: var(--text-muted);">${dev.type}</span></td>
+          <td><span style="font-size: 11px; color: var(--text-muted);">${safeType}</span></td>
           <td>${dev.connected ? '<span class="monitor-tag running">已连接</span>' : '<span class="monitor-tag stopped">就绪</span>'}</td>
         `;
         tbody.appendChild(tr);
@@ -728,10 +742,10 @@ async function triggerAiDiagnosis() {
 
       rep.findings.forEach(f => {
         html += `
-          <div class="finding-card ${f.level}">
-            <div style="font-weight: 600; font-size: 13px; margin-bottom: 4px;">${f.dim}</div>
-            <div style="color: var(--text-main); font-size: 12px; margin-bottom: 4px;">${f.desc}</div>
-            <div style="color: var(--text-muted); font-size: 11px;"><strong>根因推定:</strong> ${f.cause}</div>
+          <div class="finding-card ${escapeHtml(f.level)}">
+            <div style="font-weight: 600; font-size: 13px; margin-bottom: 4px;">${escapeHtml(f.dim)}</div>
+            <div style="color: var(--text-main); font-size: 12px; margin-bottom: 4px;">${escapeHtml(f.desc)}</div>
+            <div style="color: var(--text-muted); font-size: 11px;"><strong>根因推定:</strong> ${escapeHtml(f.cause)}</div>
           </div>
         `;
       });
@@ -746,7 +760,7 @@ async function triggerAiDiagnosis() {
       `;
 
       rep.recommendations.forEach(r => {
-        html += `<li>${r}</li>`;
+        html += `<li>${escapeHtml(r)}</li>`;
       });
 
       html += `
@@ -758,7 +772,7 @@ async function triggerAiDiagnosis() {
       body.innerHTML = `<div style="color: #ef4444;">诊断报告生成失败</div>`;
     }
   } catch (e) {
-    body.innerHTML = `<div style="color: #ef4444;">网络请求出错: ${e}</div>`;
+    body.innerHTML = `<div style="color: #ef4444;">网络请求出错: ${escapeHtml(e)}</div>`;
   }
 }
 
@@ -778,7 +792,7 @@ async function openEbpfModal(probe) {
   const body = document.getElementById('ebpf-modal-body');
   body.innerHTML = `
     <div style="text-align: center; padding: 24px; color: var(--text-muted);">
-      正在拉取 <strong>${name}</strong> 的内核 BPF Map 深度采集指标...
+      正在拉取 <strong>${escapeHtml(name)}</strong> 的内核 BPF Map 深度采集指标...
     </div>
   `;
   document.getElementById('ebpf-detail-modal').classList.add('show');
@@ -806,7 +820,7 @@ async function fetchAndRenderEbpfDetail(name, probe) {
     <div class="ebpf-stat-grid" style="margin-bottom: 12px;">
       <div class="ebpf-stat-box">
         <span class="ebpf-stat-label">运行状态</span>
-        <span class="ebpf-stat-val" style="color: #059669; font-size: 15px;">${probe.state ? probe.state.toUpperCase() : 'ATTACHED'}</span>
+        <span class="ebpf-stat-val" style="color: #059669; font-size: 15px;">${escapeHtml(probe.state ? probe.state.toUpperCase() : 'ATTACHED')}</span>
       </div>
       <div class="ebpf-stat-box">
         <span class="ebpf-stat-label">挂载探针点 (Probes)</span>
@@ -851,8 +865,8 @@ async function fetchAndRenderEbpfDetail(name, probe) {
         reasons.forEach(r => {
           detailHtml += `
             <tr>
-              <td><strong style="color: #dc2626;">${r.reason || 'UNKNOWN'}</strong></td>
-              <td><code>${r.protocol || 'IP'}</code></td>
+              <td><strong style="color: #dc2626;">${escapeHtml(r.reason || 'UNKNOWN')}</strong></td>
+              <td><code>${escapeHtml(r.protocol || 'IP')}</code></td>
               <td><strong>${r.count}</strong></td>
             </tr>
           `;
@@ -939,11 +953,11 @@ async function fetchAndRenderEbpfDetail(name, probe) {
         const dropNum = Number(obj.txDrops || 0);
         ifaceHtml += `
           <tr>
-            <td><strong>Interface #${obj.ifindex || '-'}</strong></td>
-            <td>${obj.rxPkts || 0}</td>
-            <td>${obj.txPkts || 0}</td>
-            <td><span style="color: ${dropNum > 0 ? '#dc2626' : '#059669'}; font-weight: 600;">${obj.txDrops || 0}</span></td>
-            <td><code style="color: var(--color-cyan);">${obj.txLossRate || '0%'}</code></td>
+            <td><strong>Interface #${escapeHtml(obj.ifindex || '-')}</strong></td>
+            <td>${escapeHtml(obj.rxPkts || 0)}</td>
+            <td>${escapeHtml(obj.txPkts || 0)}</td>
+            <td><span style="color: ${dropNum > 0 ? '#dc2626' : '#059669'}; font-weight: 600;">${escapeHtml(obj.txDrops || 0)}</span></td>
+            <td><code style="color: var(--color-cyan);">${escapeHtml(obj.txLossRate || '0%')}</code></td>
           </tr>
         `;
       });
@@ -988,7 +1002,7 @@ async function fetchAndRenderEbpfDetail(name, probe) {
             </div>
             <div class="ebpf-stat-box">
               <span class="ebpf-stat-label">专家归因定性</span>
-              <span class="ebpf-stat-val" style="font-size: 13px; color: ${kv.analysis && kv.analysis.includes('慢') ? '#d97706' : '#059669'};">${kv.analysis || '正常'}</span>
+              <span class="ebpf-stat-val" style="font-size: 13px; color: ${kv.analysis && kv.analysis.includes('慢') ? '#d97706' : '#059669'};">${escapeHtml(kv.analysis || '正常')}</span>
             </div>
           </div>
         </div>
@@ -1042,8 +1056,8 @@ async function fetchAndRenderEbpfDetail(name, probe) {
         const p = parseProcLine(line);
         profHtml += `
           <tr>
-            <td><code>${p.pid || '-'}</code></td>
-            <td><strong>${p.comm || '-'}</strong></td>
+            <td><code>${escapeHtml(p.pid || '-')}</code></td>
+            <td><strong>${escapeHtml(p.comm || '-')}</strong></td>
             <td><span style="color: var(--color-cyan); font-weight: 600;">${p.txBytes || 0} B</span></td>
             <td>${p.txPackets || 0}</td>
             <td><span style="color: ${Number(p.retrans) > 0 ? '#dc2626' : '#059669'};">${p.retrans || 0}</span></td>
@@ -1071,8 +1085,8 @@ async function fetchAndRenderEbpfDetail(name, probe) {
           const p = parseProcLine(line);
           profHtml += `
             <tr>
-              <td><code>${p.pid || '-'}</code></td>
-              <td><strong>${p.comm || '-'}</strong></td>
+              <td><code>${escapeHtml(p.pid || '-')}</code></td>
+              <td><strong>${escapeHtml(p.comm || '-')}</strong></td>
               <td><span style="color: ${Number(p.retrans) > 0 ? '#dc2626' : '#059669'}; font-weight: 700;">${p.retrans || 0}</span></td>
               <td>${p.txBytes || 0} B</td>
             </tr>
@@ -1090,11 +1104,11 @@ async function fetchAndRenderEbpfDetail(name, probe) {
         <div class="ebpf-section-block">
           <div class="ebpf-section-title">📌 探针运行详情快照</div>
           <div style="background: #f8fafc; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 12px; font-size: 12px; line-height: 1.8;">
-            <div><strong>探针唯一标识:</strong> <code>${probe.name}</code></div>
-            <div><strong>探针挂载状态:</strong> <span class="monitor-tag running">${probe.status || 'Active & Attached'}</span></div>
+            <div><strong>探针唯一标识:</strong> <code>${escapeHtml(probe.name)}</code></div>
+            <div><strong>探针挂载状态:</strong> <span class="monitor-tag running">${escapeHtml(probe.status || 'Active & Attached')}</span></div>
             <div><strong>单次读取均耗时:</strong> <code>${Number(probe.average_read_time_us || 0)} μs</code></div>
             <div><strong>累计读取总耗时:</strong> <code>${Number(probe.total_read_time_us || 0)} μs</code></div>
-            <div><strong>最近错误描述:</strong> <span style="color: var(--text-dim);">${probe.last_error || '无异常 (Error Free)'}</span></div>
+            <div><strong>最近错误描述:</strong> <span style="color: var(--text-dim);">${escapeHtml(probe.last_error || '无异常 (Error Free)')}</span></div>
           </div>
         </div>
       `;
@@ -1102,7 +1116,7 @@ async function fetchAndRenderEbpfDetail(name, probe) {
   } catch (e) {
     body.innerHTML = `
       ${baseHeaderHtml}
-      <div style="color: #dc2626; padding: 14px; font-size: 13px;">拉取内核指标失败: ${e}</div>
+      <div style="color: #dc2626; padding: 14px; font-size: 13px;">拉取内核指标失败: ${escapeHtml(e)}</div>
     `;
   }
 }
@@ -1145,13 +1159,25 @@ function renderSingleLogRow(entry) {
   const consoleDom = document.getElementById('log-console');
   if (!consoleDom) return;
 
+  // 使用 DOM 节点 + textContent 构造，避免日志正文（可能含设备名/错误详情）注入 HTML
   const div = document.createElement('div');
   div.className = `log-row log-level-${entry.level || 'INFO'}`;
-  div.innerHTML = `
-    <span class="log-time">[${entry.time || '--:--:--'}]</span>
-    <span class="log-mod">[${entry.module || 'SYS'}]</span>
-    <span class="log-msg">${entry.message}</span>
-  `;
+
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'log-time';
+  timeSpan.textContent = `[${entry.time || '--:--:--'}]`;
+
+  const modSpan = document.createElement('span');
+  modSpan.className = 'log-mod';
+  modSpan.textContent = `[${entry.module || 'SYS'}]`;
+
+  const msgSpan = document.createElement('span');
+  msgSpan.className = 'log-msg';
+  msgSpan.textContent = entry.message ?? '';
+
+  div.appendChild(timeSpan);
+  div.appendChild(modSpan);
+  div.appendChild(msgSpan);
   consoleDom.appendChild(div);
 
   // 控制台可视区域保留上限
