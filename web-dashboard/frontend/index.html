@@ -175,7 +175,15 @@
     <div class="card">
       <div class="card-header">
         <div class="card-title">💻 实时交互与系统审计控制台 (Live Activity & Event Stream)</div>
-        <div style="display: flex; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <!-- 级别筛选下拉选框 -->
+          <select id="log-filter-select" class="iface-select" style="font-size: 11px; padding: 3px 6px;" onchange="applyLogFilter()">
+            <option value="ALL">全部日志 (ALL)</option>
+            <option value="ERRORS">仅告警与错误 (WARN / ERROR)</option>
+            <option value="CONFIG">参数调优 (CONFIG)</option>
+            <option value="MONITOR">监控器运维 (MONITOR)</option>
+          </select>
+          <button class="btn" onclick="exportConsoleLogs()" title="一键导出当前审计日志为文本文件">📥 导出日志</button>
           <button class="btn" onclick="clearLocalLogs()">清屏</button>
           <button class="btn" onclick="fetchBackendLogs()">同步服务端历史</button>
         </div>
@@ -257,6 +265,24 @@
       <div class="modal-body" id="ai-modal-body">
         <div style="text-align: center; padding: 30px; color: var(--text-muted);">
           正在检索本地专家知识库并分析多维度时序指标...
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- eBPF 探针内核深度诊断分析弹窗 -->
+  <div class="modal-backdrop" id="ebpf-detail-modal">
+    <div class="modal-content" style="max-width: 620px;">
+      <div class="modal-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 18px;">🔬</span>
+          <span style="font-weight: 700; font-size: 15px;">eBPF 内核探针深度指标: <span id="ebpf-modal-title" style="color: var(--color-cyan);">-</span></span>
+        </div>
+        <button class="modal-close" onclick="closeEbpfModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="ebpf-modal-body">
+        <div style="text-align: center; padding: 24px; color: var(--text-muted);">
+          正在拉取内核 BPF Map 深度统计...
         </div>
       </div>
     </div>

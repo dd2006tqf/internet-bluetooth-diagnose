@@ -23,7 +23,7 @@ fi
 echo "✅ 开发板在线"
 
 echo "--- 2. 准备远端目录与同步文件 ---"
-ssh "$BOARD" "mkdir -p $REMOTE_DIR/backend $REMOTE_DIR/frontend $REMOTE_DIR/AI-assisted-analysis"
+ssh "$BOARD" "mkdir -p $REMOTE_DIR/backend $REMOTE_DIR/frontend /home/radxa/weaknet/client/lib"
 
 # 同步后端、前端和 AI 知识库依赖
 rsync -az --delete \
@@ -35,11 +35,27 @@ rsync -az --delete \
     "$BOARD:$REMOTE_DIR/frontend/"
 
 # 同步 AI 知识库源码（用于 RAG 规则）
-rsync -az \
-    "$WEB_DASHBOARD_DIR/../AI-assisted analysis/network_knowledge_base.py" \
-    "$BOARD:$REMOTE_DIR/backend/"
+if [ -f "$WEB_DASHBOARD_DIR/../AI-assisted analysis/network_knowledge_base.py" ]; then
+    rsync -az \
+        "$WEB_DASHBOARD_DIR/../AI-assisted analysis/network_knowledge_base.py" \
+        "$BOARD:$REMOTE_DIR/backend/"
+fi
 
-echo "✅ 文件同步完成"
+# 同步并安装客户端 C 动态库（确保与 D-Bus/CLI 一致）
+LIBWEAKNET_CANDIDATE=""
+if [ -f "$WEB_DASHBOARD_DIR/../dist-arm64/client/lib/libweaknet.so" ]; then
+    LIBWEAKNET_CANDIDATE="$WEB_DASHBOARD_DIR/../dist-arm64/client/lib/libweaknet.so"
+elif [ -f "$WEB_DASHBOARD_DIR/../build-arm64/client/lib/libweaknet.so" ]; then
+    LIBWEAKNET_CANDIDATE="$WEB_DASHBOARD_DIR/../build-arm64/client/lib/libweaknet.so"
+fi
+
+if [ -n "$LIBWEAKNET_CANDIDATE" ]; then
+    echo "正在同步客户端动态库 libweaknet.so..."
+    scp "$LIBWEAKNET_CANDIDATE" "$BOARD:/tmp/libweaknet.so"
+    ssh "$BOARD" "sudo cp /tmp/libweaknet.so /usr/local/lib/libweaknet.so && cp /tmp/libweaknet.so /home/radxa/weaknet/client/lib/libweaknet.so && sudo ldconfig"
+fi
+
+echo "✅ 文件与动态库同步完成"
 
 echo "--- 3. 安装开发板 Python Web 依赖 (fastapi, uvicorn) ---"
 ssh "$BOARD" << 'EOF'

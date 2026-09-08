@@ -5,6 +5,7 @@
 
 let ws = null;
 let currentIface = 'wlan0';
+let currentHistoryLimit = 60;
 
 document.addEventListener('DOMContentLoaded', () => {
   initCharts();
@@ -15,6 +16,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 周期全量轮询（保底：每 5 秒刷新静态组件与表格）
   setInterval(fetchPeriodicData, 5000);
+
+  // 历史走势图静默自刷新（每 30 秒自动按当前时间跨度拉取最新数据，推动曲线平滑步进）
+  setInterval(() => {
+    fetchHistory(currentHistoryLimit, true);
+  }, 30000);
 
   // 绑定 AI 诊断按钮
   document.getElementById('btn-ai-diagnose').addEventListener('click', triggerAiDiagnosis);
@@ -599,8 +605,11 @@ async function fetchEbpfHealth() {
         }
 
         const tr = document.createElement('tr');
+        tr.className = 'ebpf-row-clickable';
+        tr.title = `点击查看 ${m.name} 内核深度诊断数据`;
+        tr.onclick = () => openEbpfModal(m);
         tr.innerHTML = `
-          <td><strong>${m.name}</strong></td>
+          <td><strong>${m.name}</strong> <span style="font-size: 10px; color: var(--color-cyan);">🔍</span></td>
           <td><span class="monitor-tag running">${m.attached_probes} 探针</span></td>
           <td>${m.samples}</td>
           <td><code style="color: var(--color-cyan);">${displayTime}</code></td>
@@ -621,21 +630,34 @@ async function fetchBluetooth() {
   try {
     const res = await fetch('/api/bluetooth/devices');
     const json = await res.json();
-    if (json.success && json.devices) {
+    if (json.success && Array.isArray(json.devices)) {
       const tbody = document.getElementById('bt-table-body');
       tbody.innerHTML = '';
-      document.getElementById('bt-count').innerText = `已发现 ${json.devices.length} 台设备`;
 
-      json.devices.forEach(dev => {
+      // 严格按信号强度 (RSSI) 降序排序（强信号 -50dBm 优先排在最前）
+      const sortedDevices = [...json.devices].sort((a, b) => (b.rssi ?? -100) - (a.rssi ?? -100));
+
+      document.getElementById('bt-count').innerText = `已发现 ${sortedDevices.length} 台设备 (按信号降序)`;
+
+      sortedDevices.forEach(dev => {
+        const isStrong = dev.rssi >= -65;
+        const isFair = dev.rssi >= -80;
+        const color = isStrong ? '#059669' : (isFair ? '#d97706' : '#dc2626');
+        const isNamed = dev.name && dev.name !== '未知设备' && !dev.name.includes(dev.mac);
+
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td>
-            <div style="font-weight: 600;">${dev.name || '未知设备'}</div>
-            <div style="font-size: 11px; color: var(--text-dim); font-family: monospace;">${dev.mac}</div>
+            <div style="font-weight: 600; color: ${isNamed ? 'var(--text-main)' : 'var(--text-muted)'};">
+              ${dev.name || '未知设备'}
+            </div>
+            <div style="font-size: 10px; color: var(--text-dim); font-family: monospace;">${dev.mac}</div>
           </td>
-          <td><span style="color: ${dev.rssi > -70 ? '#10b981' : dev.rssi > -85 ? '#f59e0b' : '#ef4444'}; font-weight: 600;">${dev.rssi} dBm</span></td>
-          <td>${dev.type}</td>
-          <td>${dev.connected ? '<span class="monitor-tag running">连接</span>' : '<span class="monitor-tag stopped">就绪</span>'}</td>
+          <td>
+            <span style="color: ${color}; font-weight: 700; font-family: ui-monospace, monospace;">${dev.rssi} dBm</span>
+          </td>
+          <td><span style="font-size: 11px; color: var(--text-muted);">${dev.type}</span></td>
+          <td>${dev.connected ? '<span class="monitor-tag running">已连接</span>' : '<span class="monitor-tag stopped">就绪</span>'}</td>
         `;
         tbody.appendChild(tr);
       });
@@ -647,7 +669,8 @@ async function fetchBluetooth() {
   }
 }
 
-async function fetchHistory(limit = 60) {
+async function fetchHistory(limit = 60, silent = false) {
+  currentHistoryLimit = limit;
   if (fetchFlags.history) return;
   fetchFlags.history = true;
   try {
@@ -657,7 +680,7 @@ async function fetchHistory(limit = 60) {
       updateHistoryChart(json.data);
     }
   } catch (e) {
-    console.error('Fetch history failed', e);
+    if (!silent) console.error('Fetch history failed', e);
   } finally {
     fetchFlags.history = false;
   }
@@ -744,11 +767,383 @@ function closeAiModal() {
 }
 
 // ============================================================================
+// eBPF 探针深度指标下钻模态框
+// ============================================================================
+let currentViewingProbe = null;
+
+async function openEbpfModal(probe) {
+  currentViewingProbe = probe;
+  const name = probe.name;
+  document.getElementById('ebpf-modal-title').innerText = name;
+  const body = document.getElementById('ebpf-modal-body');
+  body.innerHTML = `
+    <div style="text-align: center; padding: 24px; color: var(--text-muted);">
+      正在拉取 <strong>${name}</strong> 的内核 BPF Map 深度采集指标...
+    </div>
+  `;
+  document.getElementById('ebpf-detail-modal').classList.add('show');
+
+  appendConsoleLog({
+    time: new Date().toTimeString().split(' ')[0],
+    level: 'INFO',
+    module: 'EBPF',
+    message: `User inspected eBPF probe detail for '${name}'`
+  });
+
+  await fetchAndRenderEbpfDetail(name, probe);
+}
+
+function closeEbpfModal() {
+  document.getElementById('ebpf-detail-modal').classList.remove('show');
+}
+
+async function fetchAndRenderEbpfDetail(name, probe) {
+  const body = document.getElementById('ebpf-modal-body');
+  if (!body) return;
+
+  // 基础探针元数据卡片
+  let baseHeaderHtml = `
+    <div class="ebpf-stat-grid" style="margin-bottom: 12px;">
+      <div class="ebpf-stat-box">
+        <span class="ebpf-stat-label">运行状态</span>
+        <span class="ebpf-stat-val" style="color: #059669; font-size: 15px;">${probe.state ? probe.state.toUpperCase() : 'ATTACHED'}</span>
+      </div>
+      <div class="ebpf-stat-box">
+        <span class="ebpf-stat-label">挂载探针点 (Probes)</span>
+        <span class="ebpf-stat-val" style="color: var(--color-cyan);">${probe.attached_probes} 个</span>
+      </div>
+      <div class="ebpf-stat-box">
+        <span class="ebpf-stat-label">历史采样总计</span>
+        <span class="ebpf-stat-val">${probe.samples} 次</span>
+      </div>
+    </div>
+  `;
+
+  try {
+    if (name === 'SkbDropMonitor') {
+      const res = await fetch('/api/ebpf/skb-drop');
+      const json = await res.json();
+      const dropData = json.data || {};
+      const totalDrops = dropData.total_drops || 0;
+      const reasons = dropData.top_reasons || [];
+
+      let detailHtml = `
+        ${baseHeaderHtml}
+        <div class="ebpf-section-block">
+          <div class="ebpf-section-title">📦 内核网络层 / Socket 丢包统计 (tracepoint/skb/kfree_skb)</div>
+          <div class="alert-banner ${totalDrops > 0 ? 'danger' : ''}" style="margin-bottom: 10px;">
+            ${totalDrops > 0 ? `⚠️ 内核累计捕获到 <strong>${totalDrops}</strong> 个 Socket/skb 异常丢包事件` : `✅ 当前内核网络栈 Socket 丢包计数为 0，协议链路完全平稳`}
+          </div>
+      `;
+
+      if (reasons.length > 0) {
+        detailHtml += `
+          <table style="margin-top: 6px;">
+            <thead>
+              <tr>
+                <th>丢包根本归因 (Drop Reason)</th>
+                <th>触发协议</th>
+                <th>丢包发生计数</th>
+              </tr>
+            </thead>
+            <tbody>
+        `;
+        reasons.forEach(r => {
+          detailHtml += `
+            <tr>
+              <td><strong style="color: #dc2626;">${r.reason || 'UNKNOWN'}</strong></td>
+              <td><code>${r.protocol || 'IP'}</code></td>
+              <td><strong>${r.count}</strong></td>
+            </tr>
+          `;
+        });
+        detailHtml += `</tbody></table>`;
+      }
+      detailHtml += `</div>`;
+      body.innerHTML = detailHtml;
+
+    } else if (name === 'DnsMonitor') {
+      const res = await fetch('/api/ebpf/dns');
+      const json = await res.json();
+      const raw = json.data || '';
+      // 解析 形如 "totalQueries:0|totalResponses:0|totalTimeouts:0|totalErrors:0|avgLatencyMs:0|maxLatencyMs:0|timeoutRate:0.000000"
+      const kv = {};
+      raw.split('|').forEach(part => {
+        const [k, v] = part.split(':');
+        if (k && v !== undefined) kv[k.trim()] = v.trim();
+      });
+
+      body.innerHTML = `
+        ${baseHeaderHtml}
+        <div class="ebpf-section-block">
+          <div class="ebpf-section-title">🌐 DNS 解析吞吐与时延感知 (kprobe/udp_recvmsg)</div>
+          <div class="ebpf-stat-grid" style="margin-top: 6px;">
+            <div class="ebpf-stat-box">
+              <span class="ebpf-stat-label">DNS 请求总量</span>
+              <span class="ebpf-stat-val">${kv.totalQueries || 0}</span>
+            </div>
+            <div class="ebpf-stat-box">
+              <span class="ebpf-stat-label">响应返回数</span>
+              <span class="ebpf-stat-val">${kv.totalResponses || 0}</span>
+            </div>
+            <div class="ebpf-stat-box">
+              <span class="ebpf-stat-label">超时丢包数</span>
+              <span class="ebpf-stat-val" style="color: ${Number(kv.totalTimeouts) > 0 ? '#dc2626' : 'inherit'};">${kv.totalTimeouts || 0}</span>
+            </div>
+            <div class="ebpf-stat-box">
+              <span class="ebpf-stat-label">平均解析延迟</span>
+              <span class="ebpf-stat-val" style="color: var(--color-cyan);">${kv.avgLatencyMs || 0} ms</span>
+            </div>
+            <div class="ebpf-stat-box">
+              <span class="ebpf-stat-label">峰值延迟</span>
+              <span class="ebpf-stat-val">${kv.maxLatencyMs || 0} ms</span>
+            </div>
+            <div class="ebpf-stat-box">
+              <span class="ebpf-stat-label">超时发生率</span>
+              <span class="ebpf-stat-val">${(Number(kv.timeoutRate || 0) * 100).toFixed(2)} %</span>
+            </div>
+          </div>
+        </div>
+      `;
+
+    } else if (name === 'WifiPacketLossMonitor') {
+      const res = await fetch('/api/ebpf/wifi-loss');
+      const json = await res.json();
+      const raw = json.data || '';
+      // 解析 "ifindex:1 rxPkts:101 txPkts:101 txDrops:0 txLossRate:0.000000%|..."
+      const ifaceRows = raw.split('|').filter(r => r.trim().length > 0);
+
+      let ifaceHtml = `
+        ${baseHeaderHtml}
+        <div class="ebpf-section-block">
+          <div class="ebpf-section-title">📶 Wi-Fi 链路层收发与硬件丢包率 (mac80211/cfg80211 驱动探针)</div>
+          <table style="margin-top: 8px;">
+            <thead>
+              <tr>
+                <th>网络接口 Index</th>
+                <th>接收包数 (RX)</th>
+                <th>发送包数 (TX)</th>
+                <th>底层丢包 (Drops)</th>
+                <th>链路丢包率</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+      ifaceRows.forEach(row => {
+        const parts = row.split(/\s+/);
+        const obj = {};
+        parts.forEach(p => {
+          const [k, v] = p.split(':');
+          if (k && v !== undefined) obj[k] = v;
+        });
+        const dropNum = Number(obj.txDrops || 0);
+        ifaceHtml += `
+          <tr>
+            <td><strong>Interface #${obj.ifindex || '-'}</strong></td>
+            <td>${obj.rxPkts || 0}</td>
+            <td>${obj.txPkts || 0}</td>
+            <td><span style="color: ${dropNum > 0 ? '#dc2626' : '#059669'}; font-weight: 600;">${obj.txDrops || 0}</span></td>
+            <td><code style="color: var(--color-cyan);">${obj.txLossRate || '0%'}</code></td>
+          </tr>
+        `;
+      });
+      ifaceHtml += `</tbody></table></div>`;
+      body.innerHTML = ifaceHtml;
+
+    } else if (name === 'HttpLatencyMonitor') {
+      const res = await fetch('/api/ebpf/http-latency');
+      const json = await res.json();
+      const raw = json.data || '';
+      // 解析 "totalTxns:32|p50Ms:1616|p95Ms:1616|p99Ms:1616|maxMs:1616|analysis:主要应用慢..."
+      const kv = {};
+      raw.split('|').forEach(part => {
+        const [k, v] = part.split(':');
+        if (k && v !== undefined) kv[k.trim()] = v.trim();
+      });
+
+      body.innerHTML = `
+        ${baseHeaderHtml}
+        <div class="ebpf-section-block">
+          <div class="ebpf-section-title">⚡ HTTP 请求首字节延迟 (TTFB 分位数，kretprobe/tcp_recvmsg)</div>
+          <div class="ebpf-stat-grid" style="margin-top: 6px;">
+            <div class="ebpf-stat-box">
+              <span class="ebpf-stat-label">跟踪 HTTP 事务总数</span>
+              <span class="ebpf-stat-val">${kv.totalTxns || 0}</span>
+            </div>
+            <div class="ebpf-stat-box">
+              <span class="ebpf-stat-label">P50 中位延迟</span>
+              <span class="ebpf-stat-val">${kv.p50Ms || 0} ms</span>
+            </div>
+            <div class="ebpf-stat-box">
+              <span class="ebpf-stat-label">P95 尾部延迟</span>
+              <span class="ebpf-stat-val" style="color: var(--color-cyan);">${kv.p95Ms || 0} ms</span>
+            </div>
+            <div class="ebpf-stat-box">
+              <span class="ebpf-stat-label">P99 极值延迟</span>
+              <span class="ebpf-stat-val" style="color: ${Number(kv.p99Ms) > 500 ? '#dc2626' : '#059669'};">${kv.p99Ms || 0} ms</span>
+            </div>
+            <div class="ebpf-stat-box">
+              <span class="ebpf-stat-label">历史最大延迟</span>
+              <span class="ebpf-stat-val">${kv.maxMs || 0} ms</span>
+            </div>
+            <div class="ebpf-stat-box">
+              <span class="ebpf-stat-label">专家归因定性</span>
+              <span class="ebpf-stat-val" style="font-size: 13px; color: ${kv.analysis && kv.analysis.includes('慢') ? '#d97706' : '#059669'};">${kv.analysis || '正常'}</span>
+            </div>
+          </div>
+        </div>
+      `;
+
+    } else if (name === 'ProcessNetProfiler') {
+      const res = await fetch('/api/ebpf/profiling');
+      const json = await res.json();
+      const raw = json.data || '';
+
+      // 解析 Top Bandwidth 与 Top Retransmit
+      const sections = raw.split('===');
+      let bwList = [];
+      let retransList = [];
+
+      sections.forEach(sec => {
+        if (sec.includes('Top Bandwidth')) {
+          bwList = sec.split('|').filter(line => line.includes('pid:'));
+        } else if (sec.includes('Top Retransmit')) {
+          retransList = sec.split('|').filter(line => line.includes('pid:'));
+        }
+      });
+
+      const parseProcLine = (line) => {
+        const parts = line.trim().split(/\s+/);
+        const obj = {};
+        parts.forEach(p => {
+          const [k, v] = p.split(':');
+          if (k && v !== undefined) obj[k] = v;
+        });
+        return obj;
+      };
+
+      let profHtml = `
+        ${baseHeaderHtml}
+        <div class="ebpf-section-block">
+          <div class="ebpf-section-title">📊 进程级实时网络带宽画像 (Top Bandwidth)</div>
+          <table style="margin-top: 6px;">
+            <thead>
+              <tr>
+                <th>PID</th>
+                <th>进程名 (Process Comm)</th>
+                <th>发送字节 (TX Bytes)</th>
+                <th>数据包 (Packets)</th>
+                <th>重传数</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+      bwList.forEach(line => {
+        const p = parseProcLine(line);
+        profHtml += `
+          <tr>
+            <td><code>${p.pid || '-'}</code></td>
+            <td><strong>${p.comm || '-'}</strong></td>
+            <td><span style="color: var(--color-cyan); font-weight: 600;">${p.txBytes || 0} B</span></td>
+            <td>${p.txPackets || 0}</td>
+            <td><span style="color: ${Number(p.retrans) > 0 ? '#dc2626' : '#059669'};">${p.retrans || 0}</span></td>
+          </tr>
+        `;
+      });
+      profHtml += `</tbody></table></div>`;
+
+      if (retransList.length > 0) {
+        profHtml += `
+          <div class="ebpf-section-block" style="margin-top: 14px;">
+            <div class="ebpf-section-title">🔄 进程级异常 TCP 重传画像 (Top Retransmit)</div>
+            <table style="margin-top: 6px;">
+              <thead>
+                <tr>
+                  <th>PID</th>
+                  <th>进程名 (Comm)</th>
+                  <th>重传次数 (Retrans)</th>
+                  <th>传输字节</th>
+                </tr>
+              </thead>
+              <tbody>
+        `;
+        retransList.forEach(line => {
+          const p = parseProcLine(line);
+          profHtml += `
+            <tr>
+              <td><code>${p.pid || '-'}</code></td>
+              <td><strong>${p.comm || '-'}</strong></td>
+              <td><span style="color: ${Number(p.retrans) > 0 ? '#dc2626' : '#059669'}; font-weight: 700;">${p.retrans || 0}</span></td>
+              <td>${p.txBytes || 0} B</td>
+            </tr>
+          `;
+        });
+        profHtml += `</tbody></table></div>`;
+      }
+
+      body.innerHTML = profHtml;
+
+    } else {
+      // 其它探针（如 TcpRetransMonitor, TcpConnMonitor, BtAudioAnalyzer）
+      body.innerHTML = `
+        ${baseHeaderHtml}
+        <div class="ebpf-section-block">
+          <div class="ebpf-section-title">📌 探针运行详情快照</div>
+          <div style="background: #f8fafc; border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 12px; font-size: 12px; line-height: 1.8;">
+            <div><strong>探针唯一标识:</strong> <code>${probe.name}</code></div>
+            <div><strong>探针挂载状态:</strong> <span class="monitor-tag running">${probe.status || 'Active & Attached'}</span></div>
+            <div><strong>单次读取均耗时:</strong> <code>${Number(probe.average_read_time_us || 0)} μs</code></div>
+            <div><strong>累计读取总耗时:</strong> <code>${Number(probe.total_read_time_us || 0)} μs</code></div>
+            <div><strong>最近错误描述:</strong> <span style="color: var(--text-dim);">${probe.last_error || '无异常 (Error Free)'}</span></div>
+          </div>
+        </div>
+      `;
+    }
+  } catch (e) {
+    body.innerHTML = `
+      ${baseHeaderHtml}
+      <div style="color: #dc2626; padding: 14px; font-size: 13px;">拉取内核指标失败: ${e}</div>
+    `;
+  }
+}
+
+// ============================================================================
 // 实时操作与系统控制台日志 (Log Console)
 // ============================================================================
+const localLogStore = [];
+let currentLogFilter = 'ALL';
+
 function appendConsoleLog(entry) {
+  if (!entry) return;
+  localLogStore.push(entry);
+  if (localLogStore.length > 300) {
+    localLogStore.shift();
+  }
+
+  // 判断是否符合当前选中的过滤器
+  if (matchesLogFilter(entry, currentLogFilter)) {
+    renderSingleLogRow(entry);
+  }
+}
+
+function matchesLogFilter(entry, filter) {
+  if (filter === 'ALL') return true;
+  if (filter === 'ERRORS') {
+    const lvl = (entry.level || '').toUpperCase();
+    return lvl === 'ERROR' || lvl === 'WARNING' || lvl === 'WARN';
+  }
+  if (filter === 'CONFIG') {
+    return (entry.module || '').toUpperCase() === 'CONFIG';
+  }
+  if (filter === 'MONITOR') {
+    return (entry.module || '').toUpperCase() === 'MONITOR' || (entry.module || '').toUpperCase() === 'D-BUS';
+  }
+  return true;
+}
+
+function renderSingleLogRow(entry) {
   const consoleDom = document.getElementById('log-console');
-  if (!consoleDom || !entry) return;
+  if (!consoleDom) return;
 
   const div = document.createElement('div');
   div.className = `log-row log-level-${entry.level || 'INFO'}`;
@@ -759,21 +1154,63 @@ function appendConsoleLog(entry) {
   `;
   consoleDom.appendChild(div);
 
-  // 超过 150 条清理最老一条，并始终滚到底部
-  if (consoleDom.children.length > 150) {
+  // 控制台可视区域保留上限
+  if (consoleDom.children.length > 200) {
     consoleDom.removeChild(consoleDom.firstChild);
   }
   consoleDom.scrollTop = consoleDom.scrollHeight;
+}
+
+function applyLogFilter() {
+  const select = document.getElementById('log-filter-select');
+  if (select) {
+    currentLogFilter = select.value;
+  }
+  const consoleDom = document.getElementById('log-console');
+  if (!consoleDom) return;
+
+  consoleDom.innerHTML = '';
+  localLogStore.forEach(entry => {
+    if (matchesLogFilter(entry, currentLogFilter)) {
+      renderSingleLogRow(entry);
+    }
+  });
+}
+
+function exportConsoleLogs() {
+  if (!localLogStore.length) {
+    alert('当前没有可导出的控制台审计日志');
+    return;
+  }
+
+  const lines = localLogStore.map(e => `[${e.time || ''}] [${e.level || 'INFO'}] [${e.module || 'SYS'}] ${e.message}`);
+  const header = `=======================================================\n`
+               + ` WeakNet Network Diagnostics Audit Log Export\n`
+               + ` Export Time: ${new Date().toISOString()}\n`
+               + ` Target Interface: ${currentIface}\n`
+               + ` Total Entries: ${localLogStore.length}\n`
+               + `=======================================================\n\n`;
+
+  const blob = new Blob([header + lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  a.href = url;
+  a.download = `weaknet_audit_${ts}.log`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 async function fetchBackendLogs() {
   try {
     const res = await fetch('/api/logs');
     const json = await res.json();
-    if (json.success && json.logs) {
-      const consoleDom = document.getElementById('log-console');
-      consoleDom.innerHTML = '';
-      json.logs.forEach(appendConsoleLog);
+    if (json.success && Array.isArray(json.logs)) {
+      localLogStore.length = 0;
+      json.logs.forEach(e => localLogStore.push(e));
+      applyLogFilter();
     }
   } catch (e) {
     console.error('Fetch logs failed', e);
@@ -781,6 +1218,7 @@ async function fetchBackendLogs() {
 }
 
 function clearLocalLogs() {
+  localLogStore.length = 0;
   const consoleDom = document.getElementById('log-console');
   if (consoleDom) consoleDom.innerHTML = '';
 }

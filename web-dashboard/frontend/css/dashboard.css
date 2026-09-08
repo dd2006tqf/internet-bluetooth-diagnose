@@ -377,6 +377,60 @@ tr:hover td {
   background-color: #f8fafc;
 }
 
+.ebpf-row-clickable {
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.ebpf-row-clickable:hover td {
+  background-color: #f1f5f9 !important;
+}
+
+/* eBPF 深度分析统计指标网格 */
+.ebpf-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.ebpf-stat-box {
+  background: #f8fafc;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ebpf-stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ebpf-stat-val {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-main);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.ebpf-section-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.ebpf-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* 实时终端审计日志控制台 (Log Terminal) */
 .log-console {
   background-color: #ffffff;
