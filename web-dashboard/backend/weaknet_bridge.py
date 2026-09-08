@@ -149,6 +149,21 @@ class WeakNetBridge:
         lib.weaknet_get_process_profiling.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
         lib.weaknet_get_process_profiling.restype = ctypes.c_bool
 
+        # bool weaknet_get_monitor_param(const char* monitor, char* buffer, size_t buffer_size, char* error_buffer, size_t error_size)
+        if hasattr(lib, "weaknet_get_monitor_param"):
+            lib.weaknet_get_monitor_param.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+            lib.weaknet_get_monitor_param.restype = ctypes.c_bool
+
+        # bool weaknet_set_monitor_param(const char* key, const char* value, char* error_buffer, size_t error_size)
+        if hasattr(lib, "weaknet_set_monitor_param"):
+            lib.weaknet_set_monitor_param.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t]
+            lib.weaknet_set_monitor_param.restype = ctypes.c_bool
+
+        # bool weaknet_save_monitor_overrides(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size)
+        if hasattr(lib, "weaknet_save_monitor_overrides"):
+            lib.weaknet_save_monitor_overrides.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+            lib.weaknet_save_monitor_overrides.restype = ctypes.c_bool
+
     def _init_client(self):
         if not self._lib:
             return
@@ -269,9 +284,8 @@ class WeakNetBridge:
                 return res
         return res
 
-    def _control_via_cli(self, action: str, name: str) -> Dict[str, Any]:
-        """通过 weaknet-cli 子进程安全隔离执行监控器生命周期切换，规避主进程长期连接死锁"""
-        import subprocess
+    def _resolve_cli_path(self):
+        """定位 weaknet-cli 可执行文件路径，找不到返回 None"""
         cli_candidates = [
             "/home/radxa/weaknet/client/bin/weaknet-cli",
             os.path.abspath("./dist-arm64/client/bin/weaknet-cli"),
@@ -279,11 +293,15 @@ class WeakNetBridge:
             os.path.abspath("../build-x86/client/bin/weaknet_cli"),
             "weaknet-cli"
         ]
-        cli_path = None
         for c in cli_candidates:
             if os.path.exists(c):
-                cli_path = c
-                break
+                return c
+        return None
+
+    def _control_via_cli(self, action: str, name: str) -> Dict[str, Any]:
+        """通过 weaknet-cli 子进程安全隔离执行监控器生命周期切换，规避主进程长期连接死锁"""
+        import subprocess
+        cli_path = self._resolve_cli_path()
         if not cli_path:
             return self._call_string_api(f"weaknet_{action}_monitor", 4096, name.encode("utf-8"))
 
@@ -297,6 +315,94 @@ class WeakNetBridge:
                 return {"success": False, "error": err}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def get_monitor_config(self, name: str) -> Dict[str, Any]:
+        """查询指定监控器当前运行参数，优先走 weaknet-cli get，回退 ctypes C API。
+        返回 {"success": bool, "config": {...}} 或 {"success": False, "error": ...}
+        """
+        import subprocess
+        cli_path = self._resolve_cli_path()
+        raw = None
+        if cli_path:
+            try:
+                res = subprocess.run([cli_path, "get", name], capture_output=True, text=True, timeout=8)
+                if res.returncode == 0:
+                    raw = res.stdout.strip()
+                else:
+                    return {"success": False, "error": res.stderr.strip() or res.stdout.strip()}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+        else:
+            res = self._call_string_api("weaknet_get_monitor_param", 8192, name.encode("utf-8"))
+            if not res.get("success"):
+                return {"success": False, "error": res.get("error", "查询配置失败")}
+            raw = res.get("data")
+
+        try:
+            parsed = json.loads(raw)
+            # CLI 输出形如 {"rtt": {...}}，取出该监控器的参数字典
+            if isinstance(parsed, dict) and name in parsed and isinstance(parsed[name], dict):
+                cfg = parsed[name]
+            elif isinstance(parsed, dict):
+                cfg = parsed
+            else:
+                return {"success": False, "error": f"无法解析监控器 '{name}' 的配置输出"}
+            return {"success": True, "config": cfg, "monitor": name}
+        except Exception as e:
+            return {"success": False, "error": f"配置解析失败: {e}", "raw": raw}
+
+    def set_monitor_config(self, key: str, value: str) -> Dict[str, Any]:
+        """热设置单个参数键值，优先走 weaknet-cli set，回退 ctypes C API"""
+        import subprocess
+        cli_path = self._resolve_cli_path()
+        if cli_path:
+            try:
+                res = subprocess.run([cli_path, "set", key, str(value)], capture_output=True, text=True, timeout=8)
+                if res.returncode == 0:
+                    return {"success": True, "data": res.stdout.strip() or "ok"}
+                return {"success": False, "error": res.stderr.strip() or res.stdout.strip() or "Set failed"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        # ctypes 回退：weaknet_set_monitor_param(key, value, err, err_size)
+        if not self._lib or not hasattr(self._lib, "weaknet_set_monitor_param"):
+            return {"success": False, "error": "libweaknet 未加载或不支持 set_monitor_param"}
+        err = ctypes.create_string_buffer(1024)
+        with self._mutex:
+            try:
+                ok = bool(self._lib.weaknet_set_monitor_param(
+                    key.encode("utf-8"), str(value).encode("utf-8"), err, 1024))
+                if ok:
+                    return {"success": True, "data": "ok"}
+                return {"success": False, "error": err.value.decode("utf-8", errors="replace") or "Set failed"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+    def save_monitor_overrides(self) -> Dict[str, Any]:
+        """固化当前内存态参数覆盖到配置文件，优先走 weaknet-cli monitor save"""
+        import subprocess
+        cli_path = self._resolve_cli_path()
+        if cli_path:
+            try:
+                res = subprocess.run([cli_path, "monitor", "save"], capture_output=True, text=True, timeout=8)
+                if res.returncode == 0:
+                    return {"success": True, "data": res.stdout.strip() or "saved"}
+                return {"success": False, "error": res.stderr.strip() or res.stdout.strip() or "Save failed"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        if not self._lib or not hasattr(self._lib, "weaknet_save_monitor_overrides"):
+            return {"success": False, "error": "libweaknet 未加载或不支持 save_monitor_overrides"}
+        buf = ctypes.create_string_buffer(4096)
+        err = ctypes.create_string_buffer(1024)
+        with self._mutex:
+            try:
+                ok = bool(self._lib.weaknet_save_monitor_overrides(buf, 4096, err, 1024))
+                if ok:
+                    return {"success": True, "data": buf.value.decode("utf-8", errors="replace")}
+                return {"success": False, "error": err.value.decode("utf-8", errors="replace") or "Save failed"}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
 
     def restart_monitor(self, name: str) -> Dict[str, Any]:
         return self._control_via_cli("restart", name)

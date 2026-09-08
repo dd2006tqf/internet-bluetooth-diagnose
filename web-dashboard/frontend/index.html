@@ -189,33 +189,57 @@
 
   <!-- 监控器生命周期控制弹窗 -->
   <div class="modal-backdrop" id="monitor-control-modal">
-    <div class="modal-content" style="max-width: 460px;">
+    <div class="modal-content" style="max-width: 480px;">
       <div class="modal-header">
         <div style="display: flex; align-items: center; gap: 8px;">
           <span style="font-size: 18px;">⚙️</span>
-          <span style="font-weight: 700; font-size: 15px;">监控器控制: <span id="ctrl-modal-name" style="color: var(--color-cyan);">-</span></span>
+          <span style="font-weight: 700; font-size: 15px;">监控器运维控制: <span id="ctrl-modal-name" style="color: var(--color-cyan);">-</span></span>
         </div>
         <button class="modal-close" onclick="closeMonitorModal()">&times;</button>
       </div>
       <div class="modal-body">
         <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--bg-card); border-radius: var(--radius-sm);">
-          <span style="color: var(--text-muted); font-size: 13px;">当前状态</span>
+          <span style="color: var(--text-muted); font-size: 13px;">运行状态</span>
           <span id="ctrl-modal-state" class="monitor-tag running">RUNNING</span>
         </div>
         <div id="ctrl-modal-desc" style="font-size: 12px; color: var(--text-dim); line-height: 1.6;">
           管理该插件后台独立采集线程及 eBPF 探针生命周期。
         </div>
-        <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 10px;">
-          <button id="btn-modal-restart" class="btn btn-primary" style="justify-content: center; padding: 10px;">
-            <span>🔄 重启监控 (Restart)</span>
+
+        <div style="display: flex; gap: 8px;">
+          <button id="btn-modal-restart" class="btn btn-primary" style="flex: 1; justify-content: center; padding: 8px;">
+            <span>🔄 重启</span>
           </button>
-          <button id="btn-modal-start" class="btn" style="justify-content: center; padding: 10px; background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(16, 185, 129, 0.3);">
-            <span>▶️ 启动监控 (Start / Enable)</span>
+          <button id="btn-modal-start" class="btn" style="flex: 1; justify-content: center; padding: 8px; background: rgba(16, 185, 129, 0.15); color: #34d399; border-color: rgba(16, 185, 129, 0.3);">
+            <span>▶️ 启动</span>
           </button>
-          <button id="btn-modal-stop" class="btn" style="justify-content: center; padding: 10px; background: rgba(239, 68, 68, 0.15); color: #f87171; border-color: rgba(239, 68, 68, 0.3);">
-            <span>⏹️ 停止监控 (Stop / Disable)</span>
+          <button id="btn-modal-stop" class="btn" style="flex: 1; justify-content: center; padding: 8px; background: rgba(239, 68, 68, 0.15); color: #f87171; border-color: rgba(239, 68, 68, 0.3);">
+            <span>⏹️ 停止</span>
           </button>
         </div>
+
+        <!-- 实时参数热调优配置面板 -->
+        <div class="config-section" id="ctrl-modal-config-section">
+          <div class="config-section-title">
+            <span>⚡ 运行时参数热调优 (Hot Tuning)</span>
+            <span id="config-refresh-btn" style="cursor: pointer; color: var(--color-cyan); font-size: 11px;" onclick="reloadMonitorConfig()">🔄 刷新</span>
+          </div>
+          <div id="config-form-container" class="config-form-grid">
+            <div style="color: var(--text-dim); font-size: 12px; text-align: center; padding: 10px;">
+              加载当前监控器参数中...
+            </div>
+          </div>
+          <div class="config-actions">
+            <button id="btn-apply-config" class="btn btn-primary" style="flex: 2; justify-content: center; padding: 7px 12px;" onclick="submitMonitorConfig()">
+              <span>🚀 提交热调优 (Apply)</span>
+            </button>
+            <button id="btn-save-config" class="btn" style="flex: 1; justify-content: center; padding: 7px 12px;" onclick="saveConfigOverrides()" title="将修改固化写入磁盘配置文件">
+              <span>💾 固化</span>
+            </button>
+          </div>
+          <div id="config-status-msg" class="config-status-msg"></div>
+        </div>
+
       </div>
     </div>
   </div>

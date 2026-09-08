@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-BOARD="${BOARD:-radxa@192.168.137.210}"
+BOARD="${BOARD:-radxa@radxa-cubie-a7a.local}"
 REMOTE_DIR="/home/radxa/weaknet/web"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

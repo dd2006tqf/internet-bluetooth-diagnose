@@ -341,11 +341,194 @@ function openMonitorModal(monitor) {
   btnStart.onclick = () => executeMonitorAction(monitor.name, 'enable');
   btnStop.onclick = () => executeMonitorAction(monitor.name, 'disable');
 
+  // 加载该监控器特有的配置参数
+  loadMonitorConfig(monitor.name);
+
   document.getElementById('monitor-control-modal').classList.add('show');
 }
 
 function closeMonitorModal() {
   document.getElementById('monitor-control-modal').classList.remove('show');
+}
+
+// 缓存当前正在编辑的配置参数
+let currentMonitorConfig = null;
+
+async function loadMonitorConfig(name) {
+  const container = document.getElementById('config-form-container');
+  const statusMsg = document.getElementById('config-status-msg');
+  if (!container) return;
+
+  container.innerHTML = `<div style="color: var(--text-dim); font-size: 12px; text-align: center; padding: 10px;">读取 '${name}' 参数中...</div>`;
+  if (statusMsg) {
+    statusMsg.className = 'config-status-msg';
+    statusMsg.innerText = '';
+  }
+
+  try {
+    const res = await fetch(`/api/monitors/${name}/config`);
+    const json = await res.json();
+    if (!json.success || !json.config) {
+      container.innerHTML = `<div style="color: var(--color-danger); font-size: 12px; padding: 8px;">加载配置失败: ${json.error || json.detail || '未知错误'}</div>`;
+      return;
+    }
+
+    currentMonitorConfig = json.config;
+    renderConfigForm(name, json.config);
+  } catch (e) {
+    container.innerHTML = `<div style="color: var(--color-danger); font-size: 12px; padding: 8px;">网络异常: ${e}</div>`;
+  }
+}
+
+function reloadMonitorConfig() {
+  if (selectedMonitor) {
+    loadMonitorConfig(selectedMonitor.name);
+  }
+}
+
+function renderConfigForm(name, config) {
+  const container = document.getElementById('config-form-container');
+  container.innerHTML = '';
+
+  const entries = Object.entries(config);
+  if (entries.length === 0) {
+    container.innerHTML = `<div style="color: var(--text-dim); font-size: 12px; padding: 6px;">该监控器暂无可调整的配置项</div>`;
+    return;
+  }
+
+  entries.forEach(([field, val]) => {
+    // 忽略内部对象或无须手动在表单调谐的固定项
+    if (typeof val === 'object' && val !== null) return;
+
+    const row = document.createElement('div');
+    row.className = 'config-field-row';
+
+    let hint = '';
+    let placeholder = '';
+    if (field.includes('interval')) {
+      hint = '如: 2s, 5000ms';
+      placeholder = '采样周期';
+    } else if (field.includes('timeout')) {
+      hint = '如: 800ms, 1s';
+      placeholder = '探测超时';
+    } else if (field === 'target') {
+      hint = 'IPv4 地址';
+      placeholder = '223.5.5.5';
+    } else if (field === 'window_size' || field === 'window') {
+      hint = '样本数 (2~1000)';
+      placeholder = '30';
+    } else if (field === 'bpf_obj') {
+      hint = 'ELF 对象路径';
+    }
+
+    const fieldId = `cfg-input-${field}`;
+    row.innerHTML = `
+      <div class="config-field-label">
+        <label for="${fieldId}"><strong>${field}</strong></label>
+        <span class="field-hint">${hint}</span>
+      </div>
+      <input type="text" id="${fieldId}" class="config-input" data-field="${field}" value="${val !== undefined && val !== null ? val : ''}" placeholder="${placeholder}">
+    `;
+    container.appendChild(row);
+  });
+}
+
+async function submitMonitorConfig() {
+  if (!selectedMonitor) return;
+  const name = selectedMonitor.name;
+  const container = document.getElementById('config-form-container');
+  const statusMsg = document.getElementById('config-status-msg');
+  const btnApply = document.getElementById('btn-apply-config');
+
+  const inputs = container.querySelectorAll('input.config-input');
+  if (!inputs.length) return;
+
+  const params = {};
+  inputs.forEach(input => {
+    const field = input.getAttribute('data-field');
+    const val = input.value.trim();
+    params[field] = val;
+  });
+
+  statusMsg.className = 'config-status-msg loading';
+  statusMsg.innerText = '正在提交并热生效参数...';
+  btnApply.disabled = true;
+
+  try {
+    const res = await fetch(`/api/monitors/${name}/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ params })
+    });
+    const json = await res.json();
+    if (res.ok && json.success) {
+      statusMsg.className = 'config-status-msg success';
+      statusMsg.innerText = `✅ 参数已热生效 (${new Date().toTimeString().split(' ')[0]})`;
+      appendConsoleLog({
+        time: new Date().toTimeString().split(' ')[0],
+        level: 'SUCCESS',
+        module: 'CONFIG',
+        message: `Monitor '${name}' hot-tuned successfully: ` + JSON.stringify(params)
+      });
+      // 刷新配置确保同步
+      setTimeout(() => loadMonitorConfig(name), 600);
+    } else {
+      const err = json.detail || json.error || '更新失败';
+      statusMsg.className = 'config-status-msg error';
+      statusMsg.innerText = `❌ ${err}`;
+      appendConsoleLog({
+        time: new Date().toTimeString().split(' ')[0],
+        level: 'ERROR',
+        module: 'CONFIG',
+        message: `Failed to tune params for '${name}': ${err}`
+      });
+    }
+  } catch (e) {
+    statusMsg.className = 'config-status-msg error';
+    statusMsg.innerText = `❌ 请求异常: ${e}`;
+  } finally {
+    btnApply.disabled = false;
+  }
+}
+
+async function saveConfigOverrides() {
+  const statusMsg = document.getElementById('config-status-msg');
+  const btnSave = document.getElementById('btn-save-config');
+  if (statusMsg) {
+    statusMsg.className = 'config-status-msg loading';
+    statusMsg.innerText = '正在将覆盖参数固化至磁盘...';
+  }
+  btnSave.disabled = true;
+
+  try {
+    const res = await fetch('/api/monitors/save', { method: 'POST' });
+    const json = await res.json();
+    if (res.ok && json.success) {
+      if (statusMsg) {
+        statusMsg.className = 'config-status-msg success';
+        statusMsg.innerText = `💾 配置已固化持久化落盘`;
+      }
+      appendConsoleLog({
+        time: new Date().toTimeString().split(' ')[0],
+        level: 'SUCCESS',
+        module: 'CONFIG',
+        message: `Monitor overrides successfully saved to disk`
+      });
+    } else {
+      const err = json.detail || json.error || '固化失败';
+      if (statusMsg) {
+        statusMsg.className = 'config-status-msg error';
+        statusMsg.innerText = `❌ 固化失败: ${err}`;
+      }
+    }
+  } catch (e) {
+    if (statusMsg) {
+      statusMsg.className = 'config-status-msg error';
+      statusMsg.innerText = `❌ 请求异常: ${e}`;
+    }
+  } finally {
+    btnSave.disabled = false;
+  }
 }
 
 async function executeMonitorAction(name, action) {

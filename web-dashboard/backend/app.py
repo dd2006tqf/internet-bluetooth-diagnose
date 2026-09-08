@@ -9,9 +9,10 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from pydantic import BaseModel
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -247,6 +248,75 @@ async def api_disable_monitor(name: str):
         raise HTTPException(status_code=500, detail=err)
     snapshot_cache.set("monitors", None)
     record_log("SUCCESS", "MONITOR", f"Successfully stopped monitor '{name}'")
+    return res
+
+
+# ============================================================================
+# 监控器参数热调优与配置持久化 API
+# ============================================================================
+
+class ConfigParamUpdate(BaseModel):
+    key: Optional[str] = None
+    value: Optional[Any] = None
+    params: Optional[Dict[str, Any]] = None
+
+
+@app.get("/api/monitors/{name}/config")
+async def api_get_monitor_config(name: str):
+    """获取指定监控器的当前运行时配置（如 interval_ms, target, timeout_ms 等）"""
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, bridge.get_monitor_config, name)
+    if not res.get("success"):
+        err = res.get("error", f"无法获取监控器 '{name}' 配置")
+        raise HTTPException(status_code=400 if "unknown" in str(err).lower() else 500, detail=err)
+    return res
+
+
+@app.post("/api/monitors/{name}/config")
+async def api_set_monitor_config(name: str, payload: ConfigParamUpdate):
+    """动态热修改指定监控器的配置参数，记录审计日志并即时生效"""
+    loop = asyncio.get_event_loop()
+    applied = []
+
+    # 支持两种请求格式：
+    # 1. 单键值对: {"key": "interval", "value": "5s"} 或 {"key": "rtt.interval", "value": "5s"}
+    # 2. 批量参数字典: {"params": {"interval": "5s", "target": "223.5.5.5"}}
+    updates = {}
+    if payload.params:
+        for k, v in payload.params.items():
+            full_key = k if "." in k else f"{name}.{k}"
+            updates[full_key] = v
+    elif payload.key is not None and payload.value is not None:
+        full_key = payload.key if "." in payload.key else f"{name}.{payload.key}"
+        updates[full_key] = payload.value
+    else:
+        raise HTTPException(status_code=400, detail="请求体必须包含 'key' 与 'value'，或 'params' 字典")
+
+    for k, v in updates.items():
+        v_str = str(v).strip()
+        record_log("INFO", "CONFIG", f"Applying param tuning: {k} = '{v_str}'")
+        res = await loop.run_in_executor(None, bridge.set_monitor_config, k, v_str)
+        if not res.get("success"):
+            err = res.get("error", "参数更新失败")
+            record_log("ERROR", "CONFIG", f"Failed to set {k}='{v_str}': {err}")
+            raise HTTPException(status_code=400, detail=f"设置 {k} 失败: {err}")
+        applied.append({k: v_str})
+        record_log("SUCCESS", "CONFIG", f"Successfully tuned {k} to '{v_str}'")
+
+    return {"success": True, "message": f"成功更新 {len(applied)} 项配置", "applied": applied}
+
+
+@app.post("/api/monitors/save")
+async def api_save_monitor_overrides():
+    """将当前内存态生效的所有监控器参数覆盖固化保存到磁盘配置文件"""
+    record_log("INFO", "CONFIG", "Saving runtime monitor parameter overrides to disk")
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, bridge.save_monitor_overrides)
+    if not res.get("success"):
+        err = res.get("error", "保存配置失败")
+        record_log("ERROR", "CONFIG", f"Failed to save overrides: {err}")
+        raise HTTPException(status_code=500, detail=err)
+    record_log("SUCCESS", "CONFIG", f"Monitor overrides successfully persisted to disk: {res.get('data')}")
     return res
 
 

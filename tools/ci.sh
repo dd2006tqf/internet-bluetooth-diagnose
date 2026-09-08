@@ -171,13 +171,31 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # 只同步 dist-arm64 编译产物，不同步源码和构建目录
     rsync -az --delete --exclude "data/" --exclude "server/logs/" -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" 2>/dev/null
 
-    # 部署 systemd 单元、D-Bus 系统总线策略、运行时配置并启动唯一服务实例
+    # 同步 Web 前端与网关服务
+    if [ -d "${ROOT}/web-dashboard" ]; then
+        ssh "${BOARD}" "mkdir -p /home/radxa/weaknet/web/backend /home/radxa/weaknet/web/frontend" 2>/dev/null || true
+        rsync -az --delete -e ssh "${ROOT}/web-dashboard/backend/" "${BOARD}:/home/radxa/weaknet/web/backend/" 2>/dev/null || true
+        rsync -az --delete -e ssh "${ROOT}/web-dashboard/frontend/" "${BOARD}:/home/radxa/weaknet/web/frontend/" 2>/dev/null || true
+        if [ -f "${ROOT}/AI-assisted analysis/network_knowledge_base.py" ]; then
+            scp "${ROOT}/AI-assisted analysis/network_knowledge_base.py" "${BOARD}:/home/radxa/weaknet/web/backend/" 2>/dev/null || true
+        fi
+        scp "${ROOT}/web-dashboard/backend/weaknet-web.service" "${BOARD}:/tmp/weaknet-web.service" 2>/dev/null || true
+    fi
+
+    # 部署 systemd 单元、D-Bus 系统总线策略、运行时配置并启动服务实例
     scp "${ROOT}/tools/weaknet-server.service" "${BOARD}:/tmp/weaknet-server.service" 2>/dev/null
     scp "${ROOT}/tools/com.example.WeakNet.conf" "${BOARD}:/tmp/com.example.WeakNet.conf" 2>/dev/null
     scp "${ROOT}/config.yaml" "${BOARD}:/tmp/weaknet-config.yaml" 2>/dev/null
     # 客户端动态库安装到系统路径，供 weaknet-cli 链接（服务端走 unit 内 LD_LIBRARY_PATH）
     scp "${DIST_DIR}/client/lib/libweaknet.so" "${BOARD}:/tmp/libweaknet.so" 2>/dev/null
-    ssh "${BOARD}" "sudo cp /tmp/weaknet-server.service /etc/systemd/system/weaknet-server.service && sudo cp /tmp/com.example.WeakNet.conf /etc/dbus-1/system.d/com.example.WeakNet.conf && sudo mkdir -p /etc/weaknet && sudo cp /tmp/weaknet-config.yaml /etc/weaknet/config.yaml && sudo cp /tmp/libweaknet.so /usr/local/lib/libweaknet.so && sudo ldconfig && sudo systemctl daemon-reload && sudo systemctl reload dbus 2>/dev/null || true; sudo systemctl enable weaknet-server && sudo systemctl restart weaknet-server"
+    ssh "${BOARD}" "sudo cp /tmp/weaknet-server.service /etc/systemd/system/weaknet-server.service && \
+        ( [ -f /tmp/weaknet-web.service ] && sudo cp /tmp/weaknet-web.service /etc/systemd/system/weaknet-web.service && sudo systemctl enable weaknet-web || true ) && \
+        sudo cp /tmp/com.example.WeakNet.conf /etc/dbus-1/system.d/com.example.WeakNet.conf && \
+        sudo mkdir -p /etc/weaknet && sudo cp /tmp/weaknet-config.yaml /etc/weaknet/config.yaml && \
+        sudo cp /tmp/libweaknet.so /usr/local/lib/libweaknet.so && sudo ldconfig && \
+        sudo chmod o+rx /home/radxa/weaknet/data 2>/dev/null || true && \
+        sudo systemctl daemon-reload && sudo systemctl reload dbus 2>/dev/null || true; \
+        sudo systemctl enable weaknet-server && sudo systemctl restart weaknet-server"
 
     # 测试脚本也在部署步上传（rsync --delete 会删除 dist 之外的板端文件，
     # 若只在测试步上传，--skip-test 部署后板上会缺失该脚本）
