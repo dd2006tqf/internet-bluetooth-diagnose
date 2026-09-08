@@ -317,7 +317,8 @@ std::vector<HttpTxnInfo> HttpLatencyMonitor::getRecentTxns(size_t limit) {
     }
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - started).count();
-    stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed), !result.empty());
+    uint64_t safe_elapsed = (elapsed < 0 || elapsed > 60000000LL) ? 0ULL : static_cast<uint64_t>(elapsed);
+    stateSupport_.recordReadSuccess(safe_elapsed, !result.empty());
     // 按 TTFB 降序排列，取前 limit 个（优先返回最慢的事务）
     std::sort(result.begin(), result.end(),
         [](const HttpTxnInfo& a, const HttpTxnInfo& b) {

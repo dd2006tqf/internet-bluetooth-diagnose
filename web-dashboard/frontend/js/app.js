@@ -588,12 +588,22 @@ async function fetchEbpfHealth() {
       const tbody = document.getElementById('ebpf-table-body');
       tbody.innerHTML = '';
       json.data.monitors.forEach(m => {
+        let displayTime = '';
+        const us = Number(m.average_read_time_us);
+        if (isNaN(us) || us > 60000000 || us < 0) {
+          displayTime = '< 1 μs';
+        } else if (us >= 1000) {
+          displayTime = (us / 1000).toFixed(2) + ' ms';
+        } else {
+          displayTime = Math.round(us) + ' μs';
+        }
+
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td><strong>${m.name}</strong></td>
           <td><span class="monitor-tag running">${m.attached_probes} 探针</span></td>
           <td>${m.samples}</td>
-          <td><code style="color: var(--color-cyan);">${m.average_read_time_us} μs</code></td>
+          <td><code style="color: var(--color-cyan);">${displayTime}</code></td>
         `;
         tbody.appendChild(tr);
       });

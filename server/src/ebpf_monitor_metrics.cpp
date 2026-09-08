@@ -79,6 +79,12 @@ void EbpfMonitorMetricsTracker::recordProbeAttached() {
  */
 void EbpfMonitorMetricsTracker::recordReadSuccess(uint64_t elapsedUs, bool sample) {
     std::lock_guard<std::mutex> lock(mutex_);
+    // 防御时钟微小回拨或下溢（单次 BPF Map 遍历耗时通常在 10us~50ms，超过 60s 或负数强转值均过滤为 0）
+    constexpr uint64_t kMaxReasonableReadTimeUs = 60000000ULL; // 60s
+    if (elapsedUs > kMaxReasonableReadTimeUs) {
+        elapsedUs = 0;
+    }
+
     ++metrics_.mapReads;
     if (sample) ++metrics_.samples;
     metrics_.totalReadTimeUs += elapsedUs;
