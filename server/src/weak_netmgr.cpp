@@ -367,51 +367,117 @@ bool WeakNetMgr::markMetricUnavailable(const std::string& metric) {
     return true;
 }
 
+std::optional<std::string> WeakNetMgr::getCurrentUsingInterface() const {
+    std::lock_guard<std::mutex> lock(iface_mutex_);
+    for (const auto& iface : current_interfaces_) {
+        if (iface.usingNow()) {
+            return iface.ifName();
+        }
+    }
+    if (!current_interfaces_.empty()) {
+        return current_interfaces_[0].ifName(); // 稳定回退到首个网卡
+    }
+    return std::nullopt;
+}
+
 bool WeakNetMgr::updateRttAndStateSafe(const std::string& host, int timeoutMs) {
     LOG_DEBUG(LogModule::WEAK_MGR, "updateRttAndStateSafe: acquiring lock");
-    std::lock_guard<std::mutex> lock(iface_mutex_);
-    LOG_DEBUG(LogModule::WEAK_MGR, "updateRttAndStateSafe: lock acquired, calling updateRttAndState");
-    bool result = updateRttAndState(current_interfaces_, host, timeoutMs);
-    ++snapshot_generation_;
-    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
-    LOG_DEBUG(LogModule::WEAK_MGR, "updateRttAndStateSafe: updateRttAndState completed, releasing lock");
+    std::vector<std::pair<std::string, int>> rtt_snapshots;
+    bool result = false;
+    {
+        std::lock_guard<std::mutex> lock(iface_mutex_);
+        LOG_DEBUG(LogModule::WEAK_MGR, "updateRttAndStateSafe: lock acquired, calling updateRttAndState");
+        result = updateRttAndState(current_interfaces_, host, timeoutMs);
+        ++snapshot_generation_;
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        for (auto& iface : current_interfaces_) {
+            iface.markMetricUpdated(snapshot_generation_, now);
+            rtt_snapshots.emplace_back(iface.ifName(), iface.rttMs());
+        }
+        LOG_DEBUG(LogModule::WEAK_MGR, "updateRttAndStateSafe: updateRttAndState completed, releasing lock");
+    }
+
+    // MR-2 铁律：必须在释放 iface_mutex_ 后再向 MetricsRegistry 发布
+    if (metrics_registry_) {
+        for (const auto& item : rtt_snapshots) {
+            if (item.second >= 0) {
+                metrics_registry_->publish(item.first, weaknet::MetricId::RTT_MS, weaknet::MetricSample::valid(item.second));
+                metrics_registry_->publish(item.first, weaknet::MetricId::REACHABILITY_SUCCESS, weaknet::MetricSample::valid(1.0));
+            } else {
+                metrics_registry_->publish(item.first, weaknet::MetricId::REACHABILITY_SUCCESS, weaknet::MetricSample::valid(0.0));
+            }
+        }
+    }
     return result;
 }
 
 bool WeakNetMgr::updateWifiRssiSafe(const std::string& ctrlDir) {
     LOG_DEBUG(LogModule::WEAK_MGR, "updateWifiRssiSafe: acquiring lock");
-    std::lock_guard<std::mutex> lock(iface_mutex_);
-    LOG_DEBUG(LogModule::WEAK_MGR, "updateWifiRssiSafe: lock acquired, calling updateWifiRssi");
-    bool result = updateWifiRssi(current_interfaces_, ctrlDir);
-    if (result) ++snapshot_generation_;
-    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    if (result) for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
-    LOG_DEBUG(LogModule::WEAK_MGR, "updateWifiRssiSafe: updateWifiRssi completed, releasing lock");
+    std::vector<std::pair<std::string, int>> rssi_snapshots;
+    bool result = false;
+    {
+        std::lock_guard<std::mutex> lock(iface_mutex_);
+        LOG_DEBUG(LogModule::WEAK_MGR, "updateWifiRssiSafe: lock acquired, calling updateWifiRssi");
+        result = updateWifiRssi(current_interfaces_, ctrlDir);
+        if (result) ++snapshot_generation_;
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        if (result) {
+            for (auto& iface : current_interfaces_) {
+                iface.markMetricUpdated(snapshot_generation_, now);
+                rssi_snapshots.emplace_back(iface.ifName(), iface.rssiDbm());
+            }
+        }
+        LOG_DEBUG(LogModule::WEAK_MGR, "updateWifiRssiSafe: updateWifiRssi completed, releasing lock");
+    }
+
+    // MR-2: 锁外发布
+    if (metrics_registry_ && result) {
+        for (const auto& item : rssi_snapshots) {
+            if (item.second > -1000) {
+                metrics_registry_->publish(item.first, weaknet::MetricId::RSSI_DBM, weaknet::MetricSample::valid(item.second));
+            }
+        }
+    }
     return result;
 }
 
 bool WeakNetMgr::updateTcpLossRateSafe(const std::string& iface_name, double loss_rate, const std::string& loss_level) {
     LOG_DEBUG(LogModule::WEAK_MGR, "updateTcpLossRateSafe: acquiring lock");
-    std::lock_guard<std::mutex> lock(iface_mutex_);
-    LOG_DEBUG(LogModule::WEAK_MGR, "updateTcpLossRateSafe: lock acquired, calling updateTcpLossRate");
-    bool result = updateTcpLossRate(current_interfaces_, iface_name, loss_rate, loss_level);
-    if (result) ++snapshot_generation_;
-    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    if (result) for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
-    LOG_DEBUG(LogModule::WEAK_MGR, "updateTcpLossRateSafe: updateTcpLossRate completed, releasing lock");
+    bool result = false;
+    {
+        std::lock_guard<std::mutex> lock(iface_mutex_);
+        LOG_DEBUG(LogModule::WEAK_MGR, "updateTcpLossRateSafe: lock acquired, calling updateTcpLossRate");
+        result = updateTcpLossRate(current_interfaces_, iface_name, loss_rate, loss_level);
+        if (result) ++snapshot_generation_;
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        if (result) for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
+        LOG_DEBUG(LogModule::WEAK_MGR, "updateTcpLossRateSafe: updateTcpLossRate completed, releasing lock");
+    }
+
+    // MR-2: 锁外发布
+    if (metrics_registry_ && result) {
+        metrics_registry_->publish(iface_name, weaknet::MetricId::TCP_LOSS_RATE, weaknet::MetricSample::valid(loss_rate));
+    }
     return result;
 }
 
 bool WeakNetMgr::updateJitterSafe(const std::string& iface_name, double jitter_ms, const std::string& jitter_level) {
     LOG_DEBUG(LogModule::WEAK_MGR, "updateJitterSafe: acquiring lock");
-    std::lock_guard<std::mutex> lock(iface_mutex_);
-    LOG_DEBUG(LogModule::WEAK_MGR, "updateJitterSafe: lock acquired, calling updateJitter");
-    bool result = updateJitter(current_interfaces_, iface_name, jitter_ms, jitter_level);
-    if (result) ++snapshot_generation_;
-    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    if (result) for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
-    LOG_DEBUG(LogModule::WEAK_MGR, "updateJitterSafe: updateJitter completed, releasing lock");
+    bool result = false;
+    {
+        std::lock_guard<std::mutex> lock(iface_mutex_);
+        LOG_DEBUG(LogModule::WEAK_MGR, "updateJitterSafe: lock acquired, calling updateJitter");
+        result = updateJitter(current_interfaces_, iface_name, jitter_ms, jitter_level);
+        if (result) ++snapshot_generation_;
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        if (result) for (auto& iface : current_interfaces_) iface.markMetricUpdated(snapshot_generation_, now);
+        LOG_DEBUG(LogModule::WEAK_MGR, "updateJitterSafe: updateJitter completed, releasing lock");
+    }
+
+    // MR-2: 锁外发布
+    if (metrics_registry_ && result) {
+        metrics_registry_->publish(iface_name, weaknet::MetricId::JITTER_MS, weaknet::MetricSample::valid(jitter_ms));
+    }
     return result;
 }
 

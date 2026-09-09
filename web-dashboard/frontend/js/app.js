@@ -163,25 +163,38 @@ function updateHealthUI(data) {
     }
   }
 
-  // 2. 表盘与等级标签
+  // 2. 表盘与等级标签（Assurance-first 展示：state 优先，score 降低视觉权重）
+  const levelTag = document.getElementById('badge-quality-level');
+  const level = data.overall_quality || 'UNKNOWN';
+  levelTag.innerText = level;
+  levelTag.className = `monitor-tag ${level === 'EXCELLENT' ? 'running' : level === 'POOR' ? 'failed' : level === 'GOOD' ? 'running' : level === 'FAIR' ? 'degraded' : 'failed'}`;
+
   const score = data.overall_score !== undefined ? data.overall_score : (data.quality_score || 0);
   updateGauge(score);
 
-  const levelTag = document.getElementById('badge-quality-level');
-  const level = data.overall_quality || 'FAIR';
-  levelTag.innerText = level;
-  levelTag.className = `monitor-tag ${level === 'EXCELLENT' ? 'running' : level === 'POOR' ? 'failed' : 'running'}`;
-
-  // 3. KPI 卡片
+  // 3. KPI 卡片（标注实时值 vs 评估窗口值）
   const rtt = data.rtt_ms !== undefined ? data.rtt_ms : '--';
+  const medianRtt = data.median_rtt_ms;
+  const rttSub = document.getElementById('kpi-rtt-sub');
+  if (rttSub) {
+    rttSub.innerText = (medianRtt && medianRtt > 0)
+      ? `评估依据: 中位数 ${Math.round(medianRtt)}ms`
+      : 'ICMP ping 探测';
+  }
   document.getElementById('kpi-rtt').innerHTML = `${rtt} <span style="font-size: 14px;">ms</span>`;
 
   const jitter = data.jitter_ms !== undefined ? Math.round(data.jitter_ms) : '--';
   document.getElementById('kpi-jitter').innerHTML = `${jitter} <span style="font-size: 14px;">ms</span>`;
 
-  const rssi = (data.rssi_dbm !== undefined && data.rssi_dbm > -1000) ? data.rssi_dbm : '--';
-  document.getElementById('kpi-rssi').innerHTML = `${rssi} <span style="font-size: 14px;">dBm</span>`;
-  if (data.rssi_source) {
+  // RF Health：NOT_APPLICABLE（如有线链路）显示 N/A，而不是伪造的 '--'
+  const rfNa = data.rf_applicability === 'NOT_APPLICABLE';
+  const rssi = rfNa ? 'N/A' : ((data.rssi_dbm !== undefined && data.rssi_dbm > -1000) ? data.rssi_dbm : '--');
+  document.getElementById('kpi-rssi').innerHTML = rfNa
+    ? `N/A <span style="font-size: 14px;"></span>`
+    : `${rssi} <span style="font-size: 14px;">dBm</span>`;
+  if (data.rf_applicability === 'NOT_APPLICABLE') {
+    document.getElementById('kpi-rssi-source').innerText = '当前链路不适用（有线）';
+  } else if (data.rssi_source) {
     document.getElementById('kpi-rssi-source').innerText = `来源: ${data.rssi_source}`;
   }
 

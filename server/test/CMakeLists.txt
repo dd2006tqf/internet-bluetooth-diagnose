@@ -112,10 +112,20 @@ add_executable(test_monitor_manager_gtest
     unit/test_monitor_manager_gtest.cpp)
 target_link_libraries(test_monitor_manager_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_metrics_registry_gtest
+    unit/test_metrics_registry_gtest.cpp)
+target_link_libraries(test_metrics_registry_gtest PRIVATE ${TEST_COMMON_LIBS})
+
+add_executable(test_sle_evaluator_gtest
+    unit/test_sle_evaluator_gtest.cpp)
+target_link_libraries(test_sle_evaluator_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # ---- CTest 集成 ----
 # enable_testing() 已在根 CMakeLists.txt 中调用
 foreach(test_target
     test_net_info
+    test_metrics_registry_gtest
+    test_sle_evaluator_gtest
     test_quality_assessor_gtest
     test_anomaly_detector_gtest
     test_audio_fusion_gtest

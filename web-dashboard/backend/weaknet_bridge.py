@@ -210,7 +210,11 @@ class WeakNetBridge:
         res = self._call_string_api("weaknet_health_check", 4096)
         if res["success"]:
             try:
-                return {"success": True, "data": json.loads(res["data"])}
+                raw = json.loads(res["data"])
+                # 旧 D-Bus HealthCheck 的 payload 自带 {"success":true,"data":{...}}
+                # 这里把内层 data 提升到顶层，避免出现 data.data 嵌套（保持旧契约）
+                inner = raw.get("data", raw)
+                return {"success": True, "data": inner}
             except Exception:
                 return res
         return res

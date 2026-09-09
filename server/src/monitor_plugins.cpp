@@ -223,7 +223,8 @@ public:
     const char* name() const override { return "quality"; }
     int order() const override { return 10; }
     std::vector<std::string> dependencies() const override {
-        return {"rtt", "jitter", "rssi", "tcp_loss", "traffic"};
+        // 解除硬运行时依赖：Quality/Assurance 不再阻塞或依赖前驱 Monitor 处于 Running 状态
+        return {};
     }
     bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
     bool start(ServerContext* ctx) override {

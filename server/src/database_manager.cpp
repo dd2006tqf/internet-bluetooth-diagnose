@@ -45,7 +45,7 @@
 #include "database_manager.hpp"
 #include "net_info.hpp"
 #include "logger.hpp"
-#include "network_quality_assessor.hpp"
+#include "network_quality_result.hpp"
 #include "utils/json_escape.hpp"
 #include <sqlite3.h>
 #include <sstream>
@@ -321,7 +321,8 @@ bool DatabaseManager::ensureSchema() {
            ensureColumn("rssi_sample_ts", "INTEGER DEFAULT 0") &&
            ensureColumn("jitter_sample_ts", "INTEGER DEFAULT 0") &&
            ensureColumn("tcp_loss_sample_ts", "INTEGER DEFAULT 0") &&
-           ensureColumn("traffic_sample_ts", "INTEGER DEFAULT 0");
+           ensureColumn("traffic_sample_ts", "INTEGER DEFAULT 0") &&
+           ensureColumn("score_model", "TEXT DEFAULT 'legacy_weighted_v1'");
 }
 
 bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& info,
@@ -336,8 +337,8 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
 
     // 使用参数绑定防止 SQL 注入
     const char* sql = "INSERT INTO network_history (ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, "
-                      "rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts) VALUES ("
-                      "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )";
+                      "rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts, score_model) VALUES ("
+                      "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )";
 
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -364,7 +365,16 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
     const bool trafficStale = stale(traffic_sample_ts);
 
     std::string quality = overall.levelName;
-    if (quality.empty()) quality = NetworkQualityAssessor::getQualityLevelName(overall.level);
+    if (quality.empty()) {
+        switch (overall.level) {
+            case NetworkQualityLevel::EXCELLENT: quality = "EXCELLENT"; break;
+            case NetworkQualityLevel::GOOD: quality = "GOOD"; break;
+            case NetworkQualityLevel::FAIR: quality = "FAIR"; break;
+            case NetworkQualityLevel::POOR: quality = "POOR"; break;
+            case NetworkQualityLevel::UNKNOWN:
+            default: quality = "UNKNOWN"; break;
+        }
+    }
 
     sqlite3_bind_text(stmt, 1, timestamp.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, iface.c_str(), -1, SQLITE_TRANSIENT);
@@ -420,6 +430,8 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
     sqlite3_bind_int64(stmt, 27, jitter_sample_ts);
     sqlite3_bind_int64(stmt, 28, tcp_loss_sample_ts);
     sqlite3_bind_int64(stmt, 29, traffic_sample_ts);
+    // HR-9: 评分语义版本标识。NetworkAssurance 引擎驱动的写入均标记 assurance_v1。
+    sqlite3_bind_text(stmt, 30, "assurance_v1", -1, SQLITE_TRANSIENT);
     LOG_INFO(LogModule::SYSTEM, "snapshot metadata: generation=" << generation
              << " snapshot_ts=" << snapshot_ts_ms
              << " rtt=" << rtt_sample_ts << " rssi=" << rssi_sample_ts
@@ -438,15 +450,21 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
 }
 
 bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& info, double score) {
+    return insertSnapshot(iface, info, score, nullptr);
+}
+
+bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& info, double score, const char* score_model) {
     NetworkQualityResult overall;
     overall.score = score;
     overall.level = NetworkQualityLevel::UNKNOWN;
     overall.levelName = "UNKNOWN";
-    return insertSnapshot(iface, info, overall,
+    bool ok = insertSnapshot(iface, info, overall,
                            info.generation(), info.lastUpdatedMs(),
                            info.rttSampleTsMs(), info.rssiSampleTsMs(),
                            info.jitterSampleTsMs(), info.tcpLossSampleTsMs(),
                            info.trafficSampleTsMs());
+    (void)score_model; // score_model 由主 insert 路径统一写入 'assurance_v1'（HR-9）
+    return ok;
 }
 
 std::string DatabaseManager::queryHistory(const std::string& interface,

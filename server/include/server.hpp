@@ -23,6 +23,7 @@
 
 #include "weaknet_config.hpp"
 #include "monitor_manager.hpp"
+#include "metrics/metrics_registry.hpp"
 
 // 前置声明，避免强依赖 dbus 头
 struct DBusConnection;
@@ -72,6 +73,7 @@ struct ServerContext {
     // ---------- 服务对象（unique_ptr 管理生命周期）----------
     std::unique_ptr<DbusService> service;                ///< D-Bus 服务：导出方法 + 发射信号
     std::unique_ptr<WeakNetMgr> weak_mgr;                ///< 弱网管理器：聚合所有监控器的数据更新
+    std::unique_ptr<weaknet::MetricsRegistry> metrics_registry; ///< 权威度量注册表 (HR-4)
 
     // 监控器对象由对应插件拥有；这些裸指针仅为现有查询/聚合调用提供
     // non-owning 兼容视图，插件 stop 完成后必须清空。

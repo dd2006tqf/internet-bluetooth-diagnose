@@ -1,57 +1,45 @@
 // test_dns_monitor_gtest.cpp
-// DNS Monitor tests (Google Test version)
-// Tests: DNS monitor data structures and configuration
+// DNS Monitor unit tests (Google Test version)
+// Module under test: DNS-related RTT semantic mapping in Assurance Engine
+//
+// Note: DNS eBPF probe statistics are tested separately (test_ebpf_monitor_observability_gtest).
+// This suite verifies that DNS-related RTT outcomes map into SLE states properly.
 
 #include <gtest/gtest.h>
 #include <chrono>
 #include "net_info.hpp"
-#include "network_quality_assessor.hpp"
+#include "assurance/responsiveness_evaluator.hpp"
+#include "assurance/ip_reachability_evaluator.hpp"
 
+using namespace weaknet;
 using namespace weaknet_dbus;
-
-// ============================================================================
-// 测试套件：DNS 解析质量评估
-// ============================================================================
 
 class DnsMonitorTest : public ::testing::Test {
 protected:
-    NetworkQualityAssessor assessor;
-
-    NetInfo makeIface(const std::string& name, int rtt, double loss, int rssi) {
-        NetInfo info(name);
-        info.setRttMs(rtt);
-        info.setTcpLossRate(loss);
-        info.setRssiDbm(rssi);
-        info.setState(NetState::Up);
-        info.setType(NetType::WiFi);
-        info.setDefaultRoute(true);
-        info.setUsingNow(true);
-        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        info.setMetricSampleTimes(now, now, now, now, now);
-        return info;
+    static MetricSample rttSample(double ms) {
+        return MetricSample::valid(ms);
     }
 };
 
 TEST_F(DnsMonitorTest, ExcellentDnsConditions) {
     // Low RTT = good DNS resolution
-    auto iface = makeIface("wlan0", 20, 0.0, -45);
-    auto result = assessor.assessInterfaceQuality(iface);
-    EXPECT_EQ(result.level, NetworkQualityLevel::EXCELLENT);
+    std::vector<MetricSample> rtts = {rttSample(20), rttSample(22), rttSample(21), rttSample(23)};
+    auto res = ResponsivenessEvaluator::evaluate(rtts, {});
+    EXPECT_EQ(res.state, HealthState::GOOD);
 }
 
 TEST_F(DnsMonitorTest, PoorDnsConditions) {
     // High RTT = slow DNS
-    auto iface = makeIface("wlan0", 500, 10.0, -85);
-    auto result = assessor.assessInterfaceQuality(iface);
-    EXPECT_EQ(result.level, NetworkQualityLevel::POOR);
+    std::vector<MetricSample> rtts = {rttSample(500), rttSample(520), rttSample(510), rttSample(530)};
+    auto res = ResponsivenessEvaluator::evaluate(rtts, {});
+    EXPECT_EQ(res.state, HealthState::BAD);
 }
 
 TEST_F(DnsMonitorTest, ModerateDnsConditions) {
     // Moderate RTT = moderate DNS
-    auto iface = makeIface("wlan0", 150, 1.0, -65);
-    auto result = assessor.assessInterfaceQuality(iface);
-    EXPECT_NE(result.level, NetworkQualityLevel::EXCELLENT);
+    std::vector<MetricSample> rtts = {rttSample(150), rttSample(155), rttSample(152), rttSample(154)};
+    auto res = ResponsivenessEvaluator::evaluate(rtts, {});
+    EXPECT_NE(res.state, HealthState::GOOD);
 }
 
 // ============================================================================
@@ -74,35 +62,12 @@ TEST_F(DnsMonitorTest, NetInfoWithDnsMetrics) {
 // ============================================================================
 
 TEST_F(DnsMonitorTest, TimeoutScenario) {
-    // Simulate DNS timeout: RTT = -1 (timeout)
-    auto iface = makeIface("wlan0", -1, 0.0, -50);
-
-    // RTT of -1 means no data
-    EXPECT_FALSE(iface.hasRtt());
-
-    // Quality assessment with no RTT data
-    auto result = assessor.assessInterfaceQuality(iface);
-    EXPECT_NE(result.level, NetworkQualityLevel::EXCELLENT);
-}
-
-TEST_F(DnsMonitorTest, MultipleQueriesScenario) {
-    // Single interface with good metrics should give non-UNKNOWN quality
-    std::vector<NetInfo> ifaces;
-    NetInfo wlan0("wlan0");
-    wlan0.setRttMs(30);
-    wlan0.setTcpLossRate(0.0);
-    wlan0.setRssiDbm(-50);
-    wlan0.setState(NetState::Up);
-    wlan0.setType(NetType::WiFi);
-    wlan0.setDefaultRoute(true);
-    ifaces.push_back(wlan0);
-
-    auto result = assessor.assessQuality(ifaces);
-    // With single interface, quality should be UNKNOWN (needs multiple interfaces for comparison)
-    // or a valid quality level
-    EXPECT_TRUE(result.level == NetworkQualityLevel::UNKNOWN ||
-                result.level == NetworkQualityLevel::EXCELLENT ||
-                result.level == NetworkQualityLevel::GOOD ||
-                result.level == NetworkQualityLevel::FAIR ||
-                result.level == NetworkQualityLevel::POOR);
+    // Simulate DNS timeout: RTT = -1 (timeout) -> no reachability success
+    std::vector<MetricSample> events = {
+        MetricSample::valid(0.0),
+        MetricSample::valid(0.0),
+        MetricSample::valid(0.0)
+    };
+    auto res = IpReachabilityEvaluator::evaluate(events);
+    EXPECT_NE(res.state, HealthState::GOOD);
 }

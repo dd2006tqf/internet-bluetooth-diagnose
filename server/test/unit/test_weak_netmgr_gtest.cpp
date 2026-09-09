@@ -243,45 +243,41 @@ TEST(NetInfoTest, DefaultValues) {
 }
 
 // ============================================================================
-// NetworkQualityAssessor 与 RTT 质量评估交叉测试
+// NetworkAssurance & LegacyAdapter 交叉测试
 // ============================================================================
 
-#include "network_quality_assessor.hpp"
+#include "assurance/overall_policy.hpp"
+#include "assurance/legacy_adapter.hpp"
+
+using namespace weaknet;
 
 TEST(NetworkQualityCrossTest, RttAndLossCombined) {
-    NetworkQualityAssessor assessor;
+    // RTT 好但丢包高 -> Overall BAD (Reliability 单杀)
+    SleResult reach{HealthState::GOOD, Coverage::FULL_FOR_PROFILE, {}, ""};
+    SleResult resp{HealthState::GOOD, Coverage::FULL_FOR_PROFILE, {}, ""};
+    SleResult rel_bad{HealthState::BAD, Coverage::FULL_FOR_PROFILE, {}, "high loss"};
+    SleResult rf{HealthState::GOOD, Coverage::FULL_FOR_PROFILE, {}, ""};
 
-    // RTT 好但丢包高
-    NetInfo info1("wlan0");
-    info1.setRttMs(30);
-    info1.setTcpLossRate(8.0);
-    info1.setRssiDbm(-50);
-    auto r1 = assessor.assessInterfaceQuality(info1);
+    auto exp1 = OverallPolicy::decide("wlan0", reach, resp, rel_bad, rf);
+    auto r1 = LegacyAdapter::toQualityResult(exp1);
     EXPECT_NE(r1.level, NetworkQualityLevel::EXCELLENT);
 
-    // RTT 差但丢包低
-    NetInfo info2("wlan0");
-    info2.setRttMs(250);
-    info2.setTcpLossRate(0.0);
-    info2.setRssiDbm(-50);
-    auto r2 = assessor.assessInterfaceQuality(info2);
+    // RTT 差但丢包低 -> Overall DEGRADED
+    SleResult resp_bad{HealthState::BAD, Coverage::FULL_FOR_PROFILE, {}, "high rtt"};
+    SleResult rel_good{HealthState::GOOD, Coverage::FULL_FOR_PROFILE, {}, ""};
+    auto exp2 = OverallPolicy::decide("wlan0", reach, resp_bad, rel_good, rf);
+    auto r2 = LegacyAdapter::toQualityResult(exp2);
     EXPECT_NE(r2.level, NetworkQualityLevel::EXCELLENT);
 }
 
 TEST(NetworkQualityCrossTest, PerfectConditions) {
-    NetworkQualityAssessor assessor;
-    NetInfo info("wlan0");
-    info.setRttMs(20);
-    info.setTcpLossRate(0.0);
-    info.setRssiDbm(-40);
-    info.setTrafficStats(5000000, 1000, 20);
-    info.setUsingNow(true);
-    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    info.setMetricSampleTimes(now, now, now, now, now);
+    SleResult reach{HealthState::GOOD, Coverage::FULL_FOR_PROFILE, {}, ""};
+    SleResult resp{HealthState::GOOD, Coverage::FULL_FOR_PROFILE, {}, ""};
+    SleResult rel{HealthState::GOOD, Coverage::FULL_FOR_PROFILE, {}, ""};
+    SleResult rf{HealthState::GOOD, Coverage::FULL_FOR_PROFILE, {}, ""};
 
-    auto result = assessor.assessInterfaceQuality(info);
+    auto exp = OverallPolicy::decide("wlan0", reach, resp, rel, rf);
+    auto result = LegacyAdapter::toQualityResult(exp);
     EXPECT_EQ(result.level, NetworkQualityLevel::EXCELLENT);
     EXPECT_GE(result.score, 90.0);
-    EXPECT_TRUE(result.issues.empty());
 }

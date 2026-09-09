@@ -21,8 +21,10 @@
 #include <mutex>
 #include <cstdint>
 #include <chrono>
+#include <optional>
 
 #include "net_info.hpp"
+#include "metrics/metrics_registry.hpp"
 #include "traffic_analyzer.hpp"
 
 namespace weaknet_dbus {
@@ -39,9 +41,13 @@ private:
     mutable std::mutex iface_mutex_;                      ///< 保护接口列表的互斥锁
     std::vector<NetInfo> current_interfaces_;             ///< 当前接口列表
     uint64_t snapshot_generation_ = 0;                    ///< 全局快照代次
+    weaknet::MetricsRegistry* metrics_registry_ = nullptr; ///< 关联的权威度量注册表 (MR-1, MR-2)
 
 public:
     WeakNetMgr() : iface_mutex_(), current_interfaces_() {}
+    explicit WeakNetMgr(weaknet::MetricsRegistry* reg) : iface_mutex_(), current_interfaces_(), metrics_registry_(reg) {}
+    void setMetricsRegistry(weaknet::MetricsRegistry* reg) { metrics_registry_ = reg; }
+    std::optional<std::string> getCurrentUsingInterface() const;
 
     // ==================== 接口列表采集 ====================
 

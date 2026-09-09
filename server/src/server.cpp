@@ -46,7 +46,14 @@
 #include "jitter_monitor.hpp"
 #include "event_manager.hpp"
 #include "logger.hpp"
-#include "network_quality_assessor.hpp"
+#include "network_quality_result.hpp"
+#include "assurance/legacy_adapter.hpp"
+#include "assurance/overall_policy.hpp"
+#include "assurance/state_stabilizer.hpp"
+#include "assurance/ip_reachability_evaluator.hpp"
+#include "assurance/responsiveness_evaluator.hpp"
+#include "assurance/reliability_evaluator.hpp"
+#include "assurance/rf_health_evaluator.hpp"
 #include "bt_monitor.hpp"
 #include "band_conflict_detector.hpp"
 #include "bt_audio_fusion.hpp"
@@ -328,44 +335,65 @@ void start_using_iface_thread(ServerContext* ctx, std::thread* worker) {
 // 独立接口：启动网络质量监控线程
 void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
     *worker = std::thread([ctx](){
-        LOG_INFO(LogModule::WEAK_MGR, "network quality monitor thread started");
-        
-        NetworkQualityAssessor assessor;
-        NetworkQualityResult lastQuality;
-        lastQuality.level = NetworkQualityLevel::UNKNOWN;
-        
+        LOG_INFO(LogModule::WEAK_MGR, "network assurance engine thread started (Phase 1)");
+
+        weaknet::StateStabilizer stabilizer;
+        weaknet::HealthState lastStableState = weaknet::HealthState::UNKNOWN;
+
         int loop_count = 0;
         while ((ctx->running.load() && !ctx->quality_stop.load())) {
             loop_count++;
-            LOG_INFO(LogModule::WEAK_MGR, "network quality thread running, loop=" << loop_count);
             try {
-                // 直接获取当前接口列表（线程安全）
-                auto currentInterfaces = ctx->weak_mgr->getCurrentInterfaces();
-                LOG_INFO(LogModule::WEAK_MGR, "network quality: current interfaces count=" << currentInterfaces.size());
-                
-                // 评估网络质量
-                NetworkQualityResult currentQuality = assessor.assessQuality(currentInterfaces);
-                
-                // 检查质量是否发生变化
-                if (currentQuality.level != lastQuality.level || 
-                    std::abs(currentQuality.score - lastQuality.score) > 15.0) {
-                    
-                    LOG_INFO(LogModule::WEAK_MGR, "网络质量变化: " << currentQuality.levelName 
-                        << " (分数: " << std::fixed << std::setprecision(1) << currentQuality.score << ")");
-                    
-                    // 发送网络质量变化事件
+                std::string active_iface = "wlan0";
+                if (ctx->weak_mgr) {
+                    auto opt = ctx->weak_mgr->getCurrentUsingInterface();
+                    if (opt.has_value()) active_iface = opt.value();
+                }
+
+                weaknet::NetworkExperience exp;
+                uint64_t newest_rev = 0;
+
+                if (ctx->metrics_registry) {
+                    using namespace std::chrono_literals;
+                    auto reach_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::REACHABILITY_SUCCESS, 120s);
+                    auto rtt_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::RTT_MS, 120s);
+                    auto jitter_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::JITTER_MS, 120s);
+                    auto wifi_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::WIFI_LOSS_RATE, 120s);
+                    auto tcp_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::TCP_LOSS_RATE, 120s);
+                    auto rssi_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::RSSI_DBM, 120s);
+
+                    bool is_wireless = (active_iface.rfind("wl", 0) == 0);
+                    auto reach_sle = weaknet::IpReachabilityEvaluator::evaluate(reach_samples);
+                    auto resp_sle = weaknet::ResponsivenessEvaluator::evaluate(rtt_samples, jitter_samples);
+                    auto rel_sle = weaknet::ReliabilityEvaluator::evaluate(wifi_samples, tcp_samples, is_wireless);
+                    auto rf_sle = weaknet::RfHealthEvaluator::evaluate(rssi_samples, is_wireless);
+
+                    exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle, rf_sle);
+
+                    if (!rtt_samples.empty()) newest_rev = rtt_samples.back().sequence;
+                    else if (!reach_samples.empty()) newest_rev = reach_samples.back().sequence;
+                } else {
+                    exp.iface = active_iface;
+                    exp.overall = weaknet::HealthState::UNKNOWN;
+                    exp.display_score = 50;
+                }
+
+                // CR-2: 状态防抖（只有出现新 evidence 时才推进，发生稳定跃迁时发射信号）
+                weaknet::HealthState stableState = stabilizer.update(exp.overall, newest_rev);
+                exp.overall = stableState;
+
+                if (stableState != lastStableState) {
+                    auto qualRes = weaknet::LegacyAdapter::toQualityResult(exp);
+                    LOG_INFO(LogModule::WEAK_MGR, "网络质量稳定跃迁: " << qualRes.levelName
+                        << " (分数: " << std::fixed << std::setprecision(1) << qualRes.score << ")");
+
                     getEventManager().emitNetworkQualityChanged(
-                        currentQuality.levelName, 
-                        currentQuality.details, 
+                        qualRes.levelName,
+                        qualRes.details,
                         "network_quality_assessor"
                     );
-                    
-                    lastQuality = currentQuality;
-                } else {
-                    LOG_INFO(LogModule::WEAK_MGR, "网络质量稳定: " << currentQuality.levelName 
-                        << " (分数: " << std::fixed << std::setprecision(1) << currentQuality.score << ")");
+                    lastStableState = stableState;
                 }
-                
             } catch (const std::exception& e) {
                 LOG_ERROR(LogModule::WEAK_MGR, "网络质量监控错误: " << e.what());
             }
@@ -687,10 +715,48 @@ void start_history_persistence_thread(ServerContext* ctx) {
 
             if (!ctx->db_mgr || !ctx->db_mgr->isOpen()) continue;
 
-            // 获取当前接口快照并计算质量评分
+            // 获取当前接口快照并计算质量评分 (CR-3, HR-9)
             auto snapshot = ctx->weak_mgr->getCurrentInterfaces();
-            NetworkQualityAssessor assessor;
-            NetworkQualityResult qualityResult = assessor.assessQuality(snapshot);
+            std::string active_iface = "wlan0";
+            auto opt = ctx->weak_mgr->getCurrentUsingInterface();
+            if (opt.has_value()) active_iface = opt.value();
+
+            weaknet::NetworkExperience exp;
+            if (ctx->metrics_registry) {
+                using namespace std::chrono_literals;
+                auto reach_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::REACHABILITY_SUCCESS, 120s);
+                auto rtt_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::RTT_MS, 120s);
+                auto jitter_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::JITTER_MS, 120s);
+                auto wifi_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::WIFI_LOSS_RATE, 120s);
+                auto tcp_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::TCP_LOSS_RATE, 120s);
+                auto rssi_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::RSSI_DBM, 120s);
+
+                bool is_wireless = (active_iface.rfind("wl", 0) == 0);
+                auto reach_sle = weaknet::IpReachabilityEvaluator::evaluate(reach_samples);
+                auto resp_sle = weaknet::ResponsivenessEvaluator::evaluate(rtt_samples, jitter_samples);
+                auto rel_sle = weaknet::ReliabilityEvaluator::evaluate(wifi_samples, tcp_samples, is_wireless);
+                auto rf_sle = weaknet::RfHealthEvaluator::evaluate(rssi_samples, is_wireless);
+
+                exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle, rf_sle);
+
+                double jitter_val = 0.0;
+                auto latest_jitter = ctx->metrics_registry->latest(active_iface, weaknet::MetricId::JITTER_MS);
+                if (latest_jitter.has_value() && latest_jitter->state == weaknet::MetricState::VALID) {
+                    jitter_val = latest_jitter->value;
+                }
+            } else {
+                exp.iface = active_iface;
+                exp.overall = weaknet::HealthState::UNKNOWN;
+                exp.display_score = 50;
+            }
+
+            double cur_jitter = 0.0;
+            if (ctx->metrics_registry) {
+                auto j_s = ctx->metrics_registry->latest(active_iface, weaknet::MetricId::JITTER_MS);
+                if (j_s.has_value() && j_s->state == weaknet::MetricState::VALID) cur_jitter = j_s->value;
+            }
+
+            NetworkQualityResult qualityResult = weaknet::LegacyAdapter::toQualityResult(exp, -1, 0.0, -1000, cur_jitter);
 
             int written = 0;
             for (const auto& iface : snapshot) {
@@ -821,8 +887,9 @@ int start_server(int argc, char** argv) {
     // 启动事件监控
     getEventManager().startEventMonitoring(&ctx);
 
-    // 初始化WeakNetMgr（智能指针）
-    ctx.weak_mgr = std::make_unique<WeakNetMgr>();
+    // 初始化 MetricsRegistry 与 WeakNetMgr (MR-1, MR-2, HR-4)
+    ctx.metrics_registry = std::make_unique<weaknet::MetricsRegistry>();
+    ctx.weak_mgr = std::make_unique<WeakNetMgr>(ctx.metrics_registry.get());
 
     // 启动 UsingInterfaceManager（一次性启动，不重复调用 start()）
     UsingInterfaceManager::getInstance()->start();

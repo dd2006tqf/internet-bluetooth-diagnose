@@ -346,6 +346,7 @@ main {
 .monitor-tag.running { background: #dcfce7; color: #15803d; }
 .monitor-tag.failed { background: #fee2e2; color: #b91c1c; }
 .monitor-tag.stopped { background: #f1f5f9; color: #64748b; }
+.monitor-tag.degraded { background: #fef3c7; color: #b45309; }
 
 /* 紧凑表格 */
 .table-container {

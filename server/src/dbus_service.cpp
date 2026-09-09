@@ -35,7 +35,7 @@
 #include "dbus_service.hpp"
 #include "weak_netmgr.hpp"
 #include "net_info.hpp"
-#include "network_quality_assessor.hpp"
+#include "network_quality_result.hpp"
 #include "net_ping.h"
 #include "bt_monitor.hpp"
 #include "bt_audio_analyzer.hpp"
@@ -50,6 +50,12 @@
 #include "weaknet_config.hpp"
 #include "utils/json_escape.hpp"
 #include "database_manager.hpp"
+#include "assurance/legacy_adapter.hpp"
+#include "assurance/overall_policy.hpp"
+#include "assurance/ip_reachability_evaluator.hpp"
+#include "assurance/responsiveness_evaluator.hpp"
+#include "assurance/reliability_evaluator.hpp"
+#include "assurance/rf_health_evaluator.hpp"
 #include <sstream>
 
 namespace weaknet_dbus {
@@ -393,13 +399,64 @@ bool DbusService::handleListInterfaces(DBusConnection* conn, DBusMessage* msg) {
  * 不缓存 assessor，保证每次调用都是最新快照。
  */
 bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
-    LOG_INFO(LogModule::DBUS, "handleHealthCheck called");
-    // 接口列表唯一事实源 = WeakNetMgr::current_interfaces_（线程安全接口）
-    std::vector<NetInfo> snapshot = ctx_->weak_mgr->getCurrentInterfaces();
+    LOG_INFO(LogModule::DBUS, "handleHealthCheck called (CR-1 LegacyAdapter route)");
 
-    NetworkQualityAssessor assessor;
-    NetworkQualityResult result = assessor.assessQuality(snapshot);
-    std::string reply_text = result.details;
+    std::string active_iface = "wlan0";
+    if (ctx_ && ctx_->weak_mgr) {
+        auto opt = ctx_->weak_mgr->getCurrentUsingInterface();
+        if (opt.has_value()) active_iface = opt.value();
+    }
+
+    // 从 MetricsRegistry 拉取窗口并使用无状态 Evaluator 评估
+    weaknet::NetworkExperience exp;
+    int rtt_val = -1;
+    double tcp_loss_val = 0.0;
+    int rssi_val = -1000;
+    double jitter_val = 0.0;
+    double median_rtt_val = -1.0;
+    std::string resp_reason = "";
+
+    if (ctx_ && ctx_->metrics_registry) {
+        using namespace std::chrono_literals;
+        auto reach_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::REACHABILITY_SUCCESS, 120s);
+        auto rtt_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::RTT_MS, 120s);
+        auto jitter_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::JITTER_MS, 120s);
+        auto wifi_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::WIFI_LOSS_RATE, 120s);
+        auto tcp_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::TCP_LOSS_RATE, 120s);
+        auto rssi_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::RSSI_DBM, 120s);
+
+        bool is_wireless = (active_iface.rfind("wl", 0) == 0);
+        auto reach_sle = weaknet::IpReachabilityEvaluator::evaluate(reach_samples);
+        auto resp_sle = weaknet::ResponsivenessEvaluator::evaluate(rtt_samples, jitter_samples);
+        auto rel_sle = weaknet::ReliabilityEvaluator::evaluate(wifi_samples, tcp_samples, is_wireless);
+        auto rf_sle = weaknet::RfHealthEvaluator::evaluate(rssi_samples, is_wireless);
+
+        exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle, rf_sle);
+        resp_reason = resp_sle.reason;
+        for (const auto& ev : resp_sle.evidence) {
+            if (ev.metric == "median_rtt_ms") {
+                median_rtt_val = ev.value;
+            }
+        }
+
+        auto latest_rtt = ctx_->metrics_registry->latest(active_iface, weaknet::MetricId::RTT_MS);
+        if (latest_rtt.has_value() && latest_rtt->state == weaknet::MetricState::VALID) rtt_val = static_cast<int>(latest_rtt->value);
+
+        auto latest_loss = ctx_->metrics_registry->latest(active_iface, weaknet::MetricId::TCP_LOSS_RATE);
+        if (latest_loss.has_value() && latest_loss->state == weaknet::MetricState::VALID) tcp_loss_val = latest_loss->value;
+
+        auto latest_rssi = ctx_->metrics_registry->latest(active_iface, weaknet::MetricId::RSSI_DBM);
+        if (latest_rssi.has_value() && latest_rssi->state == weaknet::MetricState::VALID) rssi_val = static_cast<int>(latest_rssi->value);
+
+        auto latest_jitter = ctx_->metrics_registry->latest(active_iface, weaknet::MetricId::JITTER_MS);
+        if (latest_jitter.has_value() && latest_jitter->state == weaknet::MetricState::VALID) jitter_val = latest_jitter->value;
+    } else {
+        exp.iface = active_iface;
+        exp.overall = weaknet::HealthState::UNKNOWN;
+        exp.display_score = 50;
+    }
+
+    std::string reply_text = weaknet::LegacyAdapter::toHealthCheckJson(exp, rtt_val, tcp_loss_val, rssi_val, jitter_val, median_rtt_val, resp_reason);
 
     DBusMessage* reply = dbus_message_new_method_return(msg);
     if (!reply) return false;

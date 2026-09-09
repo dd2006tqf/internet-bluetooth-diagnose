@@ -1,101 +1,74 @@
 // test_rtt_monitor_gtest.cpp
 // RTT Monitor unit tests (Google Test version)
-// Module under test: rtt_monitor.cpp (RTT monitoring and quality assessment)
+// Module under test: rtt_monitor.cpp / Assurance Engine (SLE evaluators)
 //
 // Note: rtt_monitor.cpp only contains start_rtt_monitor_thread which requires
-// ServerContext and real network. We test the underlying logic via WeakNetMgr
-// and NetInfo quality assessment.
+// ServerContext and real network. We test the underlying logic via
+// Responsiveness/Reachability evaluators and NetInfo quality assessment.
 
 #include <gtest/gtest.h>
 #include <chrono>
 #include "weak_netmgr.hpp"
 #include "net_info.hpp"
-#include "network_quality_assessor.hpp"
+#include "assurance/responsiveness_evaluator.hpp"
+#include "assurance/ip_reachability_evaluator.hpp"
 
+using namespace weaknet;
 using namespace weaknet_dbus;
 
 // ============================================================================
-// Test Suite: RTT Quality Assessment via NetworkQualityAssessor
+// Test Suite: RTT Quality Assessment via SLE Assurance Evaluators
 // ============================================================================
 
 class RttQualityTest : public ::testing::Test {
 protected:
-    NetworkQualityAssessor assessor;
-
-    NetInfo makeIface(const std::string& name, int rtt, double loss, int rssi) {
-        NetInfo info(name);
-        info.setRttMs(rtt);
-        info.setTcpLossRate(loss);
-        info.setRssiDbm(rssi);
-        info.setState(NetState::Up);
-        info.setType(NetType::WiFi);
-        info.setDefaultRoute(true);
-        info.setUsingNow(true);
-        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
-        info.setMetricSampleTimes(now, now, now, now, now);
-        return info;
+    static MetricSample rttSample(double ms) {
+        return MetricSample::valid(ms);
     }
 };
 
-// Test 1: Excellent RTT (< 50ms) gives high score
+// Test 1: Excellent RTT (< 60ms, ratio 0) -> GOOD
 TEST_F(RttQualityTest, ExcellentRtt) {
-    auto iface = makeIface("wlan0", 30, 0.0, -45);
-    auto result = assessor.assessInterfaceQuality(iface);
-    EXPECT_EQ(result.level, NetworkQualityLevel::EXCELLENT);
-    EXPECT_GE(result.score, 90.0);
+    std::vector<MetricSample> rtts = {rttSample(30), rttSample(28), rttSample(32), rttSample(29)};
+    auto res = ResponsivenessEvaluator::evaluate(rtts, {});
+    EXPECT_EQ(res.state, HealthState::GOOD);
 }
 
-// Test 2: Good RTT (50-100ms)
+// Test 2: Good RTT (60~100ms) -> DEGRADED
 TEST_F(RttQualityTest, GoodRtt) {
-    auto iface = makeIface("wlan0", 80, 0.0, -55);
-    auto result = assessor.assessInterfaceQuality(iface);
-    EXPECT_EQ(result.level, NetworkQualityLevel::GOOD);
-    EXPECT_GE(result.score, 75.0);
+    std::vector<MetricSample> rtts = {rttSample(80), rttSample(85), rttSample(80), rttSample(82)};
+    auto res = ResponsivenessEvaluator::evaluate(rtts, {});
+    EXPECT_NE(res.state, HealthState::GOOD);
 }
 
-// Test 3: Fair RTT (100-200ms)
-TEST_F(RttQualityTest, FairRtt) {
-    auto iface = makeIface("wlan0", 150, 0.0, -60);
-    auto result = assessor.assessInterfaceQuality(iface);
-    EXPECT_EQ(result.level, NetworkQualityLevel::FAIR);
-    EXPECT_GE(result.score, 50.0);
-}
-
-// Test 4: Poor RTT (> 200ms) + bad loss + weak signal
+// Test 3: Poor RTT (> 150ms consistently) -> BAD
 TEST_F(RttQualityTest, PoorRtt) {
-    auto iface = makeIface("wlan0", 300, 5.0, -85);
-    auto result = assessor.assessInterfaceQuality(iface);
-    EXPECT_EQ(result.level, NetworkQualityLevel::POOR);
+    std::vector<MetricSample> rtts = {rttSample(160), rttSample(180), rttSample(200), rttSample(170)};
+    auto res = ResponsivenessEvaluator::evaluate(rtts, {});
+    EXPECT_EQ(res.state, HealthState::BAD);
 }
 
-// Test 5: High packet loss degrades quality
-TEST_F(RttQualityTest, HighPacketLoss) {
-    auto iface = makeIface("wlan0", 50, 5.0, -50);
-    auto result = assessor.assessInterfaceQuality(iface);
-    EXPECT_NE(result.level, NetworkQualityLevel::EXCELLENT);
+// Test 4: Insufficient samples -> UNKNOWN (min_valid_samples)
+TEST_F(RttQualityTest, InsufficientSamples) {
+    std::vector<MetricSample> rtts = {rttSample(30)};
+    auto res = ResponsivenessEvaluator::evaluate(rtts, {});
+    EXPECT_EQ(res.state, HealthState::UNKNOWN);
 }
 
-// Test 6: Weak signal degrades quality
-TEST_F(RttQualityTest, WeakSignal) {
-    auto iface = makeIface("wlan0", 30, 0.0, -85);
-    auto result = assessor.assessInterfaceQuality(iface);
-    EXPECT_NE(result.level, NetworkQualityLevel::EXCELLENT);
-}
+// ============================================================================
+// Test Suite: Reachability semantics
+// ============================================================================
 
-// Test 7: Empty interface list returns UNKNOWN
-TEST_F(RttQualityTest, EmptyInterfaces) {
-    auto result = assessor.assessQuality({});
-    EXPECT_EQ(result.level, NetworkQualityLevel::UNKNOWN);
-}
-
-// Test 8: Quality level names are correct
-TEST_F(RttQualityTest, QualityLevelNames) {
-    EXPECT_EQ(NetworkQualityAssessor::getQualityLevelName(NetworkQualityLevel::EXCELLENT), "EXCELLENT");
-    EXPECT_EQ(NetworkQualityAssessor::getQualityLevelName(NetworkQualityLevel::GOOD), "GOOD");
-    EXPECT_EQ(NetworkQualityAssessor::getQualityLevelName(NetworkQualityLevel::FAIR), "FAIR");
-    EXPECT_EQ(NetworkQualityAssessor::getQualityLevelName(NetworkQualityLevel::POOR), "POOR");
-    EXPECT_EQ(NetworkQualityAssessor::getQualityLevelName(NetworkQualityLevel::UNKNOWN), "UNKNOWN");
+TEST(ReachabilityTest, ConsecutiveFailuresLeadToBad) {
+    std::vector<MetricSample> events = {
+        MetricSample::valid(1.0),
+        MetricSample::valid(1.0),
+        MetricSample::valid(0.0),
+        MetricSample::valid(0.0),
+        MetricSample::valid(0.0)
+    };
+    auto res = IpReachabilityEvaluator::evaluate(events);
+    EXPECT_EQ(res.state, HealthState::BAD);
 }
 
 // ============================================================================

@@ -4,8 +4,9 @@
 
 #include <gtest/gtest.h>
 #include "net_info.hpp"
-#include "network_quality_assessor.hpp"
+#include "assurance/responsiveness_evaluator.hpp"
 
+using namespace weaknet;
 using namespace weaknet_dbus;
 
 // ============================================================================
@@ -61,26 +62,23 @@ TEST_F(JitterTest, JitterLevels) {
 }
 
 TEST_F(JitterTest, HighJitterImpactOnQuality) {
-    // High jitter should degrade quality assessment
-    NetworkQualityAssessor assessor;
+    // High jitter should degrade responsiveness assessment
+    std::vector<MetricSample> rtts = {
+        MetricSample::valid(30.0),
+        MetricSample::valid(28.0),
+        MetricSample::valid(32.0),
+        MetricSample::valid(29.0)
+    };
 
-    // Good RTT but high jitter
-    NetInfo info1("wlan0");
-    info1.setRttMs(30);
-    info1.setTcpLossRate(0.0);
-    info1.setRssiDbm(-50);
-    auto r1 = assessor.assessInterfaceQuality(info1);
+    // Low jitter -> GOOD
+    std::vector<MetricSample> jitters_low = { MetricSample::valid(2.0) };
+    auto r1 = ResponsivenessEvaluator::evaluate(rtts, jitters_low);
+    EXPECT_EQ(r1.state, HealthState::GOOD);
 
-    // Same but with high jitter (jitter itself isn't in the assessor yet,
-    // but the quality should still be affected by RTT)
-    NetInfo info2("wlan0");
-    info2.setRttMs(30);
-    info2.setTcpLossRate(0.0);
-    info2.setRssiDbm(-50);
-    auto r2 = assessor.assessInterfaceQuality(info2);
-
-    // Both should be similar since jitter isn't factored into quality yet
-    EXPECT_DOUBLE_EQ(r1.score, r2.score);
+    // High jitter -> BAD (jitter_excessive)
+    std::vector<MetricSample> jitters_high = { MetricSample::valid(50.0) };
+    auto r2 = ResponsivenessEvaluator::evaluate(rtts, jitters_high);
+    EXPECT_EQ(r2.state, HealthState::BAD);
 }
 
 // ============================================================================

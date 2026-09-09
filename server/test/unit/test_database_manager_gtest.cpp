@@ -5,7 +5,7 @@
 #include <gtest/gtest.h>
 #include "database_manager.hpp"
 #include "net_info.hpp"
-#include "network_quality_assessor.hpp"
+#include "network_quality_result.hpp"
 #include <cstdio>
 #include <unistd.h>
 #include <sys/stat.h>
