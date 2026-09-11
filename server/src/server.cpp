@@ -58,6 +58,8 @@
 #include "band_conflict_detector.hpp"
 #include "bt_audio_fusion.hpp"
 #include "dns_monitor.hpp"
+#include "assurance/dns_transaction_tracker.hpp"
+#include "assurance/dns_service_evaluator.hpp"
 #include "wifi_packet_loss_monitor.hpp"
 #include "http_latency_monitor.hpp"
 #include "process_net_profiler.hpp"
@@ -367,8 +369,17 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     auto resp_sle = weaknet::ResponsivenessEvaluator::evaluate(rtt_samples, jitter_samples);
                     auto rel_sle = weaknet::ReliabilityEvaluator::evaluate(wifi_samples, tcp_samples, is_wireless);
                     auto rf_sle = weaknet::RfHealthEvaluator::evaluate(rssi_samples, is_wireless);
+                    weaknet::SleResult dns_sle;
+                    bool dns_bypass = false;
+                    if (ctx->dns_tracker) {
+                        auto snap = ctx->dns_tracker->getSnapshot();
+                        auto dns_window = ctx->dns_tracker->getWindowMetrics(120s, snap.cutoff);
+                        dns_sle = weaknet::DnsServiceEvaluator::evaluate(
+                            dns_window, ctx->dns_tracker->getRecentTerminals(), {}, &dns_bypass);
+                    }
 
-                    exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle, rf_sle);
+                    exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle,
+                                                         rf_sle, dns_sle, ctx->assessment_profile);
 
                     if (!rtt_samples.empty()) newest_rev = rtt_samples.back().sequence;
                     else if (!reach_samples.empty()) newest_rev = reach_samples.back().sequence;
@@ -570,6 +581,18 @@ void start_dns_monitor_thread(ServerContext* ctx, std::thread* worker, DnsMonito
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "DNS monitor thread started");
         while ((ctx->running.load() && !ctx->dns_stop.load())) {
+            if (ctx->dns_monitor && ctx->dns_tracker) {
+                auto drained = ctx->dns_monitor->drainEvents(ctx->dns_tracker.get());
+                if (drained > 0) {
+                    LOG_INFO(LogModule::NETWORK, "DNS events drained=" << drained);
+                }
+                ctx->dns_tracker->sweepTimeouts();
+                static int dns_diag_ticks = 0;
+                if (++dns_diag_ticks % 30 == 0) {
+                    LOG_INFO(LogModule::NETWORK, "dns-capture diag: "
+                        << ctx->dns_monitor->getCaptureDiagnostics());
+                }
+            }
             auto stats = monitor->getStats();
             if (stats.totalQueries > 0) {
                 LOG_INFO(LogModule::NETWORK, "DNS tick: queries=" << stats.totalQueries
@@ -880,6 +903,21 @@ int start_server(int argc, char** argv) {
             LOG_WARNING(LogModule::SYSTEM,
                 "Unknown log_level '" << ctx.cfg.log_level.get() << "', keeping default INFO");
         }
+
+        // IR-3: 运行时 assessment profile 来源（非法值记录错误并回落默认）
+        {
+            const std::string p = ctx.cfg.dns.assessment_profile.get();
+            if (p == "NETWORK_ONLY") {
+                ctx.assessment_profile = weaknet::AssessmentProfile::NETWORK_ONLY;
+                LOG_INFO(LogModule::SYSTEM, "Assessment profile from config: NETWORK_ONLY");
+            } else if (p == "INTERNET_ACCESS") {
+                ctx.assessment_profile = weaknet::AssessmentProfile::INTERNET_ACCESS;
+                LOG_INFO(LogModule::SYSTEM, "Assessment profile from config: INTERNET_ACCESS");
+            } else if (!p.empty()) {
+                LOG_WARNING(LogModule::SYSTEM, "Unknown assessment_profile '" << p
+                            << "', falling back to INTERNET_ACCESS");
+            }
+        }
     }
 
     if (!init_dbus(&ctx)) return 1;
@@ -889,6 +927,7 @@ int start_server(int argc, char** argv) {
 
     // 初始化 MetricsRegistry 与 WeakNetMgr (MR-1, MR-2, HR-4)
     ctx.metrics_registry = std::make_unique<weaknet::MetricsRegistry>();
+    ctx.dns_tracker = std::make_unique<weaknet::DnsTransactionTracker>();
     ctx.weak_mgr = std::make_unique<WeakNetMgr>(ctx.metrics_registry.get());
 
     // 启动 UsingInterfaceManager（一次性启动，不重复调用 start()）

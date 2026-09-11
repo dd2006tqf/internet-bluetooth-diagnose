@@ -430,8 +430,16 @@ bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
         auto resp_sle = weaknet::ResponsivenessEvaluator::evaluate(rtt_samples, jitter_samples);
         auto rel_sle = weaknet::ReliabilityEvaluator::evaluate(wifi_samples, tcp_samples, is_wireless);
         auto rf_sle = weaknet::RfHealthEvaluator::evaluate(rssi_samples, is_wireless);
+        weaknet::SleResult dns_sle;
+        if (ctx_->dns_tracker) {
+            auto snap = ctx_->dns_tracker->getSnapshot();
+            auto dns_window = ctx_->dns_tracker->getWindowMetrics(std::chrono::seconds(120), snap.cutoff);
+            dns_sle = weaknet::DnsServiceEvaluator::evaluate(
+                dns_window, ctx_->dns_tracker->getRecentTerminals());
+        }
 
-        exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle, rf_sle);
+        exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle,
+                                             rf_sle, dns_sle, ctx_->assessment_profile);
         resp_reason = resp_sle.reason;
         for (const auto& ev : resp_sle.evidence) {
             if (ev.metric == "median_rtt_ms") {

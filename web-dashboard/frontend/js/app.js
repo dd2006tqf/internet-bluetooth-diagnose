@@ -931,7 +931,42 @@ async function fetchAndRenderEbpfDetail(name, probe) {
             </div>
           </div>
         </div>
+        <div id="dns-service-health-block" class="ebpf-section-block">
+          <div class="ebpf-section-title">🩺 DNS 服务保障 (Service Health, assurance_v2)</div>
+          <div id="dns-service-health" style="margin-top: 6px;">加载中…</div>
+        </div>
       `;
+
+      // Overlay DNS service SLE from HealthCheck (assessment-first, read-only)
+      try {
+        const hcRes = await fetch('/api/health');
+        const hcJson = await hcRes.json();
+        const data = hcJson.data || hcJson;
+        const issues = Array.isArray(data.issues) ? data.issues : [];
+        const dnsIssue = issues.find(i => /DNS/i.test(i)) || null;
+        const profile = data.assessment_profile || 'UNSPECIFIED';
+        const overall = data.overall_quality || 'UNKNOWN';
+        const dnsBlock = document.getElementById('dns-service-health');
+        if (dnsBlock) {
+          dnsBlock.innerHTML = `
+            <div class="ebpf-stat-grid">
+              <div class="ebpf-stat-box">
+                <span class="ebpf-stat-label">整体评级 (含 DNS)</span>
+                <span class="ebpf-stat-val">${escapeHtml(overall)}</span>
+              </div>
+              <div class="ebpf-stat-box">
+                <span class="ebpf-stat-label">DNS 主诊断</span>
+                <span class="ebpf-stat-val" style="font-size: 12px; color: ${dnsIssue ? '#dc2626' : 'inherit'};">${escapeHtml(dnsIssue || 'No DNS issue detected')}</span>
+              </div>
+              <div class="ebpf-stat-box">
+                <span class="ebpf-stat-label">Assessment Profile</span>
+                <span class="ebpf-stat-val" style="font-size: 12px;">${escapeHtml(profile)}</span>
+              </div>
+            </div>`;
+        }
+      } catch (e) {
+        // Health overlay is advisory; do not fail the DNS panel on it.
+      }
 
     } else if (name === 'WifiPacketLossMonitor') {
       const res = await fetch('/api/ebpf/wifi-loss');

@@ -24,6 +24,8 @@
 #include "weaknet_config.hpp"
 #include "monitor_manager.hpp"
 #include "metrics/metrics_registry.hpp"
+#include "assurance/dns_transaction_tracker.hpp"
+#include "assurance/dns_service_evaluator.hpp"
 
 // 前置声明，避免强依赖 dbus 头
 struct DBusConnection;
@@ -74,6 +76,9 @@ struct ServerContext {
     std::unique_ptr<DbusService> service;                ///< D-Bus 服务：导出方法 + 发射信号
     std::unique_ptr<WeakNetMgr> weak_mgr;                ///< 弱网管理器：聚合所有监控器的数据更新
     std::unique_ptr<weaknet::MetricsRegistry> metrics_registry; ///< 权威度量注册表 (HR-4)
+    std::unique_ptr<weaknet::DnsTransactionTracker> dns_tracker; ///< DNS userspace lifecycle authority (SR-11)
+    std::atomic<uint64_t> dns_binding_epoch{1};
+    weaknet::AssessmentProfile assessment_profile{weaknet::AssessmentProfile::INTERNET_ACCESS};
 
     // 监控器对象由对应插件拥有；这些裸指针仅为现有查询/聚合调用提供
     // non-owning 兼容视图，插件 stop 完成后必须清空。

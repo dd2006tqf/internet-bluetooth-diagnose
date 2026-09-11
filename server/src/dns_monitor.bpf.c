@@ -29,11 +29,333 @@
 // DNS 超时判定阈值：5 秒内未收到响应视为超时
 #define DNS_TIMEOUT_NS 5000000000ULL  // 5 秒 = 5,000,000,000 纳秒
 
+/*
+ * Userspace event ABI.  The syscall tracepoints below are deliberately
+ * separate from the legacy aggregate kprobes: the aggregate maps remain a
+ * compatibility/observability path, while lifecycle truth comes only from
+ * these payload-bearing events (SR-11).
+ */
+struct dns_event {
+    __u8 direction;       /* 0=query, 1=response */
+    __u8 rcode;
+    __u8 tc;
+    __u8 malformed;
+    __u8 fingerprint_quality; /* 0=ENRICHED, 1=PARTIAL */
+    __u8 reserved[3];
+    __u32 client_ip;      /* network order; syscall path may be 0 */
+    __u32 resolver_ip;    /* network order */
+    __u16 client_port;    /* host order; 0 when unavailable */
+    __u16 txid;
+    __u16 qtype;
+    __u16 payload_len;
+    __u64 qname_hash;
+    __u64 timestamp_ns;
+};
+
+struct recv_pending {
+    __u64 buffer;
+    __u64 length;
+    __u64 peer;
+    __u64 peer_length;
+    __u32 client_ip;
+    __u32 resolver_ip;
+    __u16 client_port;
+    __u16 pad;
+};
+
+struct dns_iovec {
+    __u64 base;
+    __u64 len;
+};
+
+/* Linux user_msghdr layout on the supported ARM64 userspace ABI. */
+struct dns_user_msghdr {
+    __u64 name;
+    __u32 namelen;
+    __u32 _pad;
+    __u64 iov;
+    __u64 iovlen;
+    __u64 control;
+    __u64 controllen;
+    __u32 flags;
+    __u32 _pad2;
+};
+
+
+
+struct fd_resolver_key {
+    __u64 pid_tgid;
+    __s32 fd;
+    __u32 pad;
+};
+
+struct fd_resolver_value {
+    __u32 resolver_ip;
+    __u32 pad;
+};
+
+/*
+ * Capture observability counters (per-CPU, one key per stat). These turn
+ * "NO_DNS_EVENTS" into a located boundary: hook -> msghdr -> iovec -> header
+ * -> emit, without guessing user ABI offsets (Evidence-first).
+ */
+enum dns_capture_stat {
+    DNS_STAT_SENDTO_ENTER = 0,
+    DNS_STAT_SENDMSG_ENTER,
+    DNS_STAT_SENDMMSG_ENTER,
+    DNS_STAT_RECVFROM_ENTER,
+    DNS_STAT_RECVMSG_ENTER,
+    DNS_STAT_RECVMSG_EXIT,
+    DNS_STAT_RECVMMSG_EXIT,
+    DNS_STAT_MSGHDR_READ_FAIL,
+    DNS_STAT_IOVEC_READ_FAIL,
+    DNS_STAT_PAYLOAD_READ_FAIL,
+    DNS_STAT_SHORT_PAYLOAD,
+    DNS_STAT_EMITTED,
+    DNS_STAT_EMIT_FAIL,
+    DNS_STAT_MAX
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, DNS_STAT_MAX);
+    __type(key, __u32);
+    __type(value, __u64);
+} dns_capture_counters SEC(".maps");
+
+static __always_inline void dns_stat_inc(__u32 key)
+{
+    __u64 *value = bpf_map_lookup_elem(&dns_capture_counters, &key);
+    if (value)
+        (*value)++;
+}
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __type(key, __u32);
+    __type(value, __u32);
+} dns_events SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u64);
+    __type(value, struct recv_pending);
+} pending_recv SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 1024);
+    __type(key, struct fd_resolver_key);
+    __type(value, struct fd_resolver_value);
+} fd_resolvers SEC(".maps");
+
 char LICENSE[] SEC("license") = "GPL";
 
-// =============================================================================
-// 数据结构定义
-// =============================================================================
+/* arm64 syscall numbers (asm-generic/unistd.h) */
+#define DNS_NR_SENDTO      206
+#define DNS_NR_RECVFROM    207
+#define DNS_NR_SENDMSG     211
+#define DNS_NR_RECVMSG     212
+#define DNS_NR_SENDMMSG    213
+#define DNS_NR_RECVMMSG    243
+
+static __always_inline __u64 event_pid_tgid(void)
+{
+    return bpf_get_current_pid_tgid();
+}
+
+static __always_inline int emit_dns_payload(void *ctx, __u8 direction,
+                                             const void *buf, __u64 len,
+                                             __u32 client_ip, __u32 resolver_ip,
+                                             __u16 client_port)
+{
+    if (!buf || len < 12 || len > 4096) {
+        dns_stat_inc(DNS_STAT_SHORT_PAYLOAD);
+        return 0;
+    }
+
+    __u8 header[12] = {};
+    if (bpf_probe_read_user(header, sizeof(header), buf) != 0) {
+        dns_stat_inc(DNS_STAT_PAYLOAD_READ_FAIL);
+        return 0;
+    }
+
+    struct dns_event event = {};
+    event.direction = direction;
+    event.client_ip = client_ip;
+    event.resolver_ip = resolver_ip;
+    event.client_port = client_port;
+    event.txid = ((__u16)header[0] << 8) | header[1];
+    event.tc = (header[2] & 0x02) != 0;
+    event.rcode = header[3] & 0x0f;
+    event.payload_len = len > 65535 ? 65535 : (__u16)len;
+    event.timestamp_ns = bpf_ktime_get_ns();
+    event.fingerprint_quality = (client_ip && resolver_ip && client_port) ? 0 : 1;
+    long emit_ret = bpf_perf_event_output(ctx, &dns_events, BPF_F_CURRENT_CPU, &event, sizeof(event));
+    if (emit_ret < 0) {
+        dns_stat_inc(DNS_STAT_EMIT_FAIL);
+    } else {
+        dns_stat_inc(DNS_STAT_EMITTED);
+    }
+    return 0;
+}
+
+static __always_inline int emit_dns_msghdr(void *ctx, __u8 direction,
+                                            const void *msg, __u64 result_len,
+                                            __u32 client_ip, __u32 resolver_ip,
+                                            __u16 client_port)
+{
+    struct dns_user_msghdr hdr = {};
+    struct dns_iovec iov = {};
+    if (!msg || bpf_probe_read_user(&hdr, sizeof(hdr), msg) != 0) {
+        dns_stat_inc(DNS_STAT_MSGHDR_READ_FAIL);
+        return 0;
+    }
+    if (hdr.iov == 0 || hdr.iovlen == 0 || hdr.iovlen > 64) {
+        dns_stat_inc(DNS_STAT_MSGHDR_READ_FAIL);
+        return 0;
+    }
+    if (bpf_probe_read_user(&iov, sizeof(iov), (const void *)hdr.iov) != 0) {
+        dns_stat_inc(DNS_STAT_IOVEC_READ_FAIL);
+        return 0;
+    }
+    __u64 len = result_len ? result_len : iov.len;
+    if (len > iov.len) len = iov.len;
+    return emit_dns_payload(ctx, direction, (const void *)iov.base, len,
+                            client_ip, resolver_ip, client_port);
+}
+
+SEC("tracepoint/raw_syscalls/sys_enter")
+int trace_dns_enter_sendmsg(struct trace_event_raw_sys_enter *ctx)
+{
+    if (ctx->id != DNS_NR_SENDMSG) return 0;
+    dns_stat_inc(DNS_STAT_SENDMSG_ENTER);
+    emit_dns_msghdr(ctx, 0, (const void *)ctx->args[1], 0, 0, 0, 0);
+    return 0;
+}
+
+SEC("tracepoint/raw_syscalls/sys_enter")
+int trace_dns_enter_sendmmsg(struct trace_event_raw_sys_enter *ctx)
+{
+    if (ctx->id != DNS_NR_SENDMMSG) return 0;
+    dns_stat_inc(DNS_STAT_SENDMMSG_ENTER);
+    /* The first mmsghdr is layout-compatible with msghdr for its msg_hdr. */
+    emit_dns_msghdr(ctx, 0, (const void *)ctx->args[1], 0, 0, 0, 0);
+    return 0;
+}
+
+SEC("tracepoint/raw_syscalls/sys_enter")
+int trace_dns_enter_recvmsg(struct trace_event_raw_sys_enter *ctx)
+{
+    if (ctx->id != DNS_NR_RECVMSG) return 0;
+    dns_stat_inc(DNS_STAT_RECVMSG_ENTER);
+    __u64 pid = event_pid_tgid();
+    struct recv_pending pending = {};
+    pending.buffer = ctx->args[1];
+    pending.length = 0;
+    bpf_map_update_elem(&pending_recv, &pid, &pending, BPF_ANY);
+    return 0;
+}
+
+SEC("tracepoint/raw_syscalls/sys_exit")
+int trace_dns_exit_recvmsg(struct trace_event_raw_sys_exit *ctx)
+{
+    if (ctx->id != DNS_NR_RECVMSG) return 0;
+    dns_stat_inc(DNS_STAT_RECVMSG_EXIT);
+    __u64 pid = event_pid_tgid();
+    struct recv_pending *pending = bpf_map_lookup_elem(&pending_recv, &pid);
+    if (pending && ctx->ret > 0)
+        emit_dns_msghdr(ctx, 1, (const void *)pending->buffer, (__u64)ctx->ret,
+                        pending->client_ip, pending->resolver_ip, pending->client_port);
+    bpf_map_delete_elem(&pending_recv, &pid);
+    return 0;
+}
+
+SEC("tracepoint/raw_syscalls/sys_exit")
+int trace_dns_exit_recvmmsg(struct trace_event_raw_sys_exit *ctx)
+{
+    if (ctx->id != DNS_NR_RECVMMSG) return 0;
+    dns_stat_inc(DNS_STAT_RECVMMSG_EXIT);
+    /* recvmmsg uses the same pending buffer ABI; keep a separate body so
+     * libbpf does not emit a cross-section call relocation. */
+    __u64 pid = event_pid_tgid();
+    struct recv_pending *pending = bpf_map_lookup_elem(&pending_recv, &pid);
+    if (pending && ctx->ret > 0)
+        emit_dns_msghdr(ctx, 1, (const void *)pending->buffer, (__u64)ctx->ret,
+                        pending->client_ip, pending->resolver_ip, pending->client_port);
+    bpf_map_delete_elem(&pending_recv, &pid);
+    return 0;
+}
+
+
+SEC("tracepoint/raw_syscalls/sys_enter")
+int trace_dns_enter_sendto(struct trace_event_raw_sys_enter *ctx)
+{
+    if (ctx->id != DNS_NR_SENDTO) return 0;
+    int fd = (int)ctx->args[0];
+    const void *buf = (const void *)ctx->args[1];
+    __u64 len = ctx->args[2];
+    const void *addr = (const void *)ctx->args[4];
+    __u32 resolver_ip = 0;
+    __u16 resolver_port = 0;
+    if (addr) {
+        bpf_probe_read_user(&resolver_port, sizeof(resolver_port), addr + 2);
+        bpf_probe_read_user(&resolver_ip, sizeof(resolver_ip), addr + 4);
+    }
+    if (resolver_port != bpf_htons(DNS_PORT) && resolver_port != DNS_PORT)
+        return 0;
+
+    dns_stat_inc(DNS_STAT_SENDTO_ENTER);
+
+    __u64 pid = event_pid_tgid();
+    struct recv_pending pending = {.buffer = 0, .length = 0, .peer = 0, .peer_length = 0};
+    (void)fd;
+    emit_dns_payload(ctx, 0, buf, len, 0, resolver_ip, 0);
+    return 0;
+}
+
+SEC("tracepoint/raw_syscalls/sys_enter")
+int trace_dns_enter_recvfrom(struct trace_event_raw_sys_enter *ctx)
+{
+    if (ctx->id != DNS_NR_RECVFROM) return 0;
+    int fd = (int)ctx->args[0];
+    const void *buf = (const void *)ctx->args[1];
+    __u64 len = ctx->args[2];
+    const void *addr = (const void *)ctx->args[4];
+    struct recv_pending pending = {};
+    pending.buffer = (__u64)buf;
+    pending.length = len;
+    pending.peer = (__u64)addr;
+    pending.peer_length = ctx->args[5];
+    __u64 pid = event_pid_tgid();
+    (void)fd;
+    bpf_map_update_elem(&pending_recv, &pid, &pending, BPF_ANY);
+    return 0;
+}
+
+SEC("tracepoint/raw_syscalls/sys_exit")
+int trace_dns_exit_recvfrom(struct trace_event_raw_sys_exit *ctx)
+{
+    __u64 pid = event_pid_tgid();
+    struct recv_pending *pending = bpf_map_lookup_elem(&pending_recv, &pid);
+    if (!pending) return 0;
+    if (ctx->ret > 0)
+        emit_dns_payload(ctx, 1, (const void *)pending->buffer, (__u64)ctx->ret, 0, 0, 0);
+    bpf_map_delete_elem(&pending_recv, &pid);
+    return 0;
+}
+
+/*
+ * Periodically dump per-CPU capture counters into the perf channel so
+ * userspace can log the exact boundary where DNS evidence stops.
+ */
+SEC("tracepoint/syscalls/sys_enter_getpid")
+int trace_dns_counter_probe(struct trace_event_raw_sys_enter *ctx)
+{
+    return 0;
+}
+
 
 /*
  * DNS 查询标识（作为 Map Key）

@@ -39,7 +39,7 @@ TEST_F(QualityAssessorCompatTest, ExcellentMapping) {
     std::string json = LegacyAdapter::toHealthCheckJson(exp);
     EXPECT_NE(json.find("\"overall_quality\":\"EXCELLENT\""), std::string::npos);
     EXPECT_NE(json.find("\"quality_level\":4"), std::string::npos);
-    EXPECT_NE(json.find("\"score_model\":\"assurance_v1\""), std::string::npos);
+    EXPECT_NE(json.find("\"score_model\":\"assurance_v2\""), std::string::npos);
     EXPECT_NE(json.find("\"rf_applicability\":\"APPLICABLE\""), std::string::npos);
 }
 

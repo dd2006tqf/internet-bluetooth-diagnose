@@ -112,7 +112,7 @@ static int queryCallback(void* data, int argc, char** argv, char** /*colNames*/)
 struct HistoryRow {
     std::string ts, iface, quality, link_quality, overall_quality, rssi_source;
     std::string rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status;
-    std::string snapshot_ts;
+    std::string snapshot_ts, score_model, assessment_profile;
     int64_t generation = 0, data_version = 1;
     int64_t rtt_sample_ts = 0, rssi_sample_ts = 0, jitter_sample_ts = 0;
     int64_t tcp_loss_sample_ts = 0, traffic_sample_ts = 0;
@@ -322,7 +322,8 @@ bool DatabaseManager::ensureSchema() {
            ensureColumn("jitter_sample_ts", "INTEGER DEFAULT 0") &&
            ensureColumn("tcp_loss_sample_ts", "INTEGER DEFAULT 0") &&
            ensureColumn("traffic_sample_ts", "INTEGER DEFAULT 0") &&
-           ensureColumn("score_model", "TEXT DEFAULT 'legacy_weighted_v1'");
+           ensureColumn("score_model", "TEXT DEFAULT 'legacy_weighted_v1'") &&
+           ensureColumn("assessment_profile", "TEXT DEFAULT 'UNSPECIFIED'");
 }
 
 bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& info,
@@ -337,8 +338,8 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
 
     // 使用参数绑定防止 SQL 注入
     const char* sql = "INSERT INTO network_history (ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, "
-                      "rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts, score_model) VALUES ("
-                      "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )";
+                      "rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts, score_model, assessment_profile) VALUES ("
+                      "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )";
 
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -430,8 +431,9 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
     sqlite3_bind_int64(stmt, 27, jitter_sample_ts);
     sqlite3_bind_int64(stmt, 28, tcp_loss_sample_ts);
     sqlite3_bind_int64(stmt, 29, traffic_sample_ts);
-    // HR-9: 评分语义版本标识。NetworkAssurance 引擎驱动的写入均标记 assurance_v1。
-    sqlite3_bind_text(stmt, 30, "assurance_v1", -1, SQLITE_TRANSIENT);
+    // HR-9 & SR-6: 评分语义版本升级为 assurance_v2，并持久化当前 assessment_profile
+    sqlite3_bind_text(stmt, 30, "assurance_v2", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 31, "INTERNET_ACCESS", -1, SQLITE_TRANSIENT);
     LOG_INFO(LogModule::SYSTEM, "snapshot metadata: generation=" << generation
              << " snapshot_ts=" << snapshot_ts_ms
              << " rtt=" << rtt_sample_ts << " rssi=" << rssi_sample_ts
@@ -475,7 +477,7 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
     std::lock_guard<std::mutex> lock(mutex_);
 
     // 使用参数绑定防止 SQL 注入
-    std::string sql = "SELECT ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts "
+    std::string sql = "SELECT ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts, score_model, assessment_profile "
                       "FROM network_history WHERE 1=1";
 
     std::vector<std::string> conditions;
@@ -557,6 +559,10 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
         row.jitter_sample_ts = sqlite3_column_int64(stmt, 26);
         row.tcp_loss_sample_ts = sqlite3_column_int64(stmt, 27);
         row.traffic_sample_ts = sqlite3_column_int64(stmt, 28);
+        const char* sm = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 29));
+        if (sm) row.score_model = sm;
+        const char* ap = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 30));
+        if (ap) row.assessment_profile = ap;
         ctx.rows.push_back(std::move(row));
         rc = sqlite3_step(stmt);
     }
@@ -609,6 +615,8 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
              << "\"jitter_sample_ts\":" << row.jitter_sample_ts << ","
              << "\"tcp_loss_sample_ts\":" << row.tcp_loss_sample_ts << ","
              << "\"traffic_sample_ts\":" << row.traffic_sample_ts << ","
+             << "\"score_model\":\"" << weaknet_utils::escapeJsonString(row.score_model.empty() ? "legacy_weighted_v1" : row.score_model) << "\","
+             << "\"assessment_profile\":\"" << weaknet_utils::escapeJsonString(row.assessment_profile.empty() ? "UNSPECIFIED" : row.assessment_profile) << "\","
              << "\"rssi_age_ms\":" << rssiAge
              << "}";
     }

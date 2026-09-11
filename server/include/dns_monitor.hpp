@@ -19,6 +19,7 @@
 #include <memory>
 #include "ebpf_monitor_interface.hpp"
 #include "ebpf_monitor_metrics.hpp"
+#include "assurance/dns_transaction_tracker.hpp"
 
 namespace weaknet_dbus {
 
@@ -95,8 +96,18 @@ public:
     /// 获取 DNS 超时率（百分比）
     double getTimeoutRate();
 
+    /// 将当前捕获事件归入 userspace authoritative tracker；返回投递事件数。
+    size_t drainEvents(weaknet::DnsTransactionTracker* tracker);
+
+    /// Returns the number of perf-buffer events lost since the last drain.
+    uint64_t consumeLostEvents();
+
+    /// Capture/drain chain diagnostics (BPF counters + userspace poll stats).
+    std::string getCaptureDiagnostics();
+
+public:
+    struct Impl;
 private:
-    struct Impl;                    ///< Pimpl：隐藏 libbpf 实现细节
     std::unique_ptr<Impl> impl_;
 
     bool initialized_ = false;

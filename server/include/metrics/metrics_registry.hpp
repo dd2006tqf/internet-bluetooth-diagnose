@@ -71,6 +71,14 @@ public:
         im->publish(id, sample);
     }
 
+    // HOST/RESOLVER scoped metrics use explicit namespace keys and never share
+    // an interface series (SR-3/SR-4). The binding epoch remains in the sample
+    // producer's key discipline; query callers can select the namespace.
+    void publishScoped(MetricScope scope, const std::string& address,
+                       MetricId id, const MetricSample& sample) {
+        publish(scopeKey(scope, address), id, sample);
+    }
+
     std::optional<MetricSample> latest(const std::string& iface, MetricId id) const {
         std::lock_guard<std::mutex> lock(registry_mutex_);
         auto it = iface_map_.find(iface);
@@ -103,6 +111,16 @@ public:
     }
 
 private:
+    static std::string scopeKey(MetricScope scope, const std::string& address) {
+        switch (scope) {
+            case MetricScope::HOST: return "host:" + address;
+            case MetricScope::RESOLVER: return "resolver:" + address;
+            case MetricScope::GLOBAL: return "global:" + address;
+            case MetricScope::INTERFACE:
+            default: return address;
+        }
+    }
+
     InterfaceMetrics* getOrCreateInterface(const std::string& iface) {
         std::lock_guard<std::mutex> lock(registry_mutex_);
         auto it = iface_map_.find(iface);

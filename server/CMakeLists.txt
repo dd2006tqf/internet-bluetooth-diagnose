@@ -1,5 +1,5 @@
 # ---- 服务端源文件（自动发现） ----
-file(GLOB SERVER_SOURCES CONFIGURE_DEPENDS src/*.cpp src/utils/*.cpp)
+file(GLOB SERVER_SOURCES CONFIGURE_DEPENDS src/*.cpp src/utils/*.cpp src/assurance/*.cpp src/metrics/*.cpp)
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*\\.bpf\\.c$")
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*history_query_tool\\.cpp$")
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*main\\.cpp$")

@@ -74,6 +74,7 @@ public:
         json << "\"overall_quality\":\"" << levelName << "\",";
         json << "\"overall_score\":" << std::fixed << std::setprecision(1) << static_cast<double>(exp.display_score) << ",";
         json << "\"rf_applicability\":\"" << applicabilityToString(exp.rf_health.applicability) << "\",";
+        json << "\"assessment_profile\":\"" << assessmentProfileToString(exp.assessment_profile) << "\",";
 
         json << "\"issues\":[";
         std::vector<std::string> all_issues = exp.warnings;
@@ -86,11 +87,12 @@ public:
         }
         json << "],";
 
-        json << "\"score_model\":\"assurance_v1\"";
+        json << "\"score_model\":\"assurance_v2\"";
         json << "}}";
         return json.str();
     }
 
+    // 保留 Phase 1 的旧结果适配接口；HealthCheck 主路径使用 assurance_v2。
     static weaknet_dbus::NetworkQualityResult toQualityResult(const NetworkExperience& exp,
                                                             int rtt_ms = -1,
                                                             double tcp_loss = 0.0,
@@ -143,6 +145,57 @@ public:
         dump_sle("reliability", exp.reliability);
         json << ",";
         dump_sle("rf_health", exp.rf_health);
+        json << "},";
+
+        json << "\"warnings\":[";
+        for (size_t i = 0; i < exp.warnings.size(); ++i) {
+            json << "\"" << exp.warnings[i] << "\"";
+            if (i + 1 < exp.warnings.size()) json << ",";
+        }
+        json << "],";
+
+        json << "\"primary_issue\":" << (exp.primary_issue.has_value() ? ("\"" + exp.primary_issue.value() + "\"") : "null");
+        json << "}";
+        return json.str();
+    }
+
+    static std::string toExperienceJsonV2(const NetworkExperience& exp) {
+        std::ostringstream json;
+        json << "{\"schema_version\":2,";
+        json << "\"interface\":\"" << exp.iface << "\",";
+        json << "\"assessment_profile\":\"" << assessmentProfileToString(exp.assessment_profile) << "\",";
+        json << "\"overall\":{";
+        json << "\"state\":\"" << healthStateToString(exp.overall) << "\",";
+        json << "\"coverage\":\"" << coverageToString(exp.overall_coverage) << "\",";
+        json << "\"display_score\":" << exp.display_score;
+        json << "},";
+
+        auto dump_sle = [&json](const char* key, const SleResult& sle) {
+            json << "\"" << key << "\":{";
+            json << "\"state\":\"" << healthStateToString(sle.state) << "\",";
+            json << "\"coverage\":\"" << coverageToString(sle.coverage) << "\",";
+            json << "\"applicability\":\"" << applicabilityToString(sle.applicability) << "\",";
+            json << "\"reason\":\"" << sle.reason << "\",";
+            json << "\"evidence\":[";
+            for (size_t i = 0; i < sle.evidence.size(); ++i) {
+                json << "{\"metric\":\"" << sle.evidence[i].metric << "\",\"value\":" << sle.evidence[i].value << ",\"detail\":\"" << sle.evidence[i].detail << "\"}";
+                if (i + 1 < sle.evidence.size()) json << ",";
+            }
+            json << "]}";
+        };
+
+        json << "\"network_health\":{";
+        dump_sle("ip_reachability", exp.ip_reachability);
+        json << ",";
+        dump_sle("responsiveness", exp.responsiveness);
+        json << ",";
+        dump_sle("reliability", exp.reliability);
+        json << ",";
+        dump_sle("rf_health", exp.rf_health);
+        json << "},";
+
+        json << "\"service_health\":{";
+        dump_sle("dns", exp.dns_service);
         json << "},";
 
         json << "\"warnings\":[";

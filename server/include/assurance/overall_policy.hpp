@@ -26,29 +26,46 @@ namespace weaknet {
  */
 class OverallPolicy {
 public:
+    // 兼容 Phase 1 的重载 (无 dns 参数)
     static NetworkExperience decide(const std::string& iface,
                                    const SleResult& reach,
                                    const SleResult& resp,
                                    const SleResult& rel,
                                    const SleResult& rf,
                                    bool band_conflict = false) {
+        return decide(iface, reach, resp, rel, rf, SleResult{}, AssessmentProfile::INTERNET_ACCESS, band_conflict);
+    }
+
+    // Phase 2A 完整签名
+    static NetworkExperience decide(const std::string& iface,
+                                   const SleResult& reach,
+                                   const SleResult& resp,
+                                   const SleResult& rel,
+                                   const SleResult& rf,
+                                   const SleResult& dns,
+                                   AssessmentProfile profile = AssessmentProfile::INTERNET_ACCESS,
+                                   bool band_conflict = false) {
         NetworkExperience exp;
         exp.iface = iface;
+        exp.assessment_profile = profile;
         exp.ip_reachability = reach;
         exp.responsiveness = resp;
         exp.reliability = rel;
         exp.rf_health = rf;
+        exp.dns_service = dns;
 
         const bool reach_app = (reach.applicability == Applicability::APPLICABLE);
         const bool resp_app = (resp.applicability == Applicability::APPLICABLE);
         const bool rel_app = (rel.applicability == Applicability::APPLICABLE);
+        const bool dns_app = (dns.applicability == Applicability::APPLICABLE &&
+                              profile == AssessmentProfile::INTERNET_ACCESS &&
+                              (dns.state != HealthState::UNKNOWN || dns.coverage != Coverage::NONE));
 
-        // 计算整体 coverage：仅在适用（APPLICABLE）的核心 SLE 上求值，
-        // NOT_APPLICABLE 不参与 coverage 惩罚。
+        // 计算整体 coverage：在适用的核心 SLE 上求值
         size_t core_applicable = 0, core_full = 0, core_none = 0;
-        const SleResult* cores[3] = {&reach, &resp, &rel};
-        const bool core_apps[3] = {reach_app, resp_app, rel_app};
-        for (size_t i = 0; i < 3; ++i) {
+        const SleResult* cores[4] = {&reach, &resp, &rel, &dns};
+        const bool core_apps[4] = {reach_app, resp_app, rel_app, dns_app};
+        for (size_t i = 0; i < 4; ++i) {
             if (!core_apps[i]) continue;
             core_applicable++;
             if (cores[i]->coverage == Coverage::FULL_FOR_PROFILE) core_full++;
@@ -62,7 +79,7 @@ public:
             exp.overall_coverage = Coverage::PARTIAL;
         }
 
-        // Advisory 告警生成：NOT_APPLICABLE 的维度不产生 warning。
+        // Advisory 告警生成
         if (rf.applicability == Applicability::APPLICABLE &&
             (rf.state == HealthState::DEGRADED || rf.state == HealthState::BAD)) {
             exp.warnings.push_back("RF Health is suboptimal (weak signal)");
@@ -70,11 +87,20 @@ public:
         if (band_conflict) {
             exp.warnings.push_back("Potential 2.4GHz Wi-Fi and Bluetooth coexistence conflict detected");
         }
+        if (profile == AssessmentProfile::NETWORK_ONLY && dns.applicability == Applicability::APPLICABLE &&
+            (dns.state == HealthState::DEGRADED || dns.state == HealthState::BAD)) {
+            exp.warnings.push_back("DNS service issue detected (Advisory under NETWORK_ONLY profile)");
+        }
 
-        // 1. Critical BAD (Reachability 或 Reliability 任一严重故障，一票否决)
+        // 1. Critical BAD (Reachability 或 Reliability 故障，一票否决)
+        // SR-5 & 交接文档第 11 节优先级：
+        // Reachability BAD + DNS BAD -> Overall BAD, Primary=IP_PATH_FAILURE, DNS=symptom
         if (reach_app && reach.state == HealthState::BAD) {
             exp.overall = HealthState::BAD;
             exp.primary_issue = "IP path is unreachable";
+            if (dns_app && dns.state == HealthState::BAD) {
+                exp.warnings.push_back("DNS failure suspected to be caused by IP path failure");
+            }
             exp.display_score = 15;
             return exp;
         }
@@ -85,29 +111,38 @@ public:
             return exp;
         }
 
+        // Reachability GOOD + DNS BAD -> Overall BAD, Primary=DNS_SERVICE_FAILURE (仅在 INTERNET_ACCESS 下一票否决)
+        if (dns_app && dns.state == HealthState::BAD) {
+            exp.overall = HealthState::BAD;
+            exp.primary_issue = "DNS service resolution failure";
+            exp.display_score = 25;
+            return exp;
+        }
+
         // 2. Major BAD (Responsiveness 严重劣化 → DEGRADED)
         if (resp_app && resp.state == HealthState::BAD) {
-            exp.overall = HealthState::DEGRADED; // Responsiveness 严重不佳时判 DEGRADED
+            exp.overall = HealthState::DEGRADED;
             exp.primary_issue = "High latency or excessive jitter";
             exp.display_score = 55;
             return exp;
         }
 
-        // 3. 任一核心 SLE DEGRADED（负面证据优先于 coverage gate，可在 PARTIAL 下成立）
+        // 3. 任一核心 SLE DEGRADED（负面证据优先）
         bool reach_degraded = (reach_app && reach.state == HealthState::DEGRADED);
         bool rel_degraded = (rel_app && rel.state == HealthState::DEGRADED);
         bool resp_degraded = (resp_app && resp.state == HealthState::DEGRADED);
-        if (reach_degraded || rel_degraded || resp_degraded) {
+        bool dns_degraded = (dns_app && dns.state == HealthState::DEGRADED);
+        if (reach_degraded || rel_degraded || resp_degraded || dns_degraded) {
             exp.overall = HealthState::DEGRADED;
             if (reach_degraded) exp.primary_issue = "Intermittent probe failure";
             else if (rel_degraded) exp.primary_issue = "Elevated network packet loss";
+            else if (dns_degraded) exp.primary_issue = "Elevated DNS resolution failure or latency";
             else exp.primary_issue = "Latency fluctuation detected";
-            exp.display_score = 68;
+            exp.display_score = 65;
             return exp;
         }
 
-        // 4. Coverage Gate Minimum Core Coverage：无负面证据但核心 telemetry 不足时，
-        //    不允许输出 GOOD，只能 UNKNOWN。
+        // 4. Coverage Gate Minimum Core Coverage：无负面证据但核心 telemetry 不足时输出 UNKNOWN
         bool reach_known = (reach_app && reach.state != HealthState::UNKNOWN);
         bool rel_known = (rel_app && rel.state != HealthState::UNKNOWN);
         bool resp_known = (resp_app && resp.state != HealthState::UNKNOWN);
@@ -118,8 +153,7 @@ public:
             return exp;
         }
 
-        // 5. Overall GOOD (RF 不佳仅产生 Warning，不杀死 Experience；
-        //    NOT_APPLICABLE（如有线 RF）视为无射频负面影响)
+        // 5. Overall GOOD
         exp.overall = HealthState::GOOD;
         bool rf_clean = (rf.applicability == Applicability::NOT_APPLICABLE) ||
                         (rf.state == HealthState::GOOD);

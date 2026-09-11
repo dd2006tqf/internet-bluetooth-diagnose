@@ -16,7 +16,11 @@ enum class MetricId {
     TRAFFIC_BPS,
     TRAFFIC_PPS,
     TRAFFIC_FLOWS,
-    BAND_CONFLICT
+    BAND_CONFLICT,
+    DNS_QUERIES,
+    DNS_FAILURE_RATIO,
+    DNS_LATENCY_P50_MS,
+    DNS_INFLIGHT
 };
 
 inline const char* metricIdToString(MetricId id) {
@@ -31,6 +35,10 @@ inline const char* metricIdToString(MetricId id) {
         case MetricId::TRAFFIC_PPS: return "traffic_pps";
         case MetricId::TRAFFIC_FLOWS: return "traffic_flows";
         case MetricId::BAND_CONFLICT: return "band_conflict";
+        case MetricId::DNS_QUERIES: return "dns_queries";
+        case MetricId::DNS_FAILURE_RATIO: return "dns_failure_ratio";
+        case MetricId::DNS_LATENCY_P50_MS: return "dns_latency_p50_ms";
+        case MetricId::DNS_INFLIGHT: return "dns_inflight";
         default: return "unknown";
     }
 }
@@ -66,7 +74,9 @@ enum class MetricUnit {
 
 enum class MetricScope {
     INTERFACE,
-    GLOBAL
+    GLOBAL,
+    HOST,
+    RESOLVER
 };
 
 enum class SourceSemantics {
@@ -125,6 +135,18 @@ inline MetricDescriptor getMetricDescriptor(MetricId id) {
                     SourceSemantics::GAUGE, PublishedSemantics::GAUGE, 10000ms, 30000ms};
         case MetricId::BAND_CONFLICT:
             return {MetricId::BAND_CONFLICT, "band_conflict", MetricUnit::BOOLEAN, MetricScope::INTERFACE,
+                    SourceSemantics::GAUGE, PublishedSemantics::GAUGE, 10000ms, 30000ms};
+        case MetricId::DNS_QUERIES:
+            return {MetricId::DNS_QUERIES, "dns_queries", MetricUnit::COUNT, MetricScope::GLOBAL,
+                    SourceSemantics::EVENT, PublishedSemantics::EVENT, 10000ms, 30000ms};
+        case MetricId::DNS_FAILURE_RATIO:
+            return {MetricId::DNS_FAILURE_RATIO, "dns_failure_ratio", MetricUnit::PERCENT, MetricScope::GLOBAL,
+                    SourceSemantics::GAUGE, PublishedSemantics::GAUGE, 10000ms, 30000ms};
+        case MetricId::DNS_LATENCY_P50_MS:
+            return {MetricId::DNS_LATENCY_P50_MS, "dns_latency_p50_ms", MetricUnit::MILLISECONDS, MetricScope::GLOBAL,
+                    SourceSemantics::GAUGE, PublishedSemantics::GAUGE, 10000ms, 30000ms};
+        case MetricId::DNS_INFLIGHT:
+            return {MetricId::DNS_INFLIGHT, "dns_inflight", MetricUnit::COUNT, MetricScope::GLOBAL,
                     SourceSemantics::GAUGE, PublishedSemantics::GAUGE, 10000ms, 30000ms};
         default:
             return {id, "unknown", MetricUnit::COUNT, MetricScope::INTERFACE,

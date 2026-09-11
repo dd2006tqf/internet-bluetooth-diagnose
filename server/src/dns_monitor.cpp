@@ -30,6 +30,7 @@
 #include <chrono>
 #include <cerrno>
 #include <cstdio>
+#include <vector>
 #include <arpa/inet.h>
 
 #if defined(__has_include)
@@ -88,7 +89,55 @@ struct dns_stats_record {
     __u64 max_latency_ns;    // 历史最大解析延迟（纳秒）
 };
 
-// ---- 实现 ----
+struct dns_event {
+    __u8 direction;
+    __u8 rcode;
+    __u8 tc;
+    __u8 malformed;
+    __u8 fingerprint_quality;
+    __u8 reserved[3];
+    __u32 client_ip;
+    __u32 resolver_ip;
+    __u16 client_port;
+    __u16 txid;
+    __u16 qtype;
+    __u16 payload_len;
+    __u64 qname_hash;
+    __u64 timestamp_ns;
+};
+
+// Mirror of the BPF-side capture counter enum (dns_monitor.bpf.c).
+enum dns_capture_stat {
+    DNS_STAT_SENDTO_ENTER = 0,
+    DNS_STAT_SENDMSG_ENTER,
+    DNS_STAT_SENDMMSG_ENTER,
+    DNS_STAT_RECVFROM_ENTER,
+    DNS_STAT_RECVMSG_ENTER,
+    DNS_STAT_RECVMSG_EXIT,
+    DNS_STAT_RECVMMSG_EXIT,
+    DNS_STAT_MSGHDR_READ_FAIL,
+    DNS_STAT_IOVEC_READ_FAIL,
+    DNS_STAT_PAYLOAD_READ_FAIL,
+    DNS_STAT_SHORT_PAYLOAD,
+    DNS_STAT_EMITTED,
+    DNS_STAT_EMIT_FAIL,
+    DNS_STAT_MAX
+};
+
+struct DnsCaptureCounters {
+    uint64_t values[DNS_STAT_MAX] = {};
+};
+
+struct DnsDrainStats {
+    uint64_t poll_calls = 0;
+    uint64_t poll_records = 0;
+    uint64_t poll_errors = 0;
+    uint64_t sample_callbacks = 0;
+    uint64_t lost_events = 0;
+    uint64_t tracker_query_accepted = 0;
+    uint64_t tracker_response_accepted = 0;
+};
+
 
 /**
  * @brief Pimpl 实现结构体，持有 libbpf 句柄
@@ -101,7 +150,66 @@ struct DnsMonitor::Impl {
     struct bpf_object *obj = nullptr;  ///< BPF 对象实例
     struct bpf_link *link_send = nullptr;  ///< kprobe/udp_sendmsg 的 BPF link
     struct bpf_link *link_recv = nullptr;  ///< kprobe/udp_recvmsg 的 BPF link
+    std::vector<struct bpf_link *> capture_links;
+    struct perf_buffer *events = nullptr;
+    int dns_capture_fd = -1;
+    uint64_t lost_events = 0;
+    DnsCaptureCounters last_counters{};
+    DnsDrainStats drain_stats{};
+    weaknet::DnsTransactionTracker* drain_tracker = nullptr;
 };
+
+static void on_dns_event(void* ctx, int /*cpu*/, void* data, __u32 size) {
+    auto* monitor = static_cast<DnsMonitor::Impl*>(ctx);
+    if (!monitor || !monitor->drain_tracker || size < sizeof(dns_event)) return;
+    const auto* event = static_cast<const dns_event*>(data);
+    weaknet::DnsCanonicalKey key;
+    key.family = weaknet::AddressFamily::IPv4;
+    key.client_ip = ntohl(event->client_ip);
+    key.resolver_ip = ntohl(event->resolver_ip);
+    key.client_port = event->client_port;
+    key.txid = event->txid;
+    if (event->qname_hash) key.qname_hash = event->qname_hash;
+    if (event->qtype) key.qtype = event->qtype;
+    auto now = std::chrono::steady_clock::now();
+    auto quality = event->fingerprint_quality == 0 ? weaknet::FingerprintQuality::ENRICHED
+                                                    : weaknet::FingerprintQuality::PARTIAL;
+    if (event->direction == 0) {
+        if (monitor->drain_tracker->onQueryCaptured(key, quality, now)) {
+            monitor->drain_stats.tracker_query_accepted++;
+        }
+    } else {
+        monitor->drain_tracker->onResponseCaptured(key, event->rcode, event->tc != 0,
+                                                   event->malformed != 0, now);
+        monitor->drain_stats.tracker_response_accepted++;
+    }
+    monitor->drain_stats.sample_callbacks++;
+}
+
+static void on_dns_lost(void* ctx, int /*cpu*/, __u64 lost) {
+    auto* monitor = static_cast<DnsMonitor::Impl*>(ctx);
+    if (monitor) {
+        monitor->drain_stats.lost_events += lost;
+        monitor->lost_events += lost;
+    }
+}
+
+static DnsCaptureCounters read_capture_counters(int map_fd) {
+    DnsCaptureCounters result;
+    if (map_fd < 0) return result;
+    for (int key = 0; key < DNS_STAT_MAX; ++key) {
+        __u64 total = 0;
+        // Sum across all CPUs (per-CPU array, read in one batch).
+        __u32 ncpus = libbpf_num_possible_cpus();
+        if (ncpus == 0 || ncpus > 512) continue;
+        std::vector<__u64> per_cpu(ncpus, 0);
+        if (bpf_map_lookup_elem(map_fd, &key, per_cpu.data()) == 0) {
+            for (__u32 c = 0; c < ncpus; ++c) total += per_cpu[c];
+        }
+        result.values[key] = total;
+    }
+    return result;
+}
 
 DnsMonitor::DnsMonitor()
     : impl_(std::make_unique<Impl>()) {}
@@ -173,6 +281,8 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
         return false;
     }
 
+    impl_->dns_capture_fd = bpf_object__find_map_fd_by_name(obj, "dns_capture_counters");
+
     // attach 探针到 kprobe/udp_sendmsg 和 kprobe/udp_recvmsg
     // 内核探针类型：kprobe（函数入口）
     struct bpf_program *send_prog = bpf_object__find_program_by_name(obj, "trace_dns_send");
@@ -211,6 +321,41 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
     }
 
     impl_->obj = obj;
+
+    // Attach every raw_syscall capture program. bpf_program__attach resolves
+    // the tracepoint from the SEC section; explicit iteration keeps the attach
+    // error visible per program instead of relying on autoload side effects.
+    {
+        struct bpf_program *prog = nullptr;
+        bpf_object__for_each_program(prog, obj) {
+            const char *sec = bpf_program__section_name(prog);
+            if (!sec || strncmp(sec, "tracepoint/raw_syscalls/", strlen("tracepoint/raw_syscalls/")) != 0) {
+                continue;
+            }
+            struct bpf_link *link = bpf_program__attach(prog);
+            if (libbpf_get_error(link)) {
+                LOG_WARNING(LogModule::NETWORK, "DnsMonitor: attach failed for prog "
+                            << bpf_program__name(prog) << " section=" << sec);
+                link = nullptr;
+            } else {
+                impl_->capture_links.push_back(link);
+                stateSupport_.recordProbeAttached();
+            }
+        }
+        LOG_INFO(LogModule::NETWORK, "DnsMonitor: raw_syscall capture programs attached="
+                 << impl_->capture_links.size());
+    }
+
+    {
+        auto events_fd = bpf_object__find_map_fd_by_name(obj, "dns_events");
+        if (events_fd >= 0) {
+            impl_->events = perf_buffer__new(events_fd, 8, on_dns_event, on_dns_lost,
+                                             impl_.get(), nullptr);
+            if (!impl_->events) {
+                LOG_WARNING(LogModule::NETWORK, "DnsMonitor: perf buffer unavailable; lifecycle events disabled");
+            }
+        }
+    }
     available_ = true;
     initialized_ = true;
 
@@ -242,8 +387,11 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
 void DnsMonitor::stop() {
     stateSupport_.setState(EbpfMonitorState::Stopped, false, "stopped");
 #if HAVE_LIBBPF
+    if (impl_->events) { perf_buffer__free(impl_->events); impl_->events = nullptr; }
     if (impl_->link_send) { bpf_link__destroy(impl_->link_send); impl_->link_send = nullptr; }
     if (impl_->link_recv) { bpf_link__destroy(impl_->link_recv); impl_->link_recv = nullptr; }
+    for (auto *link : impl_->capture_links) { if (link) bpf_link__destroy(link); }
+    impl_->capture_links.clear();
 #endif
     if (impl_->obj) {
         bpf_object__close(impl_->obj);
@@ -315,6 +463,64 @@ double DnsMonitor::getAvgLatencyMs() {
 double DnsMonitor::getTimeoutRate() {
     auto stats = getStats();
     return stats.timeoutRate();
+}
+
+size_t DnsMonitor::drainEvents(weaknet::DnsTransactionTracker* tracker) {
+    if (!tracker || !impl_->events) return 0;
+    impl_->drain_tracker = tracker;
+    impl_->drain_stats.poll_calls++;
+    int ret = perf_buffer__poll(impl_->events, 0);
+    impl_->drain_tracker = nullptr;
+    if (ret < 0 && ret != -EINTR) {
+        impl_->drain_stats.poll_errors++;
+        LOG_WARNING(LogModule::NETWORK, "DnsMonitor: perf buffer poll failed: " << ret);
+        return 0;
+    }
+    if (ret > 0) impl_->drain_stats.poll_records += static_cast<uint64_t>(ret);
+    auto lost = consumeLostEvents();
+    if (lost) tracker->recordDeliveryLoss(lost);
+    return static_cast<size_t>(ret > 0 ? ret : 0);
+}
+
+std::string DnsMonitor::getCaptureDiagnostics() {
+#if HAVE_LIBBPF
+    auto counters = read_capture_counters(impl_->dns_capture_fd);
+    const auto& s = impl_->drain_stats;
+    std::ostringstream json;
+    json << "{"
+         << "\"capture\":{"
+         << "\"sendto\":" << counters.values[DNS_STAT_SENDTO_ENTER] << ","
+         << "\"sendmsg\":" << counters.values[DNS_STAT_SENDMSG_ENTER] << ","
+         << "\"sendmmsg\":" << counters.values[DNS_STAT_SENDMMSG_ENTER] << ","
+         << "\"recvfrom\":" << counters.values[DNS_STAT_RECVFROM_ENTER] << ","
+         << "\"recvmsg_enter\":" << counters.values[DNS_STAT_RECVMSG_ENTER] << ","
+         << "\"recvmsg_exit\":" << counters.values[DNS_STAT_RECVMSG_EXIT] << ","
+         << "\"recvmmsg_exit\":" << counters.values[DNS_STAT_RECVMMSG_EXIT] << ","
+         << "\"msghdr_read_fail\":" << counters.values[DNS_STAT_MSGHDR_READ_FAIL] << ","
+         << "\"iovec_read_fail\":" << counters.values[DNS_STAT_IOVEC_READ_FAIL] << ","
+         << "\"payload_read_fail\":" << counters.values[DNS_STAT_PAYLOAD_READ_FAIL] << ","
+         << "\"short_payload\":" << counters.values[DNS_STAT_SHORT_PAYLOAD] << ","
+         << "\"emitted\":" << counters.values[DNS_STAT_EMITTED] << ","
+         << "\"emit_fail\":" << counters.values[DNS_STAT_EMIT_FAIL]
+         << "},\"drain\":{"
+         << "\"poll_calls\":" << s.poll_calls << ","
+         << "\"poll_records\":" << s.poll_records << ","
+         << "\"poll_errors\":" << s.poll_errors << ","
+         << "\"sample_callbacks\":" << s.sample_callbacks << ","
+         << "\"lost_events\":" << s.lost_events << ","
+         << "\"tracker_query_accepted\":" << s.tracker_query_accepted << ","
+         << "\"tracker_response_accepted\":" << s.tracker_response_accepted
+         << "}}";
+    return json.str();
+#else
+    return "{}";
+#endif
+}
+
+uint64_t DnsMonitor::consumeLostEvents() {
+    auto value = impl_->lost_events;
+    impl_->lost_events = 0;
+    return value;
 }
 
 }  // namespace weaknet_dbus
