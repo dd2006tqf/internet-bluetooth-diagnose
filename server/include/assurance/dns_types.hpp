@@ -133,11 +133,17 @@ struct DnsMetricWindow {
 
     std::vector<double> latencies_ms; // 成功响应事务的端到端时延（用于计算中位数）
 
-    uint64_t unmatched{0};               // SR-8: 无对应请求且非墓碑的响应
-    uint64_t tracking_ambiguous{0};      // SR-8: 存在歧义的匹配
-    uint64_t late_responses{0};          // 迟到响应（已超时进入墓碑）
-    uint64_t tracker_insert_failures{0}; // IR-1: 容量溢出拒绝
-    uint64_t event_delivery_loss{0};     // 修正 #2: eBPF transport 丢失
+    uint64_t unmatched{0};               // SR-8: 无对应请求且非墓碑的响应（窗口增量）
+    uint64_t tracking_ambiguous{0};      // SR-8: 存在歧义的匹配（窗口增量）
+    uint64_t late_responses{0};          // 迟到响应（已超时进入墓碑，窗口增量）
+    uint64_t tracker_insert_failures{0}; // IR-1: 容量溢出拒绝（窗口增量）
+
+    // 传输层证据质量（窗口增量）。capture 与 perf 是两级不同的丢失点，
+    // 分别计量，不合并成单一数字。
+    uint64_t capture_attempts{0};        // BPF 捕获尝试（窗口增量）
+    uint64_t capture_emit_failures{0};   // BPF bpf_perf_event_output 失败（窗口增量）
+    uint64_t delivered_events{0};        // perf buffer 成功交付给用户态（窗口增量）
+    uint64_t perf_lost_events{0};        // perf buffer lost callback 报告（窗口增量）
 
     uint64_t response_match_attempts{0}; // 响应匹配尝试总数
     uint64_t query_capture_attempts{0};  // 查询捕获尝试总数
@@ -155,6 +161,12 @@ struct DnsMetricWindow {
 
     uint64_t knownFailure() const {
         return responses_servfail + responses_refused + timeouts;
+    }
+
+    /// 直接负面证据：真实捕获到服务端明确失败的响应。
+    /// 与 absence-derived 的 timeouts 不同，这类证据即使 Observer 覆盖不完美也成立。
+    uint64_t directNegativeEvidence() const {
+        return responses_servfail + responses_refused;
     }
 
     uint64_t evaluableTerminals() const {
@@ -177,9 +189,17 @@ struct DnsMetricWindow {
         return static_cast<double>(tracker_insert_failures) / static_cast<double>(query_capture_attempts);
     }
 
-    double eventDeliveryLossRatio() const {
-        if (total_captured_events == 0) return 0.0;
-        return static_cast<double>(event_delivery_loss) / static_cast<double>(total_captured_events);
+    /// BPF capture 阶段输出失败率（emit_fail 相对捕获尝试）。
+    double captureEmitFailureRatio() const {
+        if (capture_attempts == 0) return 0.0;
+        return static_cast<double>(capture_emit_failures) / static_cast<double>(capture_attempts);
+    }
+
+    /// perf buffer 投递丢失率（lost 相对已交付 + 丢失）。
+    double perfDeliveryLossRatio() const {
+        uint64_t total = delivered_events + perf_lost_events;
+        if (total == 0) return 0.0;
+        return static_cast<double>(perf_lost_events) / static_cast<double>(total);
     }
 
     double classificationCoverage() const {

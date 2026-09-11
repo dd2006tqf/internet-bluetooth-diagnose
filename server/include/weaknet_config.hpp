@@ -101,6 +101,7 @@ struct WeakNetConfig {
         std::atomic<bool> enabled{true};
         ConfigString bpf_obj{"build/dns_monitor.bpf.o"};
         std::atomic<uint32_t> interval_ms{10000};
+        std::atomic<uint32_t> capture_pages{64};             ///< perf ring buffer 页数（每 CPU）
         ConfigString assessment_profile{"INTERNET_ACCESS"};  ///< IR-3: NETWORK_ONLY | INTERNET_ACCESS
     } dns;
 

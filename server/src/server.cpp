@@ -376,6 +376,14 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                         auto dns_window = ctx->dns_tracker->getWindowMetrics(120s, snap.cutoff);
                         dns_sle = weaknet::DnsServiceEvaluator::evaluate(
                             dns_window, ctx->dns_tracker->getRecentTerminals(), {}, &dns_bypass);
+                        // DNS SLE 的判定依据与结果必须可观测：否则"DNS 为什么是这个状态"
+                        // 无法回答，排障只能靠猜。这里输出窗口计数与决策结果。
+                        LOG_INFO(LogModule::NETWORK, "DNS SLE: state="
+                            << weaknet::healthStateToString(dns_sle.state)
+                            << " coverage=" << weaknet::coverageToString(dns_sle.coverage)
+                            << " reason=" << dns_sle.reason
+                            << " fail=" << dns_window.knownFailure() << "/" << dns_window.evaluableTerminals()
+                            << " inflight=" << dns_window.current_inflight);
                     }
 
                     exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle,
@@ -580,27 +588,49 @@ void start_dns_monitor_thread(ServerContext* ctx, std::thread* worker, DnsMonito
         // The plugin owns this monitor; the worker borrows it until join.
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "DNS monitor thread started");
+
+        constexpr int kTickMs = 100;         // 循环粒度
+        constexpr int kSweepEveryTicks = 10; // 每 1s 扫描一次超时（约等于 query_timeout 的分辨率需求）
+        int tick_in_interval = 0;            // 位于当前 interval 内的第几个 tick
+        int sweep_accum = 0;                 // 距上次 sweep 的 tick 数
+        int diag_accum = 0;                  // 距上次 diag 的 tick 数
+
         while ((ctx->running.load() && !ctx->dns_stop.load())) {
             if (ctx->dns_monitor && ctx->dns_tracker) {
+                // perf buffer 每 tick 排空一次。原先只在 interval 边界排空一次，
+                // 导致突发 syscall 在 10s 内填满 ring buffer 而丢事件。
                 auto drained = ctx->dns_monitor->drainEvents(ctx->dns_tracker.get());
                 if (drained > 0) {
                     LOG_INFO(LogModule::NETWORK, "DNS events drained=" << drained);
                 }
-                ctx->dns_tracker->sweepTimeouts();
-                static int dns_diag_ticks = 0;
-                if (++dns_diag_ticks % 30 == 0) {
+
+                if (++sweep_accum >= kSweepEveryTicks) {
+                    sweep_accum = 0;
+                    ctx->dns_tracker->sweepTimeouts();
+                    // 观测质量增量随 sweep 节奏（每秒）汇入，避免每 tick 都读 BPF map。
+                    ctx->dns_monitor->feedTransportDelta(ctx->dns_tracker.get());
+                }
+
+                const int diag_every_ticks = std::max(1, static_cast<int>(ctx->cfg.dns.interval_ms.load() / kTickMs));
+                if (++diag_accum * kSweepEveryTicks >= diag_every_ticks) {
+                    diag_accum = 0;
                     LOG_INFO(LogModule::NETWORK, "dns-capture diag: "
                         << ctx->dns_monitor->getCaptureDiagnostics());
                 }
             }
-            auto stats = monitor->getStats();
-            if (stats.totalQueries > 0) {
-                LOG_INFO(LogModule::NETWORK, "DNS tick: queries=" << stats.totalQueries
-                    << " avgLatency=" << stats.avgLatencyMs << "ms"
-                    << " timeoutRate=" << stats.timeoutRate() << "%");
+
+            // interval 边界：输出聚合 tick 日志（保持原有观测节奏）
+            if (++tick_in_interval * kTickMs >= static_cast<int>(ctx->cfg.dns.interval_ms.load())) {
+                tick_in_interval = 0;
+                auto stats = monitor->getStats();
+                if (stats.totalQueries > 0) {
+                    LOG_INFO(LogModule::NETWORK, "DNS tick: queries=" << stats.totalQueries
+                        << " avgLatency=" << stats.avgLatencyMs << "ms"
+                        << " timeoutRate=" << stats.timeoutRate() << "%");
+                }
             }
-            for (int i = 0; i < static_cast<int>(ctx->cfg.dns.interval_ms.load() / 100) && (ctx->running.load() && !ctx->dns_stop.load()); ++i)
-                std::this_thread::sleep_for(100ms);
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(kTickMs));
         }
         monitor->stop();
         LOG_INFO(LogModule::NETWORK, "DNS monitor thread stopped");

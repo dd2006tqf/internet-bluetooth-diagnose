@@ -219,6 +219,7 @@ ctest --test-dir build-x86/server
 ## 📚 详细文档
 
 - [架构设计文档](docs/架构设计.md) - 系统架构和技术细节
+- [网络体验评价体系](docs/网络体验评价体系.md) - Profile 驱动 / 分层 SLE / Evidence-first / Coverage Gate 评价模型
 - [交叉编译与开发板部署](docs/交叉编译与开发板部署.md) - ARM64 部署指南
 - [蓝牙监控优化方案](docs/蓝牙监控优化实现方案.md) - 蓝牙功能优化
 - [Skills 与 OpenSpec 工作流使用指南](docs/skills-and-openspec-guide.md) - Skills 和工作流详细使用方法

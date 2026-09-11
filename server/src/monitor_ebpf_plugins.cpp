@@ -43,7 +43,7 @@ public:
             return true;
         }
         monitor_ = std::make_unique<DnsMonitor>();
-        if (!monitor_->init(ctx->cfg.dns.bpf_obj.get().c_str())) {
+        if (!monitor_->init(ctx->cfg.dns.bpf_obj.get().c_str(), ctx->cfg.dns.capture_pages.load())) {
             monitor_.reset();
             return false;
         }

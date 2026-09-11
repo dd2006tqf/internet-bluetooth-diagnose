@@ -183,6 +183,15 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "enabled") return setBoolField(cfg->dns.enabled, val, error);
         if (field == "bpf_obj") { cfg->dns.bpf_obj.set(trim(val)); return true; }
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->dns.interval_ms, val, error);
+        if (field == "capture_pages") {
+            uint32_t pages = 0;
+            if (!parseUint(val, &pages) || pages < 1 || pages > 256) {
+                *error = "dns.capture_pages: must be 1~256";
+                return false;
+            }
+            cfg->dns.capture_pages.store(pages);
+            return true;
+        }
         if (field == "assessment_profile") {
             const std::string v = trim(val);
             if (v != "NETWORK_ONLY" && v != "INTERNET_ACCESS") {
@@ -472,6 +481,7 @@ bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "dns.enabled: invalid bool"; return false; } cfg->dns.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->dns.bpf_obj.set(trim(value)); return true; }
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "dns.interval: must be 1000ms~600000ms"; return false; } cfg->dns.interval_ms.store(ms); return true; }
+        if (field == "capture_pages") { uint32_t pages; if (!parseUint(value, &pages) || !checkRange(pages, 1, 256)) { if (error) *error = "dns.capture_pages: must be 1~256"; return false; } cfg->dns.capture_pages.store(pages); return true; }
         if (field == "assessment_profile") {
             if (value != "NETWORK_ONLY" && value != "INTERNET_ACCESS") { if (error) *error = "dns.assessment_profile: must be NETWORK_ONLY or INTERNET_ACCESS"; return false; }
             cfg->dns.assessment_profile.set(value); return true;
@@ -601,6 +611,7 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeBool("enabled", cfg.dns.enabled.load());
         writeString("bpf_obj", cfg.dns.bpf_obj.get());
         writeUint("interval_ms", cfg.dns.interval_ms.load());
+        writeUint("capture_pages", cfg.dns.capture_pages.load());
         writeString("assessment_profile", cfg.dns.assessment_profile.get());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }

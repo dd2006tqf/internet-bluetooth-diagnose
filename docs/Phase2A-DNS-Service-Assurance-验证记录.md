@@ -81,6 +81,47 @@
 5. DNS_BAD 稳定态下 SR-9 突发语义与 failure_ratio 路径的真机区分度需在 1 修复后复测
 6. NXDOMAIN 语义（域名不存在 ≠ DNS 服务失败）已由 capture→Tracker 正确分类，SLE 语义待 1 修复后调阈值验证
 
+> **上述第 2、5、6 项已在 Stage 2 · Increment 1 处理**：
+> - 投递可靠性（drain 提频至 100ms、有界排空、页数配置化默认 64）见 §五
+> - Observer 质量纳入 Coverage Gate（Direct vs Absence-derived）见评价体系文档
+> - NXDOMAIN 语义已由单测锁定（`test_dns_service_evaluator_gtest.cpp`）
+
+## 五、Stage 2 · Increment 1 补充（2026-09-12）
+
+### 5.1 投递可靠性
+
+```text
+根因：drainEvents 单趟 poll + worker 每 10s 才排空一次 → 突发必然溢出
+修复：
+  server.cpp    DNS worker 分频：drain 每 100ms / sweep 每 1s / diag 每 interval
+  dns_monitor   drainEvents 改为有界循环排空（≤64 轮）
+  config        dns.capture_pages（1~256，默认 64）
+```
+
+### 5.2 Evidence Quality 纳入评价体系
+
+Observer 丢失此前**已记录但从未参与评价**（三个 ratio 无调用者），导致"自己丢 response → 假 TIMEOUT → 假 DNS BAD"。现在：
+
+```text
+有直接坏证据（SERVFAIL/REFUSED）  → 允许 BAD/DEGRADED，coverage=PARTIAL
+仅缺席推导证据（TIMEOUT）+ 观测不可靠 → UNKNOWN(observer_unreliable_*)
+观测不可靠且无坏证据              → 绝不 GOOD
+```
+
+传输两级分别计量（capture emit_fail / perf lost），**不合并相加**；Observer 质量使用**窗口增量**而非 lifetime 累计。
+
+### 5.3 测试
+
+```text
+test_dns_service_evaluator_gtest.cpp   新增，16 例真值表（Missingness/互斥/SR-9/Observer 三分支/NXDOMAIN）
+test_dns_transaction_tracker_gtest.cpp 追加 7 例对抗（同TxID/歧义/重复/unmatched/容量/epoch/窗口增量）
+x86 CTest：28/28 通过
+```
+
+### 5.4 验收脚本
+
+`tools/dns-assurance-acceptance.sh` 五阶段，核心是**阶段 3 与阶段 4 的对照**：同样"DNS 看起来坏了"，业务真坏须判 BAD，观测器坏须判 UNKNOWN。
+
 ## 四、部署速查
 
 ```bash

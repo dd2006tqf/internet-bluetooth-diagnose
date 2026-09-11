@@ -31,6 +31,8 @@
 #include <cerrno>
 #include <cstdio>
 #include <vector>
+#include <iomanip>
+#include <sstream>
 #include <arpa/inet.h>
 
 #if defined(__has_include)
@@ -119,6 +121,9 @@ enum dns_capture_stat {
     DNS_STAT_IOVEC_READ_FAIL,
     DNS_STAT_PAYLOAD_READ_FAIL,
     DNS_STAT_SHORT_PAYLOAD,
+    DNS_STAT_NOT_DNS_PORT,
+    DNS_STAT_PORT_UNKNOWN,
+    DNS_STAT_CONNECT_SEEN,
     DNS_STAT_EMITTED,
     DNS_STAT_EMIT_FAIL,
     DNS_STAT_MAX
@@ -154,8 +159,11 @@ struct DnsMonitor::Impl {
     struct perf_buffer *events = nullptr;
     int dns_capture_fd = -1;
     uint64_t lost_events = 0;
-    DnsCaptureCounters last_counters{};
     DnsDrainStats drain_stats{};
+    // 上一次读取的 BPF 累计计数器，用于计算本窗口的传输层增量。
+    DnsCaptureCounters last_counters{};
+    bool has_last_counters = false;
+    uint64_t last_lost_events = 0;
     weaknet::DnsTransactionTracker* drain_tracker = nullptr;
 };
 
@@ -231,7 +239,7 @@ DnsMonitor::~DnsMonitor() {
  * @return true  初始化成功，探针已挂载
  *         false 初始化失败（libbpf 不可用、文件不存在、attach 失败等）
  */
-bool DnsMonitor::init(const std::string& bpfObjPath) {
+bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
     LOG_INFO(LogModule::NETWORK, "DnsMonitor: BPF not available (no libbpf)");
@@ -349,10 +357,12 @@ bool DnsMonitor::init(const std::string& bpfObjPath) {
     {
         auto events_fd = bpf_object__find_map_fd_by_name(obj, "dns_events");
         if (events_fd >= 0) {
-            impl_->events = perf_buffer__new(events_fd, 8, on_dns_event, on_dns_lost,
+            impl_->events = perf_buffer__new(events_fd, capture_pages, on_dns_event, on_dns_lost,
                                              impl_.get(), nullptr);
             if (!impl_->events) {
                 LOG_WARNING(LogModule::NETWORK, "DnsMonitor: perf buffer unavailable; lifecycle events disabled");
+            } else {
+                LOG_INFO(LogModule::NETWORK, "DnsMonitor: perf buffer pages=" << capture_pages);
             }
         }
     }
@@ -469,23 +479,51 @@ size_t DnsMonitor::drainEvents(weaknet::DnsTransactionTracker* tracker) {
     if (!tracker || !impl_->events) return 0;
     impl_->drain_tracker = tracker;
     impl_->drain_stats.poll_calls++;
-    int ret = perf_buffer__poll(impl_->events, 0);
+
+    // Drain the whole backlog, not just one poll pass. A burst of syscalls can
+    // leave far more records ready than a single non-blocking pass consumes;
+    // stopping early is what forced the perf buffer to drop events.
+    constexpr int kMaxPollRounds = 64;
+    uint64_t total_records = 0;
+    int last_ret = 0;
+    for (int round = 0; round < kMaxPollRounds; ++round) {
+        last_ret = perf_buffer__poll(impl_->events, 0);
+        if (last_ret <= 0) break;
+        total_records += static_cast<uint64_t>(last_ret);
+    }
     impl_->drain_tracker = nullptr;
-    if (ret < 0 && ret != -EINTR) {
+
+    if (last_ret < 0 && last_ret != -EINTR) {
         impl_->drain_stats.poll_errors++;
-        LOG_WARNING(LogModule::NETWORK, "DnsMonitor: perf buffer poll failed: " << ret);
+        LOG_WARNING(LogModule::NETWORK, "DnsMonitor: perf buffer poll failed: " << last_ret);
         return 0;
     }
-    if (ret > 0) impl_->drain_stats.poll_records += static_cast<uint64_t>(ret);
+    impl_->drain_stats.poll_records += total_records;
     auto lost = consumeLostEvents();
     if (lost) tracker->recordDeliveryLoss(lost);
-    return static_cast<size_t>(ret > 0 ? ret : 0);
+    return static_cast<size_t>(total_records);
 }
 
 std::string DnsMonitor::getCaptureDiagnostics() {
 #if HAVE_LIBBPF
     auto counters = read_capture_counters(impl_->dns_capture_fd);
     const auto& s = impl_->drain_stats;
+    // Two transport stages are reported separately and never summed: capture-stage
+    // emit failure and perf-stage delivery loss are different failure points, and
+    // whether they describe the same congestion episode is unverified.
+    const uint64_t capture_attempts = impl_->last_counters.values[DNS_STAT_SENDTO_ENTER]
+        + impl_->last_counters.values[DNS_STAT_SENDMSG_ENTER]
+        + impl_->last_counters.values[DNS_STAT_SENDMMSG_ENTER]
+        + impl_->last_counters.values[DNS_STAT_RECVFROM_ENTER]
+        + impl_->last_counters.values[DNS_STAT_RECVMSG_ENTER]
+        + impl_->last_counters.values[DNS_STAT_RECVMMSG_EXIT];
+    const uint64_t emit_fail = counters.values[DNS_STAT_EMIT_FAIL];
+    const uint64_t delivered = counters.values[DNS_STAT_EMITTED];
+    const uint64_t perf_lost = s.lost_events;
+    const double emit_fail_ratio = capture_attempts > 0
+        ? static_cast<double>(emit_fail) / static_cast<double>(capture_attempts) : 0.0;
+    const double perf_loss_ratio = (delivered + perf_lost) > 0
+        ? static_cast<double>(perf_lost) / static_cast<double>(delivered + perf_lost) : 0.0;
     std::ostringstream json;
     json << "{"
          << "\"capture\":{"
@@ -500,16 +538,26 @@ std::string DnsMonitor::getCaptureDiagnostics() {
          << "\"iovec_read_fail\":" << counters.values[DNS_STAT_IOVEC_READ_FAIL] << ","
          << "\"payload_read_fail\":" << counters.values[DNS_STAT_PAYLOAD_READ_FAIL] << ","
          << "\"short_payload\":" << counters.values[DNS_STAT_SHORT_PAYLOAD] << ","
-         << "\"emitted\":" << counters.values[DNS_STAT_EMITTED] << ","
-         << "\"emit_fail\":" << counters.values[DNS_STAT_EMIT_FAIL]
+         << "\"not_dns_port\":" << counters.values[DNS_STAT_NOT_DNS_PORT] << ","
+         << "\"port_unknown\":" << counters.values[DNS_STAT_PORT_UNKNOWN] << ","
+         << "\"connect_seen\":" << counters.values[DNS_STAT_CONNECT_SEEN] << ","
+         << "\"emitted\":" << delivered << ","
+         << "\"emit_fail\":" << emit_fail
          << "},\"drain\":{"
          << "\"poll_calls\":" << s.poll_calls << ","
          << "\"poll_records\":" << s.poll_records << ","
          << "\"poll_errors\":" << s.poll_errors << ","
          << "\"sample_callbacks\":" << s.sample_callbacks << ","
-         << "\"lost_events\":" << s.lost_events << ","
+         << "\"lost_events\":" << perf_lost << ","
          << "\"tracker_query_accepted\":" << s.tracker_query_accepted << ","
          << "\"tracker_response_accepted\":" << s.tracker_response_accepted
+         << "},\"delivery\":{"
+         << "\"capture_attempts\":" << capture_attempts << ","
+         << "\"capture_emit_failures\":" << emit_fail << ","
+         << "\"delivered_events\":" << delivered << ","
+         << "\"perf_lost_events\":" << perf_lost << ","
+         << "\"capture_emit_failure_ratio\":" << std::fixed << std::setprecision(6) << emit_fail_ratio << ","
+         << "\"perf_delivery_loss_ratio\":" << std::fixed << std::setprecision(6) << perf_loss_ratio
          << "}}";
     return json.str();
 #else
@@ -521,6 +569,34 @@ uint64_t DnsMonitor::consumeLostEvents() {
     auto value = impl_->lost_events;
     impl_->lost_events = 0;
     return value;
+}
+
+void DnsMonitor::feedTransportDelta(weaknet::DnsTransactionTracker* tracker) {
+    if (!tracker || impl_->dns_capture_fd < 0) return;
+    auto counters = read_capture_counters(impl_->dns_capture_fd);
+
+    auto sum_entries = [](const DnsCaptureCounters& c) {
+        return c.values[DNS_STAT_SENDTO_ENTER] + c.values[DNS_STAT_SENDMSG_ENTER]
+             + c.values[DNS_STAT_SENDMMSG_ENTER] + c.values[DNS_STAT_RECVFROM_ENTER]
+             + c.values[DNS_STAT_RECVMSG_ENTER] + c.values[DNS_STAT_RECVMMSG_EXIT];
+    };
+
+    if (!impl_->has_last_counters) {
+        impl_->last_counters = counters;
+        impl_->has_last_counters = true;
+        return; // 首个窗口只建立基线
+    }
+
+    const auto& prev = impl_->last_counters;
+    const uint64_t attempts_delta = sum_entries(counters) - sum_entries(prev);
+    const uint64_t emit_fail_delta = counters.values[DNS_STAT_EMIT_FAIL] - prev.values[DNS_STAT_EMIT_FAIL];
+    const uint64_t emitted_delta = counters.values[DNS_STAT_EMITTED] - prev.values[DNS_STAT_EMITTED];
+    const uint64_t lost_delta = impl_->drain_stats.lost_events - impl_->last_lost_events;
+
+    tracker->recordTransportDelta(attempts_delta, emit_fail_delta, emitted_delta, lost_delta);
+
+    impl_->last_counters = counters;
+    impl_->last_lost_events = impl_->drain_stats.lost_events;
 }
 
 }  // namespace weaknet_dbus

@@ -31,6 +31,30 @@ void DnsTransactionTracker::recordDeliveryLoss(uint64_t lost_count) {
     revision_++;
 }
 
+void DnsTransactionTracker::recordTransportDelta(uint64_t capture_attempts,
+                                                 uint64_t capture_emit_failures,
+                                                 uint64_t delivered_events,
+                                                 uint64_t perf_lost_events) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    capture_attempts_ += capture_attempts;
+    capture_emit_failures_ += capture_emit_failures;
+    delivered_events_ += delivered_events;
+    perf_lost_events_ += perf_lost_events;
+}
+
+void DnsTransactionTracker::advanceWindowBaselineLocked(std::chrono::steady_clock::time_point now) {
+    window_base_unmatched_ = unmatched_count_;
+    window_base_ambiguous_ = tracking_ambiguous_count_;
+    window_base_insert_failures_ = tracker_insert_failures_;
+    window_base_response_matches_ = response_match_attempts_;
+    window_base_query_attempts_ = query_capture_attempts_;
+    window_base_capture_attempts_ = capture_attempts_;
+    window_base_capture_emit_failures_ = capture_emit_failures_;
+    window_base_delivered_events_ = delivered_events_;
+    window_base_perf_lost_events_ = perf_lost_events_;
+    window_base_at_ = now;
+}
+
 bool DnsTransactionTracker::onQueryCaptured(const DnsCanonicalKey& key,
                                             FingerprintQuality quality,
                                             std::chrono::steady_clock::time_point now) {
@@ -264,7 +288,7 @@ DnsTrackerSnapshot DnsTransactionTracker::getSnapshot(std::chrono::steady_clock:
 }
 
 DnsMetricWindow DnsTransactionTracker::getWindowMetrics(std::chrono::milliseconds window_duration,
-                                                       std::chrono::steady_clock::time_point cutoff_time) const {
+                                                       std::chrono::steady_clock::time_point cutoff_time) {
     std::lock_guard<std::mutex> lock(mutex_);
     DnsMetricWindow w;
     w.binding_epoch = current_binding_epoch_;
@@ -323,13 +347,21 @@ DnsMetricWindow DnsTransactionTracker::getWindowMetrics(std::chrono::millisecond
         }
     }
 
-    w.unmatched = unmatched_count_;
-    w.tracking_ambiguous = tracking_ambiguous_count_;
-    w.tracker_insert_failures = tracker_insert_failures_;
-    w.event_delivery_loss = event_delivery_loss_;
-    w.response_match_attempts = response_match_attempts_;
-    w.query_capture_attempts = query_capture_attempts_;
+    // Observer 质量使用**窗口增量**：lifetime 累计比率会被历史大样本稀释
+    // （当前已坏却测不出），也会被早期故障长期污染。
+    w.unmatched = unmatched_count_ - window_base_unmatched_;
+    w.tracking_ambiguous = tracking_ambiguous_count_ - window_base_ambiguous_;
+    w.tracker_insert_failures = tracker_insert_failures_ - window_base_insert_failures_;
+    w.response_match_attempts = response_match_attempts_ - window_base_response_matches_;
+    w.query_capture_attempts = query_capture_attempts_ - window_base_query_attempts_;
+    w.capture_attempts = capture_attempts_ - window_base_capture_attempts_;
+    w.capture_emit_failures = capture_emit_failures_ - window_base_capture_emit_failures_;
+    w.delivered_events = delivered_events_ - window_base_delivered_events_;
+    w.perf_lost_events = perf_lost_events_ - window_base_perf_lost_events_;
     w.total_captured_events = total_captured_events_;
+
+    // 本次导出即为本窗口的边界，推进基线使下个窗口重新计量。
+    advanceWindowBaselineLocked(cutoff_time);
 
     return w;
 }

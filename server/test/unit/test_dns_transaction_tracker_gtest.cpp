@@ -238,3 +238,169 @@ TEST(DnsServiceEvaluatorTest, FailureRateAndMedianLatency) {
     EXPECT_EQ(res.state, HealthState::BAD);
     EXPECT_EQ(res.reason, "high_failure_rate");
 }
+
+// ===========================================================================
+// Tracker 对抗测试：攻击极端场景，验证"不误配、不伪造、不 double-complete"
+// ===========================================================================
+
+namespace {
+
+DnsCanonicalKey makeKey(uint32_t client_ip, uint32_t resolver_ip,
+                        uint16_t client_port, uint16_t txid) {
+    DnsCanonicalKey k;
+    k.family = AddressFamily::IPv4;
+    k.client_ip = client_ip;
+    k.resolver_ip = resolver_ip;
+    k.client_port = client_port;
+    k.txid = txid;
+    return k;
+}
+
+}  // namespace
+
+TEST(DnsTrackerAdversarialTest, SameTxIdDifferentEndpointStaysDistinct) {
+    DnsTransactionTracker tracker;
+    auto now = std::chrono::steady_clock::now();
+
+    // 两个并发事务，TxID 相同但 endpoint 不同
+    auto keyA = makeKey(0x0A000001, 0x0A000053, 40001, 0x1234);
+    auto keyB = makeKey(0x0A000001, 0x0A000054, 40002, 0x1234);
+
+    EXPECT_TRUE(tracker.onQueryCaptured(keyA, FingerprintQuality::ENRICHED, now));
+    EXPECT_TRUE(tracker.onQueryCaptured(keyB, FingerprintQuality::ENRICHED, now));
+    EXPECT_EQ(tracker.getSnapshot(now).current_inflight, 2u);
+
+    // 乱序响应：先回 B 再回 A
+    tracker.onResponseCaptured(keyB, 0, false, false, now + 20ms);
+    tracker.onResponseCaptured(keyA, 3, false, false, now + 30ms);  // NXDOMAIN
+
+    auto window = tracker.getWindowMetrics(120s, now + 40ms);
+    EXPECT_EQ(window.responses_noerror, 1u);
+    EXPECT_EQ(window.responses_nxdomain, 1u);
+    EXPECT_EQ(window.unmatched, 0u);
+    EXPECT_EQ(window.tracking_ambiguous, 0u);
+}
+
+TEST(DnsTrackerAdversarialTest, AmbiguousPartialMatchIsNeverGuessed) {
+    DnsTransactionTracker tracker;
+    auto now = std::chrono::steady_clock::now();
+
+    // 两个 PARTIAL 事务，只有 TxID 可用且相同 -> 无法区分
+    auto keyA = makeKey(0, 0, 0, 0x7777);
+    auto keyB = makeKey(0, 0, 0, 0x7777);
+    // 用不同 qname_hash 让它们成为两个不同的 active 记录
+    keyA.qname_hash = 0xAAAA;
+    keyB.qname_hash = 0xBBBB;
+
+    tracker.onQueryCaptured(keyA, FingerprintQuality::PARTIAL, now);
+    tracker.onQueryCaptured(keyB, FingerprintQuality::PARTIAL, now);
+
+    // 响应只有 TxID，无 endpoint -> 候选 2 个，必须判歧义而非猜一个
+    auto respKey = makeKey(0, 0, 0, 0x7777);
+    tracker.onResponseCaptured(respKey, 0, false, false, now + 10ms);
+
+    auto window = tracker.getWindowMetrics(120s, now + 20ms);
+    EXPECT_EQ(window.tracking_ambiguous, 1u);
+    // 不得把歧义响应错配成终态
+    EXPECT_EQ(window.responses_noerror, 0u);
+    EXPECT_EQ(window.evaluableTerminals(), 0u);
+    // 两个事务仍在途
+    EXPECT_EQ(tracker.getSnapshot(now + 20ms).current_inflight, 2u);
+}
+
+TEST(DnsTrackerAdversarialTest, DuplicateResponseDoesNotDoubleComplete) {
+    DnsTransactionTracker tracker;
+    auto now = std::chrono::steady_clock::now();
+
+    auto key = makeKey(0x0A000001, 0x0A000053, 40001, 0x2222);
+    tracker.onQueryCaptured(key, FingerprintQuality::ENRICHED, now);
+    tracker.onResponseCaptured(key, 0, false, false, now + 10ms);
+
+    // 同一响应的重复副本：不得二次终态化
+    tracker.onResponseCaptured(key, 0, false, false, now + 11ms);
+
+    auto window = tracker.getWindowMetrics(120s, now + 20ms);
+    EXPECT_EQ(window.responses_noerror, 1u);   // 只算一次
+    EXPECT_EQ(window.unmatched, 1u);           // 第二次是未匹配
+    EXPECT_EQ(window.evaluableTerminals(), 1u);
+}
+
+TEST(DnsTrackerAdversarialTest, UnmatchedResponseNeverCreatesTransaction) {
+    DnsTransactionTracker tracker;
+    auto now = std::chrono::steady_clock::now();
+
+    // 从未捕获到任何 query，直接来一个 response
+    auto key = makeKey(0x0A000001, 0x0A000053, 40001, 0x3333);
+    tracker.onResponseCaptured(key, 0, false, false, now);
+
+    auto window = tracker.getWindowMetrics(120s, now + 10ms);
+    EXPECT_EQ(window.unmatched, 1u);
+    // 核心不变式：unmatched response 绝不反向创建一个 DNS 事务
+    EXPECT_EQ(window.queries_started, 0u);
+    EXPECT_EQ(window.evaluableTerminals(), 0u);
+    EXPECT_EQ(tracker.getSnapshot(now + 10ms).current_inflight, 0u);
+}
+
+TEST(DnsTrackerAdversarialTest, CapacityOverflowIsCountedNotSilent) {
+    DnsTrackerConfig cfg;
+    cfg.capacity = 4;
+    DnsTransactionTracker tracker(cfg);
+    auto now = std::chrono::steady_clock::now();
+
+    for (uint16_t i = 0; i < 4; ++i) {
+        EXPECT_TRUE(tracker.onQueryCaptured(makeKey(1, 2, 100 + i, i), FingerprintQuality::ENRICHED, now));
+    }
+    // 超出容量：必须拒绝并计数（IR-1），不能静默丢弃
+    EXPECT_FALSE(tracker.onQueryCaptured(makeKey(1, 2, 200, 99), FingerprintQuality::ENRICHED, now));
+
+    auto window = tracker.getWindowMetrics(120s, now + 10ms);
+    EXPECT_EQ(window.tracker_insert_failures, 1u);
+    EXPECT_GT(window.insertFailureRatio(), 0.0);
+}
+
+TEST(DnsTrackerAdversarialTest, EpochAdvanceInvalidatesInflightAcrossEpochs) {
+    DnsTransactionTracker tracker;
+    auto now = std::chrono::steady_clock::now();
+
+    auto oldKey = makeKey(1, 2, 30001, 0x4444);
+    tracker.onQueryCaptured(oldKey, FingerprintQuality::ENRICHED, now);
+
+    // 路由/resolver 变更推进 epoch
+    tracker.advanceBindingEpoch(2);
+    EXPECT_EQ(tracker.getSnapshot(now).current_inflight, 0u);
+
+    // 旧 epoch 的响应不得在新 epoch 中被匹配
+    tracker.onResponseCaptured(oldKey, 0, false, false, now + 10ms);
+    auto window = tracker.getWindowMetrics(120s, now + 20ms);
+    EXPECT_EQ(window.binding_epoch, 2u);
+    EXPECT_EQ(window.responses_noerror, 0u);
+    EXPECT_EQ(window.unmatched, 1u);
+}
+
+TEST(DnsTrackerAdversarialTest, TerminalCountsAreWindowScopedObserverCountsAreDeltas) {
+    DnsTransactionTracker tracker;
+    auto now = std::chrono::steady_clock::now();
+
+    tracker.onQueryCaptured(makeKey(1, 2, 40001, 1), FingerprintQuality::ENRICHED, now);
+    tracker.onResponseCaptured(makeKey(1, 2, 40001, 1), 0, false, false, now + 5ms);
+
+    // 终态计数按 120s 时间窗统计：同一事务在后续窗口中仍属于该窗口
+    auto first = tracker.getWindowMetrics(120s, now + 10ms);
+    EXPECT_EQ(first.responses_noerror, 1u);
+    auto second = tracker.getWindowMetrics(120s, now + 20ms);
+    EXPECT_EQ(second.responses_noerror, 1u);
+
+    // 观测质量计数按窗口增量：第二个窗口无新事件 -> 必须为 0，
+    // 否则历史大样本会稀释当前观测质量（当前已坏却测不出）。
+    tracker.recordTransportDelta(100, 10, 90, 10);
+    auto with_loss = tracker.getWindowMetrics(120s, now + 30ms);
+    EXPECT_EQ(with_loss.capture_attempts, 100u);
+    EXPECT_EQ(with_loss.capture_emit_failures, 10u);
+    EXPECT_EQ(with_loss.perf_lost_events, 10u);
+
+    // 第三个窗口无新增量 -> 观测计数归零，而非重复累计
+    auto next = tracker.getWindowMetrics(120s, now + 40ms);
+    EXPECT_EQ(next.capture_attempts, 0u);
+    EXPECT_EQ(next.capture_emit_failures, 0u);
+    EXPECT_EQ(next.perf_lost_events, 0u);
+}

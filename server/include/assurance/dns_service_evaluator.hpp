@@ -19,6 +19,15 @@ struct DnsEvaluatorConfig {
     // SR-9 突发连续超时单杀规则（修正 #1）
     size_t critical_timeout_count{3};                // 连续 3 次超时
     std::chrono::milliseconds critical_window{15000};// 15s 窗口内
+
+    // Observer 质量门禁：观测器自身丢证据时不允许把观测缺陷伪装成 DNS 故障。
+    // 直接负面证据（SERVFAIL/REFUSED）不受观测丢失影响，仍可成立；只有
+    // absence-derived 的超时判定会被观测丢失污染。阈值由真机负载矩阵校准得出。
+    double max_capture_emit_failure_ratio{0.02};     // BPF capture 输出失败率上限
+    double max_perf_delivery_loss_ratio{0.02};       // perf buffer 投递丢失率上限
+    double max_ambiguity_ratio{0.10};                // 匹配歧义率上限
+    double max_insert_failure_ratio{0.02};           // Tracker 容量溢出率上限
+    uint64_t observer_min_capture_attempts{20};      // 观测质量门禁的最小样本量
 };
 
 /**
@@ -99,7 +108,37 @@ public:
             return res;
         }
 
-        res.coverage = Coverage::FULL_FOR_PROFILE;
+        // 4b. Observer 质量评估。注意：这里**不立即返回**。
+        //     直接负面证据（SERVFAIL/REFUSED 等真实捕获的错误响应）即使观测覆盖不完美也成立，
+        //     只有"缺席推导"的故障（TIMEOUT）才会被观测丢失污染。
+        //     因此观测不可靠时：有直接坏证据 -> 继续裁决但降 coverage；
+        //                       无直接坏证据 -> UNKNOWN，绝不把观测缺陷伪装成 DNS 故障。
+        std::string observer_reason = checkObserverQuality(window, cfg);
+        const bool observer_unreliable = !observer_reason.empty();
+        const bool has_direct_negative = window.directNegativeEvidence() > 0;
+        if (observer_unreliable) {
+            res.evidence.push_back({"capture_emit_failure_ratio", window.captureEmitFailureRatio(),
+                                    "BPF capture emit failure ratio"});
+            res.evidence.push_back({"perf_delivery_loss_ratio", window.perfDeliveryLossRatio(),
+                                    "Perf buffer delivery loss ratio"});
+            res.evidence.push_back({"ambiguity_ratio", window.ambiguityRatio(),
+                                    "Transaction matching ambiguity ratio"});
+            res.evidence.push_back({"insert_failure_ratio", window.insertFailureRatio(),
+                                    "Tracker capacity overflow ratio"});
+        }
+        if (observer_unreliable && !has_direct_negative) {
+            res.state = HealthState::UNKNOWN;
+            res.coverage = Coverage::PARTIAL;
+            res.reason = observer_reason;
+            return res;
+        }
+
+        // coverage：观测不可靠但有直接坏证据时降级为 PARTIAL，故障结论仍成立
+        res.coverage = observer_unreliable ? Coverage::PARTIAL : Coverage::FULL_FOR_PROFILE;
+        if (observer_unreliable) {
+            res.evidence.push_back({"observer_warning", 1.0,
+                                    "Direct negative evidence is trustworthy, but observer quality is degraded"});
+        }
 
         // 5. 失败率与时延中位数计算
         double fail_ratio = window.failureRatio();
@@ -147,6 +186,33 @@ public:
     }
 
 private:
+    /**
+     * @brief 观测质量检查。返回空字符串表示观测可信；否则返回机器可读的降级原因。
+     *
+     * 两级传输分别计量（BPF capture 与 perf buffer），不合并成单一数字——
+     * 两者是否描述同一轮拥塞尚未验证，合并会掩盖真实边界。
+     * 样本不足时不做判定，避免小样本误判。
+     */
+    static std::string checkObserverQuality(const DnsMetricWindow& window, const Config& cfg) {
+        if (window.capture_attempts < cfg.observer_min_capture_attempts &&
+            window.delivered_events == 0) {
+            return {}; // 样本不足，不判定观测质量
+        }
+        if (window.captureEmitFailureRatio() > cfg.max_capture_emit_failure_ratio) {
+            return "observer_unreliable_capture_emit_failure";
+        }
+        if (window.perfDeliveryLossRatio() > cfg.max_perf_delivery_loss_ratio) {
+            return "observer_unreliable_event_loss";
+        }
+        if (window.ambiguityRatio() > cfg.max_ambiguity_ratio) {
+            return "observer_unreliable_ambiguity";
+        }
+        if (window.insertFailureRatio() > cfg.max_insert_failure_ratio) {
+            return "tracker_capacity_overflow";
+        }
+        return {};
+    }
+
     static bool checkCriticalTimeoutBypass(const std::vector<DnsTransactionRecord>& terminals,
                                            uint64_t target_epoch,
                                            size_t burst_count,

@@ -67,9 +67,10 @@ public:
     /**
      * @brief 初始化（加载 BPF 对象并挂载 tracepoint）
      * @param bpfObjPath BPF 对象文件路径
+     * @param capture_pages perf ring buffer 页数（每 CPU），决定突发流量的缓冲深度
      * @return true 加载成功；false 加载失败（降级为离线模式）
      */
-    bool init(const std::string& bpfObjPath);
+    bool init(const std::string& bpfObjPath, uint32_t capture_pages = 64);
 
     /// 停止并清理（卸载 eBPF 程序，关闭 BPF 对象）
     void stop();
@@ -103,7 +104,12 @@ public:
     uint64_t consumeLostEvents();
 
     /// Capture/drain chain diagnostics (BPF counters + userspace poll stats).
+    /// 计数器始终单调递增，验收通过 before/after 快照取差，不由测试工具重置。
     std::string getCaptureDiagnostics();
+
+    /// 把本窗口的传输层增量（capture 输出失败 / perf 投递丢失）汇入 Tracker，
+    /// 供 Evidence Quality 门禁使用。两级分别计量，不合并。
+    void feedTransportDelta(weaknet::DnsTransactionTracker* tracker);
 
 public:
     struct Impl;

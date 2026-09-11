@@ -60,7 +60,7 @@ struct recv_pending {
     __u32 client_ip;
     __u32 resolver_ip;
     __u16 client_port;
-    __u16 pad;
+    __s32 fd;
 };
 
 struct dns_iovec {
@@ -81,18 +81,41 @@ struct dns_user_msghdr {
     __u32 _pad2;
 };
 
-
-
-struct fd_resolver_key {
-    __u64 pid_tgid;
-    __s32 fd;
-    __u32 pad;
+/* Kernel-independent sockaddr_in prefix (user memory supplied by the caller). */
+struct dns_sockaddr_in {
+    __u16 sin_family;
+    __u16 sin_port;   /* network order */
+    __u32 sin_addr;   /* network order */
 };
 
-struct fd_resolver_value {
-    __u32 resolver_ip;
-    __u32 pad;
-};
+/* DNS 端口判定（主机序与网络序兼容，见文件末尾同名函数的历史用法） */
+static __always_inline bool is_dns_port(__u16 port)
+{
+    return port == DNS_PORT || port == bpf_htons(DNS_PORT);
+}
+
+/**
+ * @brief 从 msghdr.name 解析对端 UDP 端口（网络序）。
+ * @return 0 表示无法解析；否则返回 sin_port。
+ *
+ * 这是区分 DNS 与其他 UDP 流量的**唯一可靠依据**：仅靠 payload 长度与首字节
+ * 会把任何 >=12 字节的 UDP（QUIC/STUN/NTP 等）误判成 DNS 查询，产生幽灵事务。
+ */
+static __always_inline __u16 msghdr_udp_port(const struct dns_user_msghdr *hdr, bool *ok)
+{
+    *ok = false;
+    if (!hdr->name || hdr->namelen < sizeof(struct dns_sockaddr_in))
+        return 0;
+    struct dns_sockaddr_in sa = {};
+    if (bpf_probe_read_user(&sa, sizeof(sa), (const void *)hdr->name) != 0)
+        return 0;
+    if (sa.sin_family != AF_INET)
+        return 0;
+    *ok = true;
+    return sa.sin_port;
+}
+
+
 
 /*
  * Capture observability counters (per-CPU, one key per stat). These turn
@@ -111,9 +134,24 @@ enum dns_capture_stat {
     DNS_STAT_IOVEC_READ_FAIL,
     DNS_STAT_PAYLOAD_READ_FAIL,
     DNS_STAT_SHORT_PAYLOAD,
+    DNS_STAT_NOT_DNS_PORT,
+    DNS_STAT_PORT_UNKNOWN,
+    DNS_STAT_CONNECT_SEEN,
     DNS_STAT_EMITTED,
     DNS_STAT_EMIT_FAIL,
     DNS_STAT_MAX
+};
+
+struct fd_resolver_key {
+    __u64 pid_tgid;
+    __s32 fd;
+    __u32 pad;
+};
+
+struct fd_resolver_value {
+    __u32 resolver_ip;
+    __u16 resolver_port;  /* network order */
+    __u16 valid;
 };
 
 struct {
@@ -131,6 +169,46 @@ static __always_inline void dns_stat_inc(__u32 key)
 }
 
 struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 1024);
+    __type(key, struct fd_resolver_key);
+    __type(value, struct fd_resolver_value);
+} fd_resolvers SEC(".maps");
+
+/*
+ * Connected UDP sockets carry no peer address in msghdr, so the destination port
+ * cannot be recovered from sendmsg/recvmsg arguments alone. We therefore learn
+ * the (pid, fd) → resolver binding from connect() and consult it at send time.
+ * Without this the capture cannot tell DNS apart from other UDP traffic.
+ */
+static __always_inline bool lookup_fd_resolver(__u64 pid_tgid, __s32 fd, __u16 *port_out)
+{
+    struct fd_resolver_key key = {.pid_tgid = pid_tgid, .fd = fd, .pad = 0};
+    struct fd_resolver_value *v = bpf_map_lookup_elem(&fd_resolvers, &key);
+    if (!v || !v->valid)
+        return false;
+    *port_out = v->resolver_port;
+    return true;
+}
+
+/**
+ * @brief 登记/缓存 (pid, fd) → resolver 绑定。
+ *
+ * 已 connect 的 UDP socket 在 sendmsg/recvmsg 的 msghdr 中不带 name，
+ * 因此只要在任一路径（connect 或带 name 的 sendmsg）学到绑定就缓存下来，
+ * 供同 fd 的后续调用复用。否则"查得到 query 却查不到 response"会伪造超时。
+ */
+static __always_inline void remember_fd_resolver(__u64 pid_tgid, __s32 fd, __u16 port_nbo)
+{
+    struct fd_resolver_key key = {.pid_tgid = pid_tgid, .fd = fd, .pad = 0};
+    struct fd_resolver_value val = {};
+    val.resolver_port = port_nbo;
+    val.valid = 1;
+    bpf_map_update_elem(&fd_resolvers, &key, &val, BPF_ANY);
+}
+
+
+struct {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
     __type(key, __u32);
     __type(value, __u32);
@@ -143,13 +221,6 @@ struct {
     __type(value, struct recv_pending);
 } pending_recv SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 1024);
-    __type(key, struct fd_resolver_key);
-    __type(value, struct fd_resolver_value);
-} fd_resolvers SEC(".maps");
-
 char LICENSE[] SEC("license") = "GPL";
 
 /* arm64 syscall numbers (asm-generic/unistd.h) */
@@ -159,6 +230,7 @@ char LICENSE[] SEC("license") = "GPL";
 #define DNS_NR_RECVMSG     212
 #define DNS_NR_SENDMMSG    213
 #define DNS_NR_RECVMMSG    243
+#define DNS_NR_CONNECT     203
 
 static __always_inline __u64 event_pid_tgid(void)
 {
@@ -201,7 +273,7 @@ static __always_inline int emit_dns_payload(void *ctx, __u8 direction,
     return 0;
 }
 
-static __always_inline int emit_dns_msghdr(void *ctx, __u8 direction,
+static __always_inline int emit_dns_msghdr(void *ctx, __u8 direction, __s32 fd,
                                             const void *msg, __u64 result_len,
                                             __u32 client_ip, __u32 resolver_ip,
                                             __u16 client_port)
@@ -216,6 +288,29 @@ static __always_inline int emit_dns_msghdr(void *ctx, __u8 direction,
         dns_stat_inc(DNS_STAT_MSGHDR_READ_FAIL);
         return 0;
     }
+
+    // 端口门控：只有确实指向/来自 53 的 UDP 流才是 DNS。
+    // 缺少这一步会把任意 >=12 字节的 UDP（QUIC/STUN/NTP 等）当作 DNS 查询，
+    // 产生永远等不到响应的幽灵事务，进而伪造超时并压低 DNS 健康度。
+    bool port_ok = false;
+    __u16 peer_port = msghdr_udp_port(&hdr, &port_ok);
+    if (!port_ok) {
+        // 已 connect 的 socket 在 msghdr 中不带 name：改用此前学到的绑定。
+        port_ok = lookup_fd_resolver(event_pid_tgid(), fd, &peer_port);
+        if (!port_ok) {
+            dns_stat_inc(DNS_STAT_PORT_UNKNOWN);
+            return 0;   // 无法确认是 DNS，宁可漏采也不伪造事务
+        }
+    } else if (is_dns_port(peer_port)) {
+        // 本次带 name 且确实是 DNS：缓存绑定，供同 fd 后续无 name 的调用复用
+        // （典型情形是 sendmsg 带 name、对应 recvmsg 不带）。
+        remember_fd_resolver(event_pid_tgid(), fd, peer_port);
+    }
+    if (!is_dns_port(peer_port)) {
+        dns_stat_inc(DNS_STAT_NOT_DNS_PORT);
+        return 0;
+    }
+
     if (bpf_probe_read_user(&iov, sizeof(iov), (const void *)hdr.iov) != 0) {
         dns_stat_inc(DNS_STAT_IOVEC_READ_FAIL);
         return 0;
@@ -226,12 +321,42 @@ static __always_inline int emit_dns_msghdr(void *ctx, __u8 direction,
                             client_ip, resolver_ip, client_port);
 }
 
+/*
+ * 学习 (pid, fd) → resolver 绑定。已 connect 的 UDP socket 在后续
+ * sendmsg/recvmsg 的 msghdr 中不再带对端地址，因此必须在此登记。
+ */
+SEC("tracepoint/raw_syscalls/sys_enter")
+int trace_dns_enter_connect(struct trace_event_raw_sys_enter *ctx)
+{
+    if (ctx->id != DNS_NR_CONNECT) return 0;
+
+    __s32 fd = (__s32)ctx->args[0];
+    const void *addr = (const void *)ctx->args[1];
+    if (!addr) return 0;
+
+    struct dns_sockaddr_in sa = {};
+    if (bpf_probe_read_user(&sa, sizeof(sa), addr) != 0)
+        return 0;
+    if (sa.sin_family != AF_INET)
+        return 0;   // 仅跟踪 IPv4 UDP，与 Phase 2A 覆盖范围一致
+
+    struct fd_resolver_key key = {.pid_tgid = bpf_get_current_pid_tgid(), .fd = fd, .pad = 0};
+    struct fd_resolver_value val = {};
+    val.resolver_ip = sa.sin_addr;
+    val.resolver_port = sa.sin_port;
+    val.valid = 1;
+    bpf_map_update_elem(&fd_resolvers, &key, &val, BPF_ANY);
+    dns_stat_inc(DNS_STAT_CONNECT_SEEN);
+    return 0;
+}
+
+
 SEC("tracepoint/raw_syscalls/sys_enter")
 int trace_dns_enter_sendmsg(struct trace_event_raw_sys_enter *ctx)
 {
     if (ctx->id != DNS_NR_SENDMSG) return 0;
     dns_stat_inc(DNS_STAT_SENDMSG_ENTER);
-    emit_dns_msghdr(ctx, 0, (const void *)ctx->args[1], 0, 0, 0, 0);
+    emit_dns_msghdr(ctx, 0, (__s32)ctx->args[0], (const void *)ctx->args[1], 0, 0, 0, 0);
     return 0;
 }
 
@@ -241,7 +366,7 @@ int trace_dns_enter_sendmmsg(struct trace_event_raw_sys_enter *ctx)
     if (ctx->id != DNS_NR_SENDMMSG) return 0;
     dns_stat_inc(DNS_STAT_SENDMMSG_ENTER);
     /* The first mmsghdr is layout-compatible with msghdr for its msg_hdr. */
-    emit_dns_msghdr(ctx, 0, (const void *)ctx->args[1], 0, 0, 0, 0);
+    emit_dns_msghdr(ctx, 0, (__s32)ctx->args[0], (const void *)ctx->args[1], 0, 0, 0, 0);
     return 0;
 }
 
@@ -254,6 +379,7 @@ int trace_dns_enter_recvmsg(struct trace_event_raw_sys_enter *ctx)
     struct recv_pending pending = {};
     pending.buffer = ctx->args[1];
     pending.length = 0;
+    pending.fd = (__s32)ctx->args[0];
     bpf_map_update_elem(&pending_recv, &pid, &pending, BPF_ANY);
     return 0;
 }
@@ -266,7 +392,7 @@ int trace_dns_exit_recvmsg(struct trace_event_raw_sys_exit *ctx)
     __u64 pid = event_pid_tgid();
     struct recv_pending *pending = bpf_map_lookup_elem(&pending_recv, &pid);
     if (pending && ctx->ret > 0)
-        emit_dns_msghdr(ctx, 1, (const void *)pending->buffer, (__u64)ctx->ret,
+        emit_dns_msghdr(ctx, 1, (__s32)pending->fd, (const void *)pending->buffer, (__u64)ctx->ret,
                         pending->client_ip, pending->resolver_ip, pending->client_port);
     bpf_map_delete_elem(&pending_recv, &pid);
     return 0;
@@ -282,7 +408,7 @@ int trace_dns_exit_recvmmsg(struct trace_event_raw_sys_exit *ctx)
     __u64 pid = event_pid_tgid();
     struct recv_pending *pending = bpf_map_lookup_elem(&pending_recv, &pid);
     if (pending && ctx->ret > 0)
-        emit_dns_msghdr(ctx, 1, (const void *)pending->buffer, (__u64)ctx->ret,
+        emit_dns_msghdr(ctx, 1, (__s32)pending->fd, (const void *)pending->buffer, (__u64)ctx->ret,
                         pending->client_ip, pending->resolver_ip, pending->client_port);
     bpf_map_delete_elem(&pending_recv, &pid);
     return 0;
@@ -326,6 +452,7 @@ int trace_dns_enter_recvfrom(struct trace_event_raw_sys_enter *ctx)
     struct recv_pending pending = {};
     pending.buffer = (__u64)buf;
     pending.length = len;
+    pending.fd = (__s32)fd;
     pending.peer = (__u64)addr;
     pending.peer_length = ctx->args[5];
     __u64 pid = event_pid_tgid();
@@ -433,16 +560,6 @@ struct {
 // =============================================================================
 // 辅助函数（static __always_inline，避免函数调用开销）
 // =============================================================================
-
-/*
- * 判断 UDP 端口是否为 DNS 端口（53）
- * bpf_htons 将主机序（小端）转为网络序（大端），
- * 因为 skc_daddr/dport 在内核中存储为网络序，需要兼容两种情况。
- */
-static __always_inline bool is_dns_port(__u16 port)
-{
-    return port == DNS_PORT || port == bpf_htons(DNS_PORT);
-}
 
 /*
  * 更新全局 DNS 聚合统计
