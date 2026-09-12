@@ -45,6 +45,9 @@ public:
 
     struct Input {
         std::vector<CaptivePortalProbe> probes;
+        /// 是否已提供受控探测证据。false 时一律 NO_CAPABILITY，
+        /// 绝不凭普通重定向给出门户结论。
+        bool has_controlled_probe{false};
         /// 网络层前置条件：仅当底层可用时，门户判定才有意义
         bool ip_reachable{false};
         bool dns_resolvable{false};
@@ -56,6 +59,35 @@ public:
     static SleResult evaluate(const Input& in, const Config& cfg = Config()) {
         SleResult res;
         res.applicability = Applicability::APPLICABLE;
+        res.source = EvidenceSource::UNSPECIFIED;
+        res.scope = EvidenceScope::NO_CAPABILITY;
+
+        // 0. 能力门禁（当前版本的核心语义）
+        //
+        // 可靠的 Portal 判定需要**受控探测**：向已知 connectivity-check 端点
+        // 发起请求，比对是否被重定向到认证页 / 内容被替换。
+        // 当前 capture 不提取 Location 头，也没有主动探测，因此**不具备**
+        // 可靠的 Portal 判定能力。
+        //
+        // 普通 301/302/307/308 是网站的常见正常行为，绝不等价于门户。
+        // 没有能力时如实返回 NO_CAPABILITY，而不是凭普通重定向给出 BAD ——
+        // 也不能因为没看到重定向就说"没有门户"。
+        //
+        // 仅当调用方显式提供受控探测证据（in.has_controlled_probe）时才进入判定。
+        if (!in.has_controlled_probe) {
+            res.state = HealthState::UNKNOWN;
+            res.coverage = Coverage::NONE;
+            res.reason = "no_portal_probe_capability";
+            // 普通重定向最多作为观测事实记录，不产生任何状态语义
+            if (!in.probes.empty()) {
+                res.evidence.push_back({"redirect_observed", 1.0,
+                    "Redirects observed in passive traffic; NOT a portal verdict"});
+            }
+            return res;
+        }
+
+        res.source = EvidenceSource::ACTIVE_PROBE;
+        res.scope = EvidenceScope::PER_DESTINATION;
 
         // 1. 样本门禁
         if (in.probes.size() < cfg.min_samples) {

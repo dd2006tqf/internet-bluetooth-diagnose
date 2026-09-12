@@ -2,9 +2,16 @@
 
 /**
  * @file http_access_evaluator.hpp
- * @brief HTTP/HTTPS Access SLE — 无状态纯函数评估
+ * @brief Passive Cleartext HTTP Experience SLE — 无状态纯函数评估
  *
- * 回答的问题：DNS 解析成功、TCP 也连上之后，**应用层是否真的能得到有效响应**？
+ * **命名与 scope 说明（重要）**：
+ *   本 SLE 只能观测**明文 HTTP**（capture 靠方法前缀 "GET "/"POST " 识别，
+ *   TLS 加密后无法匹配）。因此它**不是** "HTTP/HTTPS Access"，
+ *   不能代表完整的 Internet 应用层可用性。
+ *   其结果是 non-blocking 的"观测到的业务体验"，无权单独判定 Internet 可用性。
+ *   scope = CLEARTEXT_PER_DESTINATION
+ *
+ * 回答的问题（观测语义）：在**明文 HTTP** 流量中，应用层是否得到了有效响应？
  *
  * 语义边界（关键，与业务语义严格分离）：
  *   本 SLE 判断的是"HTTP 服务链路是否工作"，不是"网页内容是否符合用户期望"。
@@ -61,6 +68,11 @@ public:
     static SleResult evaluate(const Input& in, const Config& cfg = Config()) {
         SleResult res;
         res.applicability = Applicability::APPLICABLE;
+        // 证据来自真实业务 HTTP 流量，且**仅覆盖明文 HTTP**
+        // （TLS 加密后无法识别方法与状态码）。
+        // 不得对外宣称覆盖 HTTPS；这是 non-blocking 的 observed service。
+        res.source = EvidenceSource::PASSIVE_REAL_TRAFFIC;
+        res.scope = EvidenceScope::CLEARTEXT_PER_DESTINATION;
 
         // 1. 样本门禁
         if (in.samples.size() < cfg.min_samples) {
@@ -157,7 +169,7 @@ public:
         }
 
         res.state = HealthState::GOOD;
-        res.reason = "http_access_healthy";
+        res.reason = "cleartext_http_experience_healthy";
         return res;
     }
 };

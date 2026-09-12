@@ -44,11 +44,19 @@ TEST(HttpAccessEvaluatorTruthTable, BelowSampleGateIsUnknown) {
     EXPECT_EQ(res.reason, "insufficient_http_samples");
 }
 
+// scope 必须明确暴露：仅覆盖明文 HTTP，不得宣称覆盖 HTTPS
+TEST(HttpAccessEvaluatorTruthTable, DeclaresCleartextOnlyScope) {
+    auto in = makeInput({200, 200, 200, 200, 200, 200});
+    auto res = HttpAccessEvaluator::evaluate(in);
+    EXPECT_EQ(res.source, EvidenceSource::PASSIVE_REAL_TRAFFIC);
+    EXPECT_EQ(res.scope, EvidenceScope::CLEARTEXT_PER_DESTINATION);
+}
+
 TEST(HttpAccessEvaluatorTruthTable, AllSuccessIsGood) {
     auto in = makeInput({200, 200, 200, 200, 200, 200});
     auto res = HttpAccessEvaluator::evaluate(in);
     EXPECT_EQ(res.state, HealthState::GOOD);
-    EXPECT_EQ(res.reason, "http_access_healthy");
+    EXPECT_EQ(res.reason, "cleartext_http_experience_healthy");
 }
 
 TEST(HttpAccessEvaluatorTruthTable, ClientErrorsAreNotTransportFailure) {

@@ -140,6 +140,10 @@ add_executable(test_captive_portal_evaluator_gtest
     unit/test_captive_portal_evaluator_gtest.cpp)
 target_link_libraries(test_captive_portal_evaluator_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_assurance_policy_source_gtest
+    unit/test_assurance_policy_source_gtest.cpp)
+target_link_libraries(test_assurance_policy_source_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # ---- CTest 集成 ----
 # enable_testing() 已在根 CMakeLists.txt 中调用
 foreach(test_target
@@ -151,6 +155,7 @@ foreach(test_target
     test_tcp_connect_evaluator_gtest
     test_http_access_evaluator_gtest
     test_captive_portal_evaluator_gtest
+    test_assurance_policy_source_gtest
     test_quality_assessor_gtest
     test_anomaly_detector_gtest
     test_audio_fusion_gtest

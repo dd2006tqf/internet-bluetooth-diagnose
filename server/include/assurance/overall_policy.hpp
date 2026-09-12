@@ -152,36 +152,54 @@ public:
             return exp;
         }
 
-        // Reachability GOOD + DNS BAD -> Overall BAD, Primary=DNS_SERVICE_FAILURE (仅在 INTERNET_ACCESS 下一票否决)
+        // DNS BAD：仅当证据属 "host-level resolver capability" 故障时才否决
+        // INTERNET_ACCESS。本机解析不了名字，上网体验确实受损。
+        // 若只是单域名 SERVFAIL/REFUSED（capability_level_negative=false），
+        // 那可能是域名或策略侧问题，无权把 "某域名解析失败" 升级为
+        // "Internet 不可用" —— 降为警告与证据，不改变 Overall。
         if (dns_app && dns.state == HealthState::BAD) {
-            exp.overall = HealthState::BAD;
-            exp.primary_issue = "DNS service resolution failure";
-            exp.display_score = 25;
-            return exp;
+            if (dns.capability_level_negative) {
+                exp.overall = HealthState::BAD;
+                exp.primary_issue = "DNS service resolution failure";
+                exp.display_score = 25;
+                return exp;
+            }
+            exp.warnings.push_back(
+                "DNS resolution failures observed (per-domain, not resolver capability)");
         }
 
-        // DNS 之后的下一层：TCP 建连失败（DNS 正常但连不上对端）
+        // Passive TCP 建连失败：**non-blocking observed service**。
+        //
+        // 被动 TCP 观测的是"本机连向任意目的地的结果"，而目的地由用户业务决定，
+        // 可能本来就该失败（已下线服务器、被防火墙拦截的端口、不存在的服务）。
+        // 因此它无权单独把 INTERNET_ACCESS 判为 BAD/DEGRADED —— 那等于用
+        // 未知目的地的失败冒充 Internet ground truth。
+        // 自身 SLE 可继续为 BAD 并展示证据，但 Overall 不受其影响。
+        // 只有受控主动探测（ACTIVE_PROBE）才具备判定 Internet 可用性的资格。
         if (tcp_app && tcp_connect.state == HealthState::BAD) {
-            exp.overall = HealthState::BAD;
-            exp.primary_issue = "TCP connection failure to remote endpoint";
-            exp.display_score = 20;
-            return exp;
+            exp.warnings.push_back(
+                "Observed TCP connect failures on application endpoints (not an Internet availability verdict)");
         }
 
-        // 明确被认证门户拦截：这是确定性事实，优先于 HTTP 服务质量归因
-        if (portal_app && captive_portal.state == HealthState::BAD) {
+        // Captive Portal：仅当存在受控探测证据时才可确诊。
+        // scope == NO_CAPABILITY 表示当前没有可靠的 portal 判定能力
+        // （capture 不提取 Location，也没有主动 probe），此时无权做任何决策。
+        const bool portal_has_capability =
+            (captive_portal.scope != EvidenceScope::NO_CAPABILITY) &&
+            (captive_portal.source != EvidenceSource::UNSPECIFIED);
+        if (portal_has_capability && captive_portal.state == HealthState::BAD) {
             exp.overall = HealthState::BAD;
             exp.primary_issue = "Captive portal interception detected";
             exp.display_score = 20;
             return exp;
         }
 
-        // HTTP 层失败（DNS/TCP 正常但应用层不可用）
+        // Passive cleartext HTTP 失败：同样 non-blocking。
+        // 当前 scope 仅覆盖明文 HTTP（TLS 后无法识别），且目的地由用户业务决定，
+        // 不足以判定 Internet 可用性。
         if (http_app && http_access.state == HealthState::BAD) {
-            exp.overall = HealthState::BAD;
-            exp.primary_issue = "HTTP service access failure";
-            exp.display_score = 22;
-            return exp;
+            exp.warnings.push_back(
+                "Observed cleartext HTTP failures (scope: cleartext only, not an Internet availability verdict)");
         }
 
         // 2. Major BAD (Responsiveness 严重劣化 → DEGRADED)
@@ -196,16 +214,25 @@ public:
         bool reach_degraded = (reach_app && reach.state == HealthState::DEGRADED);
         bool rel_degraded = (rel_app && rel.state == HealthState::DEGRADED);
         bool resp_degraded = (resp_app && resp.state == HealthState::DEGRADED);
+        // 被动 Service SLE（TCP / Cleartext HTTP）即便 DEGRADED 也不改变 Overall：
+        // 若允许它们把 Overall 压到 DEGRADED，本质上仍是用未知目的地的失败
+        // 评价 Internet，只是从 BAD 改成 DEGRADED，语义漏洞并未消失。
         bool dns_degraded = (dns_app && dns.state == HealthState::DEGRADED);
-        bool tcp_degraded = (tcp_app && tcp_connect.state == HealthState::DEGRADED);
-        bool http_degraded = (http_app && http_access.state == HealthState::DEGRADED);
-        if (reach_degraded || rel_degraded || resp_degraded || dns_degraded || tcp_degraded || http_degraded) {
+        const bool tcp_degraded = (tcp_app && tcp_connect.state == HealthState::DEGRADED);
+        const bool http_degraded = (http_app && http_access.state == HealthState::DEGRADED);
+        if (tcp_degraded) {
+            exp.warnings.push_back(
+                "Observed TCP connect degradation on application endpoints (non-blocking)");
+        }
+        if (http_degraded) {
+            exp.warnings.push_back(
+                "Observed cleartext HTTP degradation (non-blocking, cleartext only)");
+        }
+        if (reach_degraded || rel_degraded || resp_degraded || dns_degraded) {
             exp.overall = HealthState::DEGRADED;
             if (reach_degraded) exp.primary_issue = "Intermittent probe failure";
             else if (rel_degraded) exp.primary_issue = "Elevated network packet loss";
             else if (dns_degraded) exp.primary_issue = "Elevated DNS resolution failure or latency";
-            else if (tcp_degraded) exp.primary_issue = "Elevated TCP connection failure or latency";
-            else if (http_degraded) exp.primary_issue = "Elevated HTTP access failure or latency";
             else exp.primary_issue = "Latency fluctuation detected";
             exp.display_score = 65;
             return exp;

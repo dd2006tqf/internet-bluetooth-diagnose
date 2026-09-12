@@ -430,21 +430,19 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                         http_in.capture_events = http_in.samples.size();
                         http_sle = weaknet::HttpAccessEvaluator::evaluate(http_in);
 
-                        // Captive Portal：需要明确的门户特征 + 底层链路健康
+                        // Captive Portal：**当前不具备可靠判定能力**。
+                        //
+                        // 可靠的 portal 判定需要受控探测（向已知 connectivity-check
+                        // 端点请求，看是否被重定向/内容替换）。当前 capture 不提取
+                        // Location 头，也没有主动探测。
+                        // 普通 301/302 是网站常见正常行为，绝不能等价于门户。
+                        // 因此这里不喂入任何被动重定向作为判定依据，
+                        // evaluator 会如实返回 UNKNOWN / NO_CAPABILITY。
                         weaknet::CaptivePortalEvaluator::Input portal_in;
-                        for (const auto& t : txns) {
-                            weaknet::CaptivePortalProbe p;
-                            p.status_code = t.statusCode;
-                            // 3xx 视为可疑门户信号（精确的门户特征需 Location 解析，
-                            // 当前 capture 未提取 Location，故仅作弱信号）
-                            p.redirect_to_portal = (t.statusCode >= 300 && t.statusCode < 400);
-                            p.expected_content = (t.statusCode >= 200 && t.statusCode < 300);
-                            portal_in.probes.push_back(p);
-                        }
+                        portal_in.has_controlled_probe = false;
                         portal_in.ip_reachable = (reach_sle.state == weaknet::HealthState::GOOD);
                         portal_in.dns_resolvable = (dns_sle.state == weaknet::HealthState::GOOD);
                         portal_in.tcp_connectable = (tcp_sle.state == weaknet::HealthState::GOOD);
-                        portal_in.capture_events = portal_in.probes.size();
                         portal_sle = weaknet::CaptivePortalEvaluator::evaluate(portal_in);
 
                         LOG_INFO(LogModule::NETWORK, "HTTP SLE: state="

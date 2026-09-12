@@ -50,6 +50,14 @@ struct DnsEvaluatorConfig {
  *    - 计算有效时延的中位数 (p50)
  * 4. Tracking Quality 降级门禁 (SR-8):
  *    - classification_coverage 过低 -> UNKNOWN (insufficient_classified_outcomes)
+ *
+ * capability_level_negative（是否具备否决 Internet Access 的资格）：
+ *   只有"本机名字解析能力失效"的证据才置位 —— 即
+ *     - SR-9 连续超时（解析器完全不响应），或
+ *     - 失败以 TIMEOUT 为主（解析器答不出来），或
+ *     - 解析普遍极慢
+ *   单域名/单次 SERVFAIL、REFUSED 不置位：那可能是域名自身或策略侧问题，
+ *   无权把"某个域名解析失败"升级为"Internet 不可用"。
  */
 class DnsServiceEvaluator {
 public:
@@ -61,6 +69,9 @@ public:
                              bool* out_is_critical_bypass = nullptr) {
         SleResult res;
         res.applicability = Applicability::APPLICABLE;
+        // DNS 证据来自真实 DNS 事务（被动观测），scope 是本机解析能力。
+        res.source = EvidenceSource::PASSIVE_REAL_TRAFFIC;
+        res.scope = EvidenceScope::HOST_RESOLVER_CAPABILITY;
         if (out_is_critical_bypass) *out_is_critical_bypass = false;
 
         // 1. Missingness 三态检查
@@ -84,6 +95,8 @@ public:
         if (checkCriticalTimeoutBypass(recent_terminals, window.binding_epoch, cfg.critical_timeout_count, cfg.critical_window, window.evaluation_cutoff)) {
             res.state = HealthState::BAD;
             res.coverage = Coverage::FULL_FOR_PROFILE;
+            // 连续 3 个独立事务无任何响应且无成功穿插 → 解析器能力级故障
+            res.capability_level_negative = true;
             res.reason = "critical_burst_timeouts";
             res.evidence.push_back({"burst_timeouts", static_cast<double>(cfg.critical_timeout_count), "Burst consecutive timeouts detected without success"});
             if (out_is_critical_bypass) *out_is_critical_bypass = true;
@@ -158,13 +171,34 @@ public:
         }
 
         // 6. 状态阶梯裁决
+        // 失败率按**类型**区分是否具备 host-level 否决权。
+        //
+        // 关键区分：解析器"答不答"与"答什么"是两件事。
+        //   TIMEOUT  —— 解析器完全没响应 => 本机解析能力失效（capability 级）
+        //   SERVFAIL —— 解析器答了，但上游/权威侧解析失败。可能是该域名自身
+        //               或权威侧问题，不能自动等同于本机能力故障
+        //   REFUSED  —— 明确的策略拒绝，几乎总是域名/策略侧问题
+        //
+        // 因此不能用聚合 failure_ratio 触发否决权：小样本下单个域名的
+        // SERVFAIL 就可能超过 20% 阈值，从而把一个域名的问题升级成
+        // "Internet 不可用"。否决权只由 timeout 占比决定。
+        const double timeout_ratio = evaluable > 0
+            ? static_cast<double>(window.timeouts) / static_cast<double>(evaluable)
+            : 0.0;
+
         if (fail_ratio >= cfg.error_ratio_bad) {
             res.state = HealthState::BAD;
             res.reason = "high_failure_rate";
+            // 仅当失败以"无响应"为主时，才认定是本机解析能力故障
+            res.capability_level_negative = (timeout_ratio >= cfg.error_ratio_bad);
+            res.evidence.push_back({"timeout_ratio", timeout_ratio * 100.0,
+                                    "Timeout share of evaluable terminals %"});
             return res;
         }
         if (median_latency >= cfg.median_latency_bad_ms) {
             res.state = HealthState::BAD;
+            // 解析普遍变慢同样是本机解析能力的退化
+            res.capability_level_negative = true;
             res.reason = "excessive_dns_latency";
             return res;
         }
