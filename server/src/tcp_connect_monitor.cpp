@@ -79,14 +79,20 @@ constexpr uint8_t kTcpSynSent = 2;
 constexpr uint8_t kTcpEstablished = 1;
 constexpr uint8_t kTcpClose = 7;
 
+/*
+ * 关联键说明（实测内核语义）：
+ *   SYN_SENT 事件触发时临时端口**尚未分配**（sport=0），
+ *   ESTABLISHED 事件才有真实 sport（如 40628）。
+ *   因此 sport 不能作为关联键，否则成功建连永远配不上。
+ *   用 (saddr, daddr, dport) 关联：这三个字段在同一次建连的全过程稳定。
+ *   同一四元组组内的并发建连属极端情况，由 capture pairing 质量兜底。
+ */
 struct TcpConnKey {
     uint32_t saddr;
     uint32_t daddr;
-    uint16_t sport;
     uint16_t dport;
     bool operator==(const TcpConnKey& o) const {
-        return saddr == o.saddr && daddr == o.daddr &&
-               sport == o.sport && dport == o.dport;
+        return saddr == o.saddr && daddr == o.daddr && dport == o.dport;
     }
 };
 
@@ -94,7 +100,7 @@ struct TcpConnKeyHash {
     size_t operator()(const TcpConnKey& k) const noexcept {
         size_t h = std::hash<uint32_t>{}(k.saddr);
         h ^= std::hash<uint32_t>{}(k.daddr) + 0x9e3779b9 + (h << 6) + (h >> 2);
-        h ^= (static_cast<size_t>(k.sport) << 16) | k.dport;
+        h ^= std::hash<uint16_t>{}(k.dport) + 0x9e3779b9 + (h << 6) + (h >> 2);
         return h;
     }
 };
@@ -153,7 +159,7 @@ void on_tcp_event(void* ctx, int /*cpu*/, void* data, __u32 size) {
     if (!impl || size < sizeof(tcp_connect_event)) return;
 
     const auto* ev = static_cast<const tcp_connect_event*>(data);
-    TcpConnKey key{ev->saddr, ev->daddr, ev->sport, ev->dport};
+    TcpConnKey key{ev->saddr, ev->daddr, ev->dport};
     const auto now = std::chrono::steady_clock::now();
 
     std::lock_guard<std::mutex> lock(impl->mutex);

@@ -204,6 +204,22 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         *error = "dns: unknown field '" + field + "'";
         return false;
     }
+    if (mon == "tcp_connect") {
+        if (field == "enabled") return setBoolField(cfg->tcp_connect.enabled, val, error);
+        if (field == "bpf_obj") { cfg->tcp_connect.bpf_obj.set(trim(val)); return true; }
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->tcp_connect.interval_ms, val, error);
+        if (field == "capture_pages") {
+            uint32_t pages = 0;
+            if (!parseUint(val, &pages) || pages < 1 || pages > 256) {
+                *error = "tcp_connect.capture_pages: must be 1~256";
+                return false;
+            }
+            cfg->tcp_connect.capture_pages.store(pages);
+            return true;
+        }
+        *error = "tcp_connect: unknown field '" + field + "'";
+        return false;
+    }
     if (mon == "wifi_loss") {
         if (field == "enabled") return setBoolField(cfg->wifi_loss.enabled, val, error);
         if (field == "bpf_obj") { cfg->wifi_loss.bpf_obj.set(trim(val)); return true; }
@@ -402,6 +418,7 @@ bool getMonitorEnabled(const WeakNetConfig& cfg, const std::string& monitor, boo
     else if (monitor == "quality") *enabled = cfg.quality.enabled.load();
     else if (monitor == "bluetooth") *enabled = cfg.bluetooth.enabled.load();
     else if (monitor == "dns") *enabled = cfg.dns.enabled.load();
+    else if (monitor == "tcp_connect") *enabled = cfg.tcp_connect.enabled.load();
     else if (monitor == "wifi_loss") *enabled = cfg.wifi_loss.enabled.load();
     else if (monitor == "http_latency") *enabled = cfg.http_latency.enabled.load();
     else if (monitor == "process_profiler") *enabled = cfg.process_profiler.enabled.load();
@@ -423,6 +440,7 @@ bool setMonitorEnabled(WeakNetConfig* cfg, const std::string& monitor, bool enab
     else if (monitor == "quality") cfg->quality.enabled.store(enabled);
     else if (monitor == "bluetooth") cfg->bluetooth.enabled.store(enabled);
     else if (monitor == "dns") cfg->dns.enabled.store(enabled);
+    else if (monitor == "tcp_connect") cfg->tcp_connect.enabled.store(enabled);
     else if (monitor == "wifi_loss") cfg->wifi_loss.enabled.store(enabled);
     else if (monitor == "http_latency") cfg->http_latency.enabled.store(enabled);
     else if (monitor == "process_profiler") cfg->process_profiler.enabled.store(enabled);
@@ -487,6 +505,12 @@ bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
             cfg->dns.assessment_profile.set(value); return true;
         }
     }
+    if (mon == "tcp_connect") {
+        if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "tcp_connect.enabled: invalid bool"; return false; } cfg->tcp_connect.enabled.store(b); return true; }
+        if (field == "bpf_obj") { cfg->tcp_connect.bpf_obj.set(trim(value)); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "tcp_connect.interval: must be 1000ms~600000ms"; return false; } cfg->tcp_connect.interval_ms.store(ms); return true; }
+        if (field == "capture_pages") { uint32_t pages; if (!parseUint(value, &pages) || !checkRange(pages, 1, 256)) { if (error) *error = "tcp_connect.capture_pages: must be 1~256"; return false; } cfg->tcp_connect.capture_pages.store(pages); return true; }
+    }
     if (mon == "wifi_loss") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "wifi_loss.enabled: invalid bool"; return false; } cfg->wifi_loss.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->wifi_loss.bpf_obj.set(trim(value)); return true; }
@@ -532,7 +556,7 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
     static const std::set<std::string> valid = {
         "all", "server", "rtt", "jitter", "rssi", "tcp_loss", "traffic", "quality",
         "bluetooth", "dns", "wifi_loss", "http_latency", "process_profiler",
-        "tcp_retrans", "tcp_conn", "skb_drop"
+        "tcp_retrans", "tcp_conn", "skb_drop", "tcp_connect"
     };
     if (valid.find(monitor) == valid.end()) {
         if (error) *error = "unknown monitor: " + monitor;
@@ -613,6 +637,14 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeUint("interval_ms", cfg.dns.interval_ms.load());
         writeUint("capture_pages", cfg.dns.capture_pages.load());
         writeString("assessment_profile", cfg.dns.assessment_profile.get());
+        json.seekp(-1, std::ios_base::cur); json << "},";
+    }
+    if (monitor == "all" || monitor == "tcp_connect") {
+        json << "\"tcp_connect\":{";
+        writeBool("enabled", cfg.tcp_connect.enabled.load());
+        writeString("bpf_obj", cfg.tcp_connect.bpf_obj.get());
+        writeUint("interval_ms", cfg.tcp_connect.interval_ms.load());
+        writeUint("capture_pages", cfg.tcp_connect.capture_pages.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "wifi_loss") {
