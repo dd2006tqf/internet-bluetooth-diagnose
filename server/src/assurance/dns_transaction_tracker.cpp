@@ -321,7 +321,12 @@ DnsMetricWindow DnsTransactionTracker::getWindowMetrics(std::chrono::millisecond
                     break;
                 case DnsTransactionState::NXDOMAIN:
                     w.responses_nxdomain++;
-                    w.latencies_ms.push_back(rec.latency_ms);
+                    // 不计入时延样本：NXDOMAIN 是**事务成功**，但它需要递归到
+                    // 权威服务器逐层否定，结构性就比肯定应答慢得多
+                    // （实测中位 ~545ms vs 正常解析 ~45ms）。
+                    // 把它的固有慢算作"解析器服务劣化"，会导致
+                    // failure_ratio=0 却被判 BAD —— 归因错误。
+                    // 时延判定只应基于解析器需要正常解析的请求（NOERROR）。
                     break;
                 case DnsTransactionState::SERVFAIL:
                     w.responses_servfail++;
