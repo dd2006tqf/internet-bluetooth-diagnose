@@ -22,6 +22,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <sstream>
 #include <vector>
 #include <thread>
 #include <chrono>
@@ -67,6 +68,8 @@
 #include "tcp_conn_monitor.hpp"
 #include "tcp_connect_monitor.hpp"
 #include "assurance/tcp_connect_evaluator.hpp"
+#include "assurance/active_connectivity.hpp"
+#include "active_connectivity_monitor.hpp"
 #include "assurance/http_access_evaluator.hpp"
 #include "assurance/captive_portal_evaluator.hpp"
 #include "http_latency_monitor.hpp"
@@ -454,9 +457,28 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                             << " reason=" << portal_sle.reason);
                     }
 
+                    // 受控主动探测：host-level Internet 能力的唯一证据来源。
+                    // 与被动观测分开评估、分开传入 —— 两者语义不同，
+                    // 绝不混入同一统计窗口。
+                    weaknet::ActiveConnectivityResult active;
+                    if (ctx->active_probe) {
+                        active = weaknet::ActiveConnectivityEvaluator::evaluate(
+                            ctx->active_probe->results(),
+                            ctx->active_probe->isUsable());
+                        LOG_INFO(LogModule::NETWORK, "Active capability: dns="
+                            << weaknet::healthStateToString(active.dns.state)
+                            << "(" << active.dns.reason << ") tcp="
+                            << weaknet::healthStateToString(active.tcp.state)
+                            << "(" << active.tcp.reason << ") https="
+                            << weaknet::healthStateToString(active.https.state)
+                            << " portal=" << weaknet::healthStateToString(active.portal.state));
+                    }
+
                     exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle,
                                                          rf_sle, dns_sle, tcp_sle,
                                                          http_sle, portal_sle,
+                                                         active.dns, active.tcp,
+                                                         active.https, active.portal,
                                                          ctx->assessment_profile);
 
                     if (!rtt_samples.empty()) newest_rev = rtt_samples.back().sequence;
@@ -839,6 +861,33 @@ void start_tcp_connect_monitor_thread(ServerContext* ctx, std::thread* worker, T
     });
 }
 
+/**
+ * @brief 受控主动连通性探测线程
+ *
+ * 只在 INTERNET_ACCESS Profile 且配置启用时运行。
+ * 与被动观测不同：**不能因为最近被动流量充足就跳过**，否则
+ * host-level capability 证据会消失。
+ */
+void start_active_probe_thread(ServerContext* ctx, std::thread* worker) {
+    *worker = std::thread([ctx]() {
+        LOG_INFO(LogModule::NETWORK, "Active connectivity probe thread started");
+        while (ctx->running.load() && !ctx->active_probe_stop.load()) {
+            if (ctx->active_probe && ctx->active_probe->isUsable()) {
+                ctx->active_probe->runProbeRound();
+            }
+            // 直接按毫秒计算。此前误把毫秒值当作秒（interval * 10 次 100ms），
+            // 导致探测实际约 2.8 小时才跑一轮，结论长期停留在首轮快照。
+            const uint32_t interval_ms = std::max(5000u, ctx->cfg.active_probe.interval_ms.load());
+            const int ticks = static_cast<int>(interval_ms / 100);
+            for (int i = 0; i < ticks &&
+                            ctx->running.load() && !ctx->active_probe_stop.load(); ++i) {
+                std::this_thread::sleep_for(100ms);
+            }
+        }
+        LOG_INFO(LogModule::NETWORK, "Active connectivity probe thread stopped");
+    });
+}
+
 void start_history_persistence_thread(ServerContext* ctx) {
     ctx->history_thread = std::thread([ctx](){
         LOG_INFO(LogModule::SYSTEM, "History persistence thread started");
@@ -1055,6 +1104,51 @@ int start_server(int argc, char** argv) {
         LOG_INFO(LogModule::SYSTEM, "database manager opened, records=" << ctx.db_mgr->getRecordCount());
     } else {
         LOG_WARNING(LogModule::SYSTEM, "database manager failed to open, history persistence disabled");
+    }
+
+    // ================================================================
+    // 受控主动连通性探测：宿主 Internet 能力证据的唯一来源
+    // 默认关闭；targets 为空时不启用（不内置任何第三方默认目标，
+    // 避免第三方服务异常被误读为 Internet 故障）。
+    // ================================================================
+    {
+        ctx.active_probe = std::make_unique<ActiveConnectivityMonitor>();
+        ActiveProbeConfig ap;
+        ap.enabled = ctx.cfg.active_probe.enabled.load();
+        const uint32_t interval_ms = std::max(5000u, ctx.cfg.active_probe.interval_ms.load());
+        const uint32_t timeout_ms = std::max(500u, ctx.cfg.active_probe.timeout_ms.load());
+        ap.interval_sec = interval_ms / 1000u;
+        ap.timeout_sec = std::max(1u, timeout_ms / 1000u);
+
+        // 解析 targets："id|hostname|port,id|hostname|port"
+        const std::string raw = ctx.cfg.active_probe.targets.get();
+        std::istringstream ts(raw);
+        std::string item;
+        while (std::getline(ts, item, ',')) {
+            if (item.empty()) continue;
+            ActiveProbeTargetConfig t;
+            std::istringstream is(item);
+            std::string id, host, port;
+            std::getline(is, id, '|');
+            std::getline(is, host, '|');
+            std::getline(is, port, '|');
+            t.id = id;
+            t.hostname = host;
+            t.tcp_port = port.empty() ? 443 : static_cast<uint16_t>(std::atoi(port.c_str()));
+            if (t.hostname.empty()) continue;
+            ap.targets.push_back(t);
+        }
+        ctx.active_probe->configure(ap);
+
+        if (ap.enabled && ap.targets.size() < 2) {
+            LOG_WARNING(LogModule::NETWORK,
+                "Active probe enabled but fewer than 2 targets configured; "
+                "capability verdict requires >=2 independent targets. "
+                "Active capability will report UNKNOWN.");
+        }
+        LOG_INFO(LogModule::NETWORK, "Active connectivity probe: "
+                 << ctx.active_probe->describeConfig());
+        start_active_probe_thread(&ctx, &ctx.active_probe_thread);
     }
 
     // 初始化接口列表到WeakNetMgr中

@@ -23,6 +23,13 @@ struct NetworkExperience {
     SleResult http_access;    // Stage 2: HTTP/HTTPS Access SLE
     SleResult captive_portal; // Stage 2: Captive Portal SLE
 
+    // 受控主动探测（host-level Internet capability）——唯一有资格
+    // 判定 INTERNET_ACCESS 的服务层证据。与被动 observed experience 分开表达。
+    SleResult active_dns;
+    SleResult active_tcp;
+    SleResult active_https;
+    SleResult active_portal;
+
     std::vector<std::string> warnings;
     std::optional<std::string> primary_issue;
     int display_score{50}; // 仅供展示与兼容映射

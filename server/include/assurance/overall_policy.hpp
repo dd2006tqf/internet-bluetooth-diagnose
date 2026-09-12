@@ -74,6 +74,28 @@ public:
                                    const SleResult& captive_portal,
                                    AssessmentProfile profile,
                                    bool band_conflict = false) {
+        return decide(iface, reach, resp, rel, rf, dns, tcp_connect, http_access,
+                      captive_portal, SleResult{}, SleResult{}, SleResult{}, SleResult{},
+                      profile, band_conflict);
+    }
+
+    // Stage 2 + Active Probe：受控能力证据（唯一有资格判定 Internet 的
+    // 服务层来源）与被动 observed experience 分开传入。
+    static NetworkExperience decide(const std::string& iface,
+                                   const SleResult& reach,
+                                   const SleResult& resp,
+                                   const SleResult& rel,
+                                   const SleResult& rf,
+                                   const SleResult& dns,
+                                   const SleResult& tcp_connect,
+                                   const SleResult& http_access,
+                                   const SleResult& captive_portal,
+                                   const SleResult& active_dns,
+                                   const SleResult& active_tcp,
+                                   const SleResult& active_https,
+                                   const SleResult& active_portal,
+                                   AssessmentProfile profile,
+                                   bool band_conflict = false) {
         NetworkExperience exp;
         exp.iface = iface;
         exp.assessment_profile = profile;
@@ -85,6 +107,10 @@ public:
         exp.tcp_connect = tcp_connect;
         exp.http_access = http_access;
         exp.captive_portal = captive_portal;
+        exp.active_dns = active_dns;
+        exp.active_tcp = active_tcp;
+        exp.active_https = active_https;
+        exp.active_portal = active_portal;
 
         const bool reach_app = (reach.applicability == Applicability::APPLICABLE);
         const bool resp_app = (resp.applicability == Applicability::APPLICABLE);
@@ -167,6 +193,32 @@ public:
             exp.warnings.push_back(
                 "DNS resolution failures observed (per-domain, not resolver capability)");
         }
+
+        // Active TCP capability：受控目标（由我们选定、应稳定可达）全部失败。
+        // 这测的是 host-level Internet 能力，不是任意业务端点，
+        // 因此**有资格**判定 INTERNET_ACCESS。
+        const bool active_tcp_app = (active_tcp.applicability == Applicability::APPLICABLE &&
+                                     profile == AssessmentProfile::INTERNET_ACCESS &&
+                                     active_tcp.capability_level_negative);
+        if (active_tcp_app && active_tcp.state == HealthState::BAD) {
+            exp.overall = HealthState::BAD;
+            exp.primary_issue = "Internet transport capability failed (all controlled targets)";
+            exp.display_score = 18;
+            return exp;
+        }
+
+        // Active DNS capability：所有受控目标名称解析失败
+        const bool active_dns_app = (active_dns.applicability == Applicability::APPLICABLE &&
+                                     profile == AssessmentProfile::INTERNET_ACCESS &&
+                                     active_dns.capability_level_negative);
+        if (active_dns_app && active_dns.state == HealthState::BAD) {
+            exp.overall = HealthState::BAD;
+            exp.primary_issue = "Internet name resolution capability failed (all controlled targets)";
+            exp.display_score = 20;
+            return exp;
+        }
+
+        // Active HTTPS / Portal：本轮不具备探测能力，不参与决策（UNKNOWN/NONE）
 
         // Passive TCP 建连失败：**non-blocking observed service**。
         //

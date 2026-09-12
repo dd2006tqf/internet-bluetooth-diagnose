@@ -43,6 +43,7 @@ class ProcessNetProfiler;   // 前置声明：进程网络画像（eBPF）
 class TcpRetransMonitor;    // 前置声明：TCP 重传监控（eBPF）
 class TcpConnMonitor;       // 前置声明：TCP 连接生命周期监控（eBPF）
 class TcpConnectMonitor;    // 前置声明：TCP 建连可观测性（eBPF）
+class ActiveConnectivityMonitor; // 前置声明：受控主动连通性探测
 class SkbDropMonitor;       // 前置声明：Socket 丢包归因监控（eBPF）
 class DatabaseManager;      // 前置声明：SQLite 历史数据持久化
 
@@ -65,6 +66,7 @@ struct ServerContext {
     // ---------- 服务级线程 ----------
     // MonitorManager/各插件分别持有监控 worker；这里只保留历史持久化线程。
     std::thread history_thread;                 ///< 每 5 秒将 iface_list 快照写入 DB
+    std::thread active_probe_thread;            ///< 受控主动连通性探测
 
     // ---------- 共享数据 ----------
     std::mutex iface_mutex;                   ///< 保护 iface_list 的并发访问（多写多读场景）
@@ -93,6 +95,9 @@ struct ServerContext {
     SkbDropMonitor* skb_drop_monitor = nullptr;
     TcpConnectMonitor* tcp_connect_monitor = nullptr;
 
+    /// 受控主动连通性探测（宿主能力证据的唯一来源）
+    std::unique_ptr<ActiveConnectivityMonitor> active_probe;
+
     // ---------- 历史数据持久化 ----------
     std::unique_ptr<DatabaseManager> db_mgr;   ///< SQLite 管理器，持有数据库连接
 
@@ -115,6 +120,7 @@ struct ServerContext {
     std::atomic<bool> tcp_retrans_stop{false};
     std::atomic<bool> tcp_conn_stop{false};
     std::atomic<bool> tcp_connect_stop{false};
+    std::atomic<bool> active_probe_stop{false};
 
     // ---------- 频段冲突检测快照 ----------
     std::mutex conflict_mutex;
@@ -167,6 +173,7 @@ void start_process_net_profiler_thread(ServerContext* ctx, std::thread* worker, 
 void start_tcp_retrans_monitor_thread(ServerContext* ctx, std::thread* worker, TcpRetransMonitor* monitor);     ///< TCP 连接级重传（tcp_retransmit.bpf.o）
 void start_tcp_conn_monitor_thread(ServerContext* ctx, std::thread* worker, TcpConnMonitor* monitor);        ///< TCP 连接生命周期（tcp_conn_stats.bpf.o）
 void start_tcp_connect_monitor_thread(ServerContext* ctx, std::thread* worker, TcpConnectMonitor* monitor);   ///< TCP 建连（tcp_connect.bpf.o）
+void start_active_probe_thread(ServerContext* ctx, std::thread* worker);   ///< 受控主动连通性探测
 
 void start_history_persistence_thread(ServerContext* ctx);     ///< 历史数据持久化（非监控器，server.cpp 单独启动）
 

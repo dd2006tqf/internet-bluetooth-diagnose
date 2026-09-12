@@ -18,6 +18,8 @@
 #include "process_net_profiler.hpp"
 #include "tcp_retransmit_monitor.hpp"
 #include "tcp_conn_monitor.hpp"
+#include "tcp_connect_monitor.hpp"
+#include "active_connectivity_monitor.hpp"
 #include "bt_monitor.hpp"
 #include "weak_netmgr.hpp"
 

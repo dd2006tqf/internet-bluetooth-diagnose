@@ -147,6 +147,27 @@ struct WeakNetConfig {
         std::atomic<uint32_t> interval_ms{10000};
         std::atomic<uint32_t> capture_pages{32};
     } tcp_connect;
+
+    // ---------- 受控主动连通性探测 ----------
+    //
+    // 默认 **关闭**，且**不内置任何第三方默认目标**。
+    // 理由：probe 目标决定了"设备主动连接谁"，也决定了评价体系把谁当作
+    // ground truth。硬编码第三方公共服务会产生新的错误 oracle
+    // （对方限流/地区不可达/改响应都会被解释成 Internet 故障）。
+    // 因此默认 targets 为空；部署方须显式提供 targets 才启用。
+    //
+    // targets 格式：逗号分隔的 "id|hostname|port"（端口可省略，默认 443）。
+    // 本项目 YAML 解析器只支持 key: value 两级结构，不支持列表语法，
+    // 故用逗号分隔字符串表达多目标；至少需要 2 个目标才有判定资格。
+    struct {
+        std::atomic<bool> enabled{false};
+        // 与其它监控器一致，内部统一以**毫秒**存储（setDurationField 的语义）。
+        // 此前字段名为 interval_sec 却存 ms，导致线程按"秒"计算 sleep 时长，
+        // 探测实际约 2.8 小时才跑一轮 —— 结论长期停留在首轮快照。
+        std::atomic<uint32_t> interval_ms{30000};
+        std::atomic<uint32_t> timeout_ms{3000};
+        ConfigString targets{""};        ///< "id|host|port,id|host|port"
+    } active_probe;
 };
 
 /**

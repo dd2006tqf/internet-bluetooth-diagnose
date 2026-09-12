@@ -56,6 +56,13 @@
 #include "assurance/responsiveness_evaluator.hpp"
 #include "assurance/reliability_evaluator.hpp"
 #include "assurance/rf_health_evaluator.hpp"
+#include "assurance/dns_service_evaluator.hpp"
+#include "assurance/tcp_connect_evaluator.hpp"
+#include "assurance/http_access_evaluator.hpp"
+#include "assurance/captive_portal_evaluator.hpp"
+#include "assurance/active_connectivity.hpp"
+#include "tcp_connect_monitor.hpp"
+#include "active_connectivity_monitor.hpp"
 #include <sstream>
 
 namespace weaknet_dbus {
@@ -438,8 +445,51 @@ bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
                 dns_window, ctx_->dns_tracker->getRecentTerminals());
         }
 
+        // TCP Connect SLE（被动）
+        weaknet::SleResult tcp_sle;
+        if (ctx_->tcp_connect_monitor) {
+            weaknet::TcpConnectEvaluator::Input tcp_in;
+            for (const auto& o : ctx_->tcp_connect_monitor->recentObservations()) {
+                tcp_in.samples.push_back({o.success, o.latency_ms});
+            }
+            const auto ts = ctx_->tcp_connect_monitor->stats();
+            tcp_in.unmatched_terminal = ts.unmatched_terminal;
+            tcp_in.capture_events = tcp_in.samples.size() + ts.unmatched_terminal;
+            tcp_sle = weaknet::TcpConnectEvaluator::evaluate(tcp_in);
+        }
+
+        // Passive cleartext HTTP + Portal
+        weaknet::SleResult http_sle;
+        weaknet::SleResult portal_sle;
+        if (ctx_->http_latency_monitor) {
+            weaknet::HttpAccessEvaluator::Input http_in;
+            const auto txns = ctx_->http_latency_monitor->getRecentTxns(200);
+            for (const auto& t : txns) {
+                http_in.samples.push_back({t.statusCode, static_cast<double>(t.ttfbNs) / 1e6, false});
+            }
+            http_in.capture_events = http_in.samples.size();
+            http_sle = weaknet::HttpAccessEvaluator::evaluate(http_in);
+
+            weaknet::CaptivePortalEvaluator::Input portal_in;
+            portal_in.has_controlled_probe = false;   // 当前无 portal 探测能力
+            portal_in.ip_reachable = (reach_sle.state == weaknet::HealthState::GOOD);
+            portal_in.dns_resolvable = (dns_sle.state == weaknet::HealthState::GOOD);
+            portal_in.tcp_connectable = (tcp_sle.state == weaknet::HealthState::GOOD);
+            portal_sle = weaknet::CaptivePortalEvaluator::evaluate(portal_in);
+        }
+
+        // 受控主动探测（与质量线程共用同一份证据，保证两条路径结论一致）
+        weaknet::ActiveConnectivityResult active;
+        if (ctx_->active_probe) {
+            active = weaknet::ActiveConnectivityEvaluator::evaluate(
+                ctx_->active_probe->results(), ctx_->active_probe->isUsable());
+        }
+
         exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle,
-                                             rf_sle, dns_sle, ctx_->assessment_profile);
+                                             rf_sle, dns_sle, tcp_sle, http_sle, portal_sle,
+                                             active.dns, active.tcp,
+                                             active.https, active.portal,
+                                             ctx_->assessment_profile);
         resp_reason = resp_sle.reason;
         for (const auto& ev : resp_sle.evidence) {
             if (ev.metric == "median_rtt_ms") {
