@@ -59,6 +59,7 @@ set(BPF_PROGRAMS
     http_latency
     tcp_conn_stats
     skb_drop
+    tcp_connect
 )
 
 foreach(BPF_PROG ${BPF_PROGRAMS})
@@ -99,6 +100,7 @@ add_custom_target(ebpf
         ${BPF_BUILD_DIR}/tcp_conn_stats.bpf.o
         ${BPF_BUILD_DIR}/skb_drop.bpf.o
         ${BPF_BUILD_DIR}/a2dp_media.bpf.o
+        ${BPF_BUILD_DIR}/tcp_connect.bpf.o
 )
 # eBPF 依赖：在 ARM64 容器内编译时链接，x86 开发机可跳过
 option(BUILD_EBPF "Build eBPF programs (requires ARM64 or native BTF)" ON)

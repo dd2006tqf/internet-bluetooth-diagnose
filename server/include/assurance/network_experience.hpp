@@ -18,7 +18,8 @@ struct NetworkExperience {
     SleResult responsiveness;
     SleResult reliability;
     SleResult rf_health;   // Advisory
-    SleResult dns_service; // Phase 2A: Service Health SLE (HOST / RESOLVER)
+    SleResult dns_service;   // Phase 2A: DNS Service SLE
+    SleResult tcp_connect;   // Stage 2: TCP Connect SLE
 
     std::vector<std::string> warnings;
     std::optional<std::string> primary_issue;

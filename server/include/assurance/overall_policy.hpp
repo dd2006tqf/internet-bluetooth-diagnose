@@ -45,6 +45,19 @@ public:
                                    const SleResult& dns,
                                    AssessmentProfile profile = AssessmentProfile::INTERNET_ACCESS,
                                    bool band_conflict = false) {
+        return decide(iface, reach, resp, rel, rf, dns, SleResult{}, profile, band_conflict);
+    }
+
+    // Stage 2：在 INTERNET_ACCESS 下把 TCP Connect 纳入 required service 链
+    static NetworkExperience decide(const std::string& iface,
+                                   const SleResult& reach,
+                                   const SleResult& resp,
+                                   const SleResult& rel,
+                                   const SleResult& rf,
+                                   const SleResult& dns,
+                                   const SleResult& tcp_connect,
+                                   AssessmentProfile profile,
+                                   bool band_conflict = false) {
         NetworkExperience exp;
         exp.iface = iface;
         exp.assessment_profile = profile;
@@ -53,6 +66,7 @@ public:
         exp.reliability = rel;
         exp.rf_health = rf;
         exp.dns_service = dns;
+        exp.tcp_connect = tcp_connect;
 
         const bool reach_app = (reach.applicability == Applicability::APPLICABLE);
         const bool resp_app = (resp.applicability == Applicability::APPLICABLE);
@@ -60,12 +74,15 @@ public:
         const bool dns_app = (dns.applicability == Applicability::APPLICABLE &&
                               profile == AssessmentProfile::INTERNET_ACCESS &&
                               (dns.state != HealthState::UNKNOWN || dns.coverage != Coverage::NONE));
+        const bool tcp_app = (tcp_connect.applicability == Applicability::APPLICABLE &&
+                              profile == AssessmentProfile::INTERNET_ACCESS &&
+                              (tcp_connect.state != HealthState::UNKNOWN || tcp_connect.coverage != Coverage::NONE));
 
         // 计算整体 coverage：在适用的核心 SLE 上求值
         size_t core_applicable = 0, core_full = 0, core_none = 0;
-        const SleResult* cores[4] = {&reach, &resp, &rel, &dns};
-        const bool core_apps[4] = {reach_app, resp_app, rel_app, dns_app};
-        for (size_t i = 0; i < 4; ++i) {
+        const SleResult* cores[5] = {&reach, &resp, &rel, &dns, &tcp_connect};
+        const bool core_apps[5] = {reach_app, resp_app, rel_app, dns_app, tcp_app};
+        for (size_t i = 0; i < 5; ++i) {
             if (!core_apps[i]) continue;
             core_applicable++;
             if (cores[i]->coverage == Coverage::FULL_FOR_PROFILE) core_full++;
@@ -119,6 +136,14 @@ public:
             return exp;
         }
 
+        // DNS 之后的下一层：TCP 建连失败（DNS 正常但连不上对端）
+        if (tcp_app && tcp_connect.state == HealthState::BAD) {
+            exp.overall = HealthState::BAD;
+            exp.primary_issue = "TCP connection failure to remote endpoint";
+            exp.display_score = 20;
+            return exp;
+        }
+
         // 2. Major BAD (Responsiveness 严重劣化 → DEGRADED)
         if (resp_app && resp.state == HealthState::BAD) {
             exp.overall = HealthState::DEGRADED;
@@ -132,11 +157,13 @@ public:
         bool rel_degraded = (rel_app && rel.state == HealthState::DEGRADED);
         bool resp_degraded = (resp_app && resp.state == HealthState::DEGRADED);
         bool dns_degraded = (dns_app && dns.state == HealthState::DEGRADED);
-        if (reach_degraded || rel_degraded || resp_degraded || dns_degraded) {
+        bool tcp_degraded = (tcp_app && tcp_connect.state == HealthState::DEGRADED);
+        if (reach_degraded || rel_degraded || resp_degraded || dns_degraded || tcp_degraded) {
             exp.overall = HealthState::DEGRADED;
             if (reach_degraded) exp.primary_issue = "Intermittent probe failure";
             else if (rel_degraded) exp.primary_issue = "Elevated network packet loss";
             else if (dns_degraded) exp.primary_issue = "Elevated DNS resolution failure or latency";
+            else if (tcp_degraded) exp.primary_issue = "Elevated TCP connection failure or latency";
             else exp.primary_issue = "Latency fluctuation detected";
             exp.display_score = 65;
             return exp;

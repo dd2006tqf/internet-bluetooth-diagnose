@@ -65,6 +65,8 @@
 #include "process_net_profiler.hpp"
 #include "tcp_retransmit_monitor.hpp"
 #include "tcp_conn_monitor.hpp"
+#include "tcp_connect_monitor.hpp"
+#include "assurance/tcp_connect_evaluator.hpp"
 #include "bt_audio_analyzer.hpp"
 #include "database_manager.hpp"
 #include "using_iface.h"
@@ -390,8 +392,29 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                             << " late=" << dns_window.late_responses);
                     }
 
+                    // TCP Connect SLE：回答"DNS 解析出地址后，能否真的建立连接"。
+                    // 与 DNS 同源纪律：证据不足 → UNKNOWN，观测不可靠 → UNKNOWN。
+                    weaknet::SleResult tcp_sle;
+                    if (ctx->tcp_connect_monitor) {
+                        weaknet::TcpConnectEvaluator::Input tcp_in;
+                        for (const auto& o : ctx->tcp_connect_monitor->recentObservations()) {
+                            tcp_in.samples.push_back({o.success, o.latency_ms});
+                        }
+                        const auto tcp_stats = ctx->tcp_connect_monitor->stats();
+                        tcp_in.unmatched_terminal = tcp_stats.unmatched_terminal;
+                        // 捕获事件量以窗口内样本为准（内核计数器为累计值，不直接用于比率）
+                        tcp_in.capture_events = tcp_in.samples.size() + tcp_stats.unmatched_terminal;
+                        tcp_sle = weaknet::TcpConnectEvaluator::evaluate(tcp_in);
+                        LOG_INFO(LogModule::NETWORK, "TCP SLE: state="
+                            << weaknet::healthStateToString(tcp_sle.state)
+                            << " coverage=" << weaknet::coverageToString(tcp_sle.coverage)
+                            << " reason=" << tcp_sle.reason
+                            << " ok=" << tcp_stats.successes << " fail=" << tcp_stats.failures
+                            << " unmatched=" << tcp_stats.unmatched_terminal);
+                    }
+
                     exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle,
-                                                         rf_sle, dns_sle, ctx->assessment_profile);
+                                                         rf_sle, dns_sle, tcp_sle, ctx->assessment_profile);
 
                     if (!rtt_samples.empty()) newest_rev = rtt_samples.back().sequence;
                     else if (!reach_samples.empty()) newest_rev = reach_samples.back().sequence;
@@ -616,7 +639,7 @@ void start_dns_monitor_thread(ServerContext* ctx, std::thread* worker, DnsMonito
                 }
 
                 const int diag_every_ticks = std::max(1, static_cast<int>(ctx->cfg.dns.interval_ms.load() / kTickMs));
-                if (++diag_accum * kSweepEveryTicks >= diag_every_ticks) {
+                if (++diag_accum >= diag_every_ticks) {
                     diag_accum = 0;
                     LOG_INFO(LogModule::NETWORK, "dns-capture diag: "
                         << ctx->dns_monitor->getCaptureDiagnostics());
@@ -759,6 +782,20 @@ void start_tcp_conn_monitor_thread(ServerContext* ctx, std::thread* worker, TcpC
 }
 
 // 启动历史数据持久化线程
+void start_tcp_connect_monitor_thread(ServerContext* ctx, std::thread* worker, TcpConnectMonitor* monitor) {
+    *worker = std::thread([ctx, monitor]() {
+        if (!monitor) return;
+        LOG_INFO(LogModule::NETWORK, "TCP connect monitor thread started");
+        // 与 DNS 捕获同构：高频排空 perf buffer，避免突发建连丢事件
+        while ((ctx->running.load() && !ctx->tcp_connect_stop.load())) {
+            monitor->drain();
+            std::this_thread::sleep_for(200ms);
+        }
+        monitor->stop();
+        LOG_INFO(LogModule::NETWORK, "TCP connect monitor thread stopped");
+    });
+}
+
 void start_history_persistence_thread(ServerContext* ctx) {
     ctx->history_thread = std::thread([ctx](){
         LOG_INFO(LogModule::SYSTEM, "History persistence thread started");

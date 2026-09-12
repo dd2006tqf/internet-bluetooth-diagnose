@@ -128,6 +128,10 @@ add_executable(test_dns_service_evaluator_gtest
     unit/test_dns_service_evaluator_gtest.cpp)
 target_link_libraries(test_dns_service_evaluator_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_tcp_connect_evaluator_gtest
+    unit/test_tcp_connect_evaluator_gtest.cpp)
+target_link_libraries(test_tcp_connect_evaluator_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # ---- CTest 集成 ----
 # enable_testing() 已在根 CMakeLists.txt 中调用
 foreach(test_target
@@ -136,6 +140,7 @@ foreach(test_target
     test_sle_evaluator_gtest
     test_dns_transaction_tracker_gtest
     test_dns_service_evaluator_gtest
+    test_tcp_connect_evaluator_gtest
     test_quality_assessor_gtest
     test_anomaly_detector_gtest
     test_audio_fusion_gtest

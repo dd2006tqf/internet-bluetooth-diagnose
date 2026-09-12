@@ -140,6 +140,13 @@ struct WeakNetConfig {
         ConfigString bpf_obj{"build/skb_drop.bpf.o"};
         std::atomic<uint32_t> interval_ms{10000};
     } skb_drop;
+
+    struct {
+        std::atomic<bool> enabled{true};
+        ConfigString bpf_obj{"build/tcp_connect.bpf.o"};
+        std::atomic<uint32_t> interval_ms{10000};
+        std::atomic<uint32_t> capture_pages{32};
+    } tcp_connect;
 };
 
 /**

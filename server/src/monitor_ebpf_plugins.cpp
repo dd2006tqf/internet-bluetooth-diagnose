@@ -23,6 +23,7 @@
 #include "tcp_retransmit_monitor.hpp"
 #include "tcp_conn_monitor.hpp"
 #include "skb_drop_monitor.hpp"
+#include "tcp_connect_monitor.hpp"
 
 namespace weaknet_dbus {
 
@@ -280,6 +281,45 @@ public:
 // ---------------------------------------------------------------------------
 // eBPF 插件注册入口
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// TCP 建连可观测性（Stage 2 新增，order 10）
+// ---------------------------------------------------------------------------
+class TcpConnectPlugin : public IMonitorPlugin {
+    ServerContext* ctx_ = nullptr;
+    std::thread worker_;
+    std::unique_ptr<TcpConnectMonitor> monitor_;
+public:
+    const char* name() const override { return "tcp_connect"; }
+    int order() const override { return 10; }
+    bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
+    bool start(ServerContext* ctx) override {
+        if (!ctx->cfg.tcp_connect.enabled.load()) {
+            LOG_INFO(LogModule::NETWORK, "TCP connect monitor disabled by config");
+            return true;
+        }
+        monitor_ = std::make_unique<TcpConnectMonitor>();
+        if (!monitor_->init(ctx->cfg.tcp_connect.bpf_obj.get().c_str(),
+                            ctx->cfg.tcp_connect.capture_pages.load())) {
+            LOG_WARNING(LogModule::NETWORK, "TcpConnectPlugin: init failed for "
+                        << ctx->cfg.tcp_connect.bpf_obj.get());
+            monitor_.reset();
+            return false;
+        }
+        ctx->tcp_connect_monitor = monitor_.get();
+        ctx->tcp_connect_stop.store(false);
+        start_tcp_connect_monitor_thread(ctx, &worker_, monitor_.get());
+        return true;
+    }
+    void stop() override {
+        if (!ctx_) return;
+        ctx_->tcp_connect_stop.store(true);
+        if (worker_.joinable()) worker_.join();
+        if (ctx_->tcp_connect_monitor == monitor_.get()) ctx_->tcp_connect_monitor = nullptr;
+        monitor_.reset();
+    }
+};
+
 void registerEbpfPlugins() {
     registerPlugin("dns",             [] { return std::make_unique<DnsPlugin>(); });
     registerPlugin("wifi_loss",       [] { return std::make_unique<WifiLossPlugin>(); });
@@ -288,6 +328,7 @@ void registerEbpfPlugins() {
     registerPlugin("tcp_retrans",     [] { return std::make_unique<TcpRetransPlugin>(); });
     registerPlugin("tcp_conn",        [] { return std::make_unique<TcpConnPlugin>(); });
     registerPlugin("skb_drop",        [] { return std::make_unique<SkbDropPlugin>(); });
+    registerPlugin("tcp_connect",     [] { return std::make_unique<TcpConnectPlugin>(); });
 }
 
 }  // namespace weaknet_dbus
