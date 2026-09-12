@@ -29,6 +29,7 @@
 #include <mutex>
 #include <atomic>
 #include <arpa/inet.h>
+#include <unistd.h>
 
 #if defined(__has_include)
 #  if __has_include(<linux/bpf.h>) && __has_include(<bpf/libbpf.h>) && __has_include(<bpf/bpf.h>)
@@ -247,6 +248,18 @@ bool TcpConnectMonitor::init(const std::string& bpfObjPath, uint32_t capture_pag
     }
 
     impl_->counters_fd = bpf_object__find_map_fd_by_name(obj, "tcp_connect_counters");
+
+    // 同 DnsMonitor：排除服务端自身流量，保持 Active/Passive 证据边界
+    {
+        const int self_fd = bpf_object__find_map_fd_by_name(obj, "tcp_self_pid");
+        if (self_fd >= 0) {
+            __u32 k = 0;
+            __u32 self_pid = static_cast<__u32>(::getpid());
+            if (bpf_map_update_elem(self_fd, &k, &self_pid, BPF_ANY) == 0) {
+                LOG_INFO(LogModule::NETWORK, "TcpConnectMonitor: self-pid filter set to " << self_pid);
+            }
+        }
+    }
 
     struct bpf_program* prog = bpf_object__find_program_by_name(obj, "trace_tcp_connect");
     if (!prog) {

@@ -181,6 +181,55 @@ struct {
     __type(value, __u64);
 } dns_capture_counters SEC(".maps");
 
+/*
+ * Map: dns_self_pid
+ * 存放 weaknet-server 自身的 PID。
+ *
+ * 为什么需要：主动探测（ActiveConnectivityMonitor）在同一进程内发出 DNS 查询，
+ * 若不排除，这些"服务端自身产生的"流量会被 passive capture 捕获并进入
+ * Passive DNS SLE 窗口。实测仅开探测 70s 即让被动计数从 1 涨到 15 —— 且探测
+ * 目标都是应稳定可达的，会人为改善被动指标、掩盖真实业务失败，
+ * 破坏 Active/Passive 的证据边界。
+ *
+ * 语义：passive pipeline 观测的是"被观测的用户/业务流量"，
+ * 服务端自身产生的流量不属于此范畴，应从源头排除。
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} dns_self_pid SEC(".maps");
+
+/*
+ * Map: dns_self_socks
+ * 记录"服务端自身 DNS socket"的 cookie，用于 ingress 侧排除。
+ *
+ * 为什么需要它（PID 过滤对 ingress 无效）：
+ *   egress 在系统调用上下文，current_pid 就是我们的进程，PID 判断有效；
+ *   但 ingress（udp_queue_rcv_skb）运行在 softirq 上下文，
+ *   bpf_get_current_pid_tgid() 返回的是内核软中断上下文而非服务端 PID，
+ *   因此 PID 过滤只能挡住 query，挡不住 response（实测 queue_emitted 仍增长）。
+ *
+ * 做法：egress 侧（PID 有效）记录该 sock 的 cookie；ingress 侧按同一 cookie 排除。
+ * 同一 socket 的 cookie 在两个方向一致，因此可以桥接上下文差异。
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 256);
+    __type(key, __u64);
+    __type(value, __u8);
+} dns_self_socks SEC(".maps");
+
+static __always_inline bool is_self_traffic(void)
+{
+    __u32 key = 0;
+    __u32 *pid = bpf_map_lookup_elem(&dns_self_pid, &key);
+    if (!pid || *pid == 0)
+        return false;   // 未设置时不误杀
+    return ((__u32)(bpf_get_current_pid_tgid() >> 32)) == *pid;
+}
+
 static __always_inline void dns_stat_inc(__u32 key)
 {
     __u64 *value = bpf_map_lookup_elem(&dns_capture_counters, &key);
@@ -744,6 +793,21 @@ int trace_dns_egress_skb(struct pt_regs *ctx)
     if (!skb)
         return 0;
 
+    // 排除服务端自身（主动探测）产生的流量，避免污染 passive 证据。
+    // 同时记录该 socket 的 cookie，供 ingress 侧排除对应响应：
+    // ingress 运行在 softirq 上下文，bpf_get_current_pid_tgid() 拿到的
+    // 不是服务端 PID，故 PID 过滤只能挡住 query、挡不住 response
+    // （实测 queue_emitted 仍增长）。cookie 在两方向一致，可用它桥接。
+    if (is_self_traffic()) {
+        struct sock *sk = BPF_CORE_READ(skb, sk);
+        if (sk) {
+            __u64 cookie = bpf_get_socket_cookie(sk);
+            __u8 one = 1;
+            bpf_map_update_elem(&dns_self_socks, &cookie, &one, BPF_ANY);
+        }
+        return 0;
+    }
+
     unsigned char *head = BPF_CORE_READ(skb, head);
     if (!head)
         return 0;
@@ -911,6 +975,13 @@ int trace_dns_queue_rcv(struct pt_regs *ctx)
     struct sk_buff *skb = (struct sk_buff *)PT_REGS_PARM2(ctx);
     if (!sk || !skb)
         return 0;
+
+    // ingress 侧排除服务端自身流量：PID 在 softirq 上下文不可靠，改用 cookie
+    {
+        __u64 cookie = bpf_get_socket_cookie(sk);
+        if (cookie && bpf_map_lookup_elem(&dns_self_socks, &cookie))
+            return 0;
+    }
 
     __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
     if (family != AF_INET) {

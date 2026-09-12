@@ -34,6 +34,7 @@
 #include <iomanip>
 #include <sstream>
 #include <arpa/inet.h>
+#include <unistd.h>
 #include <atomic>
 
 #if defined(__has_include)
@@ -353,6 +354,23 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages) {
     }
 
     impl_->dns_capture_fd = bpf_object__find_map_fd_by_name(obj, "dns_capture_counters");
+
+    // 写入自身 PID，供 BPF 侧排除"服务端自己产生的"DNS 流量。
+    // 主动探测在同一进程内发查询，若不排除会进入 passive 窗口：
+    // 实测仅开探测 70s 即让被动计数 1->15，且探测目标都稳定可达，
+    // 会人为改善被动指标、掩盖真实业务失败。
+    {
+        const int self_fd = bpf_object__find_map_fd_by_name(obj, "dns_self_pid");
+        if (self_fd >= 0) {
+            __u32 k = 0;
+            __u32 self_pid = static_cast<__u32>(::getpid());
+            if (bpf_map_update_elem(self_fd, &k, &self_pid, BPF_ANY) == 0) {
+                LOG_INFO(LogModule::NETWORK, "DnsMonitor: self-pid filter set to " << self_pid);
+            } else {
+                LOG_WARNING(LogModule::NETWORK, "DnsMonitor: failed to set self-pid filter");
+            }
+        }
+    }
 
     // attach 探针到 kprobe/udp_sendmsg 和 kprobe/udp_recvmsg
     // 内核探针类型：kprobe（函数入口）

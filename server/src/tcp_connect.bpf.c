@@ -73,6 +73,18 @@ struct {
     __type(value, __u64);
 } tcp_connect_counters SEC(".maps");
 
+/*
+ * 排除服务端自身（主动探测）产生的 TCP 连接。
+ * 同 dns_monitor：主动探测的目标应稳定可达，若进入 passive TCP 窗口
+ * 会人为改善被动指标并破坏 Active/Passive 证据边界。
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} tcp_self_pid SEC(".maps");
+
 static __always_inline void tcp_stat_inc(__u32 key)
 {
     __u64 *v = bpf_map_lookup_elem(&tcp_connect_counters, &key);
@@ -92,6 +104,15 @@ SEC("tracepoint/sock/inet_sock_set_state")
 int trace_tcp_connect(struct trace_event_raw_inet_sock_set_state *ctx)
 {
     tcp_stat_inc(TCP_CONN_STAT_ENTER);
+
+    {
+        __u32 k = 0;
+        __u32 *self = bpf_map_lookup_elem(&tcp_self_pid, &k);
+        if (self && *self != 0 &&
+            ((__u32)(bpf_get_current_pid_tgid() >> 32)) == *self) {
+            return 0;   // 服务端自身流量不计入被动观测
+        }
+    }
 
     if (ctx->family != AF_INET) {
         tcp_stat_inc(TCP_CONN_STAT_NON_IPV4);
