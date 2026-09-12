@@ -137,6 +137,22 @@ enum dns_capture_stat {
     DNS_STAT_NOT_DNS_PORT,
     DNS_STAT_PORT_UNKNOWN,
     DNS_STAT_CONNECT_SEEN,
+    DNS_STAT_UNSUPPORTED_ITER,
+    DNS_STAT_SEND_ENTER,
+    DNS_STAT_QUEUE_ENTER,
+    DNS_STAT_SEND_DNS_PORT,
+    DNS_STAT_SEND_NONIPV4,
+    DNS_STAT_QUEUE_DNS_PORT,
+    DNS_STAT_SEND_NON_DNS_PORT,
+    DNS_STAT_SEND_HAS_MSG_NAME,
+    DNS_STAT_SEND_CONNECTED_PEER,
+    DNS_STAT_SEND_PAYLOAD_FAIL,
+    DNS_STAT_SEND_EMITTED,
+    DNS_STAT_QUEUE_NONIPV4,
+    DNS_STAT_QUEUE_HEADER_FAIL,
+    DNS_STAT_QUEUE_PAYLOAD_FAIL,
+    DNS_STAT_QUEUE_NONDNS,
+    DNS_STAT_QUEUE_EMITTED,
     DNS_STAT_EMITTED,
     DNS_STAT_EMIT_FAIL,
     DNS_STAT_MAX
@@ -208,6 +224,91 @@ static __always_inline void remember_fd_resolver(__u64 pid_tgid, __s32 fd, __u16
 }
 
 
+
+/*
+ * ===========================================================================
+ * 单一来源（single-source）DNS 捕获
+ *
+ * 架构原则（IR-DNS-5）：一个 DNS observation 的 endpoint 与 payload
+ * 必须来自同一个 hook / 同一语义源，不允许依赖跨独立 probe 的时序 join。
+ * 跨探针 join 需要猜测关联键（pid_tgid 等），在并发与交错场景下已被实机
+ * 证明不可靠，并会留下陈旧条目污染后续事件。
+ *
+ * 本文件的三个单一来源点：
+ *   - udp_sendmsg          : sk(sock) → endpoint, msg(msghdr) → payload   [query]
+ *   - udp_queue_rcv_skb    : sk(sock) → endpoint, skb        → payload   [response]
+ *   - udp_recvmsg(kret)    : sk(sock) → endpoint, msg_iter   → payload   [response, fallback]
+ * 每个 hook 单独取齐两半后 emit，不产生任何 pending pair。
+ * ===========================================================================
+ */
+
+/* iov_iter 类型最小判定所需（与 BTF 一致，仅用 CO-RE 读取，不硬编码整体偏移） */
+#define DNS_ITER_IOVEC  0
+#define DNS_ITER_KVEC   1
+
+/*
+ * 从内核 msghdr 的迭代器取前 12 字节 DNS 头。
+ * 第一版只支持单段 ITER_IOVEC（用户态 sendmsg 的常见形态），
+ * 其余类型计入 unsupported 并放弃，绝不猜测内存布局。
+ */
+static __always_inline bool read_dns_header_from_iter(const struct msghdr *msg, __u8 *header)
+{
+    if (!msg)
+        return false;
+    __u8 iter_type = BPF_CORE_READ(msg, msg_iter.iter_type);
+    if (iter_type != DNS_ITER_IOVEC)
+        return false;
+
+    size_t iov_offset = BPF_CORE_READ(msg, msg_iter.iov_offset);
+    const struct iovec *iov = BPF_CORE_READ(msg, msg_iter.iov);
+    if (!iov)
+        return false;
+
+    // iovec 数组本身在**内核**内存：小 iovec 数时内核用栈上的 iovstack，
+    // 大 iovec 数时是 kmalloc 的副本。只有 iov_base 指向用户数据。
+    // 用 bpf_probe_read_user 读它必然失败（这正是此前 emitted 恒为 0 的原因）。
+    struct iovec first = {};
+    if (bpf_probe_read_kernel(&first, sizeof(first), (const void *)iov) != 0)
+        return false;
+    __u64 base = (__u64)first.iov_base;
+    if (!base)
+        return false;
+
+    const void *cursor = (const void *)(base + iov_offset);
+    return bpf_probe_read_user(header, 12, cursor) == 0;
+}
+
+
+/*
+ * 从 sk_buff 取前 12 字节 DNS 头。
+ * udp_queue_rcv_skb 时 skb->data 尚未被剥离 UDP 载荷之外的内容（队列态），
+ * 这里按内核语义读取 data 指针起始处，并受 skb->len 约束。
+ */
+static __always_inline bool read_dns_header_from_skb(const struct sk_buff *skb, __u8 *header)
+{
+    if (!skb)
+        return false;
+    unsigned int len = BPF_CORE_READ(skb, len);
+    if (len < 12)
+        return false;
+    unsigned char *data = BPF_CORE_READ(skb, data);
+    if (!data)
+        return false;
+
+    // UDP 头可能已被 pull。用前 4 字节的源/目的端口是否存在 53 来判定：
+    //   有 53 -> data 指向 UDP 头，DNS 在 data+8
+    //   无 53 -> 头已被 pull，data 即 DNS 起始
+    __u8 ports[4] = {};
+    if (bpf_probe_read_kernel(ports, sizeof(ports), data) != 0)
+        return false;
+    __u16 p0 = ((__u16)ports[0] << 8) | ports[1];   // sport (网络序->大端值)
+    __u16 p1 = ((__u16)ports[2] << 8) | ports[3];   // dport
+    bool udp_hdr_present = (p0 == DNS_PORT) || (p1 == DNS_PORT);
+
+    const void *cursor = udp_hdr_present ? (const void *)(data + 8) : (const void *)data;
+    return bpf_probe_read_kernel(header, 12, cursor) == 0;
+}
+
 struct {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
     __type(key, __u32);
@@ -263,13 +364,13 @@ static __always_inline int emit_dns_payload(void *ctx, __u8 direction,
     event.rcode = header[3] & 0x0f;
     event.payload_len = len > 65535 ? 65535 : (__u16)len;
     event.timestamp_ns = bpf_ktime_get_ns();
-    event.fingerprint_quality = (client_ip && resolver_ip && client_port) ? 0 : 1;
-    long emit_ret = bpf_perf_event_output(ctx, &dns_events, BPF_F_CURRENT_CPU, &event, sizeof(event));
-    if (emit_ret < 0) {
-        dns_stat_inc(DNS_STAT_EMIT_FAIL);
-    } else {
-        dns_stat_inc(DNS_STAT_EMITTED);
-    }
+    // 旧 syscall 路径不再向 dns_events 投递：单一来源原则下，
+    // DNS observation 只能由 udp_sendmsg / udp_queue_rcv_skb 产生，
+    // 否则两条路径并存会让 dns_events 混入不对称事件。
+    (void)event;
+    (void)client_ip;
+    (void)resolver_ip;
+    (void)client_port;
     return 0;
 }
 
@@ -434,10 +535,8 @@ int trace_dns_enter_sendto(struct trace_event_raw_sys_enter *ctx)
 
     dns_stat_inc(DNS_STAT_SENDTO_ENTER);
 
-    __u64 pid = event_pid_tgid();
-    struct recv_pending pending = {.buffer = 0, .length = 0, .peer = 0, .peer_length = 0};
-    (void)fd;
-    emit_dns_payload(ctx, 0, buf, len, 0, resolver_ip, 0);
+    // 单一来源：query 事件由 udp_sendmsg 产生，此处不投递。
+    (void)fd; (void)buf; (void)len; (void)resolver_ip;
     return 0;
 }
 
@@ -467,8 +566,7 @@ int trace_dns_exit_recvfrom(struct trace_event_raw_sys_exit *ctx)
     __u64 pid = event_pid_tgid();
     struct recv_pending *pending = bpf_map_lookup_elem(&pending_recv, &pid);
     if (!pending) return 0;
-    if (ctx->ret > 0)
-        emit_dns_payload(ctx, 1, (const void *)pending->buffer, (__u64)ctx->ret, 0, 0, 0);
+    // 单一来源：response 事件由 udp_queue_rcv_skb 产生，此处不投递。
     bpf_map_delete_elem(&pending_recv, &pid);
     return 0;
 }
@@ -606,79 +704,79 @@ static __always_inline void update_dns_stats(__u64 latency_ns, bool is_timeout, 
 
 /*
  * 函数: trace_dns_send
- * 挂点: SEC("kprobe/udp_sendmsg")
- * 触发时机: 每当内核调用 udp_sendmsg() 时（任何 UDP socket 发送数据）。
- *           内核函数签名: int udp_sendmsg(struct sock *sk, struct msghdr *msg, ...)
- * 主要逻辑:
- *   1. 从第一个参数 pt_regs 获取 struct sock*（内核 socket 结构体）
- *   2. 过滤出 AF_INET (IPv4) 家族
- *   3. 用 skc_dport 检查目的端口是否为 53（DNS）
- *   4. 从 skc_rcv_saddr/skc_daddr/skc_num 提取 IP 和端口，构造查询 Key
- *   5. 记录发送时间戳 bpf_ktime_get_ns() 并写入 dns_queries Map
- *   6. 更新全局统计 total_queries
- * 写入的 Map:
- *   - dns_queries（更新/插入 key 对应的查询记录）
- *   - dns_stats（累加 total_queries）
+ * 挂点: kprobe/udp_sendmsg（单一来源：sk→endpoint, msg_iter→payload）
  */
-SEC("kprobe/udp_sendmsg")
-int trace_dns_send(struct pt_regs *ctx)
+/*
+ * 函数: trace_dns_egress_skb
+ * 挂点: kprobe/ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
+ *
+ * 为什么不在 udp_sendmsg / udp_send_skb 取 query endpoint：
+ *   - udp_sendmsg **入口**：未 connect 的 socket 尚未 autobind，
+ *     skc_num / skc_rcv_saddr 仍为 0，get 不到真实 local endpoint。
+ *   - udp_send_skb **入口**：UDP 头尚未写入（该函数自己才写），
+ *     transport_header 不可用。
+ *   - ip_finish_output2：UDP 与 IP 头均已构造完毕、地址已定型，
+ *     endpoint 与 payload 可全部从**同一个报文**读出，与接收侧完全对称。
+ *
+ * endpoint 与 payload 同源（该 skb），无跨探针 join。
+ */
+SEC("kprobe/ip_finish_output2")
+int trace_dns_egress_skb(struct pt_regs *ctx)
 {
-    // PT_REGS_PARM1(ctx) 取出 kprobe 第一个参数：struct sock *sk
-    // 这是 libbpf 提供的宏，适配不同架构（x86/arm64）的寄存器调用约定
-    struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
-    if (!sk)
+    dns_stat_inc(DNS_STAT_SEND_ENTER);
+    struct sk_buff *skb = (struct sk_buff *)PT_REGS_PARM3(ctx);
+    if (!skb)
         return 0;
 
-    // BPF_CORE_READ 是 CO-RE（Compile Once, Run Everywhere）的核心宏，
-    // 它会根据内核 BTF 自动获取正确的结构体偏移，编译时生成 reloc，
-    // 运行时由 libbpf 解析，从而实现跨内核版本兼容性。
-    __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
-    if (family != AF_INET)
-        return 0;  // 只处理 IPv4（可扩展 AF_INET6）
-
-    // skc_num：主机序，存储本地端口号
-    // skc_dport：网络序，存储对端端口号（因为 UDP 头中 dport 是大端存储）
-    __u16 sport = BPF_CORE_READ(sk, __sk_common.skc_num);
-    __u16 dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
-
-    // 过滤目的端口 53：只有发往 DNS 服务器的 UDP 包才是 DNS 请求
-    if (!is_dns_port(dport))
+    unsigned char *head = BPF_CORE_READ(skb, head);
+    if (!head)
         return 0;
 
-    // skc_rcv_saddr：本机绑定的源 IP（内核语义）
-    // skc_daddr：对端目的 IP
-    __u32 saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
-    __u32 daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    __u16 transport_off = BPF_CORE_READ(skb, transport_header);
+    __u16 net_off = BPF_CORE_READ(skb, network_header);
 
-    // 构造 dns_query_key，sport 直接用主机序，
-    // 因为 skc_num 在内核里本身就是主机序存储
-    struct dns_query_key key = {0};
-    key.saddr = saddr;
-    key.daddr = daddr;
-    key.sport = sport;
+    __u8 ports[4] = {};
+    if (bpf_probe_read_kernel(ports, sizeof(ports), (const void *)(head + transport_off)) != 0) {
+        dns_stat_inc(DNS_STAT_QUEUE_HEADER_FAIL);
+        return 0;
+    }
+    __u16 sport = ((__u16)ports[0] << 8) | ports[1];   // 客户端端口（autobind 后）
+    __u16 dport = ((__u16)ports[2] << 8) | ports[3];   // 目的端口，应为 53
+    if (dport != DNS_PORT) {
+        dns_stat_inc(DNS_STAT_SEND_NON_DNS_PORT);
+        return 0;
+    }
+    dns_stat_inc(DNS_STAT_SEND_DNS_PORT);
 
-    // bpf_ktime_get_ns()：获取当前内核单调时钟时间戳（纳秒）。
-    // 基于 sched_clock()，不随系统时间调整而变化，适合测延迟。
-    struct dns_query_record rec = {0};
-    rec.send_time_ns = bpf_ktime_get_ns();
-    rec.is_response = 0;
-    // BPF_ANY：存在则覆盖，不存在则创建。LRU Hash 会自动淘汰旧条目
-    // 防止在高 DNS 请求率下内存泄漏
-    bpf_map_update_elem(&dns_queries, &key, &rec, BPF_ANY);
+    __u8 iphdr[20] = {};
+    if (bpf_probe_read_kernel(iphdr, sizeof(iphdr), (const void *)(head + net_off)) != 0) {
+        dns_stat_inc(DNS_STAT_QUEUE_HEADER_FAIL);
+        return 0;
+    }
+    __u32 saddr = 0, daddr = 0;
+    __builtin_memcpy(&saddr, iphdr + 12, 4);   // 客户端源地址（已定型）
+    __builtin_memcpy(&daddr, iphdr + 16, 4);   // DNS 服务器
 
-    // 发送请求即累计 total_queries，不依赖响应路径
-    __u32 stats_key = 0;
-    struct dns_stats_record *stat = bpf_map_lookup_elem(&dns_stats, &stats_key);
-    if (stat) {
-        // __sync_fetch_and_add：GCC 原子内置函数，在 BPF JIT 中会编译
-        // 成单条 lock add 指令，保证多核并发安全
-        __sync_fetch_and_add(&stat->total_queries, 1);
-    } else {
-        struct dns_stats_record init = {0};
-        init.total_queries = 1;
-        bpf_map_update_elem(&dns_stats, &stats_key, &init, BPF_ANY);
+    __u8 header[12] = {};
+    if (bpf_probe_read_kernel(header, sizeof(header),
+                              (const void *)(head + transport_off + 8)) != 0) {
+        dns_stat_inc(DNS_STAT_SEND_PAYLOAD_FAIL);
+        return 0;
     }
 
+    struct dns_event ev = {};
+    ev.direction = 0;
+    ev.client_ip = saddr;        // 与接收侧 daddr 同域（原始 NBO 字节）
+    ev.resolver_ip = daddr;
+    ev.client_port = sport;      // 与接收侧 dport 同域（大端组装）
+    ev.txid = ((__u16)header[0] << 8) | header[1];
+    ev.tc = (header[2] & 0x02) != 0;
+    ev.rcode = header[3] & 0x0f;
+    ev.timestamp_ns = bpf_ktime_get_ns();
+    ev.fingerprint_quality = 0;
+    bpf_perf_event_output(ctx, &dns_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+    dns_stat_inc(DNS_STAT_SEND_EMITTED);
+    dns_stat_inc(DNS_STAT_EMITTED);
     return 0;
 }
 
@@ -769,5 +867,98 @@ int trace_dns_recv(struct pt_regs *ctx)
     // 清理已匹配的查询记录，LRU Hash 不再保留无意义的条目
     bpf_map_delete_elem(&dns_queries, &key);
 
+    return 0;
+}
+
+/*
+ * ===========================================================================
+ * BPF 入口函数 3: DNS 响应接收（单一来源）
+ *
+ * 挂点选择：udp_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
+ *   - sk  → endpoint（client_pc / resolver）
+ *   - skb → payload（DNS 头）
+ * 两半来自同一 hook 的同一次调用，无需任何跨探针关联或时序假设。
+ *
+ * 选择它而不是 udp_recvmsg 的原因：udp_recvmsg 在 entry 时用户缓冲区尚未
+ * 写入数据，需要 entry/return 配对保存指针，属于跨阶段脆弱状态；而队列态
+ * 的 skb 已经持有完整载荷。
+ * ===========================================================================
+ */
+SEC("kprobe/udp_queue_rcv_skb")
+int trace_dns_queue_rcv(struct pt_regs *ctx)
+{
+    dns_stat_inc(DNS_STAT_QUEUE_ENTER);
+    struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
+    struct sk_buff *skb = (struct sk_buff *)PT_REGS_PARM2(ctx);
+    if (!sk || !skb)
+        return 0;
+
+    __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
+    if (family != AF_INET) {
+        dns_stat_inc(DNS_STAT_QUEUE_NONIPV4);
+        return 0;
+    }
+
+    // 用 skb->head + transport_header 定位 UDP 头。
+    // 不用 skb->data：skb_pull 会移动 data，其含义取决于挂载点；head 是稳定基址，
+    // transport_header 是相对 head 的偏移，这是内核自身的定位方式。
+    unsigned char *head = BPF_CORE_READ(skb, head);
+    __u16 transport_off = BPF_CORE_READ(skb, transport_header);
+    if (!head)
+        return 0;
+
+    const void *udp_hdr = (const void *)(head + transport_off);
+    __u8 ports[4] = {};
+    if (bpf_probe_read_kernel(ports, sizeof(ports), udp_hdr) != 0) {
+        dns_stat_inc(DNS_STAT_QUEUE_HEADER_FAIL);
+        return 0;
+    }
+    // 大端组装 = 数值化的端口（与 query 侧的主机序语义一致）
+    __u16 sport = ((__u16)ports[0] << 8) | ports[1];
+    __u16 dport = ((__u16)ports[2] << 8) | ports[3];
+
+    // 响应方向：packet 源端口才是 DNS server 的 53，目的端口是客户端随机端口。
+    // （query 侧相反：目的端口是 53。）
+    if (sport != DNS_PORT) {
+        dns_stat_inc(DNS_STAT_QUEUE_NONDNS);
+        return 0;
+    }
+    dns_stat_inc(DNS_STAT_QUEUE_DNS_PORT);
+
+    // 网络层地址：同样从 packet 取，不依赖 sock 的 remote peer
+    // （未 connect 的 UDP socket 不保证有固定 remote）
+    __u16 net_off = BPF_CORE_READ(skb, network_header);
+    __u8 iphdr[20] = {};
+    if (bpf_probe_read_kernel(iphdr, sizeof(iphdr), (const void *)(head + net_off)) != 0) {
+        dns_stat_inc(DNS_STAT_QUEUE_HEADER_FAIL);
+        return 0;
+    }
+    // 直接按 4 字节原样读出（网络序字节的小端加载），与 query 侧
+    // msg_name.sin_addr / skc_daddr 的字节序保持一致；
+    // 用户态统一做 ntohl()，两侧必须同域，否则 canonical key 无法相等。
+    __u32 saddr = 0, daddr = 0;
+    __builtin_memcpy(&saddr, iphdr + 12, 4);   // DNS server
+    __builtin_memcpy(&daddr, iphdr + 16, 4);   // client
+
+    __u8 header[12] = {};
+    if (bpf_probe_read_kernel(header, sizeof(header),
+                              (const void *)(head + transport_off + 8)) != 0) {
+        dns_stat_inc(DNS_STAT_QUEUE_PAYLOAD_FAIL);
+        return 0;
+    }
+
+    struct dns_event ev = {};
+    ev.direction = 1;
+    // canonical（客户端视角）：client = packet 目的端，resolver = packet 源端
+    ev.client_ip = daddr;
+    ev.resolver_ip = saddr;
+    ev.client_port = dport;   /* 大端组装=主机序数值，与 query 侧 skc_num 同域 */
+    ev.txid = ((__u16)header[0] << 8) | header[1];
+    ev.tc = (header[2] & 0x02) != 0;
+    ev.rcode = header[3] & 0x0f;
+    ev.timestamp_ns = bpf_ktime_get_ns();
+    ev.fingerprint_quality = 0;
+    bpf_perf_event_output(ctx, &dns_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+    dns_stat_inc(DNS_STAT_QUEUE_EMITTED);
     return 0;
 }

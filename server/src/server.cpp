@@ -383,7 +383,11 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                             << " coverage=" << weaknet::coverageToString(dns_sle.coverage)
                             << " reason=" << dns_sle.reason
                             << " fail=" << dns_window.knownFailure() << "/" << dns_window.evaluableTerminals()
-                            << " inflight=" << dns_window.current_inflight);
+                            << " inflight=" << dns_window.current_inflight
+                            << " ok=" << dns_window.knownSuccess()
+                            << " unmatched=" << dns_window.unmatched
+                            << " ambiguous=" << dns_window.tracking_ambiguous
+                            << " late=" << dns_window.late_responses);
                     }
 
                     exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle,

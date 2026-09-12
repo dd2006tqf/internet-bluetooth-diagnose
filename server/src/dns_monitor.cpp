@@ -34,6 +34,7 @@
 #include <iomanip>
 #include <sstream>
 #include <arpa/inet.h>
+#include <atomic>
 
 #if defined(__has_include)
 #  if __has_include(<linux/bpf.h>) && __has_include(<bpf/libbpf.h>) && __has_include(<bpf/bpf.h>)
@@ -51,6 +52,9 @@ extern "C" {
 #endif
 
 namespace weaknet_dbus {
+
+// 配对诊断输出条数上限（避免污染日志）
+static constexpr int kDnsKeyDumpBudget = 12;
 
 // ---- 数据结构映射（与 BPF 端 C 结构体一一对应，必须保持字段和 __packed 一致） ----
 
@@ -124,6 +128,22 @@ enum dns_capture_stat {
     DNS_STAT_NOT_DNS_PORT,
     DNS_STAT_PORT_UNKNOWN,
     DNS_STAT_CONNECT_SEEN,
+    DNS_STAT_UNSUPPORTED_ITER,
+    DNS_STAT_SEND_ENTER,
+    DNS_STAT_QUEUE_ENTER,
+    DNS_STAT_SEND_DNS_PORT,
+    DNS_STAT_SEND_NONIPV4,
+    DNS_STAT_QUEUE_DNS_PORT,
+    DNS_STAT_SEND_NON_DNS_PORT,
+    DNS_STAT_SEND_HAS_MSG_NAME,
+    DNS_STAT_SEND_CONNECTED_PEER,
+    DNS_STAT_SEND_PAYLOAD_FAIL,
+    DNS_STAT_SEND_EMITTED,
+    DNS_STAT_QUEUE_NONIPV4,
+    DNS_STAT_QUEUE_HEADER_FAIL,
+    DNS_STAT_QUEUE_PAYLOAD_FAIL,
+    DNS_STAT_QUEUE_NONDNS,
+    DNS_STAT_QUEUE_EMITTED,
     DNS_STAT_EMITTED,
     DNS_STAT_EMIT_FAIL,
     DNS_STAT_MAX
@@ -155,6 +175,7 @@ struct DnsMonitor::Impl {
     struct bpf_object *obj = nullptr;  ///< BPF 对象实例
     struct bpf_link *link_send = nullptr;  ///< kprobe/udp_sendmsg 的 BPF link
     struct bpf_link *link_recv = nullptr;  ///< kprobe/udp_recvmsg 的 BPF link
+    struct bpf_link *link_queue = nullptr; ///< kprobe/udp_queue_rcv_skb（响应单源）
     std::vector<struct bpf_link *> capture_links;
     struct perf_buffer *events = nullptr;
     int dns_capture_fd = -1;
@@ -182,6 +203,17 @@ static void on_dns_event(void* ctx, int /*cpu*/, void* data, __u32 size) {
     auto now = std::chrono::steady_clock::now();
     auto quality = event->fingerprint_quality == 0 ? weaknet::FingerprintQuality::ENRICHED
                                                     : weaknet::FingerprintQuality::PARTIAL;
+    // 配对诊断：低频打印真实 canonical 字段，用于定位 query/response 键差异。
+    // 计数只能说明"没配上"，不能说明"哪个字段不同"。
+    {
+        static std::atomic<int> diag_budget{kDnsKeyDumpBudget};
+        if (diag_budget.load() > 0 && diag_budget.fetch_sub(1) >= 0) {
+            LOG_INFO(LogModule::NETWORK, "DNSKEY dir=" << (int)event->direction
+                << " cli=" << key.client_ip << ":" << key.client_port
+                << " rs=" << key.resolver_ip
+                << " txid=" << key.txid);
+        }
+    }
     if (event->direction == 0) {
         if (monitor->drain_tracker->onQueryCaptured(key, quality, now)) {
             monitor->drain_stats.tracker_query_accepted++;
@@ -293,7 +325,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages) {
 
     // attach 探针到 kprobe/udp_sendmsg 和 kprobe/udp_recvmsg
     // 内核探针类型：kprobe（函数入口）
-    struct bpf_program *send_prog = bpf_object__find_program_by_name(obj, "trace_dns_send");
+    struct bpf_program *send_prog = bpf_object__find_program_by_name(obj, "trace_dns_egress_skb");
     struct bpf_program *recv_prog = bpf_object__find_program_by_name(obj, "trace_dns_recv");
     if (!send_prog || !recv_prog) {
         LOG_ERROR(LogModule::NETWORK, "DnsMonitor: BPF program not found");
@@ -309,6 +341,18 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages) {
     if (err_send) {
         LOG_ERROR(LogModule::NETWORK, "DnsMonitor: attach kprobe/udp_sendmsg failed err=" << err_send);
         impl_->link_send = nullptr;
+    }
+
+    // 响应侧单一来源：udp_queue_rcv_skb 同时持有 sk(endpoint) 与 skb(payload)
+    struct bpf_program *queue_prog = bpf_object__find_program_by_name(obj, "trace_dns_queue_rcv");
+    if (queue_prog) {
+        impl_->link_queue = bpf_program__attach(queue_prog);
+        if (libbpf_get_error(impl_->link_queue)) {
+            LOG_WARNING(LogModule::NETWORK, "DnsMonitor: attach kprobe/udp_queue_rcv_skb failed");
+            impl_->link_queue = nullptr;
+        } else {
+            stateSupport_.recordProbeAttached();
+        }
     }
 
     impl_->link_recv = bpf_program__attach(recv_prog);
@@ -400,6 +444,7 @@ void DnsMonitor::stop() {
     if (impl_->events) { perf_buffer__free(impl_->events); impl_->events = nullptr; }
     if (impl_->link_send) { bpf_link__destroy(impl_->link_send); impl_->link_send = nullptr; }
     if (impl_->link_recv) { bpf_link__destroy(impl_->link_recv); impl_->link_recv = nullptr; }
+    if (impl_->link_queue) { bpf_link__destroy(impl_->link_queue); impl_->link_queue = nullptr; }
     for (auto *link : impl_->capture_links) { if (link) bpf_link__destroy(link); }
     impl_->capture_links.clear();
 #endif
@@ -541,6 +586,21 @@ std::string DnsMonitor::getCaptureDiagnostics() {
          << "\"not_dns_port\":" << counters.values[DNS_STAT_NOT_DNS_PORT] << ","
          << "\"port_unknown\":" << counters.values[DNS_STAT_PORT_UNKNOWN] << ","
          << "\"connect_seen\":" << counters.values[DNS_STAT_CONNECT_SEEN] << ","
+         << "\"send_enter\":" << counters.values[DNS_STAT_SEND_ENTER] << ","
+         << "\"queue_enter\":" << counters.values[DNS_STAT_QUEUE_ENTER] << ","
+         << "\"send_dns_port\":" << counters.values[DNS_STAT_SEND_DNS_PORT] << ","
+         << "\"send_nonipv4\":" << counters.values[DNS_STAT_SEND_NONIPV4] << ","
+         << "\"send_nondns\":" << counters.values[DNS_STAT_SEND_NON_DNS_PORT] << ","
+         << "\"queue_dns_port\":" << counters.values[DNS_STAT_QUEUE_DNS_PORT] << ","
+         << "\"send_has_msg_name\":" << counters.values[DNS_STAT_SEND_HAS_MSG_NAME] << ","
+         << "\"send_connected_peer\":" << counters.values[DNS_STAT_SEND_CONNECTED_PEER] << ","
+         << "\"send_payload_fail\":" << counters.values[DNS_STAT_SEND_PAYLOAD_FAIL] << ","
+         << "\"send_emitted\":" << counters.values[DNS_STAT_SEND_EMITTED] << ","
+         << "\"queue_nonipv4\":" << counters.values[DNS_STAT_QUEUE_NONIPV4] << ","
+         << "\"queue_header_fail\":" << counters.values[DNS_STAT_QUEUE_HEADER_FAIL] << ","
+         << "\"queue_payload_fail\":" << counters.values[DNS_STAT_QUEUE_PAYLOAD_FAIL] << ","
+         << "\"queue_nondns\":" << counters.values[DNS_STAT_QUEUE_NONDNS] << ","
+         << "\"queue_emitted\":" << counters.values[DNS_STAT_QUEUE_EMITTED] << ","
          << "\"emitted\":" << delivered << ","
          << "\"emit_fail\":" << emit_fail
          << "},\"drain\":{"
