@@ -67,6 +67,9 @@
 #include "tcp_conn_monitor.hpp"
 #include "tcp_connect_monitor.hpp"
 #include "assurance/tcp_connect_evaluator.hpp"
+#include "assurance/http_access_evaluator.hpp"
+#include "assurance/captive_portal_evaluator.hpp"
+#include "http_latency_monitor.hpp"
 #include "bt_audio_analyzer.hpp"
 #include "database_manager.hpp"
 #include "using_iface.h"
@@ -413,8 +416,50 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                             << " unmatched=" << tcp_stats.unmatched_terminal);
                     }
 
+                    // HTTP/HTTPS Access SLE：TCP 通了不代表应用层可用。
+                    // 语义边界：4xx 是业务语义（服务端正常应答），只有 5xx 与
+                    // 无响应/TLS 失败才算传输层故障。
+                    weaknet::SleResult http_sle;
+                    weaknet::SleResult portal_sle;
+                    if (ctx->http_latency_monitor) {
+                        weaknet::HttpAccessEvaluator::Input http_in;
+                        const auto txns = ctx->http_latency_monitor->getRecentTxns(200);
+                        for (const auto& t : txns) {
+                            http_in.samples.push_back({t.statusCode, static_cast<double>(t.ttfbNs) / 1e6, false});
+                        }
+                        http_in.capture_events = http_in.samples.size();
+                        http_sle = weaknet::HttpAccessEvaluator::evaluate(http_in);
+
+                        // Captive Portal：需要明确的门户特征 + 底层链路健康
+                        weaknet::CaptivePortalEvaluator::Input portal_in;
+                        for (const auto& t : txns) {
+                            weaknet::CaptivePortalProbe p;
+                            p.status_code = t.statusCode;
+                            // 3xx 视为可疑门户信号（精确的门户特征需 Location 解析，
+                            // 当前 capture 未提取 Location，故仅作弱信号）
+                            p.redirect_to_portal = (t.statusCode >= 300 && t.statusCode < 400);
+                            p.expected_content = (t.statusCode >= 200 && t.statusCode < 300);
+                            portal_in.probes.push_back(p);
+                        }
+                        portal_in.ip_reachable = (reach_sle.state == weaknet::HealthState::GOOD);
+                        portal_in.dns_resolvable = (dns_sle.state == weaknet::HealthState::GOOD);
+                        portal_in.tcp_connectable = (tcp_sle.state == weaknet::HealthState::GOOD);
+                        portal_in.capture_events = portal_in.probes.size();
+                        portal_sle = weaknet::CaptivePortalEvaluator::evaluate(portal_in);
+
+                        LOG_INFO(LogModule::NETWORK, "HTTP SLE: state="
+                            << weaknet::healthStateToString(http_sle.state)
+                            << " coverage=" << weaknet::coverageToString(http_sle.coverage)
+                            << " reason=" << http_sle.reason
+                            << " samples=" << txns.size()
+                            << " | Portal: " << weaknet::healthStateToString(portal_sle.state)
+                            << " reason=" << portal_sle.reason);
+                    }
+
                     exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle,
-                                                         rf_sle, dns_sle, tcp_sle, ctx->assessment_profile);
+                                                         rf_sle, dns_sle, tcp_sle,
+                                                         http_sle, portal_sle,
+                                                         ctx->assessment_profile);
 
                     if (!rtt_samples.empty()) newest_rev = rtt_samples.back().sequence;
                     else if (!reach_samples.empty()) newest_rev = reach_samples.back().sequence;
