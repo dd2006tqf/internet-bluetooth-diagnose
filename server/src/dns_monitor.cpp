@@ -109,8 +109,34 @@ struct dns_event {
     __u16 qtype;
     __u16 payload_len;
     __u64 qname_hash;
+    __u8  qname_area[24];   // DNS 头之后的原始字节（含 QNAME），由本层解析
     __u64 timestamp_ns;
 };
+
+/**
+ * @brief 从原始字节解析 QNAME 并计算 FNV-1a 哈希。
+ *
+ * eBPF 只 capture 原始字节；解析放在用户态：
+ *   - verifier 会拒绝 eBPF 内的变址栈访问与复杂控制流
+ *   - 解析本属用户态职责（与项目"eBPF 只产证据、用户态做语义"的分层一致）
+ * 返回 0 表示无法解析（此时 qname_hash 保持未设置，不影响配对）。
+ */
+static uint64_t qname_hash_from_area(const __u8* area, size_t n) {
+    uint64_t h = 1469598103934665603ULL;  // FNV-1a 64 offset basis
+    bool saw_label = false;
+    for (size_t i = 0; i < n; ++i) {
+        const uint8_t c = area[i];
+        if (c == 0) break;               // QNAME 结束
+        if (c >= 'A' && c <= 'Z') {
+            // DNS 名字大小写不敏感
+        }
+        const uint8_t lc = (c >= 'A' && c <= 'Z') ? static_cast<uint8_t>(c + 32) : c;
+        saw_label = true;
+        h ^= lc;
+        h *= 1099511628211ULL;
+    }
+    return saw_label ? h : 0;
+}
 
 // Mirror of the BPF-side capture counter enum (dns_monitor.bpf.c).
 enum dns_capture_stat {
@@ -198,7 +224,12 @@ static void on_dns_event(void* ctx, int /*cpu*/, void* data, __u32 size) {
     key.resolver_ip = ntohl(event->resolver_ip);
     key.client_port = event->client_port;
     key.txid = event->txid;
-    if (event->qname_hash) key.qname_hash = event->qname_hash;
+    if (event->qname_hash) {
+        key.qname_hash = event->qname_hash;
+    } else {
+        const uint64_t qh = qname_hash_from_area(event->qname_area, sizeof(event->qname_area));
+        if (qh) key.qname_hash = qh;   // 解析不出则不设置，不伪造
+    }
     if (event->qtype) key.qtype = event->qtype;
     auto now = std::chrono::steady_clock::now();
     auto quality = event->fingerprint_quality == 0 ? weaknet::FingerprintQuality::ENRICHED

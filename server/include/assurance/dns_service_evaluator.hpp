@@ -28,6 +28,11 @@ struct DnsEvaluatorConfig {
     double max_ambiguity_ratio{0.10};                // 匹配歧义率上限
     double max_insert_failure_ratio{0.02};           // Tracker 容量溢出率上限
     uint64_t observer_min_capture_attempts{20};      // 观测质量门禁的最小样本量
+
+    // 授予 capability-level 否决权所需的**最少不同 QNAME 数**。
+    // 单个域名的权威链路异常也会导致该域名长时间无响应，但那不是
+    // 本机解析能力故障；只有多个不同域名同时失败才足以证明能力失效。
+    uint64_t capability_min_distinct_qnames{2};
 };
 
 /**
@@ -54,7 +59,8 @@ struct DnsEvaluatorConfig {
  * capability_level_negative（是否具备否决 Internet Access 的资格）：
  *   只有"本机名字解析能力失效"的证据才置位 —— 即
  *     - SR-9 连续超时（解析器完全不响应），或
- *     - 失败以 TIMEOUT 为主（解析器答不出来），或
+ *     - 失败以 TIMEOUT 为主 **且** 超时涉及多个不同 QNAME
+ *       （单个域名的权威链路异常不算本机能力故障），或
  *     - 解析普遍极慢
  *   单域名/单次 SERVFAIL、REFUSED 不置位：那可能是域名自身或策略侧问题，
  *   无权把"某个域名解析失败"升级为"Internet 不可用"。
@@ -189,10 +195,23 @@ public:
         if (fail_ratio >= cfg.error_ratio_bad) {
             res.state = HealthState::BAD;
             res.reason = "high_failure_rate";
-            // 仅当失败以"无响应"为主时，才认定是本机解析能力故障
-            res.capability_level_negative = (timeout_ratio >= cfg.error_ratio_bad);
+            // 授予否决权需同时满足两个条件：
+            //   1. 失败以"无响应"（TIMEOUT）为主 —— 解析器答不出来
+            //   2. 超时涉及**多个不同 QNAME** —— 排除单域名权威链路异常
+            // 任一不满足则只作 warning/evidence，不 veto Internet Access。
+            const bool timeout_dominant = (timeout_ratio >= cfg.error_ratio_bad);
+            const bool multi_qname = (window.timeout_distinct_qnames >= cfg.capability_min_distinct_qnames);
+            res.capability_level_negative = timeout_dominant && multi_qname;
+
             res.evidence.push_back({"timeout_ratio", timeout_ratio * 100.0,
                                     "Timeout share of evaluable terminals %"});
+            res.evidence.push_back({"timeout_distinct_qnames",
+                                    static_cast<double>(window.timeout_distinct_qnames),
+                                    "Distinct QNAMEs among timeouts"});
+            if (timeout_dominant && !multi_qname) {
+                res.evidence.push_back({"capability_veto_withheld", 1.0,
+                    "Timeouts concentrated on a single QNAME; not a resolver-capability verdict"});
+            }
             return res;
         }
         if (median_latency >= cfg.median_latency_bad_ms) {

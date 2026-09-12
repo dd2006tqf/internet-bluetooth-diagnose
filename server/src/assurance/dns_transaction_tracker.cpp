@@ -1,6 +1,7 @@
 #include "assurance/dns_transaction_tracker.hpp"
 #include "logger.hpp"
 #include <algorithm>
+#include <set>
 
 namespace weaknet {
 
@@ -304,6 +305,8 @@ DnsMetricWindow DnsTransactionTracker::getWindowMetrics(std::chrono::millisecond
     }
     w.current_inflight = inflight;
 
+    std::set<uint64_t> timeout_qnames;
+
     // 筛选位于 [cutoff_time - window_duration, cutoff_time] 内且处于同一 binding_epoch 的终态事务
     for (const auto& rec : terminal_history_) {
         if (rec.binding_epoch != current_binding_epoch_) {
@@ -340,9 +343,19 @@ DnsMetricWindow DnsTransactionTracker::getWindowMetrics(std::chrono::millisecond
                 case DnsTransactionState::RESPONSE_OTHER:
                     w.responses_other++;
                     break;
-                case DnsTransactionState::TIMEOUT_EXPIRED:
+                case DnsTransactionState::TIMEOUT_EXPIRED: {
                     w.timeouts++;
+                    // 按 QNAME 去重统计，用于区分"单域名权威链路异常"
+                    // 与"解析器整体不响应"
+                    if (rec.key.qname_hash.has_value()) {
+                        timeout_qnames.insert(*rec.key.qname_hash);
+                    } else {
+                        // 无法确认 QNAME（解析失败/字段缺失）时，
+                        // 用 transaction_generation 占位，避免被误当作"同一域名"
+                        timeout_qnames.insert(rec.transaction_generation | (1ULL << 63));
+                    }
                     break;
+                }
                 case DnsTransactionState::LATE_RESPONSE:
                     w.late_responses++;
                     break;
@@ -364,6 +377,7 @@ DnsMetricWindow DnsTransactionTracker::getWindowMetrics(std::chrono::millisecond
     w.delivered_events = delivered_events_ - window_base_delivered_events_;
     w.perf_lost_events = perf_lost_events_ - window_base_perf_lost_events_;
     w.total_captured_events = total_captured_events_;
+    w.timeout_distinct_qnames = timeout_qnames.size();
 
     // 本次导出即为本窗口的边界，推进基线使下个窗口重新计量。
     advanceWindowBaselineLocked(cutoff_time);

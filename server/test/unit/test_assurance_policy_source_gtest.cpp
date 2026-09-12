@@ -208,16 +208,18 @@ TEST(AssurancePolicySourceTest, DnsEvaluatorMarksCapabilityOnlyForTimeoutDominan
     EXPECT_FALSE(res.capability_level_negative)
         << "解析器答了（SERVFAIL）不等于本机解析能力失效，不得授予否决权";
 
-    // 同样 30% 失败率，但全为超时（解析器完全不响应）
+    // 同样 30% 失败率，但全为超时，且涉及多个不同 QNAME
+    // （解析器整体不响应 —— 这才是本机能力级故障）
     DnsMetricWindow w2 = w;
     w2.responses_noerror = 7;
     w2.responses_servfail = 0;
     w2.timeouts = 3;
+    w2.timeout_distinct_qnames = 3;
 
     auto res2 = DnsServiceEvaluator::evaluate(w2, {});
     EXPECT_EQ(res2.state, HealthState::BAD);
     EXPECT_TRUE(res2.capability_level_negative)
-        << "解析器完全不响应属本机能力级故障，应授予否决权";
+        << "多域名同时无响应属本机能力级故障，应授予否决权";
 }
 
 TEST(AssurancePolicySourceTest, DnsEvaluatorDeclaresHostResolverScope) {
@@ -230,4 +232,44 @@ TEST(AssurancePolicySourceTest, DnsEvaluatorDeclaresHostResolverScope) {
     auto res = DnsServiceEvaluator::evaluate(w, {});
     EXPECT_EQ(res.source, EvidenceSource::PASSIVE_REAL_TRAFFIC);
     EXPECT_EQ(res.scope, EvidenceScope::HOST_RESOLVER_CAPABILITY);
+}
+
+// --- 9. Portal 无能力 ≠ 缺失 required evidence ---
+//
+// 关键：若把 Portal 当作 INTERNET_ACCESS 的 required SLE，则主动探测上线前
+// 整个 INTERNET_ACCESS 会永远 UNKNOWN。没有实现的 capability 不等于
+// 缺失的 required evidence —— Portal 当前是 NOT_AVAILABLE，不是 missing。
+TEST(AssurancePolicySourceTest, PortalWithoutCapabilityDoesNotForceOverallUnknown) {
+    auto exp = OverallPolicy::decide("wlan0", coreGood(), coreGood(), coreGood(),
+                                     coreGood(), coreGood(), coreGood(), coreGood(),
+                                     portalUnknownNoCapability(),
+                                     AssessmentProfile::INTERNET_ACCESS);
+    EXPECT_NE(exp.overall, HealthState::UNKNOWN)
+        << "Portal 无探测能力不得让 Overall 永久 UNKNOWN";
+    EXPECT_EQ(exp.overall, HealthState::GOOD);
+}
+
+// --- 10. 单一 QNAME 连续 timeout 不应获得 capability-level 否决权 ---
+//
+// 某个域名的权威链路异常，同样会让递归解析长时间无结果。
+// 只有"多个不同 QNAME 同时失败"才足以证明本机解析能力整体失效。
+TEST(AssurancePolicySourceTest, SingleQnameTimeoutsDoNotGrantCapabilityVeto) {
+    DnsMetricWindow w;
+    w.binding_epoch = 1;
+    w.evaluation_cutoff = std::chrono::steady_clock::now();
+    w.queries_started = 6;
+    w.timeouts = 6;                  // 全部超时
+    w.timeout_distinct_qnames = 1;   // 但只涉及同一个 QNAME
+
+    auto res = DnsServiceEvaluator::evaluate(w, {});
+    EXPECT_EQ(res.state, HealthState::BAD);
+    EXPECT_FALSE(res.capability_level_negative)
+        << "单一域名的权威链路异常不得升级为本机解析能力故障";
+
+    // 对照：多个不同 QNAME 同时超时 → 才认定能力级
+    DnsMetricWindow w2 = w;
+    w2.timeout_distinct_qnames = 4;
+    auto res2 = DnsServiceEvaluator::evaluate(w2, {});
+    EXPECT_EQ(res2.state, HealthState::BAD);
+    EXPECT_TRUE(res2.capability_level_negative);
 }

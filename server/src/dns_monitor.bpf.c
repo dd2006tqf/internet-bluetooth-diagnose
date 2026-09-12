@@ -49,6 +49,10 @@ struct dns_event {
     __u16 qtype;
     __u16 payload_len;
     __u64 qname_hash;
+    /* DNS 头之后的原始字节（含 QNAME），由**用户态**解析。
+     * 不在 eBPF 内解析 QNAME：verifier 会拒绝变址栈访问与复杂控制流，
+     * 且解析本属用户态职责（eBPF 只负责 capture 原始事实）。*/
+    __u8  qname_area[24];
     __u64 timestamp_ns;
 };
 
@@ -309,6 +313,18 @@ static __always_inline bool read_dns_header_from_skb(const struct sk_buff *skb, 
     return bpf_probe_read_kernel(header, 12, cursor) == 0;
 }
 
+
+/*
+ * QNAME 哈希（FNV-1a）。
+ *
+ * 为什么需要：判定"本机解析能力是否整体失效"时，必须区分
+ *   - 单个域名的权威链路异常（可能导致该域名长时间无响应）
+ *   - 解析器整体不响应（所有域名都失败）
+ * 只有后者才够格否决 Internet Access。因此需要按 QNAME 区分失败来源。
+ *
+ * 只扫描 QNAME 所在区域，遇到 0x00（名字结束）即停。
+ * 读不到则返回 0，表示"无法确认"，调用方不得据此授予能力级否决权。
+ */
 struct {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
     __type(key, __u32);
@@ -766,6 +782,9 @@ int trace_dns_egress_skb(struct pt_regs *ctx)
 
     struct dns_event ev = {};
     ev.direction = 0;
+    // 一次固定大小读（无循环、无常量外索引），verifier 可静态证明安全
+    bpf_probe_read_kernel(ev.qname_area, sizeof(ev.qname_area),
+                          (const void *)(head + transport_off + 8 + 12));
     ev.client_ip = saddr;        // 与接收侧 daddr 同域（原始 NBO 字节）
     ev.resolver_ip = daddr;
     ev.client_port = sport;      // 与接收侧 dport 同域（大端组装）
@@ -949,6 +968,8 @@ int trace_dns_queue_rcv(struct pt_regs *ctx)
 
     struct dns_event ev = {};
     ev.direction = 1;
+    bpf_probe_read_kernel(ev.qname_area, sizeof(ev.qname_area),
+                          (const void *)(head + transport_off + 8 + 12));
     // canonical（客户端视角）：client = packet 目的端，resolver = packet 源端
     ev.client_ip = daddr;
     ev.resolver_ip = saddr;

@@ -149,6 +149,12 @@ struct DnsMetricWindow {
     uint64_t query_capture_attempts{0};  // 查询捕获尝试总数
     uint64_t total_captured_events{0};   // 捕获事件总数
 
+    // 窗口内发生超时的**不同 QNAME 数量**。
+    // 判定"本机解析能力是否整体失效"必须区分：
+    //   单个域名的权威链路异常 → 该域名长时间无响应（不代表本机能力故障）
+    //   解析器整体不响应       → 多个不同域名同时失败（才是能力级故障）
+    uint64_t timeout_distinct_qnames{0};
+
     size_t   current_inflight{0};        // SR-13: Tracker 实时提供
     uint64_t binding_epoch{0};
     std::chrono::steady_clock::time_point evaluation_cutoff;
