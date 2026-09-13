@@ -117,6 +117,10 @@ class WeakNetBridge:
         lib.weaknet_get_coexistence_conflict.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
         lib.weaknet_get_coexistence_conflict.restype = ctypes.c_bool
 
+        # bool weaknet_get_network_experience(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size)
+        lib.weaknet_get_network_experience.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+        lib.weaknet_get_network_experience.restype = ctypes.c_bool
+
         # bool weaknet_list_monitors(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size)
         lib.weaknet_list_monitors.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
         lib.weaknet_list_monitors.restype = ctypes.c_bool
@@ -272,6 +276,15 @@ class WeakNetBridge:
 
     def get_coexistence_conflict(self) -> Dict[str, Any]:
         res = self._call_string_api("weaknet_get_coexistence_conflict", 4096)
+        if res["success"]:
+            try:
+                return {"success": True, "data": json.loads(res["data"])}
+            except Exception:
+                return res
+
+    def get_network_experience(self) -> Dict[str, Any]:
+        """获取网络体验权威评估（schema v2，只读 snapshot，含全部 SLE）"""
+        res = self._call_string_api("weaknet_get_network_experience", 8192)
         if res["success"]:
             try:
                 return {"success": True, "data": json.loads(res["data"])}

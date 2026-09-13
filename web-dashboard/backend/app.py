@@ -377,6 +377,11 @@ async def api_bluetooth_devices():
     return await get_cached_or_fetch("bt_devices", bridge.get_bluetooth_devices)
 
 
+@app.get("/api/experience")
+async def api_experience():
+    """获取网络体验权威评估（schema v2：全部 SLE + source/scope/policy_role）"""
+    return await get_cached_or_fetch("experience", bridge.get_network_experience)
+
 @app.get("/api/coexistence")
 async def api_coexistence():
     """获取 Wi-Fi 与蓝牙 2.4GHz 射频共存与干扰分析"""

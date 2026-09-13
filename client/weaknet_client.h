@@ -436,6 +436,15 @@ bool weaknet_get_bluetooth_audio_quality(const char* mac, char* buffer, size_t b
 bool weaknet_get_coexistence_conflict(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
 
 /**
+ * @brief 获取网络体验权威评估（schema v2 JSON）
+ *
+ * 只读 AssessmentSnapshot（quality 线程 stabilizer 后的最终结论），
+ * 含全部 Core/Service/Active SLE、source/scope/policy_role、
+ * primary_issue 与 evidence。绝不重新 evaluate。
+ */
+bool weaknet_get_network_experience(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
+/**
  * @brief 订阅蓝牙设备变化事件
  *
  * 通过 D-Bus add_match 订阅 BluetoothDeviceChanged 信号。

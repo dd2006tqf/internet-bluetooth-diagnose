@@ -245,6 +245,7 @@ function updateConflictUI(conflict) {
 // ============================================================================
 const fetchFlags = {
   health: false,
+  experience: false,
   coexistence: false,
   monitors: false,
   ebpf: false,
@@ -258,6 +259,7 @@ function fetchAllData() {
   fetchEbpfHealth();
   fetchBluetooth();
   fetchCoexistence();
+  fetchExperience();
   fetchHistory(60);
 }
 
@@ -297,6 +299,67 @@ async function fetchCoexistence() {
   } finally {
     fetchFlags.coexistence = false;
   }
+}
+
+
+// 网络体验权威评估（schema v2）：全部 SLE + source/scope/policy_role
+async function fetchExperience() {
+  if (fetchFlags.experience) return;
+  fetchFlags.experience = true;
+  try {
+    const res = await fetch('/api/experience');
+    const json = await res.json();
+    if (json.success && json.data) {
+      updateExperienceUI(json.data);
+    }
+  } catch (e) {
+    console.error('Fetch experience failed', e);
+  } finally {
+    fetchFlags.experience = false;
+  }
+}
+
+// 渲染网络体验面板：Overall / 各 SLE（含 source/scope）/ Primary Issue
+function updateExperienceUI(data) {
+  const box = document.getElementById('experience-panel');
+  if (!box) return;   // 面板不存在时静默跳过（页面可渐进增强）
+  const rows = [];
+  const addSle = (name, sle) => {
+    if (!sle) return;
+    const state = sle.state || 'UNKNOWN';
+    const color = state === 'GOOD' ? '#22c55e' : state === 'BAD' ? '#dc2626'
+                : state === 'DEGRADED' ? '#f59e0b' : '#6b7280';
+    rows.push('<tr>'
+      + '<td>' + escapeHtml(name) + '</td>'
+      + '<td style="color:' + color + ';font-weight:600;">' + escapeHtml(state) + '</td>'
+      + '<td>' + escapeHtml(sle.coverage || '') + '</td>'
+      + '<td>' + escapeHtml(sle.applicability || '') + '</td>'
+      + '<td>' + escapeHtml(sle.reason || '') + '</td>'
+      + '</tr>');
+  };
+  const nh = data.network_health || {};
+  const sh = data.service_health || {};
+  addSle('IP Reachability', nh.ip_reachability);
+  addSle('Responsiveness', nh.responsiveness);
+  addSle('Reliability', nh.reliability);
+  addSle('RF Health (Advisory)', nh.rf_health);
+  addSle('DNS Service', sh.dns);
+  addSle('TCP Connect', sh.tcp_connect);
+  addSle('Cleartext HTTP', sh.http_access);
+  addSle('Captive Portal', sh.captive_portal);
+  addSle('Active DNS Capability', sh.active_dns);
+  addSle('Active TCP Capability', sh.active_tcp);
+  addSle('Active HTTPS Capability', sh.active_https);
+  addSle('Active Portal Capability', sh.active_portal);
+
+  box.innerHTML = '<div class="ebpf-section-title">🩺 网络体验权威评估 (Assurance v2)</div>'
+    + '<div>Overall: <strong>' + escapeHtml(data.overall?.state || 'UNKNOWN') + '</strong>'
+    + ' | Coverage: ' + escapeHtml(data.overall?.coverage || '')
+    + ' | Score: ' + (data.overall?.display_score ?? '-') + '</div>'
+    + '<div>Primary Issue: ' + escapeHtml(data.primary_issue || 'NONE') + '</div>'
+    + '<table style="margin-top:8px;">'
+    + '<thead><tr><th>SLE</th><th>State</th><th>Coverage</th><th>Applicability</th><th>Reason</th></tr></thead>'
+    + '<tbody>' + rows.join('') + '</tbody></table>';
 }
 
 async function fetchMonitors() {

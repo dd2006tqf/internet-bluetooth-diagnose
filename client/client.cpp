@@ -777,8 +777,11 @@ public:
 
     /** @brief 调用 GetDnsStats 获取 DNS eBPF 监控统计 */
     bool getDnsStats(std::string& result, std::string& errorMsg) {
-        if (!isConnected()) return fail("客户端未连接", errorMsg);
         return requestStringData(kMethodGetDnsStats, "DNS 监控统计", result, errorMsg);
+    }
+    bool getNetworkExperience(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        return requestStringData(kMethodGetNetworkExperience, "网络体验评估", result, errorMsg);
     }
 
     /** @brief 调用 GetWifiLossStats 获取 Wi-Fi 丢包统计 */
@@ -1486,6 +1489,21 @@ extern "C" bool weaknet_get_coexistence_conflict(char* buffer, size_t buffer_siz
     }
     std::string result, errorMsg;
     if (weaknet_dbus::g_client->getCoexistenceConflict(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    } else {
+        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+        return false;
+    }
+}
+extern "C" bool weaknet_get_network_experience(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getNetworkExperience(result, errorMsg)) {
         snprintf(buffer, buffer_size, "%s", result.c_str());
         return true;
     } else {
