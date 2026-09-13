@@ -63,6 +63,33 @@ std::string stripInlineComment(const std::string& s) {
     return s;
 }
 
+/**
+ * @brief 剥离值两端成对的引号（'...' 或 "..."）
+ *
+ * 为什么需要：本解析器是 YAML 子集，但配置书写者自然会按 YAML 习惯加引号，
+ * 文档中的格式示例也写作 "id|host|port"。此前引号会被当成值的一部分，
+ * 造成"配置看起来对、行为却错"的静默故障：
+ *
+ *   实测（开发板，2026-09-13）：
+ *     portal_path: "/success.txt"
+ *     → 实际值 "/success.txt"（含字面引号）
+ *     → HTTP 请求路径畸形 → detectportal.firefox.com 返回 404、
+ *       captive.apple.com 返回 400
+ *     → Portal oracle 判定为内容不匹配，能力永远无法建立
+ *
+ * 注意 stripInlineComment 已先行处理注释，故此处只需处理成对引号；
+ * 只有首尾同引号且长度 >= 2 时才剥离，避免误伤 'a 这类不完整输入。
+ */
+std::string stripQuotes(const std::string& s) {
+    if (s.size() >= 2) {
+        const char q = s.front();
+        if ((q == '"' || q == '\'') && s.back() == q) {
+            return s.substr(1, s.size() - 2);
+        }
+    }
+    return s;
+}
+
 bool parseBool(const std::string& v, bool* out) {
     std::string l = toLower(trim(v));
     if (l == "true" || l == "yes" || l == "1") { *out = true; return true; }
@@ -353,7 +380,9 @@ bool loadWeakNetConfig(const std::string& path, WeakNetConfig* out, std::string*
             return false;
         }
         std::string key = trim(trimmed.substr(0, colon));
-        std::string value = trim(trimmed.substr(colon + 1));
+        // 值先剥引号再 trim：stripQuotes 处理成对引号（见其文档注释），
+        // 保留引号内的空白语义，故顺序是 trim → stripQuotes → trim。
+        std::string value = trim(stripQuotes(trim(trimmed.substr(colon + 1))));
 
         // 弹出同级或更深层 section，当前行属于栈顶
         while (!stack.empty() && stack.back().indent >= static_cast<int>(indent))

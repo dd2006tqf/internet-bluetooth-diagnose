@@ -1154,25 +1154,52 @@ int start_server(int argc, char** argv) {
         ap.interval_sec = interval_ms / 1000u;
         ap.timeout_sec = std::max(1u, timeout_ms / 1000u);
 
-        // 解析 targets："id|hostname|port,id|hostname|port"
-        // 第 4 段可选，为故障域标识；缺省时取 hostname（见 ActiveProbeTargetConfig）
+        // 解析 targets："id|hostname|port|domain|path|expect_body"
+        // 后三段可选：
+        //   domain      —— 故障域标识（缺省取 hostname）
+        //   path        —— 该目标的 HTTP 路径（仅 Portal oracle 用）
+        //   expect_body —— 该目标的预期正文（仅 Portal oracle 用）
+        // 真实 connectivity-check 端点的路径与预期正文互不相同，
+        // 必须能按目标声明（见 ActiveProbeTargetConfig 的说明）。
+        //
+        // 必须**手动按 '|' 切分**而不是反复 std::getline：getline 在读到
+        // 末尾空字段（"x|" 的最后一个字段）时提取 0 字符 → 置 failbit →
+        // 返回 false，于是"显式留空"与"字段不存在"无法区分。
+        // 真机实测后果：generate_204 的 `...|/generate_204|` 被判成"未声明
+        // 预期"，回落全局文本预期 → 空正文永远 CONTENT_MISMATCH。
         const auto parseTargets = [](const std::string& raw) {
             std::vector<ActiveProbeTargetConfig> out;
-            std::istringstream ts(raw);
-            std::string item;
-            while (std::getline(ts, item, ',')) {
+            size_t pos = 0;
+            while (pos <= raw.size()) {
+                const size_t comma = raw.find(',', pos);
+                const std::string item = raw.substr(
+                    pos, comma == std::string::npos ? std::string::npos : comma - pos);
+                pos = (comma == std::string::npos) ? raw.size() + 1 : comma + 1;
                 if (item.empty()) continue;
+
+                // 按 '|' 切分，保留末尾空字段
+                std::vector<std::string> f;
+                size_t fp = 0;
+                for (;;) {
+                    const size_t bar = item.find('|', fp);
+                    if (bar == std::string::npos) { f.push_back(item.substr(fp)); break; }
+                    f.push_back(item.substr(fp, bar - fp));
+                    fp = bar + 1;
+                }
+
                 ActiveProbeTargetConfig t;
-                std::istringstream is(item);
-                std::string id, host, port, domain;
-                std::getline(is, id, '|');
-                std::getline(is, host, '|');
-                std::getline(is, port, '|');
-                std::getline(is, domain, '|');
-                t.id = id;
-                t.hostname = host;
+                t.id = f.size() > 0 ? f[0] : "";
+                t.hostname = f.size() > 1 ? f[1] : "";
+                const std::string port = f.size() > 2 ? f[2] : "";
+                const std::string domain = f.size() > 3 ? f[3] : "";
                 t.tcp_port = port.empty() ? 443 : static_cast<uint16_t>(std::atoi(port.c_str()));
-                t.failure_domain = domain.empty() ? host : domain;
+                t.failure_domain = domain.empty() ? t.hostname : domain;
+                t.http_path = f.size() > 4 ? f[4] : "";
+                if (f.size() > 5) {
+                    t.expect_body = f[5];
+                    // 字段存在即为"已声明"，即使为空串（generate_204 场景）
+                    t.expect_body_specified = true;
+                }
                 if (t.hostname.empty()) continue;
                 out.push_back(t);
             }
@@ -1211,6 +1238,22 @@ int start_server(int argc, char** argv) {
         }
 
         ctx.active_probe->configure(ap);
+        LOG_INFO(LogModule::NETWORK,
+                 "Active probe detail: capability_targets=" << ap.targets.size()
+                 << " https_enabled=" << (ap.https_enabled ? "true" : "false")
+                 << " tls_available=" << (ActiveConnectivityMonitor::tlsAvailable() ? "true" : "false")
+                 << " portal_enabled=" << (ap.portal.enabled ? "true" : "false")
+                 << " portal_targets=" << ap.portal.targets.size()
+                 << " portal_path=" << ap.portal.path
+                 << " portal_expect_body=" << (ap.portal.expect_body.empty() ? "(empty)" : ap.portal.expect_body));
+        for (const auto& t : ap.portal.targets) {
+            LOG_INFO(LogModule::NETWORK, "Portal oracle target: id=" << t.id
+                     << " host=" << t.hostname
+                     << " port=" << t.tcp_port
+                     << " domain=" << t.failure_domain
+                     << " path=" << (t.http_path.empty() ? ap.portal.path : t.http_path)
+                     << " expect_body=" << (t.expect_body.empty() ? ap.portal.expect_body : t.expect_body));
+        }
 
         if (ap.enabled && ap.targets.size() < 2) {
             LOG_WARNING(LogModule::NETWORK,

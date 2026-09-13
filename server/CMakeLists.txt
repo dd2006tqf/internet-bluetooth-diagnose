@@ -113,16 +113,25 @@ endif()
 # 既不在 ld.so.conf 也没被 ldconfig 收录，运行完全依赖 OpenSSL::SSL 导入目标
 # 携带的 RPATH=/usr/local/lib64。剥掉会直接导致
 # "error while loading shared libraries: libssl.so.1.1"（已实测）。
-set_target_properties(server_lib PROPERTIES
-    SKIP_BUILD_RPATH ${WEAKNET_TLS_IS_SYSROOT})
+#
+# 注意 SKIP_BUILD_RPATH 是**链接期**属性，必须设在最终可执行目标上。
+# 设在 server_lib（静态库）上无效 —— 静态库不参与链接，属性不会传播，
+# 实测 ARM64 产物仍带 RUNPATH。
+function(weaknet_strip_build_rpath target)
+    if(WEAKNET_TLS_IS_SYSROOT)
+        set_target_properties(${target} PROPERTIES SKIP_BUILD_RPATH TRUE)
+    endif()
+endfunction()
 
 # ---- 服务端可执行文件 ----
 add_executable(weaknet-dbus-server src/main.cpp src/server.cpp)
 target_link_libraries(weaknet-dbus-server PRIVATE server_lib)
+weaknet_strip_build_rpath(weaknet-dbus-server)
 
 # ---- 历史数据查询工具 ----
 add_executable(history_query_tool src/history_query_tool.cpp)
 target_link_libraries(history_query_tool PRIVATE server_lib)
+weaknet_strip_build_rpath(history_query_tool)
 
 # ---- eBPF 程序编译（自定义命令） ----
 find_program(CLANG clang REQUIRED)

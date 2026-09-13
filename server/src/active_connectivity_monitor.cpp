@@ -457,7 +457,21 @@ ActiveConnectivityMonitor::runPortalRound(const ActiveProbeConfig& cfg,
         TlsProbeClient::Config tc;
         tc.deadline_ms = cfg.timeout_sec * 1000;
         tc.use_tls = false;                 // 门户 oracle 走明文
-        tc.path = cfg.portal.path.empty() ? "/" : cfg.portal.path;
+        // 路径与预期正文支持按目标覆盖（不同厂商端点本就不一致）
+        const std::string path = !t.http_path.empty()
+            ? t.http_path
+            : (cfg.portal.path.empty() ? std::string("/") : cfg.portal.path);
+        // expect_body 的三态语义：必须能表达"该目标不比对正文"（如
+        // generate_204 的正确判据是状态码 204，正文为空）。
+        //   显式声明 → 用声明值
+        //   显式留空（字段存在但为空）→ 不比对正文，由状态码判定
+        //   字段不存在（无第 6 段）→ 回落全局值
+        // 不能简单地"空即回落"：那会让 generate_204 被套上文本预期，
+        // 从而永远判 CONTENT_MISMATCH（真机实测过的错误行为）。
+        const std::string expect_body = t.expect_body_specified
+            ? t.expect_body
+            : cfg.portal.expect_body;
+        tc.path = path;
         const auto tr = TlsProbeClient::run(fd, t.hostname, tc);
         ::close(fd);
 
@@ -488,9 +502,9 @@ ActiveConnectivityMonitor::runPortalRound(const ActiveProbeConfig& cfg,
             r.http_info.portal_signal = points_elsewhere
                 ? weaknet::PortalSignal::REDIRECTED
                 : weaknet::PortalSignal::NONE;
-        } else if (!cfg.portal.expect_body.empty()) {
-            // 正文指纹比对
-            const bool matched = tr.body_snippet.find(cfg.portal.expect_body) != std::string::npos;
+        } else if (!expect_body.empty()) {
+            // 正文指纹比对（大小写敏感，见 ActiveProbeTargetConfig::expect_body）
+            const bool matched = tr.body_snippet.find(expect_body) != std::string::npos;
             r.http_info.body_matches_expected = matched;
             if (matched) {
                 r.http_info.portal_signal = weaknet::PortalSignal::NONE;
@@ -501,9 +515,20 @@ ActiveConnectivityMonitor::runPortalRound(const ActiveProbeConfig& cfg,
                 // 5xx 等：endpoint 自身故障，不是门户信号
                 r.http_info.portal_signal = weaknet::PortalSignal::NOT_PROBED;
             }
+        } else if (t.expect_body_specified) {
+            // 显式声明"不比对正文"，例如 generate_204：
+            // 正确判据是**状态码本身**（204 = 未被拦截）。
+            // 此时任何非 2xx/3xx 都是异常；被门户拦截通常会得到
+            // 200 + 门户页面（被上游重定向分支捕获）或非 204。
+            if (tr.status_code == 204 || tr.status_code == 200) {
+                r.http_info.portal_signal = weaknet::PortalSignal::NONE;
+            } else if (tr.status_code >= 200 && tr.status_code < 400) {
+                r.http_info.portal_signal = weaknet::PortalSignal::CONTENT_MISMATCH;
+            } else {
+                r.http_info.portal_signal = weaknet::PortalSignal::NOT_PROBED;
+            }
         } else {
-            // 无预期正文可比对（未配置 portal_expect_body）：
-            // 只有明确的重定向才算信号，否则不推测
+            // 未配置任何预期（字段缺失）：只有明确的重定向才算信号，否则不推测
             r.http_info.portal_signal = weaknet::PortalSignal::NONE;
         }
 
@@ -511,6 +536,14 @@ ActiveConnectivityMonitor::runPortalRound(const ActiveProbeConfig& cfg,
             || r.http_info.portal_signal == weaknet::PortalSignal::CONTENT_MISMATCH) {
             r.portal_detected = true;
         }
+
+        LOG_INFO(LogModule::NETWORK, "Portal oracle: target=" << t.id
+                 << " host=" << t.hostname
+                 << " http_ok=" << (tr.http_ok ? "true" : "false")
+                 << " status=" << tr.status_code
+                 << " detail=" << tr.http_detail
+                 << " signal=" << static_cast<int>(r.http_info.portal_signal)
+                 << " body_len=" << tr.body_snippet.size());
 
         out.push_back(std::move(r));
     }

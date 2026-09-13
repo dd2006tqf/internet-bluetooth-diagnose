@@ -290,3 +290,100 @@ TEST(WeakNetConfigTest, SerializeMonitorJsonUnknown) {
     EXPECT_TRUE(json.empty());
     EXPECT_FALSE(err.empty());
 }
+
+// ============================================================================
+// 引号剥离回归（真机缺陷，2026-09-13）
+//
+// 缺陷：解析器不剥离值两端引号，于是
+//   portal_path: "/success.txt"
+// 的实际值是 `"/success.txt"`（含字面引号），使 HTTP 请求路径畸形。
+// 真机表现：detectportal.firefox.com 返回 404、captive.apple.com 返回 400，
+// Portal oracle 永远判"内容不匹配"，能力无法建立。
+//
+// 为什么长期未暴露：现有用例的配置值都没加引号，而书写者按 YAML 习惯
+// 加引号是极自然的行为，且失败是静默的（解析成功、语义错误）。
+// ============================================================================
+
+TEST(WeakNetConfigTest, StripsDoubleQuotedStringValue) {
+    ConfigFile f(
+        "monitors:\n"
+        "  active_probe:\n"
+        "    enabled: true\n"
+        "    portal_path: \"/success.txt\"\n");
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadWeakNetConfig(f.path(), &cfg, &err)) << err;
+
+    EXPECT_EQ(cfg.active_probe.portal_path.get(), "/success.txt")
+        << "双引号必须被剥离，否则请求路径会带字面引号";
+}
+
+TEST(WeakNetConfigTest, StripsSingleQuotedStringValue) {
+    ConfigFile f(
+        "monitors:\n"
+        "  active_probe:\n"
+        "    enabled: true\n"
+        "    portal_path: '/success.txt'\n");
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadWeakNetConfig(f.path(), &cfg, &err)) << err;
+
+    EXPECT_EQ(cfg.active_probe.portal_path.get(), "/success.txt");
+}
+
+// 完整复刻真机配置中的 oracle 段，锁定端到端解析结果
+TEST(WeakNetConfigTest, ParsesQuotedPortalOracleConfig) {
+    ConfigFile f(
+        "monitors:\n"
+        "  active_probe:\n"
+        "    enabled: true\n"
+        "    interval_ms: 30000\n"
+        "    timeout_ms: 3000\n"
+        "    targets: \"cf|one.one.one.one|443|cloudflare,iana|example.com|443|iana\"\n"
+        "    https_enabled: true\n"
+        "    portal_check_enabled: true\n"
+        "    portal_targets: \"fx|detectportal.firefox.com|80|mozilla,ap|captive.apple.com|80|apple\"\n"
+        "    portal_path: \"/success.txt\"\n"
+        "    portal_expect_body: \"success\"\n");
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadWeakNetConfig(f.path(), &cfg, &err)) << err;
+
+    EXPECT_TRUE(cfg.active_probe.enabled.load());
+    EXPECT_TRUE(cfg.active_probe.https_enabled.load());
+    EXPECT_TRUE(cfg.active_probe.portal_check_enabled.load());
+    EXPECT_EQ(cfg.active_probe.portal_path.get(), "/success.txt");
+    EXPECT_EQ(cfg.active_probe.portal_expect_body.get(), "success");
+    // 前缀引号必须先被剥离，再进入 "id|host|port|domain" 切分
+    EXPECT_EQ(cfg.active_probe.portal_targets.get().substr(0, 2), "fx")
+        << "引号残留在值首会让第一个 target 的 id 变成 \"fx";
+    EXPECT_NE(cfg.active_probe.targets.get().find("one.one.one.one"),
+              std::string::npos);
+}
+
+// 无引号的值不应被影响（既有行为不得回退）
+TEST(WeakNetConfigTest, UnquotedValueUnchanged) {
+    ConfigFile f(
+        "monitors:\n"
+        "  active_probe:\n"
+        "    enabled: true\n"
+        "    portal_path: /success.txt\n");
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadWeakNetConfig(f.path(), &cfg, &err)) << err;
+    EXPECT_EQ(cfg.active_probe.portal_path.get(), "/success.txt");
+}
+
+// 不成对的引号不应被剥离（避免误伤不完整输入）
+TEST(WeakNetConfigTest, UnpairedQuoteIsPreserved) {
+    ConfigFile f(
+        "monitors:\n"
+        "  active_probe:\n"
+        "    enabled: true\n"
+        "    portal_path: \"/success.txt\n");
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(loadWeakNetConfig(f.path(), &cfg, &err)) << err;
+    EXPECT_EQ(cfg.active_probe.portal_path.get(), "\"/success.txt")
+        << "只有成对引号才剥离；单个引号应原样保留";
+}

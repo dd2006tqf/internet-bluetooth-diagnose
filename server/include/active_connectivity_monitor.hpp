@@ -46,6 +46,25 @@ struct ActiveProbeTargetConfig {
     /// Portal quorum 要求信号来自不同故障域，避免同一 CDN 的多个域名
     /// 被当成独立目标凑数。
     std::string failure_domain;
+
+    // ---- 以下两项仅 Portal oracle 使用，空则回落到 PortalProbeConfig 的全局值 ----
+    //
+    // 为什么必须支持按目标覆盖：真实 connectivity-check 端点的路径与
+    // 预期正文**互不相同**，实测（开发板 2026-09-13）：
+    //   detectportal.firefox.com /success.txt          → 正文 "success"
+    //   captive.apple.com       /hotspot-detect.html   → 正文 "Success"
+    // 用全局单一值会导致除一个端点外全部判 CONTENT_MISMATCH，
+    // oracle 永远无法达成一致信号。大小写敏感，故 "success" 与 "Success"
+    // 必须分别声明。
+    std::string http_path;       ///< 空 → 用 PortalProbeConfig::path
+    std::string expect_body;     ///< 空 → 用 PortalProbeConfig::expect_body
+    /// expect_body 是否被**显式声明**（即使声明为空串）。
+    ///
+    /// 用于区分"不比对正文"与"未配置、用全局值"这两种语义 ——
+    /// generate_204 这类端点的正确判据是状态码 204、正文为空，
+    /// 若把空串当作"回落全局值"，它会被套上文本预期并永远判
+    /// CONTENT_MISMATCH（真机实测过的错误行为）。
+    bool expect_body_specified{false};
 };
 
 /// Portal oracle 的单次探测配置
