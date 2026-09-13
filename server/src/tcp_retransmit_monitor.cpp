@@ -45,6 +45,7 @@ extern "C" {
 #include <linux/bpf.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
+#include <unistd.h>
 }
 #  else
 #    define HAVE_LIBBPF 0
@@ -204,6 +205,23 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath) {
         initialized_ = true;
         stateSupport_.setState(EbpfMonitorState::Error, false, "retrans_stats map not found");
         return false;
+    }
+
+    // 排除服务端自身（主动探测）连接的 TCP 重传。
+    // 本探针的统计直接参与 Reliability SLE（blocking Core SLE），
+    // 探测流量进入会同时污染 Active/Passive 边界与 Overall 判决。
+    // 灌入 PID 后，sendmsg 侧据此登记 socket cookie，
+    // 供 retransmit 侧在 softirq 上下文（PID 不可用）识别。
+    {
+        const int self_fd = bpf_object__find_map_fd_by_name(obj, "retrans_self_pid");
+        if (self_fd >= 0) {
+            __u32 k = 0;
+            __u32 self_pid = static_cast<__u32>(::getpid());
+            if (bpf_map_update_elem(self_fd, &k, &self_pid, BPF_ANY) == 0) {
+                LOG_INFO(LogModule::TCP_LOSS,
+                         "TcpRetransMonitor: self-pid filter set to " << self_pid);
+            }
+        }
     }
 
     // attach 探针到 kprobe/tcp_retransmit_skb 和 kprobe/tcp_sendmsg

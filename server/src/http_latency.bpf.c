@@ -128,6 +128,28 @@ struct {
 } recvmsg_ctx_map SEC(".maps");
 
 /*
+ * Map: http_self_pid
+ * 存放 weaknet-server 自身的 PID，用于排除**主动探测**产生的明文 HTTP 流量。
+ *
+ * 为什么这里尤为关键：Captive Portal 的受控 oracle 走的就是**明文 HTTP**
+ * （门户拦截通常发生在明文层），所以它的请求与响应会被本探针完整识别为
+ * "真实业务 HTTP 流量"并写入 http_txn_stats。若不排除：
+ *   - passive Cleartext HTTP SLE 被 probe 流量污染
+ *   - W1 硬验收"仅开探测时 passive 计数零增长"直接失败
+ *
+ * 本探针的所有挂点都在**发起 recvmsg/sendmsg 的进程上下文**中
+ * （tcp_sendmsg / tcp_recvmsg_locked 都在调用方进程上下文），
+ * 因此 PID 过滤在两个方向都有效，不需要 cookie 桥接
+ * （对比 dns_monitor：那里的 ingress 在 softirq 上下文，PID 不可用）。
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} http_self_pid SEC(".maps");
+
+/*
  * Map: http_debug
  * 类型: BPF_MAP_TYPE_ARRAY（固定大小数组，所有 CPU 共享同一个槽位）
  * Key:  __u32（数组索引 0~63）
@@ -334,6 +356,18 @@ int BPF_KPROBE(probe_http_req, struct sock *sk, struct msghdr *msg, size_t size)
     if (!sk || !msg) return 0;
     dbg_inc(0);  // 分支 0：进入 tcp_sendmsg
 
+    // 排除服务端自身（主动探测 / Portal oracle）产生的明文 HTTP 流量。
+    // 放在最前面：probe 请求是合法的 HTTP 报文，若不在此拦截，
+    // 会被下面 check_http_request 正常识别并写入 passive 窗口。
+    {
+        __u32 k = 0;
+        __u32 *self = bpf_map_lookup_elem(&http_self_pid, &k);
+        if (self && *self != 0 &&
+            ((__u32)(bpf_get_current_pid_tgid() >> 32)) == *self) {
+            return 0;
+        }
+    }
+
     // size 是本次 send 的总字节数；<=0 表示无实际数据
     if (size <= 0) return 0;
 
@@ -386,6 +420,19 @@ SEC("kprobe/tcp_recvmsg_locked")
 int BPF_KPROBE(trace_recvmsg_entry, struct sock *sk, struct msghdr *msg, size_t len, int flags)
 {
     if (!sk || !msg) return 0;
+
+    // 排除服务端自身流量：不保存上下文，retprobe 侧自然也无从匹配。
+    // 两侧都过滤是刻意的冗余 —— 只挡一侧会留下"看起来修好了"的假象
+    // （dns_monitor 的排查经验：PID 只挡住 query 时 response 仍在污染）。
+    {
+        __u32 k = 0;
+        __u32 *self = bpf_map_lookup_elem(&http_self_pid, &k);
+        if (self && *self != 0 &&
+            ((__u32)(bpf_get_current_pid_tgid() >> 32)) == *self) {
+            return 0;
+        }
+    }
+
     // bpf_get_current_pid_tgid() 返回 64 位值: 高 32 位 = PID，低 32 位 = TID
     // 右移 32 位拿 PID 部分作为 Map Key（同一个线程的 entry 和 retprobe 同 PID）
     __u32 pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
@@ -418,6 +465,22 @@ SEC("kretprobe/tcp_recvmsg_locked")
 int BPF_KPROBE(trace_recvmsg_return, long ret)
 {
     dbg_inc(90);
+
+    // 排除服务端自身流量（与 sendmsg 侧同一判据）。
+    // 本挂点也在调用方进程上下文（recvmsg 由服务端自己发起），
+    // 因此 PID 过滤有效 —— 这与 dns_monitor 的 ingress（softirq，
+    // PID 不可用，必须靠 socket cookie 桥接）情形不同。
+    {
+        __u32 k = 0;
+        __u32 *self = bpf_map_lookup_elem(&http_self_pid, &k);
+        if (self && *self != 0 &&
+            ((__u32)(bpf_get_current_pid_tgid() >> 32)) == *self) {
+            // 仍需清理本 PID 的临时上下文，避免残留
+            __u32 selfpid = (__u32)(bpf_get_current_pid_tgid() >> 32);
+            bpf_map_delete_elem(&recvmsg_ctx_map, &selfpid);
+            return 0;
+        }
+    }
 
     // 用 PID 取回 entry probe 保存的上下文
     __u32 pid = (__u32)(bpf_get_current_pid_tgid() >> 32);

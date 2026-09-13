@@ -114,9 +114,53 @@ struct {
     __type(value, struct tcp_retrans_stats);
 } retrans_stats SEC(".maps");
 
+/*
+ * Map: retrans_self_pid
+ * 服务端自身 PID。用于排除**主动探测**连接的 TCP 重传。
+ *
+ * 为什么这里必须排除：本探针的 total_retrans / total_segs 直接喂给
+ * Reliability SLE —— 一个 blocking 的 Core SLE。主动探测目标是
+ * "应稳定可达"的，若其重传进入本窗口，会人为改变丢包率并影响
+ * Overall 判决，同时破坏 Active/Passive 证据边界。
+ *
+ * 为什么还需要 self_socks（cookie）：
+ *   sendmsg 在调用方进程上下文，PID 有效；
+ *   但 tcp_retransmit_skb 可能由**重传定时器**在 softirq 上下文触发，
+ *   此时 bpf_get_current_pid_tgid() 返回的不是服务端 PID，PID 过滤
+ *   只能挡住 sendmsg（分母），挡不住重传本身（分子）。
+ *
+ * 只挡一侧的危害是**不对称的**：分母被减小而分子不变，
+ * 反而会抬高丢包率、造成假 BAD。因此必须两个方向都排除。
+ *
+ * 做法与 dns_monitor 一致：sendmsg 侧（PID 有效）记录该 socket 的 cookie，
+ * retransmit 侧按同一 cookie 排除。cookie 在两方向一致，可桥接上下文差异。
+ */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} retrans_self_pid SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 256);
+    __type(key, __u64);
+    __type(value, __u8);
+} retrans_self_socks SEC(".maps");
+
 // =============================================================================
 // 辅助函数
 // =============================================================================
+
+static __always_inline bool is_self_pid(void)
+{
+    __u32 k = 0;
+    __u32 *self = bpf_map_lookup_elem(&retrans_self_pid, &k);
+    if (!self || *self == 0)
+        return false;   // 未设置时不误杀
+    return ((__u32)(bpf_get_current_pid_tgid() >> 32)) == *self;
+}
 
 /*
  * 从 struct sock 构造 TCP 4 元组 Key
@@ -166,6 +210,19 @@ int trace_tcp_retransmit(struct pt_regs *ctx)
     // PT_REGS_PARM1(ctx) 提取第一个参数 struct sock *sk
     struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
     if (!sk)
+        return 0;
+
+    // === 排除服务端自身（主动探测）的连接 ===
+    // 两个判据并用：
+    //   1. PID —— tcp_retransmit_skb 若在进程上下文触发（同步重传路径）
+    //   2. socket cookie —— 重传定时器在 softirq 上下文触发时 PID 不可用，
+    //      靠 sendmsg 侧登记的 cookie 识别
+    {
+        __u64 cookie = bpf_get_socket_cookie(sk);
+        if (cookie && bpf_map_lookup_elem(&retrans_self_socks, &cookie))
+            return 0;
+    }
+    if (is_self_pid())
         return 0;
 
     // 构造 TCP 4 元组 Key
@@ -238,6 +295,25 @@ int trace_tcp_sendmsg(struct pt_regs *ctx)
     unsigned long size = (unsigned long)PT_REGS_PARM3(ctx);
     if (!sk || size == 0)
         return 0;
+
+    // === 排除服务端自身（主动探测）的发送 ===
+    // sendmsg 在调用方进程上下文，PID 可靠；同时登记 cookie，
+    // 供 tcp_retransmit_skb 在 softirq 上下文（PID 不可用）识别。
+    // 必须与 retransmit 侧成对：只排除分母会抬高丢包率、造成假 BAD。
+    if (is_self_pid()) {
+        __u64 cookie = bpf_get_socket_cookie(sk);
+        if (cookie) {
+            __u8 one = 1;
+            bpf_map_update_elem(&retrans_self_socks, &cookie, &one, BPF_ANY);
+        }
+        return 0;
+    }
+    // 已登记过 cookie 的连接（例如上一次 sendmsg 时被判为自身）也排除
+    {
+        __u64 cookie = bpf_get_socket_cookie(sk);
+        if (cookie && bpf_map_lookup_elem(&retrans_self_socks, &cookie))
+            return 0;
+    }
 
     struct tcp_conn_key key = {};
     if (fill_conn_key(sk, &key) < 0)

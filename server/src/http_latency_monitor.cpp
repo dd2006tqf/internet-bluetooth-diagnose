@@ -28,6 +28,7 @@
 #include "logger.hpp"
 
 #include <cstring>
+#include <unistd.h>
 #include <algorithm>
 #include <chrono>
 #include <arpa/inet.h>
@@ -154,6 +155,21 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
         initialized_ = true;
         stateSupport_.setState(EbpfMonitorState::Error, false, "http_txn_stats map not found");
         return false;
+    }
+
+    // 排除服务端自身流量（主动探测 / Captive Portal oracle）。
+    // 本探针的挂点全在发起 syscall 的进程上下文，PID 过滤即可，
+    // 故不需要 dns_monitor 那样的 socket cookie 桥接。
+    {
+        const int self_fd = bpf_object__find_map_fd_by_name(obj, "http_self_pid");
+        if (self_fd >= 0) {
+            __u32 k = 0;
+            __u32 self_pid = static_cast<__u32>(::getpid());
+            if (bpf_map_update_elem(self_fd, &k, &self_pid, BPF_ANY) == 0) {
+                LOG_INFO(LogModule::NETWORK,
+                         "HttpLatencyMonitor: self-pid filter set to " << self_pid);
+            }
+        }
     }
 
     // attach 探针到 kprobe/tcp_sendmsg (出站请求) 和 kprobe/kretprobe/tcp_recvmsg_locked (响应)
