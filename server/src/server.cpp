@@ -462,16 +462,42 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     // 绝不混入同一统计窗口。
                     weaknet::ActiveConnectivityResult active;
                     if (ctx->active_probe) {
+                        // 能力声明取自编译期事实，而不是从结果推断：
+                        // 未声明能力（tls_available=false）时 evaluator
+                        // 必须返回 NO_CAPABILITY，绝不能因为恰好有 TLS 数据
+                        // 就宣称 HTTPS 可用。
+                        weaknet::ActiveConnectivityConfig acfg;
+                        acfg.tls_available = ctx->cfg.active_probe.https_enabled.load()
+                                             && ActiveConnectivityMonitor::tlsAvailable();
+                        // 底层健康度：Core SLE 决定。Portal 判定要求底层健康，
+                        // 否则把"网断了"误归因成"被门户拦截"。
+                        acfg.underlying_healthy =
+                            reach_sle.state != weaknet::HealthState::BAD
+                            && rel_sle.state != weaknet::HealthState::BAD
+                            && dns_sle.state != weaknet::HealthState::BAD;
                         active = weaknet::ActiveConnectivityEvaluator::evaluate(
                             ctx->active_probe->results(),
-                            ctx->active_probe->isUsable());
+                            ctx->active_probe->isUsable(),
+                            acfg);
+                        // Portal 使用独立的受控 oracle 结果
+                        if (acfg.tls_available) {
+                            const auto portal_targets = ctx->active_probe->portalResults();
+                            if (!portal_targets.empty()) {
+                                auto pr = weaknet::ActiveConnectivityEvaluator::evaluate(
+                                    portal_targets, ctx->active_probe->isUsable(), acfg);
+                                active.portal = pr.portal;
+                                active.portal_suspected = pr.portal_suspected;
+                            }
+                        }
                         LOG_INFO(LogModule::NETWORK, "Active capability: dns="
                             << weaknet::healthStateToString(active.dns.state)
                             << "(" << active.dns.reason << ") tcp="
                             << weaknet::healthStateToString(active.tcp.state)
                             << "(" << active.tcp.reason << ") https="
                             << weaknet::healthStateToString(active.https.state)
-                            << " portal=" << weaknet::healthStateToString(active.portal.state));
+                            << "(" << active.https.reason << ") portal="
+                            << weaknet::healthStateToString(active.portal.state)
+                            << "(" << active.portal.reason << ")");
                     }
 
                     exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle,
@@ -1129,23 +1155,61 @@ int start_server(int argc, char** argv) {
         ap.timeout_sec = std::max(1u, timeout_ms / 1000u);
 
         // 解析 targets："id|hostname|port,id|hostname|port"
-        const std::string raw = ctx.cfg.active_probe.targets.get();
-        std::istringstream ts(raw);
-        std::string item;
-        while (std::getline(ts, item, ',')) {
-            if (item.empty()) continue;
-            ActiveProbeTargetConfig t;
-            std::istringstream is(item);
-            std::string id, host, port;
-            std::getline(is, id, '|');
-            std::getline(is, host, '|');
-            std::getline(is, port, '|');
-            t.id = id;
-            t.hostname = host;
-            t.tcp_port = port.empty() ? 443 : static_cast<uint16_t>(std::atoi(port.c_str()));
-            if (t.hostname.empty()) continue;
-            ap.targets.push_back(t);
+        // 第 4 段可选，为故障域标识；缺省时取 hostname（见 ActiveProbeTargetConfig）
+        const auto parseTargets = [](const std::string& raw) {
+            std::vector<ActiveProbeTargetConfig> out;
+            std::istringstream ts(raw);
+            std::string item;
+            while (std::getline(ts, item, ',')) {
+                if (item.empty()) continue;
+                ActiveProbeTargetConfig t;
+                std::istringstream is(item);
+                std::string id, host, port, domain;
+                std::getline(is, id, '|');
+                std::getline(is, host, '|');
+                std::getline(is, port, '|');
+                std::getline(is, domain, '|');
+                t.id = id;
+                t.hostname = host;
+                t.tcp_port = port.empty() ? 443 : static_cast<uint16_t>(std::atoi(port.c_str()));
+                t.failure_domain = domain.empty() ? host : domain;
+                if (t.hostname.empty()) continue;
+                out.push_back(t);
+            }
+            return out;
+        };
+
+        ap.targets = parseTargets(ctx.cfg.active_probe.targets.get());
+
+        // HTTPS capability：编译期无 TLS 依赖时如实降级，不伪装
+        ap.https_enabled = ctx.cfg.active_probe.https_enabled.load();
+        if (ap.https_enabled && !ActiveConnectivityMonitor::tlsAvailable()) {
+            LOG_WARNING(LogModule::NETWORK,
+                "active_probe.https_enabled=true but this build has no TLS "
+                "(WEAKNET_HAVE_TLS undefined); HTTPS capability will report "
+                "NO_CAPABILITY (no_tls_probe_capability).");
         }
+
+        // Captive Portal 受控 oracle
+        ap.portal.enabled = ctx.cfg.active_probe.portal_check_enabled.load();
+        ap.portal.path = ctx.cfg.active_probe.portal_path.get();
+        ap.portal.expect_body = ctx.cfg.active_probe.portal_expect_body.get();
+        ap.portal.targets = parseTargets(ctx.cfg.active_probe.portal_targets.get());
+        if (ap.portal.enabled) {
+            if (ap.portal.targets.empty()) {
+                LOG_WARNING(LogModule::NETWORK,
+                    "active_probe.portal_check_enabled=true but portal_targets is empty; "
+                    "Portal will report NO_CAPABILITY. Portal verdict requires "
+                    "controlled oracle endpoints with known responses.");
+                ap.portal.enabled = false;
+            } else if (ap.portal.expect_body.empty()) {
+                LOG_WARNING(LogModule::NETWORK,
+                    "Portal oracle configured without portal_expect_body; only "
+                    "redirect-away signals will be considered (content "
+                    "fingerprint comparison disabled).");
+            }
+        }
+
         ctx.active_probe->configure(ap);
 
         if (ap.enabled && ap.targets.size() < 2) {

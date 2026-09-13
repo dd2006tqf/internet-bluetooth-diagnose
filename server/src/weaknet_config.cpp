@@ -209,6 +209,11 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "interval" || field == "interval_sec" || field == "interval_ms") return setDurationField(cfg->active_probe.interval_ms, val, error);
         if (field == "timeout" || field == "timeout_sec" || field == "timeout_ms") return setDurationField(cfg->active_probe.timeout_ms, val, error);
         if (field == "targets") { cfg->active_probe.targets.set(trim(val)); return true; }
+        if (field == "https_enabled") return setBoolField(cfg->active_probe.https_enabled, val, error);
+        if (field == "portal_check_enabled") return setBoolField(cfg->active_probe.portal_check_enabled, val, error);
+        if (field == "portal_targets") { cfg->active_probe.portal_targets.set(trim(val)); return true; }
+        if (field == "portal_path") { cfg->active_probe.portal_path.set(trim(val)); return true; }
+        if (field == "portal_expect_body") { cfg->active_probe.portal_expect_body.set(trim(val)); return true; }
         *error = "active_probe: unknown field '" + field + "'";
         return false;
     }
@@ -520,6 +525,11 @@ bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
         if (field == "interval" || field == "interval_sec" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 5000, 3600000)) { if (error) *error = "active_probe.interval: must be 5000ms~3600000ms"; return false; } cfg->active_probe.interval_ms.store(ms); return true; }
         if (field == "timeout" || field == "timeout_sec" || field == "timeout_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 500, 30000)) { if (error) *error = "active_probe.timeout: must be 500ms~30000ms"; return false; } cfg->active_probe.timeout_ms.store(ms); return true; }
         if (field == "targets") { cfg->active_probe.targets.set(trim(value)); return true; }
+        if (field == "https_enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "active_probe.https_enabled: invalid bool"; return false; } cfg->active_probe.https_enabled.store(b); return true; }
+        if (field == "portal_check_enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "active_probe.portal_check_enabled: invalid bool"; return false; } cfg->active_probe.portal_check_enabled.store(b); return true; }
+        if (field == "portal_targets") { cfg->active_probe.portal_targets.set(trim(value)); return true; }
+        if (field == "portal_path") { cfg->active_probe.portal_path.set(trim(value)); return true; }
+        if (field == "portal_expect_body") { cfg->active_probe.portal_expect_body.set(trim(value)); return true; }
     }
     if (mon == "tcp_connect") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "tcp_connect.enabled: invalid bool"; return false; } cfg->tcp_connect.enabled.store(b); return true; }
@@ -661,6 +671,11 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeUint("interval_ms", cfg.active_probe.interval_ms.load());
         writeUint("timeout_ms", cfg.active_probe.timeout_ms.load());
         writeString("targets", cfg.active_probe.targets.get());
+        writeBool("https_enabled", cfg.active_probe.https_enabled.load());
+        writeBool("portal_check_enabled", cfg.active_probe.portal_check_enabled.load());
+        writeString("portal_targets", cfg.active_probe.portal_targets.get());
+        writeString("portal_path", cfg.active_probe.portal_path.get());
+        writeString("portal_expect_body", cfg.active_probe.portal_expect_body.get());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "tcp_connect") {

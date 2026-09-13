@@ -148,6 +148,10 @@ add_executable(test_active_connectivity_gtest
     unit/test_active_connectivity_gtest.cpp)
 target_link_libraries(test_active_connectivity_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_tls_probe_client_gtest
+    unit/test_tls_probe_client_gtest.cpp)
+target_link_libraries(test_tls_probe_client_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # ---- CTest 集成 ----
 # enable_testing() 已在根 CMakeLists.txt 中调用
 foreach(test_target
@@ -161,6 +165,7 @@ foreach(test_target
     test_captive_portal_evaluator_gtest
     test_assurance_policy_source_gtest
     test_active_connectivity_gtest
+    test_tls_probe_client_gtest
     test_quality_assessor_gtest
     test_anomaly_detector_gtest
     test_audio_fusion_gtest

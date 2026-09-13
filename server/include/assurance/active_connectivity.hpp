@@ -35,6 +35,7 @@
  */
 
 #include "assurance/health_state.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -49,6 +50,38 @@ struct ProbeStageResult {
     std::string detail;         ///< 失败原因 / 解析到的地址等（诊断用）
 };
 
+/// TLS 阶段附加事实（证书与协议层，用于根因区分）
+struct TlsStageInfo {
+    bool cert_verified{false};
+    std::string version;        ///< 如 TLSv1.3
+    std::string cipher;
+    std::string peer_subject;
+    std::string issuer;
+};
+
+/**
+ * @brief Captive Portal 观测信号
+ *
+ * 只有**受控 oracle**（预期响应已知的 connectivity-check 端点）才能产生
+ * 这些信号。普通业务流量里的 301/302 不构成任何门户语义。
+ */
+enum class PortalSignal {
+    NONE = 0,           ///< 响应符合预期
+    NOT_PROBED,         ///< 未执行 oracle 探测
+    REDIRECTED,         ///< 被重定向到非预期主机
+    CONTENT_MISMATCH,   ///< 状态码正常但内容不符合预期
+};
+
+/// HTTP 阶段附加事实（Portal oracle 判定所需）
+struct HttpStageInfo {
+    int status_code{0};
+    std::string location;       ///< Location 响应头
+    std::string server_header;
+    std::string content_type;
+    bool body_matches_expected{false};
+    PortalSignal portal_signal{PortalSignal::NOT_PROBED};
+};
+
 /**
  * @brief 单个目标的一次完整探测结果
  *
@@ -58,11 +91,17 @@ struct ProbeTargetResult {
     std::string target_id;
     std::string hostname;
     uint16_t tcp_port{0};
+    /// 该目标的故障域标识（默认取 hostname）。
+    /// Portal quorum 要求信号来自**不同故障域**，同一 CDN 的多个域名
+    /// 实为单点 oracle，不能凑数。
+    std::string failure_domain;
 
     ProbeStageResult dns;
     ProbeStageResult tcp;
-    ProbeStageResult tls;    ///< 本轮恒为 attempted=false（无 TLS 能力）
-    ProbeStageResult http;   ///< 本轮恒为 attempted=false
+    ProbeStageResult tls;
+    ProbeStageResult http;
+    TlsStageInfo tls_info;
+    HttpStageInfo http_info;
     bool portal_detected{false};
 
     uint64_t timestamp_ns{0};
@@ -72,19 +111,38 @@ struct ActiveConnectivityConfig {
     /// 授予 capability 判定所需的最少可用目标数。
     /// 单个目标的失败可能是该目标自身的问题，不足以判定整体能力。
     size_t min_eligible_targets{2};
+
+    /// 编译期是否具备 TLS 能力（由调用方以 TlsProbeClient::available() 填入）。
+    ///
+    /// 必须**显式声明**而不是从 targets 推断：二者语义不同 ——
+    ///   tls_available=false            → 我们没有这个能力（NO_CAPABILITY）
+    ///   tls_available=true 但无数据     → 有能力，但本轮证据不足（UNKNOWN/PARTIAL）
+    /// 把后者表达成前者会掩盖"探测本身没跑起来"这类真实缺陷。
+    /// 默认 false 是保守取值：未声明能力时绝不宣称 HTTPS 可用。
+    bool tls_available{false};
+
+    /// 底层链路（IP/DNS/TCP）是否健康。
+    /// Portal 判定要求底层健康 —— 底层故障时应把解释权交回底层 SLE，
+    /// 不得把底层故障误归因门户（评价体系硬约束）。
+    bool underlying_healthy{true};
+
+    /// Captive Portal 判定所需的一致信号故障域数下限。
+    size_t portal_min_domains{2};
 };
 
 /**
  * @brief 主动连通性 SLE 集合
  *
- * 四个维度分开表达：DNS/TCP 为已实现能力，HTTPS/Portal 明确标为
- * 未具备能力（UNKNOWN/NONE），而非"证据不足"。
+ * 四个维度分开表达。DNS/TCP/HTTPS 为 capability 语义，
+ * Portal 为受控 oracle 语义。
  */
 struct ActiveConnectivityResult {
     SleResult dns;
     SleResult tcp;
     SleResult https;
     SleResult portal;
+    /// Portal 观测到信号但未达 quorum 时置位，供 UI 提示而不改变状态
+    bool portal_suspected{false};
 };
 
 /**
@@ -99,17 +157,25 @@ public:
                                              const Config& cfg = Config()) {
         ActiveConnectivityResult out;
 
-        // HTTPS / Portal：本轮不具备探测能力。
-        // 明确表达为 NO_CAPABILITY，而不是"证据不足"（PARTIAL）——
+        // HTTPS / Portal：能力由配置显式声明，不从数据推断。
+        // 未声明能力时明确表达为 NO_CAPABILITY，而不是"证据不足"（PARTIAL）——
         // 二者含义不同：前者是我们没有这个能力，后者是有能力但数据不够。
-        setUnavailable(out.https, "no_tls_probe_capability");
-        setUnavailable(out.portal, "no_portal_probe_capability");
+        if (!cfg.tls_available) {
+            setUnavailable(out.https, "no_tls_probe_capability");
+        }
+        // Portal 能力的缺失在下方按"是否探测过 oracle"单独表达。
 
         // 探测未启用：能力维度整体 UNKNOWN，绝不退回被动证据替代
         if (!probe_enabled || targets.empty()) {
             setUnavailable(out.dns,
                 probe_enabled ? "no_probe_targets" : "active_probe_disabled");
             setUnavailable(out.tcp,
+                probe_enabled ? "no_probe_targets" : "active_probe_disabled");
+            if (!cfg.tls_available || !probe_enabled || targets.empty()) {
+                setUnavailable(out.https,
+                    probe_enabled ? "no_probe_targets" : "active_probe_disabled");
+            }
+            setUnavailable(out.portal,
                 probe_enabled ? "no_probe_targets" : "active_probe_disabled");
             return out;
         }
@@ -187,6 +253,12 @@ public:
         out.tcp.evidence.push_back({"probe_tcp_success",
             static_cast<double>(tcp_ok), "Targets with successful TCP connect"});
 
+        // ---- HTTPS capability（依赖截断：仅在 TCP 成功的 target 上评估）----
+        evaluateHttps(out, targets, cfg);
+
+        // ---- Captive Portal（受控 oracle，依赖截断 + 底层健康门禁）----
+        evaluatePortal(out, targets, cfg);
+
         return out;
     }
 
@@ -198,6 +270,168 @@ private:
         r.scope = EvidenceScope::NO_CAPABILITY;
         r.capability_level_negative = false;
         r.reason = reason;
+    }
+
+    /**
+     * @brief HTTPS capability 判定
+     *
+     * 语义边界（与评价体系一致）：
+     *   收到**任意合法 HTTP 状态码**即证明 HTTPS transport 可用。
+     *   404/500 是 endpoint 自身的业务语义 —— 我们选的受控目标返回 5xx，
+     *   说明该 endpoint 有问题，不能据此判定本机 HTTPS 能力失效。
+     *   因此这里的 success 条件是 tls.ok && http.ok（http.ok 与状态码解耦）。
+     *
+     * 证书错误单独归因：全部目标都因证书校验失败时，这是强负面证据
+     * （可能是中间人/劫持），reason 与"连不上"区分开。
+     */
+    static void evaluateHttps(ActiveConnectivityResult& out,
+                              const std::vector<ProbeTargetResult>& targets,
+                              const Config& cfg) {
+        if (!cfg.tls_available) return;   // 已由 setUnavailable 表达
+
+        out.https.source = EvidenceSource::ACTIVE_PROBE;
+        out.https.scope = EvidenceScope::NETWORK_PATH;
+
+        std::vector<const ProbeTargetResult*> eligible;
+        size_t ok = 0, cert_fail = 0;
+        for (const auto& t : targets) {
+            // 依赖截断：上游未走到 TLS 阶段的不计入，避免一次 DNS/TCP
+            // 故障在 HTTPS 维度再产生一次"失败"
+            if (!t.dns.attempted || !t.dns.success) continue;
+            if (!t.tcp.attempted || !t.tcp.success) continue;
+            if (!t.tls.attempted) continue;
+            eligible.push_back(&t);
+            if (t.tls.success && t.http.success) ok++;
+            else if (!t.tls.success && t.tls.detail == "cert_verify_failed") cert_fail++;
+        }
+
+        if (eligible.empty()) {
+            out.https.state = HealthState::UNKNOWN;
+            out.https.coverage = Coverage::NONE;
+            out.https.reason = "blocked_by_tcp";
+            return;
+        }
+        if (eligible.size() < cfg.min_eligible_targets) {
+            out.https.state = HealthState::UNKNOWN;
+            out.https.coverage = Coverage::NONE;
+            out.https.reason = "insufficient_probe_targets";
+            return;
+        }
+        if (ok == 0) {
+            out.https.state = HealthState::BAD;
+            out.https.coverage = Coverage::FULL_FOR_PROFILE;
+            out.https.capability_level_negative = true;
+            // 全部失败且全部是证书问题 → 精确归因，不混进"网络不可达"
+            out.https.reason = (cert_fail == eligible.size())
+                ? "active_https_cert_verification_failed"
+                : "active_https_capability_failed";
+        } else {
+            // 只要有一个受控目标建立了 TLS 并得到合法 HTTP 响应，
+            // 就证明本机 HTTPS capability 存在
+            out.https.state = HealthState::GOOD;
+            out.https.coverage = Coverage::FULL_FOR_PROFILE;
+            out.https.reason = "active_https_capability_ok";
+        }
+        out.https.evidence.push_back({"probe_https_eligible",
+            static_cast<double>(eligible.size()), "Targets reaching TLS stage"});
+        out.https.evidence.push_back({"probe_https_success",
+            static_cast<double>(ok), "Targets with TLS + valid HTTP response"});
+        out.https.evidence.push_back({"probe_https_cert_fail",
+            static_cast<double>(cert_fail), "Targets failing certificate verification"});
+    }
+
+    /**
+     * @brief Captive Portal 判定（受控 oracle）
+     *
+     * 判定纪律：
+     *   1. 底层链路不健康时不产生门户结论 —— 把解释权交回底层 SLE，
+     *      避免把"网断了"误归因成"被门户拦截"。
+     *   2. 单个端点的异常只置 portal_suspected，不判 CAPTIVE_PORTAL。
+     *      一个 connectivity-check 端点挂掉是常见运维事件，不是门户。
+     *   3. 达到 quorum 的门槛是**故障域**而非目标条数：同一 CDN 的多个
+     *      域名实为单点 oracle，凑数会让判定退化成单点依赖。
+     */
+    static void evaluatePortal(ActiveConnectivityResult& out,
+                               const std::vector<ProbeTargetResult>& targets,
+                               const Config& cfg) {
+        const bool any_probed = [&] {
+            for (const auto& t : targets) {
+                if (t.http_info.portal_signal != PortalSignal::NOT_PROBED) return true;
+            }
+            return false;
+        }();
+
+        if (!any_probed) {
+            setUnavailable(out.portal, "no_portal_probe_capability");
+            return;
+        }
+
+        out.portal.source = EvidenceSource::ACTIVE_PROBE;
+        out.portal.scope = EvidenceScope::NETWORK_PATH;
+
+        // 底层不健康：不解释为门户。UNKNOWN 而非 GOOD，
+        // 因为此时我们也无法确认网络是干净的。
+        if (!cfg.underlying_healthy) {
+            out.portal.state = HealthState::UNKNOWN;
+            out.portal.coverage = Coverage::PARTIAL;
+            out.portal.reason = "portal_signal_but_underlying_unhealthy";
+            return;
+        }
+
+        size_t probed = 0, positive = 0, expected = 0;
+        std::vector<std::string> signal_domains;
+        for (const auto& t : targets) {
+            const auto sig = t.http_info.portal_signal;
+            if (sig == PortalSignal::NOT_PROBED) continue;
+            probed++;
+            if (sig == PortalSignal::REDIRECTED || sig == PortalSignal::CONTENT_MISMATCH) {
+                positive++;
+                const std::string dom =
+                    t.failure_domain.empty() ? t.hostname : t.failure_domain;
+                if (std::find(signal_domains.begin(), signal_domains.end(), dom)
+                    == signal_domains.end()) {
+                    signal_domains.push_back(dom);
+                }
+            } else if (sig == PortalSignal::NONE) {
+                expected++;
+            }
+        }
+
+        if (probed < cfg.min_eligible_targets) {
+            out.portal.state = HealthState::UNKNOWN;
+            out.portal.coverage = Coverage::NONE;
+            out.portal.reason = "insufficient_portal_probe_targets";
+            return;
+        }
+
+        // quorum：≥2 个**独立故障域**给出一致信号
+        const bool quorum = signal_domains.size() >= cfg.portal_min_domains;
+        if (quorum) {
+            out.portal.state = HealthState::BAD;
+            out.portal.coverage = Coverage::FULL_FOR_PROFILE;
+            out.portal.capability_level_negative = true;
+            out.portal.reason = "captive_portal_detected";
+        } else if (positive > 0) {
+            // 单端点异常：提示但不改变状态
+            out.portal_suspected = true;
+            out.portal.state = HealthState::UNKNOWN;
+            out.portal.coverage = Coverage::PARTIAL;
+            out.portal.reason = "portal_suspected_single_endpoint";
+        } else if (expected > 0) {
+            out.portal.state = HealthState::GOOD;
+            out.portal.coverage = Coverage::FULL_FOR_PROFILE;
+            out.portal.reason = "no_captive_portal";
+        } else {
+            out.portal.state = HealthState::UNKNOWN;
+            out.portal.coverage = Coverage::NONE;
+            out.portal.reason = "portal_signal_inconclusive";
+        }
+
+        out.portal.evidence.push_back({"probe_portal_signal_domains",
+            static_cast<double>(signal_domains.size()),
+            "Distinct failure domains reporting a consistent portal signal"});
+        out.portal.evidence.push_back({"probe_portal_positive",
+            static_cast<double>(positive), "Targets reporting a portal signal"});
     }
 };
 

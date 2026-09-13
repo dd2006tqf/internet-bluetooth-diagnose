@@ -20,9 +20,12 @@
  *
  * ## 本版本覆盖范围
  *
- *   DNS / TCP  —— 已实现
- *   TLS / HTTPS / Portal —— 未实现（无 TLS 开发依赖）。
- *   两者在 evaluator 中明确返回 NO_CAPABILITY，绝不伪造。
+ *   DNS / TCP            —— 已实现
+ *   TLS / HTTPS          —— 由 TlsProbeClient 实现（复用 TCP 已建立的 fd）
+ *   Captive Portal       —— 受控 oracle，明文 HTTP + 预期响应比对
+ *
+ * 编译期无 TLS 依赖时（WEAKNET_HAVE_TLS 未定义），TLS/HTTP 阶段保持
+ * attempted=false，由 evaluator 表达为 NO_CAPABILITY，绝不伪造。
  */
 
 #include "assurance/active_connectivity.hpp"
@@ -39,6 +42,19 @@ struct ActiveProbeTargetConfig {
     std::string id;
     std::string hostname;
     uint16_t tcp_port{443};
+    /// 故障域标识（默认取 hostname）。
+    /// Portal quorum 要求信号来自不同故障域，避免同一 CDN 的多个域名
+    /// 被当成独立目标凑数。
+    std::string failure_domain;
+};
+
+/// Portal oracle 的单次探测配置
+struct PortalProbeConfig {
+    bool enabled{false};
+    std::string path{"/"};
+    /// 响应正文必须包含的子串；空则跳过正文比对
+    std::string expect_body;
+    std::vector<ActiveProbeTargetConfig> targets;
 };
 
 struct ActiveProbeConfig {
@@ -46,6 +62,9 @@ struct ActiveProbeConfig {
     uint32_t interval_sec{30};
     uint32_t timeout_sec{3};
     std::vector<ActiveProbeTargetConfig> targets;
+    /// 是否在 TCP 成功后继续做 TLS + HTTP（HTTPS capability）
+    bool https_enabled{true};
+    PortalProbeConfig portal;
 };
 
 /**
@@ -74,12 +93,23 @@ public:
     /// 最近一轮结果（拷贝）
     std::vector<weaknet::ProbeTargetResult> results() const;
 
+    /// 最近一轮 Portal oracle 结果（由 runProbeRound 一并产出）
+    std::vector<weaknet::ProbeTargetResult> portalResults() const;
+
+    /// 运行期是否具备 TLS 能力（编译期决定）
+    static bool tlsAvailable();
+
     /// 启动时的配置摘要（用于 startup log）
     std::string describeConfig() const;
 
 private:
+    /// Portal oracle 探测（明文 HTTP，独立于 capability 目标）
+    std::vector<weaknet::ProbeTargetResult>
+    runPortalRound(const ActiveProbeConfig& cfg, const std::string& resolver);
+
     ActiveProbeConfig cfg_;
     std::vector<weaknet::ProbeTargetResult> last_results_;
+    std::vector<weaknet::ProbeTargetResult> last_portal_results_;
     mutable std::mutex mutex_;
     uint64_t round_counter_{0};
 };

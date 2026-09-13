@@ -167,6 +167,21 @@ struct WeakNetConfig {
         std::atomic<uint32_t> interval_ms{30000};
         std::atomic<uint32_t> timeout_ms{3000};
         ConfigString targets{""};        ///< "id|host|port,id|host|port"
+        // HTTPS 探测开关。关闭时 evaluator 返回 NO_CAPABILITY
+        // （reason=no_tls_probe_capability），绝不因 DNS/TCP 成功就宣称 HTTPS 可用。
+        std::atomic<bool> https_enabled{true};
+        // Portal oracle 开关。开启后额外做一次**明文 HTTP** connectivity-check
+        // 请求，比对是否被重定向/替换内容。
+        std::atomic<bool> portal_check_enabled{false};
+        // Portal oracle 的受控端点。格式同 targets（"id|host|port"），
+        // 但语义不同：这些端点必须是**响应已知**的 connectivity-check 服务。
+        // 默认空 → 不做 oracle 探测 → Portal 返回 NO_CAPABILITY，
+        // 绝不退回"观测到 302 就算门户"这种推测。
+        ConfigString portal_targets{""};
+        // 明文 HTTP 路径（Portal oracle 用），默认 "/"
+        ConfigString portal_path{"/"};
+        // oracle 响应正文必须包含的子串；空则不比对正文
+        ConfigString portal_expect_body{""};
     } active_probe;
 };
 

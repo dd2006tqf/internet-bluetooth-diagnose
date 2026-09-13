@@ -218,7 +218,52 @@ public:
             return exp;
         }
 
-        // Active HTTPS / Portal：本轮不具备探测能力，不参与决策（UNKNOWN/NONE）
+        // Active Captive Portal：受控 oracle 在 ≥2 个独立故障域上给出一致信号。
+        //
+        // 排在 Active HTTPS 之前，因为门户拦截本身会导致 TLS 证书校验失败
+        // （被中间人替换的证书）。若先判 HTTPS 能力失败，门户场景就会被
+        // 误报成"加密通道不可用"，根因定位错误。
+        //
+        // 无受控 oracle（scope == NO_CAPABILITY）时无权决策，
+        // 只能由证据链展示 UNKNOWN。
+        const bool active_portal_app =
+            (active_portal.applicability == Applicability::APPLICABLE &&
+             profile == AssessmentProfile::INTERNET_ACCESS &&
+             active_portal.scope != EvidenceScope::NO_CAPABILITY &&
+             active_portal.capability_level_negative);
+        if (active_portal_app && active_portal.state == HealthState::BAD) {
+            exp.overall = HealthState::BAD;
+            exp.primary_issue = "Captive portal interception detected (controlled oracle)";
+            exp.display_score = 20;
+            return exp;
+        }
+
+        // Active HTTPS capability：受控目标全部无法完成 TLS + HTTP。
+        //
+        // 注意这里判的是"全部失败"，单个受控目标返回 404/500 不构成失败 ——
+        // 收到任意合法 HTTP 状态码即证明 HTTPS transport 存在，
+        // endpoint 自身的业务状态不是 Internet 的判决依据。
+        const bool active_https_app =
+            (active_https.applicability == Applicability::APPLICABLE &&
+             profile == AssessmentProfile::INTERNET_ACCESS &&
+             active_https.capability_level_negative);
+        if (active_https_app && active_https.state == HealthState::BAD) {
+            exp.overall = HealthState::BAD;
+            exp.primary_issue =
+                (active_https.reason == "active_https_cert_verification_failed")
+                    ? "HTTPS certificate verification failed on all controlled targets"
+                    : "Internet HTTPS capability failed (all controlled targets)";
+            exp.display_score = 20;
+            return exp;
+        }
+
+        // Portal 观测到信号但未达 quorum（单端点异常）：仅提示，不改变状态
+        if (active_portal.reason == "portal_suspected_single_endpoint") {
+            exp.warnings.push_back(
+                "A controlled portal-check endpoint behaved unexpectedly, but the "
+                "signal did not reach quorum across independent failure domains; "
+                "not treated as a captive portal");
+        }
 
         // Passive TCP 建连失败：**non-blocking observed service**。
         //

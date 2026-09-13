@@ -18,6 +18,7 @@
 
 #include "active_connectivity_monitor.hpp"
 #include "logger.hpp"
+#include "tls_probe_client.hpp"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -25,6 +26,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sstream>
 #include <vector>
@@ -165,14 +167,23 @@ bool probeDnsA(const std::string& resolver_ip, const std::string& qname,
     return false;
 }
 
-/// 非阻塞 connect + poll，带超时
-bool probeTcpConnect(const std::string& ip, uint16_t port, uint32_t timeout_sec,
-                     std::string* out_detail) {
+/**
+ * @brief 非阻塞 connect + poll，带超时。
+ *
+ * @param out_fd 成功时返回**仍处连接状态**的 fd，由调用方负责 close。
+ *               保留而非立即 close 是因为 TLS 阶段要在同一个连接上
+ *               继续握手；重连会引入一次额外的握手 RTT 与状态差异。
+ */
+bool probeTcpConnectFd(const std::string& ip, uint16_t port, uint32_t timeout_sec,
+                       int* out_fd, std::string* out_detail) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) { *out_detail = std::string("socket: ") + std::strerror(errno); return false; }
 
     const int flags = ::fcntl(fd, F_GETFL, 0);
     ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    // TLS 阶段复用同一 fd，禁用 Nagle 以免小请求被延迟合并
+    const int one = 1;
+    ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
     sockaddr_in sa{};
     sa.sin_family = AF_INET;
@@ -184,7 +195,7 @@ bool probeTcpConnect(const std::string& ip, uint16_t port, uint32_t timeout_sec,
     }
 
     const int rc = ::connect(fd, reinterpret_cast<sockaddr*>(&sa), sizeof(sa));
-    if (rc == 0) { ::close(fd); *out_detail = "connected"; return true; }
+    if (rc == 0) { *out_fd = fd; *out_detail = "connected"; return true; }
     if (errno != EINPROGRESS) {
         *out_detail = std::string("connect: ") + std::strerror(errno);
         ::close(fd);
@@ -208,9 +219,20 @@ bool probeTcpConnect(const std::string& ip, uint16_t port, uint32_t timeout_sec,
         ::close(fd);
         return false;
     }
-    ::close(fd);
+    *out_fd = fd;
     *out_detail = "connected";
     return true;
+}
+
+/// 仅验证建连能力（Portal 探测只需要一个已连接 fd，用不到 TLS）
+bool probeTcpConnect(const std::string& ip, uint16_t port, uint32_t timeout_sec,
+                     std::string* out_detail) {
+    int fd = -1;
+    std::string detail;
+    const bool ok = probeTcpConnectFd(ip, port, timeout_sec, &fd, &detail);
+    if (fd >= 0) ::close(fd);
+    *out_detail = detail;
+    return ok;
 }
 
 /**
@@ -282,6 +304,7 @@ std::vector<weaknet::ProbeTargetResult> ActiveConnectivityMonitor::runProbeRound
         r.target_id = t.id;
         r.hostname = t.hostname;
         r.tcp_port = t.tcp_port;
+        r.failure_domain = t.failure_domain.empty() ? t.hostname : t.failure_domain;
         r.timestamp_ns = now_ns();
 
         // ---- DNS 阶段 ----
@@ -307,32 +330,200 @@ std::vector<weaknet::ProbeTargetResult> ActiveConnectivityMonitor::runProbeRound
             continue;
         }
 
-        // ---- TCP 阶段 ----
+        // ---- TCP 阶段（保留 fd 供 TLS 复用）----
         r.tcp.attempted = true;
         const auto tcp_t0 = std::chrono::steady_clock::now();
         std::string tcp_detail;
-        const bool tcp_ok = probeTcpConnect(addr, t.tcp_port, cfg.timeout_sec, &tcp_detail);
+        int fd = -1;
+        const bool tcp_ok = probeTcpConnectFd(addr, t.tcp_port, cfg.timeout_sec,
+                                              &fd, &tcp_detail);
         r.tcp.latency_ms = std::chrono::duration_cast<std::chrono::microseconds>(
                                std::chrono::steady_clock::now() - tcp_t0).count() / 1000.0;
         r.tcp.success = tcp_ok;
         r.tcp.detail = tcp_detail;
 
-        // ---- TLS / HTTP：本版本未实现（无 TLS 开发依赖）----
-        // 明确保持 attempted=false，由 evaluator 表达为 NO_CAPABILITY。
-        // 绝不因 TCP 成功就推断 HTTPS 可用。
-        r.tls.attempted = false;
-        r.tls.detail = tcp_ok ? "no_tls_probe_capability" : "blocked_by_tcp";
-        r.http.attempted = false;
-        r.http.detail = tcp_ok ? "no_tls_probe_capability" : "blocked_by_tcp";
+        if (!tcp_ok) {
+            // 依赖截断：TCP 未成功则 TLS/HTTP 记为 blocked_by_tcp，
+            // 而不是各自产生一次失败
+            r.tls.attempted = false;
+            r.tls.detail = "blocked_by_tcp";
+            r.http.attempted = false;
+            r.http.detail = "blocked_by_tcp";
+            if (fd >= 0) ::close(fd);
+            results.push_back(std::move(r));
+            continue;
+        }
 
+        // ---- TLS + HTTP 阶段（HTTPS capability）----
+        if (cfg.https_enabled) {
+            TlsProbeClient::Config tc;
+            tc.deadline_ms = cfg.timeout_sec * 1000;
+            tc.use_tls = true;
+            tc.path = "/";
+            const auto tr = TlsProbeClient::run(fd, t.hostname, tc);
+
+            r.tls.attempted = tr.tls_attempted;
+            r.tls.success = tr.tls_ok;
+            r.tls.latency_ms = tr.tls_ms;
+            r.tls.detail = tr.tls_detail;
+            r.tls_info.cert_verified = tr.cert_verified;
+            r.tls_info.version = tr.tls_version;
+            r.tls_info.cipher = tr.cipher;
+            r.tls_info.peer_subject = tr.peer_subject;
+            r.tls_info.issuer = tr.issuer;
+
+            r.http.attempted = tr.http_attempted;
+            // http.success 表示"得到可解析的 HTTP 响应"，与状态码无关。
+            // 404/500 同样是合法响应，证明 transport 存在。
+            r.http.success = tr.http_ok;
+            r.http.latency_ms = tr.http_ms;
+            r.http.detail = tr.http_detail;
+            r.http_info.status_code = tr.status_code;
+            r.http_info.location = tr.location;
+            r.http_info.server_header = tr.server_header;
+            r.http_info.content_type = tr.content_type;
+        } else {
+            r.tls.attempted = false;
+            r.tls.detail = "https_probe_disabled";
+            r.http.attempted = false;
+            r.http.detail = "https_probe_disabled";
+        }
+
+        if (fd >= 0) ::close(fd);
         results.push_back(std::move(r));
+    }
+
+    // ---- Captive Portal oracle（独立一轮，明文 HTTP）----
+    std::vector<weaknet::ProbeTargetResult> portal_results;
+    if (cfg.portal.enabled && !cfg.portal.targets.empty()) {
+        portal_results = runPortalRound(cfg, resolver);
     }
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         last_results_ = results;
+        last_portal_results_ = portal_results;
     }
     return results;
+}
+
+/**
+ * @brief Captive Portal oracle 探测（明文 HTTP）
+ *
+ * 与 HTTPS 探测分开的原因：门户拦截通常发生在明文 HTTP 层，
+ * 且 oracle 端点与 capability 目标不是同一批（前者必须响应已知）。
+ *
+ * 判定信号只在**受控端点**上产生：
+ *   - 302/301 且 Location 指向非预期主机 → REDIRECTED（门户典型行为）
+ *   - 状态码正常但正文不含预期子串     → CONTENT_MISMATCH
+ *   - 其余                             → NONE
+ *
+ * 顶层 DNS 失败时不计入：底层不通时不得产生门户语义。
+ */
+std::vector<weaknet::ProbeTargetResult>
+ActiveConnectivityMonitor::runPortalRound(const ActiveProbeConfig& cfg,
+                                          const std::string& resolver) {
+    std::vector<weaknet::ProbeTargetResult> out;
+    const auto now_ns = [] {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+    };
+
+    for (const auto& t : cfg.portal.targets) {
+        weaknet::ProbeTargetResult r;
+        r.target_id = t.id;
+        r.hostname = t.hostname;
+        r.tcp_port = t.tcp_port;
+        r.failure_domain = t.failure_domain.empty() ? t.hostname : t.failure_domain;
+        r.timestamp_ns = now_ns();
+
+        std::string addr, detail;
+        if (!probeDnsA(resolver, t.hostname, cfg.timeout_sec, &addr, &detail)) {
+            // 底层 DNS 不通：不产生门户信号（交给底层 SLE 解释）
+            r.http_info.portal_signal = weaknet::PortalSignal::NOT_PROBED;
+            out.push_back(std::move(r));
+            continue;
+        }
+
+        int fd = -1;
+        std::string tcp_detail;
+        if (!probeTcpConnectFd(addr, t.tcp_port, cfg.timeout_sec, &fd, &tcp_detail)) {
+            r.http_info.portal_signal = weaknet::PortalSignal::NOT_PROBED;
+            out.push_back(std::move(r));
+            continue;
+        }
+
+        TlsProbeClient::Config tc;
+        tc.deadline_ms = cfg.timeout_sec * 1000;
+        tc.use_tls = false;                 // 门户 oracle 走明文
+        tc.path = cfg.portal.path.empty() ? "/" : cfg.portal.path;
+        const auto tr = TlsProbeClient::run(fd, t.hostname, tc);
+        ::close(fd);
+
+        r.http.attempted = tr.http_attempted;
+        r.http.success = tr.http_ok;
+        r.http.latency_ms = tr.http_ms;
+        r.http.detail = tr.http_detail;
+        r.http_info.status_code = tr.status_code;
+        r.http_info.location = tr.location;
+        r.http_info.server_header = tr.server_header;
+        r.http_info.content_type = tr.content_type;
+
+        if (!tr.http_ok) {
+            // 拿不到响应：无法断定是否被门户拦截，不产生信号
+            r.http_info.portal_signal = weaknet::PortalSignal::NOT_PROBED;
+            out.push_back(std::move(r));
+            continue;
+        }
+
+        // ---- 一致信号判定 ----
+        // 重定向到非预期主机
+        const bool is_redirect = (tr.status_code == 301 || tr.status_code == 302
+                                  || tr.status_code == 303 || tr.status_code == 307
+                                  || tr.status_code == 308);
+        if (is_redirect && !tr.location.empty()) {
+            const bool points_elsewhere = tr.location.find(t.hostname) == std::string::npos
+                                          && tr.location.rfind("/", 0) != 0;
+            r.http_info.portal_signal = points_elsewhere
+                ? weaknet::PortalSignal::REDIRECTED
+                : weaknet::PortalSignal::NONE;
+        } else if (!cfg.portal.expect_body.empty()) {
+            // 正文指纹比对
+            const bool matched = tr.body_snippet.find(cfg.portal.expect_body) != std::string::npos;
+            r.http_info.body_matches_expected = matched;
+            if (matched) {
+                r.http_info.portal_signal = weaknet::PortalSignal::NONE;
+            } else if (tr.status_code >= 200 && tr.status_code < 400) {
+                // 状态码正常但内容不是预期 —— 内容被替换
+                r.http_info.portal_signal = weaknet::PortalSignal::CONTENT_MISMATCH;
+            } else {
+                // 5xx 等：endpoint 自身故障，不是门户信号
+                r.http_info.portal_signal = weaknet::PortalSignal::NOT_PROBED;
+            }
+        } else {
+            // 无预期正文可比对（未配置 portal_expect_body）：
+            // 只有明确的重定向才算信号，否则不推测
+            r.http_info.portal_signal = weaknet::PortalSignal::NONE;
+        }
+
+        if (r.http_info.portal_signal == weaknet::PortalSignal::REDIRECTED
+            || r.http_info.portal_signal == weaknet::PortalSignal::CONTENT_MISMATCH) {
+            r.portal_detected = true;
+        }
+
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+std::vector<weaknet::ProbeTargetResult> ActiveConnectivityMonitor::portalResults() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return last_portal_results_;
+}
+
+bool ActiveConnectivityMonitor::tlsAvailable() {
+    return TlsProbeClient::available();
 }
 
 std::vector<weaknet::ProbeTargetResult> ActiveConnectivityMonitor::results() const {

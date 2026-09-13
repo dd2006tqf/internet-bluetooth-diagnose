@@ -1,3 +1,5 @@
+# ---- 产物不携带构建机专用路径 ----
+
 # ---- 服务端源文件（自动发现） ----
 file(GLOB SERVER_SOURCES CONFIGURE_DEPENDS src/*.cpp src/utils/*.cpp src/assurance/*.cpp src/metrics/*.cpp)
 list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*\\.bpf\\.c$")
@@ -27,23 +29,92 @@ target_link_libraries(server_lib PUBLIC
     PkgConfig::DBUS1 glog bpf pthread ${SQLITE3_LIB}
     $<$<BOOL:${NL80211_FOUND}>:PkgConfig::NL80211>)
 
-# ---- W1: OpenSSL 1.1 私有 sysroot（D 路线）----
-# libssl-dev 不经 APT 安装（bullseye-security 索引/pool 不一致），
-# 由 scripts/setup_openssl_sysroot.sh 解压到 /opt/weaknet-openssl-1.1/。
-# 链接用 PRIVATE：公共头不暴露 OpenSSL 类型，不把 TLS 依赖传播给消费者。
-# sysroot 不存在时（如某些开发环境）不 fail，TLS 能力按项目语义降级为 UNKNOWN。
-find_library(WEAKNET_OPENSSL_SSL NAMES ssl ssl.1.1
-    PATHS /opt/weaknet-openssl-1.1/usr/lib/aarch64-linux-gnu
-    /usr/lib/aarch64-linux-gnu /usr/lib64 /usr/lib)
-find_path(WEAKNET_OPENSSL_INCLUDE_DIR openssl/ssl.h
-    PATHS /opt/weaknet-openssl-1.1/usr/include
-          /opt/weaknet-openssl-1.1/usr/include/aarch64-linux-gnu
-          /usr/include)
-if(WEAKNET_OPENSSL_LIB AND WEAKNET_OPENSSL_INCLUDE_DIR)
-    message(STATUS "weaknet TLS: sysroot found (OPENSSL 1.1 private sysroot)")
+# ---- W1: OpenSSL（TLS 探测能力）----
+#
+# 双路径探测，按优先级：
+#   1. 私有 sysroot ${WEAKNET_OPENSSL_SYSROOT}（ARM64 构建容器的主路径）
+#      libssl-dev 不经 APT 安装（bullseye-security 索引/pool 不一致导致
+#      恒 404；bullseye/main 的 deb11u1 又与镜像已装 libssl1.1 deb11u8
+#      版本冲突），改由 scripts/setup_openssl_sysroot.sh 以固定 .deb +
+#      SHA256 校验 + dpkg-deb -x 解压得到。
+#   2. 系统 OpenSSL（x86 开发机，实测为 3.5.5）
+#
+# 两个 backend 的 API 差异（1.1 vs 3.x）由源码内
+# #if OPENSSL_VERSION_NUMBER 适配，CMake 只负责定位与链接。
+#
+# 链接范围 PRIVATE：公共头不暴露任何 OpenSSL 类型，不把 TLS 依赖
+# 传播给 server_lib 的消费者。
+#
+# 找不到时不 fail：TLS 能力按项目语义降级为 NO_CAPABILITY
+# （对应 SleResult.scope = NO_CAPABILITY、reason = no_tls_probe_capability），
+# 而不是让整个构建失败。
+set(WEAKNET_OPENSSL_SYSROOT "/opt/weaknet-openssl-1.1"
+    CACHE PATH "OpenSSL 1.1 私有 sysroot（ARM64 构建容器）")
+
+# 1) 私有 sysroot：NO_DEFAULT_PATH 确保不会误拾系统库
+# 默认 FALSE：仅 sysroot 后端会置 TRUE（决定是否剥掉构建期 RUNPATH）
+set(WEAKNET_TLS_IS_SYSROOT FALSE)
+find_path(WEAKNET_OPENSSL_SYSROOT_INCLUDE_DIR openssl/ssl.h
+    PATHS "${WEAKNET_OPENSSL_SYSROOT}/usr/include"
+    NO_DEFAULT_PATH)
+find_library(WEAKNET_OPENSSL_SYSROOT_SSL_LIB NAMES ssl
+    PATHS "${WEAKNET_OPENSSL_SYSROOT}/usr/lib/aarch64-linux-gnu"
+    NO_DEFAULT_PATH)
+find_library(WEAKNET_OPENSSL_SYSROOT_CRYPTO_LIB NAMES crypto
+    PATHS "${WEAKNET_OPENSSL_SYSROOT}/usr/lib/aarch64-linux-gnu"
+    NO_DEFAULT_PATH)
+
+if(WEAKNET_OPENSSL_SYSROOT_INCLUDE_DIR
+   AND WEAKNET_OPENSSL_SYSROOT_SSL_LIB
+   AND WEAKNET_OPENSSL_SYSROOT_CRYPTO_LIB)
+    set(WEAKNET_TLS_FOUND TRUE)
+    set(WEAKNET_TLS_IS_SYSROOT TRUE)
+    set(WEAKNET_TLS_BACKEND "sysroot:${WEAKNET_OPENSSL_SYSROOT}")
+    # Debian multiarch 布局：opensslconf.h 在 aarch64-linux-gnu/ 子目录下，
+    # 只加 usr/include 会报 "openssl/opensslconf.h: No such file".
+    set(WEAKNET_TLS_INCLUDE_DIRS
+        "${WEAKNET_OPENSSL_SYSROOT_INCLUDE_DIR}"
+        "${WEAKNET_OPENSSL_SYSROOT}/usr/include/aarch64-linux-gnu")
+    set(WEAKNET_TLS_LIBRARIES
+        "${WEAKNET_OPENSSL_SYSROOT_SSL_LIB}"
+        "${WEAKNET_OPENSSL_SYSROOT_CRYPTO_LIB}")
 else()
-    message(STATUS "weaknet TLS: OpenSSL sysroot not found; HTTPS probe capability will be NONE")
+    # 2) 回退系统 OpenSSL
+    find_package(OpenSSL QUIET)
+    if(OpenSSL_FOUND)
+        set(WEAKNET_TLS_FOUND TRUE)
+        set(WEAKNET_TLS_BACKEND "system:${OPENSSL_VERSION}")
+        set(WEAKNET_TLS_INCLUDE_DIRS "${OPENSSL_INCLUDE_DIR}")
+        set(WEAKNET_TLS_LIBRARIES OpenSSL::SSL OpenSSL::Crypto)
+    else()
+        set(WEAKNET_TLS_FOUND FALSE)
+        set(WEAKNET_TLS_IS_SYSROOT FALSE)
+    endif()
 endif()
+
+if(WEAKNET_TLS_FOUND)
+    message(STATUS "weaknet TLS: enabled (${WEAKNET_TLS_BACKEND})")
+    target_include_directories(server_lib PRIVATE ${WEAKNET_TLS_INCLUDE_DIRS})
+    target_link_libraries(server_lib PRIVATE ${WEAKNET_TLS_LIBRARIES})
+    target_compile_definitions(server_lib PRIVATE WEAKNET_HAVE_TLS=1)
+else()
+    message(STATUS "weaknet TLS: not found; HTTPS probe capability will be NONE")
+endif()
+
+# 只有**私有 sysroot** 后端需要剥掉构建期 RPATH。
+#
+# 背景：sysroot 位于 /opt/weaknet-openssl-1.1/...，不在 linker 默认搜索路径内，
+# 于是 CMake 给链接它的目标加了 RUNPATH=<sysroot>/usr/lib/aarch64-linux-gnu。
+# 该路径是构建期产物，**在开发板上不存在**；把它固化进交付产物会误导依赖排查
+# （ldd 显示这条路径，实际运行走的是系统库 —— 因为 SONAME 就是 libssl.so.1.1，
+# 板端 /usr/lib/aarch64-linux-gnu/libssl.so.1.1 已具备，运行不依赖 sysroot）。
+#
+# 系统后端（x86 开发机）**不能剥**：那里的 libssl.so.1.1 只在 /usr/local/lib64，
+# 既不在 ld.so.conf 也没被 ldconfig 收录，运行完全依赖 OpenSSL::SSL 导入目标
+# 携带的 RPATH=/usr/local/lib64。剥掉会直接导致
+# "error while loading shared libraries: libssl.so.1.1"（已实测）。
+set_target_properties(server_lib PROPERTIES
+    SKIP_BUILD_RPATH ${WEAKNET_TLS_IS_SYSROOT})
 
 # ---- 服务端可执行文件 ----
 add_executable(weaknet-dbus-server src/main.cpp src/server.cpp)
