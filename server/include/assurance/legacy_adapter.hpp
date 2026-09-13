@@ -196,6 +196,20 @@ public:
 
         json << "\"service_health\":{";
         dump_sle("dns", exp.dns_service);
+        json << ",";
+        dump_sle("tcp_connect", exp.tcp_connect);
+        json << ",";
+        dump_sle("http_access", exp.http_access);
+        json << ",";
+        dump_sle("captive_portal", exp.captive_portal);
+        json << ",";
+        dump_sle("active_dns", exp.active_dns);
+        json << ",";
+        dump_sle("active_tcp", exp.active_tcp);
+        json << ",";
+        dump_sle("active_https", exp.active_https);
+        json << ",";
+        dump_sle("active_portal", exp.active_portal);
         json << "},";
 
         json << "\"warnings\":[";
