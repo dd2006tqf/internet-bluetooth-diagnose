@@ -27,6 +27,24 @@ target_link_libraries(server_lib PUBLIC
     PkgConfig::DBUS1 glog bpf pthread ${SQLITE3_LIB}
     $<$<BOOL:${NL80211_FOUND}>:PkgConfig::NL80211>)
 
+# ---- W1: OpenSSL 1.1 私有 sysroot（D 路线）----
+# libssl-dev 不经 APT 安装（bullseye-security 索引/pool 不一致），
+# 由 scripts/setup_openssl_sysroot.sh 解压到 /opt/weaknet-openssl-1.1/。
+# 链接用 PRIVATE：公共头不暴露 OpenSSL 类型，不把 TLS 依赖传播给消费者。
+# sysroot 不存在时（如某些开发环境）不 fail，TLS 能力按项目语义降级为 UNKNOWN。
+find_library(WEAKNET_OPENSSL_SSL NAMES ssl ssl.1.1
+    PATHS /opt/weaknet-openssl-1.1/usr/lib/aarch64-linux-gnu
+    /usr/lib/aarch64-linux-gnu /usr/lib64 /usr/lib)
+find_path(WEAKNET_OPENSSL_INCLUDE_DIR openssl/ssl.h
+    PATHS /opt/weaknet-openssl-1.1/usr/include
+          /opt/weaknet-openssl-1.1/usr/include/aarch64-linux-gnu
+          /usr/include)
+if(WEAKNET_OPENSSL_LIB AND WEAKNET_OPENSSL_INCLUDE_DIR)
+    message(STATUS "weaknet TLS: sysroot found (OPENSSL 1.1 private sysroot)")
+else()
+    message(STATUS "weaknet TLS: OpenSSL sysroot not found; HTTPS probe capability will be NONE")
+endif()
+
 # ---- 服务端可执行文件 ----
 add_executable(weaknet-dbus-server src/main.cpp src/server.cpp)
 target_link_libraries(weaknet-dbus-server PRIVATE server_lib)
