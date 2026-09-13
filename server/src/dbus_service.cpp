@@ -56,6 +56,7 @@
 #include "assurance/responsiveness_evaluator.hpp"
 #include "assurance/reliability_evaluator.hpp"
 #include "assurance/rf_health_evaluator.hpp"
+#include "assessment_snapshot.hpp"
 #include "assurance/dns_service_evaluator.hpp"
 #include "assurance/tcp_connect_evaluator.hpp"
 #include "assurance/http_access_evaluator.hpp"
@@ -118,6 +119,10 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetCoexistenceConflict)) {
         self->handleGetCoexistenceConflict(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetNetworkExperience)) {
+        self->handleGetNetworkExperience(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetDnsStats)) {
@@ -437,59 +442,29 @@ bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
         auto resp_sle = weaknet::ResponsivenessEvaluator::evaluate(rtt_samples, jitter_samples);
         auto rel_sle = weaknet::ReliabilityEvaluator::evaluate(wifi_samples, tcp_samples, is_wireless);
         auto rf_sle = weaknet::RfHealthEvaluator::evaluate(rssi_samples, is_wireless);
-        weaknet::SleResult dns_sle;
-        if (ctx_->dns_tracker) {
-            auto snap = ctx_->dns_tracker->getSnapshot();
-            auto dns_window = ctx_->dns_tracker->getWindowMetrics(std::chrono::seconds(120), snap.cutoff);
-            dns_sle = weaknet::DnsServiceEvaluator::evaluate(
-                dns_window, ctx_->dns_tracker->getRecentTerminals());
-        }
-
-        // TCP Connect SLE（被动）
-        weaknet::SleResult tcp_sle;
-        if (ctx_->tcp_connect_monitor) {
-            weaknet::TcpConnectEvaluator::Input tcp_in;
-            for (const auto& o : ctx_->tcp_connect_monitor->recentObservations()) {
-                tcp_in.samples.push_back({o.success, o.latency_ms});
+        // W2 单一事实源：HealthCheck **只读权威快照**，绝不重新 evaluate。
+        // 此前本方法现场拉 metrics + 调 OverallPolicy，与 quality 线程、
+        // history 线程构成三条结论可能不一致的评估路径（既有 bug）。
+        auto snap = ctx_->assessment_store.latest();
+        if (snap) {
+            const uint64_t cur_epoch = ctx_->dns_tracker ? ctx_->dns_tracker->currentBindingEpoch()
+                                                         : ctx_->dns_binding_epoch.load();
+            if (weaknet::AssessmentSnapshotStore::isCurrent(*snap,
+                    ctx_->config_generation.load(), cur_epoch)) {
+                exp = snap->experience;
+            } else {
+                // snapshot 过期：显式 UNKNOWN，等下一轮评估，不返回旧 profile 结论
+                exp.iface = active_iface;
+                exp.overall = weaknet::HealthState::UNKNOWN;
+                exp.overall_coverage = weaknet::Coverage::NONE;
+                exp.primary_issue = "stale_assessment";
             }
-            const auto ts = ctx_->tcp_connect_monitor->stats();
-            tcp_in.unmatched_terminal = ts.unmatched_terminal;
-            tcp_in.capture_events = tcp_in.samples.size() + ts.unmatched_terminal;
-            tcp_sle = weaknet::TcpConnectEvaluator::evaluate(tcp_in);
+        } else {
+            exp.iface = active_iface;
+            exp.overall = weaknet::HealthState::UNKNOWN;
+            exp.display_score = 50;
+            exp.primary_issue = "no_assessment_yet";
         }
-
-        // Passive cleartext HTTP + Portal
-        weaknet::SleResult http_sle;
-        weaknet::SleResult portal_sle;
-        if (ctx_->http_latency_monitor) {
-            weaknet::HttpAccessEvaluator::Input http_in;
-            const auto txns = ctx_->http_latency_monitor->getRecentTxns(200);
-            for (const auto& t : txns) {
-                http_in.samples.push_back({t.statusCode, static_cast<double>(t.ttfbNs) / 1e6, false});
-            }
-            http_in.capture_events = http_in.samples.size();
-            http_sle = weaknet::HttpAccessEvaluator::evaluate(http_in);
-
-            weaknet::CaptivePortalEvaluator::Input portal_in;
-            portal_in.has_controlled_probe = false;   // 当前无 portal 探测能力
-            portal_in.ip_reachable = (reach_sle.state == weaknet::HealthState::GOOD);
-            portal_in.dns_resolvable = (dns_sle.state == weaknet::HealthState::GOOD);
-            portal_in.tcp_connectable = (tcp_sle.state == weaknet::HealthState::GOOD);
-            portal_sle = weaknet::CaptivePortalEvaluator::evaluate(portal_in);
-        }
-
-        // 受控主动探测（与质量线程共用同一份证据，保证两条路径结论一致）
-        weaknet::ActiveConnectivityResult active;
-        if (ctx_->active_probe) {
-            active = weaknet::ActiveConnectivityEvaluator::evaluate(
-                ctx_->active_probe->results(), ctx_->active_probe->isUsable());
-        }
-
-        exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle,
-                                             rf_sle, dns_sle, tcp_sle, http_sle, portal_sle,
-                                             active.dns, active.tcp,
-                                             active.https, active.portal,
-                                             ctx_->assessment_profile);
         resp_reason = resp_sle.reason;
         for (const auto& ev : resp_sle.evidence) {
             if (ev.metric == "median_rtt_ms") {
@@ -878,6 +853,62 @@ bool DbusService::handleGetCoexistenceConflict(DBusConnection* conn, DBusMessage
     dbus_message_unref(reply);
     return true;
 }
+
+/**
+ * @brief DBus 方法实现：GetNetworkExperience —— 返回权威评估快照（schema v2）
+ *
+ * **只读 snapshot，绝不重新 evaluate**（W2 单一事实源）：
+ * quality 线程是唯一 evaluator 执行点；本方法只序列化 stabilizer 后的
+ * 最终结论。实测此前三条评估路径（quality/history/HealthCheck）各自拉
+ * 不同 metrics、结论可能不一致 —— 该 bug 由本方法杜绝。
+ *
+ * 生命周期边界：
+ *   - 尚无第一份 snapshot → 显式 UNKNOWN(no_assessment_yet)，不返回空对象
+ *   - config_generation / network_epoch 与当前不符 → 旧 snapshot 失效，
+ *     同样返回 UNKNOWN(stale_assessment)，等下一轮评估
+ */
+bool DbusService::handleGetNetworkExperience(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetNetworkExperience called (W2 read-only snapshot)");
+
+    std::string jsonResult;
+    auto snap = ctx_ ? ctx_->assessment_store.latest() : nullptr;
+    bool stale = false;
+    if (snap) {
+        // 配置代/网络代与当前不符 → 旧 snapshot 失效
+        const uint64_t cur_epoch = ctx_->dns_tracker ? ctx_->dns_tracker->currentBindingEpoch()
+                                                     : ctx_->dns_binding_epoch.load();
+        if (!weaknet::AssessmentSnapshotStore::isCurrent(*snap,
+                ctx_->config_generation.load(), cur_epoch)) {
+            stale = true;
+        }
+    }
+
+    if (!snap) {
+        jsonResult = "{\"schema_version\":2,\"state\":\"UNKNOWN\","
+                     "\"coverage\":\"NONE\",\"reason\":\"no_assessment_yet\"}";
+    } else if (stale) {
+        jsonResult = "{\"schema_version\":2,\"state\":\"UNKNOWN\","
+                     "\"coverage\":\"NONE\",\"reason\":\"stale_assessment\","
+                     "\"note\":\"waiting for next evaluation with current config/epoch\"}";
+    } else {
+        jsonResult = weaknet::LegacyAdapter::toExperienceJsonV2(snap->experience);
+    }
+
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = jsonResult.c_str();
+    if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s)) {
+        dbus_message_unref(reply);
+        return false;
+    }
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
 
 // ====================================================================
 // eBPF 监控数据 D-Bus 方法

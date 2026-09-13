@@ -493,6 +493,22 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                 weaknet::HealthState stableState = stabilizer.update(exp.overall, newest_rev);
                 exp.overall = stableState;
 
+                // W2: 发布权威评估快照（单一事实源）。
+                // quality 线程是唯一 evaluator 执行点；HealthCheck /
+                // GetNetworkExperience / history persistence 全部只读本快照。
+                {
+                    auto snap = std::make_shared<weaknet::AssessmentSnapshot>();
+                    snap->sequence_id = ++ctx->assessment_sequence; // 每轮都发布（含 UNKNOWN），消费者可见评估节奏
+                    snap->evaluated_at_monotonic = std::chrono::steady_clock::now();
+                    snap->wall_timestamp = std::chrono::system_clock::now();
+                    snap->profile = ctx->assessment_profile;
+                    snap->config_generation = ctx->config_generation.load();
+                    snap->network_epoch = ctx->dns_tracker ? ctx->dns_tracker->currentBindingEpoch() : ctx->dns_binding_epoch.load();
+                    snap->experience = exp;
+                    // 以 const 指针发布：读侧拿到后不可修改（不可变快照语义）
+                    ctx->assessment_store.publish(std::const_pointer_cast<const weaknet::AssessmentSnapshot>(std::move(snap)));
+                }
+
                 if (stableState != lastStableState) {
                     auto qualRes = weaknet::LegacyAdapter::toQualityResult(exp);
                     LOG_INFO(LogModule::WEAK_MGR, "网络质量稳定跃迁: " << qualRes.levelName
@@ -907,33 +923,25 @@ void start_history_persistence_thread(ServerContext* ctx) {
             auto opt = ctx->weak_mgr->getCurrentUsingInterface();
             if (opt.has_value()) active_iface = opt.value();
 
+            // W2 单一事实源：history persistence **只读权威快照**，绝不重新 evaluate。
+            // 此前本线程现场只拉 5 个 Core SLE 调 OverallPolicy（无 DNS/TCP/HTTP/Active），
+            // 与 quality 线程、HealthCheck 构成三条结论可能不一致的评估路径 ——
+            // DB 中写入的是"只有 5 个 SLE 的旧结论"（既有 bug，本处修复）。
+            // 原始 metrics 与 assessment **同代冻结**：同一 snapshot 的 experience
+            // 提供结论，registry 的 latest 值仅作快照内的指标补充且由 snapshot 时刻界定。
             weaknet::NetworkExperience exp;
-            if (ctx->metrics_registry) {
-                using namespace std::chrono_literals;
-                auto reach_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::REACHABILITY_SUCCESS, 120s);
-                auto rtt_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::RTT_MS, 120s);
-                auto jitter_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::JITTER_MS, 120s);
-                auto wifi_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::WIFI_LOSS_RATE, 120s);
-                auto tcp_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::TCP_LOSS_RATE, 120s);
-                auto rssi_samples = ctx->metrics_registry->window(active_iface, weaknet::MetricId::RSSI_DBM, 120s);
-
-                bool is_wireless = (active_iface.rfind("wl", 0) == 0);
-                auto reach_sle = weaknet::IpReachabilityEvaluator::evaluate(reach_samples);
-                auto resp_sle = weaknet::ResponsivenessEvaluator::evaluate(rtt_samples, jitter_samples);
-                auto rel_sle = weaknet::ReliabilityEvaluator::evaluate(wifi_samples, tcp_samples, is_wireless);
-                auto rf_sle = weaknet::RfHealthEvaluator::evaluate(rssi_samples, is_wireless);
-
-                exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle, rf_sle);
-
-                double jitter_val = 0.0;
-                auto latest_jitter = ctx->metrics_registry->latest(active_iface, weaknet::MetricId::JITTER_MS);
-                if (latest_jitter.has_value() && latest_jitter->state == weaknet::MetricState::VALID) {
-                    jitter_val = latest_jitter->value;
-                }
+            auto snap = ctx->assessment_store.latest();
+            const bool snap_valid = snap && weaknet::AssessmentSnapshotStore::isCurrent(*snap,
+                    ctx->config_generation.load(),
+                    ctx->dns_tracker ? ctx->dns_tracker->currentBindingEpoch()
+                                     : ctx->dns_binding_epoch.load());
+            if (snap_valid) {
+                exp = snap->experience;
             } else {
                 exp.iface = active_iface;
                 exp.overall = weaknet::HealthState::UNKNOWN;
                 exp.display_score = 50;
+                exp.primary_issue = snap ? "stale_assessment" : "no_assessment_yet";
             }
 
             double cur_jitter = 0.0;

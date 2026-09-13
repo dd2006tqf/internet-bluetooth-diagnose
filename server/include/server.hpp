@@ -25,6 +25,7 @@
 #include "monitor_manager.hpp"
 #include "metrics/metrics_registry.hpp"
 #include "assurance/dns_transaction_tracker.hpp"
+#include "assessment_snapshot.hpp"
 #include "assurance/dns_service_evaluator.hpp"
 
 // 前置声明，避免强依赖 dbus 头
@@ -97,6 +98,14 @@ struct ServerContext {
 
     /// 受控主动连通性探测（宿主能力证据的唯一来源）
     std::unique_ptr<ActiveConnectivityMonitor> active_probe;
+
+    // ---------- 权威评估快照（W2 单一事实源）----------
+    // quality 线程是唯一 evaluator 执行点；每轮评估后发布不可变快照。
+    // HealthCheck / GetNetworkExperience / history persistence 全部只读，
+    // 绝不重新拉 metrics、重新 evaluate、重新调 OverallPolicy。
+    weaknet::AssessmentSnapshotStore assessment_store;
+    std::atomic<uint32_t> config_generation{1};   ///< 配置代（配置变更时递增）
+    std::atomic<uint64_t> assessment_sequence{0}; ///< 快照发布序号
 
     // ---------- 历史数据持久化 ----------
     std::unique_ptr<DatabaseManager> db_mgr;   ///< SQLite 管理器，持有数据库连接
