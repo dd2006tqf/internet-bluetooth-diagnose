@@ -118,6 +118,35 @@ def normalize_timeline(rows):
     return rows[-1]["_t_h"]
 
 
+def seg_slopes(rows, key_fn):
+    """
+    对每个分段**独立**计算回归斜率，返回 (最差斜率, 分段明细)。
+
+    为什么必须分段：进程重启后，进程级指标的**基线会跳变**（新进程的
+    FD/RSS 起点与旧进程末值不同）。若跨段混算回归，"基线跳变"会被误读成
+    "持续增长趋势"。
+
+    实测（2026-09-14）：段1 末值 FD=148、段2 全段恒定 151（3.16h 无一变化），
+    混算得到 +0.643/h 的"增长"假象，而两段独立斜率分别是 +0.020 与 -0.016，
+    即真实情况是**零增长**。
+
+    返回最差（绝对值最大）斜率作为判据，保守取值。
+    """
+    worst = None
+    detail = []
+    for s in sorted({r["_segment"] for r in rows}):
+        seg = [r for r in rows if r["_segment"] == s]
+        if len(seg) < 3:
+            continue
+        sl = slope_per_hour(seg, key_fn)
+        if sl is None:
+            continue
+        detail.append((os.path.basename(s)[:22], sl, len(seg)))
+        if worst is None or abs(sl) > abs(worst):
+            worst = sl
+    return worst, detail
+
+
 def sawtooth_stats(vals, window=60):
     """
     判定时间序列是否呈「锯齿」（即有升有降，说明存在回收机制）。
@@ -238,36 +267,42 @@ def main():
         record("PASS", "进程连续性", "全程单一 PID，未发生重启")
 
     # ── A. 内存趋势 ─────────────────────────────────────────────────────────
-    s = slope_per_hour(rows, lambda r: r["process"]["rss_mb"])
+    # 分段计算：进程重启后 RSS 基线会跳变，跨段混算会把"基线跳变"
+    # 误读成趋势（同 B1，见 seg_slopes 的说明）。
     lo, hi = rng(rows, lambda r: r["process"]["rss_mb"])
+    s, det = seg_slopes(rows, lambda r: r["process"]["rss_mb"])
     if s is None:
         record("SKIP", "A. RSS 趋势", "样本不足")
     else:
-        msg = f"斜率 {s:+.3f} MB/h（范围 {lo}~{hi} MB）"
+        det_s = " / ".join(f"{n}:{v:+.3f}" for n, v, _ in det)
+        msg = f"最差分段斜率 {s:+.3f} MB/h（范围 {lo}~{hi} MB，分段 {det_s}）"
         record("PASS" if abs(s) <= RSS_SLOPE_MB_PER_H else "FAIL", "A. RSS 趋势", msg)
 
     # ── B. FD / socket ─────────────────────────────────────────────────────
     # FD 数量级大（~150），长窗口下斜率是有意义的泄漏指标。
-    # 但短窗口（<1h）下 ±1 的正常抖动会被回归放大成看似很大的漂移
-    # （实测 0.08h 内 148→149 得 -2.145/h）。因此判据分两层：
-    #   短窗口 → 只判「是否有界」，不给驻留趋势结论
-    #   长窗口 → 斜率判定
+    # 判据分两层：
+    #   短窗口（<1h）→ 只判「是否有界」，斜率会被 ±1 抖动放大
+    #                  （实测 0.08h 内 148→149 得 -2.145/h）
+    #   长窗口       → **分段**斜率判定（跨段混算会被基线跳变污染，
+    #                  实测段1末148/段2恒定151 混算出 +0.643/h 假增长）
     FD_SLOPE_MIN_HOURS = 1.0
     lo_fd, hi_fd = rng(rows, lambda r: r["process"]["fds"])
-    s_fd = slope_per_hour(rows, lambda r: r["process"]["fds"])
+    s_fd, det_fd = seg_slopes(rows, lambda r: r["process"]["fds"])
     if hi_fd is None:
         record("SKIP", "B1. FD 有界性", "样本不足")
     else:
         fd_span = hi_fd - lo_fd
-        if span_h >= FD_SLOPE_MIN_HOURS and s_fd is not None:
+        if active_h >= FD_SLOPE_MIN_HOURS and s_fd is not None:
+            det_s = " / ".join(f"{n}:{v:+.3f}" for n, v, _ in det_fd)
             record("PASS" if abs(s_fd) <= FD_SLOPE_PER_H else "FAIL",
                    "B1. FD 趋势",
-                   f"斜率 {s_fd:+.3f}/h（范围 {lo_fd}~{hi_fd}，观测 {span_h:.2f}h）")
+                   f"最差分段斜率 {s_fd:+.3f}/h（范围 {lo_fd}~{hi_fd}，"
+                   f"累计 {active_h:.2f}h，分段 {det_s}）")
         else:
             record("PASS" if fd_span <= FD_SPAN_LIMIT else "FAIL",
                    "B1. FD 有界性",
                    f"波动幅度 {fd_span}（范围 {lo_fd}~{hi_fd}，上限 {FD_SPAN_LIMIT}）"
-                   f" —— 观测仅 {span_h:.2f}h 不足 {FD_SLOPE_MIN_HOURS}h，"
+                   f" —— 观测仅 {active_h:.2f}h 不足 {FD_SLOPE_MIN_HOURS}h，"
                    f"驻留趋势待长窗口判定")
 
     # socket / 线程是**小整数**指标（个位数），斜率在短窗口下会被 ±1 抖动
