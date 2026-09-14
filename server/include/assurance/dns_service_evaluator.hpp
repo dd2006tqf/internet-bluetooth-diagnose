@@ -11,7 +11,9 @@ namespace weaknet {
 struct DnsEvaluatorConfig {
     double error_ratio_degraded{0.05};               // 失败率 >= 5% -> DEGRADED
     double error_ratio_bad{0.20};                    // 失败率 >= 20% -> BAD
-    double median_latency_degraded_ms{150.0};        // 中位数时延 >= 150ms -> DEGRADED
+    // W3 校准：原工程初值 150ms 偏紧，跨公网真实递归时延常在 80~180ms 间波动，
+    // 会导致无丢包零失败的健康 DNS 频繁被置为 DEGRADED。校准后定为 200ms。
+    double median_latency_degraded_ms{200.0};        // 中位数时延 >= 200ms -> DEGRADED
     double median_latency_bad_ms{500.0};             // 中位数时延 >= 500ms -> BAD
     uint64_t min_terminals_for_evaluation{5};        // 最少终态事务门禁
     double min_classification_coverage{0.70};        // SR-8: 分类覆盖率门禁 (evaluable / (evaluable + other + truncated))

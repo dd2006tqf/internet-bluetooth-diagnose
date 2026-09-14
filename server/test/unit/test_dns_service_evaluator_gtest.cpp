@@ -144,6 +144,30 @@ TEST(DnsServiceEvaluatorTruthTable, ExcessiveMedianLatencyIsBad) {
     EXPECT_EQ(res.reason, "excessive_dns_latency");
 }
 
+TEST(DnsServiceEvaluatorTruthTable, ElevatedLatencyIsDegraded) {
+    auto w = makeWindow();
+    w.queries_started = 5;
+    w.responses_noerror = 5;
+    // W3 校准值：中位数 250ms >= 200ms -> DEGRADED
+    w.latencies_ms = {210.0, 230.0, 250.0, 260.0, 280.0};
+
+    auto res = DnsServiceEvaluator::evaluate(w, noTerminals());
+    EXPECT_EQ(res.state, HealthState::DEGRADED);
+    EXPECT_EQ(res.reason, "elevated_dns_latency");
+}
+
+TEST(DnsServiceEvaluatorTruthTable, ToleratesModerateLatencyUnderCalibratedThreshold) {
+    auto w = makeWindow();
+    w.queries_started = 5;
+    w.responses_noerror = 5;
+    // W3 校准前 150ms 会误判为 DEGRADED；校准至 200ms 后，160ms 中位数被正确判定为 GOOD
+    w.latencies_ms = {120.0, 140.0, 160.0, 170.0, 180.0};
+
+    auto res = DnsServiceEvaluator::evaluate(w, noTerminals());
+    EXPECT_EQ(res.state, HealthState::GOOD);
+    EXPECT_EQ(res.reason, "dns_service_healthy");
+}
+
 // ---------------------------------------------------------------------------
 // 3. SR-9 突发连续超时单杀
 // ---------------------------------------------------------------------------
