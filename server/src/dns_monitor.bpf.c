@@ -202,24 +202,38 @@ struct {
 } dns_self_pid SEC(".maps");
 
 /*
- * Map: dns_self_socks
- * 记录"服务端自身 DNS socket"的 cookie，用于 ingress 侧排除。
+ * Endpoint 标识 Key（用于跨方向传播 Active Probe provenance）
  *
- * 为什么需要它（PID 过滤对 ingress 无效）：
- *   egress 在系统调用上下文，current_pid 就是我们的进程，PID 判断有效；
- *   但 ingress（udp_queue_rcv_skb）运行在 softirq 上下文，
- *   bpf_get_current_pid_tgid() 返回的是内核软中断上下文而非服务端 PID，
- *   因此 PID 过滤只能挡住 query，挡不住 response（实测 queue_emitted 仍增长）。
+ * 为什么不能用 bpf_get_socket_cookie：
+ *   Linux 5.15 内核中，kprobe 程序类型的 helper 白名单未注册
+ *   bpf_get_socket_cookie（Helper ID 46），调用直接触发 Verifier
+ *   拒绝加载（unknown func bpf_get_socket_cookie#46）。
  *
- * 做法：egress 侧（PID 有效）记录该 sock 的 cookie；ingress 侧按同一 cookie 排除。
- * 同一 socket 的 cookie 在两个方向一致，因此可以桥接上下文差异。
+ * 解决方案（BPF-side Port Tagging）：
+ *   1. egress 侧在进程上下文，PID 可信：识别到自流量后，直接从已定型的
+ *      IP/UDP 首部提取 local_ip (saddr) 与 local_port (sport)，写入本 Map，
+ *      并记录当前时间 + TTL 得到 expires_at_ns。
+ *   2. ingress 侧在 softirq 上下文，PID 不可用：从接收 skb 的 IP/UDP 首部
+ *      提取目的端点 local_ip (daddr) 与 local_port (dport) 查本 Map。
+ *      若命中且未过期，即确认为自流量回复，予以静默拦截。
+ *   3. 生命周期控制：TTL 设置为 30s（覆盖探测超时与墓碑宽限期），
+ *      过期条目自动失效，防止临时端口被业务复用时发生误杀。
+ *   4. 容量有界：BPF_MAP_TYPE_LRU_HASH，最大 256 条。
  */
+struct dns_self_endpoint {
+    __u32 local_ip;     ///< IPv4 地址（网络序或同域原样数值）
+    __u16 local_port;   ///< UDP 端口（数值）
+    __u16 pad;          ///< 4 字节对齐
+};
+
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 256);
-    __type(key, __u64);
-    __type(value, __u8);
-} dns_self_socks SEC(".maps");
+    __type(key, struct dns_self_endpoint);
+    __type(value, __u64);  ///< expires_at_ns（纳秒时间戳）
+} dns_self_endpoints SEC(".maps");
+
+#define DNS_SELF_TAG_TTL_NS (30ULL * 1000000000ULL)  // 30 秒超时
 
 static __always_inline bool is_self_traffic(void)
 {
@@ -793,21 +807,6 @@ int trace_dns_egress_skb(struct pt_regs *ctx)
     if (!skb)
         return 0;
 
-    // 排除服务端自身（主动探测）产生的流量，避免污染 passive 证据。
-    // 同时记录该 socket 的 cookie，供 ingress 侧排除对应响应：
-    // ingress 运行在 softirq 上下文，bpf_get_current_pid_tgid() 拿到的
-    // 不是服务端 PID，故 PID 过滤只能挡住 query、挡不住 response
-    // （实测 queue_emitted 仍增长）。cookie 在两方向一致，可用它桥接。
-    if (is_self_traffic()) {
-        struct sock *sk = BPF_CORE_READ(skb, sk);
-        if (sk) {
-            __u64 cookie = bpf_get_socket_cookie(sk);
-            __u8 one = 1;
-            bpf_map_update_elem(&dns_self_socks, &cookie, &one, BPF_ANY);
-        }
-        return 0;
-    }
-
     unsigned char *head = BPF_CORE_READ(skb, head);
     if (!head)
         return 0;
@@ -836,6 +835,20 @@ int trace_dns_egress_skb(struct pt_regs *ctx)
     __u32 saddr = 0, daddr = 0;
     __builtin_memcpy(&saddr, iphdr + 12, 4);   // 客户端源地址（已定型）
     __builtin_memcpy(&daddr, iphdr + 16, 4);   // DNS 服务器
+
+    // 排除服务端自身（主动探测）产生的流量，避免污染 passive 证据。
+    // 方案：BPF-side Port Tagging（记录 local_ip + local_port + expiry）。
+    // 在进程上下文，PID 100% 可信；记录 endpoint 供 ingress 侧（softirq，无 PID）
+    // 识别并拦截其回复，杜绝 unmatched 噪声与假样本。
+    if (is_self_traffic()) {
+        struct dns_self_endpoint ep = {};
+        ep.local_ip = saddr;
+        ep.local_port = sport;
+        __u64 now = bpf_ktime_get_ns();
+        __u64 expires_at = now + DNS_SELF_TAG_TTL_NS;
+        bpf_map_update_elem(&dns_self_endpoints, &ep, &expires_at, BPF_ANY);
+        return 0;
+    }
 
     __u8 header[12] = {};
     if (bpf_probe_read_kernel(header, sizeof(header),
@@ -976,13 +989,6 @@ int trace_dns_queue_rcv(struct pt_regs *ctx)
     if (!sk || !skb)
         return 0;
 
-    // ingress 侧排除服务端自身流量：PID 在 softirq 上下文不可靠，改用 cookie
-    {
-        __u64 cookie = bpf_get_socket_cookie(sk);
-        if (cookie && bpf_map_lookup_elem(&dns_self_socks, &cookie))
-            return 0;
-    }
-
     __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
     if (family != AF_INET) {
         dns_stat_inc(DNS_STAT_QUEUE_NONIPV4);
@@ -1029,6 +1035,25 @@ int trace_dns_queue_rcv(struct pt_regs *ctx)
     __u32 saddr = 0, daddr = 0;
     __builtin_memcpy(&saddr, iphdr + 12, 4);   // DNS server
     __builtin_memcpy(&daddr, iphdr + 16, 4);   // client
+
+    // ingress 侧排除服务端自身流量（BPF-side Port Tagging）：
+    // softirq 上下文 PID 不可信，按接收端的 (local_ip, local_port) 即 (daddr, dport) 匹配。
+    // 若命中且未超时（30s TTL），确认为 Active Probe 的回复，直接丢弃，
+    // 不 emit response、不进 Tracker，杜绝产生 unmatched / late 垃圾样本。
+    {
+        struct dns_self_endpoint ep = {};
+        ep.local_ip = daddr;
+        ep.local_port = dport;
+        __u64 *expires_at = bpf_map_lookup_elem(&dns_self_endpoints, &ep);
+        if (expires_at) {
+            __u64 now = bpf_ktime_get_ns();
+            if (now < *expires_at) {
+                // 属于活跃探测的回复或迟到回复，予以静默拦截
+                return 0;
+            }
+            // 已过期：不拦截，允许正常进入（处理端口被真实业务复用场景）
+        }
+    }
 
     __u8 header[12] = {};
     if (bpf_probe_read_kernel(header, sizeof(header),
