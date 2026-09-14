@@ -118,6 +118,30 @@ def normalize_timeline(rows):
     return rows[-1]["_t_h"]
 
 
+def sawtooth_stats(vals, window=60):
+    """
+    判定时间序列是否呈「锯齿」（即有升有降，说明存在回收机制）。
+
+    为什么不能逐样本比较：采样间隔 10s，而水位在相邻样本间几乎不变，
+    逐样本统计"回落次数"会把缓慢下降误算成不回落（实测 2130 次观测
+    只数出 18 次回落 = 0.8%，得出"疑似单调爬升"的错误结论）。
+
+    正确做法：先按窗口取中位数降采样，消除逐样本噪声，再统计窗口之间
+    的升降段数。返回 (up, down, samples)，供调用方判断是否既有升也有降。
+    """
+    import statistics
+    if not vals:
+        return 0, 0, []
+    win = []
+    for i in range(0, len(vals), window):
+        chunk = vals[i:i + window]
+        if chunk:
+            win.append(statistics.median(chunk))
+    up = sum(1 for a, b in zip(win, win[1:]) if b > a)
+    down = sum(1 for a, b in zip(win, win[1:]) if b < a)
+    return up, down, [int(x) for x in win]
+
+
 def rng(rows, key_fn):
     vals = [key_fn(r) for r in rows if key_fn(r) is not None]
     if not vals:
@@ -277,15 +301,32 @@ def main():
         tail = ep_vals[len(ep_vals) // 2:]
         tail_hi = max(tail) if tail else hi_ep
         over = hi_ep > BPF_ENDPOINT_CAP
+
+        # 锯齿判定：既要证明"有界"，也要证明"回收真的在工作"。
+        # 只证有界不够 —— 若水位单调爬到接近上限再不动，虽有界但说明 TTL
+        # 回收失效，长期仍有OOM/LRU 抖动风险。
+        up, down, _ = sawtooth_stats(ep_vals)
+        sawtooth_ok = up >= 3 and down >= 3
+        # 末段水位应显著低于历史峰值，证明回收持续发生
+        tail_low = min(tail) if tail else lo_ep
+        not_pinned = tail_hi < hi_ep * 0.9 or tail_low < hi_ep * 0.5
+
         detail = (f"峰值 {hi_ep} / 内核硬上限 {BPF_ENDPOINT_CAP}"
-                  f"（范围 {lo_ep}~{hi_ep}，后半程峰值 {tail_hi}）")
-        # 判据：绝不越界 + 后半程不高于前半程（排除单调爬升）。
-        # LRU_HASH 的 max_entries 是内核强制上限，结构上不可能越界；
-        # 这里真正要证伪的是"是否持续爬升"，故比较前后半程峰值。
+                  f"（范围 {lo_ep}~{hi_ep}，后半程 {tail_low}~{tail_hi}）"
+                  f"，升降段 {up}/{down}")
+
         if over:
-            record("FAIL", "C. dns_self_endpoints 水位", detail + " —— 越过内核上限（不可能，须查证）")
+            record("FAIL", "C. dns_self_endpoints 水位",
+                   detail + " —— 越过内核上限（不可能，须查证）")
+        elif not sawtooth_ok:
+            record("FAIL", "C. dns_self_endpoints 水位",
+                   detail + " —— 无锯齿形态，疑似回收失效或单调爬升")
+        elif not not_pinned:
+            record("FAIL", "C. dns_self_endpoints 水位",
+                   detail + " —— 末段贴近峰值，疑似贴顶")
         else:
-            record("PASS", "C. dns_self_endpoints 水位", detail + " —— 有界，未越界")
+            record("PASS", "C. dns_self_endpoints 水位",
+                   detail + " —— 有界且呈锯齿回落")
 
     # self_pid 类 map 的值必须与**该段**被测进程一致，否则 provenance 过滤失效。
     #
