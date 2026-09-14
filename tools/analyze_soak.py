@@ -29,6 +29,7 @@ WeakNet Assurance v1 长稳证据审计器 (Soak Analyzer)
 
 import argparse
 import json
+import os
 import sys
 
 
@@ -69,13 +70,16 @@ def slope_per_hour(rows, key_fn):
     """
     对 (hours, value) 做最小二乘线性回归，返回斜率（单位/小时）。
     比"首末相减"稳健：单点噪声不会主导结论。
+
+    时间轴用归一化后的 `_t_h`（见 normalize_timeline），而不是原始
+    uptime_sec —— 后者在分段合并后会回绕，导致趋势结论完全错误。
     """
     pts = []
     for r in rows:
         v = key_fn(r)
         if v is None:
             continue
-        pts.append((r["uptime_sec"] / 3600.0, float(v)))
+        pts.append((r["_t_h"], float(v)))
     n = len(pts)
     if n < 3:
         return None
@@ -89,6 +93,31 @@ def slope_per_hour(rows, key_fn):
     return (n * sxy - sx * sy) / denom
 
 
+def normalize_timeline(rows):
+    """
+    为所有样本建立单调递增的累计时间轴 `_t_h`（单位：小时），并返回总时长。
+
+    为什么必须做：分段证据（如断电前的段1 + 重启后的段2）合并后，
+    每段的 uptime_sec 都从 0 重新计数。若直接沿用，时间轴会回绕，
+    回归斜率与"后半程"判定全部失去意义。
+
+    做法：同一段内用该段的 uptime_sec；段与段之间按真实墙钟时间戳
+    （timestamp，UTC epoch 秒）衔接，因此断点期间的停机时长也被正确计入
+    累计观测跨度（这正是"分段累计 24h"想要的口径）。
+    """
+    if not rows:
+        return 0.0
+    rows.sort(key=lambda r: r.get("timestamp", 0.0))
+    t0 = rows[0].get("timestamp", 0.0)
+    for r in rows:
+        ts = r.get("timestamp")
+        if ts is None:
+            r["_t_h"] = 0.0
+        else:
+            r["_t_h"] = (ts - t0) / 3600.0
+    return rows[-1]["_t_h"]
+
+
 def rng(rows, key_fn):
     vals = [key_fn(r) for r in rows if key_fn(r) is not None]
     if not vals:
@@ -98,47 +127,91 @@ def rng(rows, key_fn):
 
 def main():
     ap = argparse.ArgumentParser(description="WeakNet v1 Soak Analyzer")
-    ap.add_argument("--input", required=True)
+    ap.add_argument("--input", required=True, action="append",
+                    help="可多次指定（分段证据合并审计），例如 "
+                         "--input soak_3h69_prepowerloss.jsonl --input soak_24h.jsonl")
     ap.add_argument("--min-hours", type=float, default=0.0,
-                    help="低于该时长只做趋势自检，不给出最终结论")
+                    help="低于该累计时长只做趋势自检，不给出最终结论")
     args = ap.parse_args()
 
     rows = []
-    try:
-        with open(args.input) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rows.append(json.loads(line))
-                except Exception:
-                    pass
-    except FileNotFoundError:
-        print(f"[!] 找不到输入文件: {args.input}", file=sys.stderr)
-        return 2
+    for path in args.input:
+        seg = []
+        try:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        seg.append(json.loads(line))
+                    except Exception:
+                        pass
+        except FileNotFoundError:
+            print(f"[!] 找不到输入文件: {path}", file=sys.stderr)
+            return 2
+        if not seg:
+            print(f"[!] {path} 无有效样本", file=sys.stderr)
+            continue
+        # 标注分段来源，便于报告里显示断点
+        for r in seg:
+            r["_segment"] = path
+        rows.extend(seg)
+        print(f"[*] {path}: {len(seg)} 条，"
+              f"PID={sorted({r.get('pid') for r in seg})}，"
+              f"时长 {seg[-1]['uptime_sec']/3600:.2f}h")
 
     if len(rows) < 10:
         print(f"[!] 样本过少（{len(rows)} 条），无法分析。", file=sys.stderr)
         return 2
 
-    span_h = rows[-1]["uptime_sec"] / 3600.0
+    # 建立跨分段的单调时间轴（原始 uptime_sec 在分段间会回绕）
+    span_h = normalize_timeline(rows)
+
+    # 实际在跑的观测时长（各段 uptime 之和），用于区分"跨度"与"有效观测"
+    active_h = 0.0
+    for seg_path in {r["_segment"] for r in rows}:
+        seg_rows = [r for r in rows if r["_segment"] == seg_path]
+        active_h += seg_rows[-1]["uptime_sec"] / 3600.0
+
+    print()
     print("=" * 72)
     print("WeakNet Assurance v1 — 长稳证据审计报告")
     print("=" * 72)
-    print(f"样本文件   : {args.input}")
     print(f"采样条数   : {len(rows)}")
-    print(f"观测时长   : {span_h:.2f} 小时")
-    print(f"起始时间   : {rows[0].get('timestamp')}")
-    print(f"结束时间   : {rows[-1].get('timestamp')}")
-    pid_changes = len({r.get('pid') for r in rows})
-    print(f"被测 PID   : {sorted({r.get('pid') for r in rows})}"
-          + ("" if pid_changes == 1 else "  ⚠️ 进程重启过，长稳连续性受影响"))
+    print(f"累计观测   : {active_h:.2f} 小时（各段有效运行之和）")
+    print(f"时间跨度   : {span_h:.2f} 小时（含段间停机）")
+    start_ts = rows[0].get("timestamp")
+    end_ts = rows[-1].get("timestamp")
+    if start_ts and end_ts:
+        import datetime as _dt
+        print(f"起始时间   : {_dt.datetime.fromtimestamp(start_ts, _dt.timezone.utc):%Y-%m-%d %H:%M:%S} UTC")
+        print(f"结束时间   : {_dt.datetime.fromtimestamp(end_ts, _dt.timezone.utc):%Y-%m-%d %H:%M:%S} UTC")
+
+    segs = sorted({r["_segment"] for r in rows})
+    pids = sorted({r.get("pid") for r in rows})
+    print(f"分段数     : {len(segs)}")
+    for s in segs:
+        seg_rows = [r for r in rows if r["_segment"] == s]
+        import datetime as _dt
+        a = _dt.datetime.fromtimestamp(seg_rows[0]["timestamp"], _dt.timezone.utc)
+        b = _dt.datetime.fromtimestamp(seg_rows[-1]["timestamp"], _dt.timezone.utc)
+        print(f"   - {os.path.basename(s)}")
+        print(f"       {a:%m-%d %H:%M:%S} → {b:%m-%d %H:%M:%S} UTC  "
+              f"{seg_rows[-1]['uptime_sec']/3600:.2f}h  PID={seg_rows[0].get('pid')}")
+    print(f"被测 PID   : {pids}")
     print()
 
+    pid_changes = len(pids)
     if pid_changes != 1:
-        record("SKIP", "进程连续性",
-               f"检测到 {pid_changes} 个不同 PID，长稳期间进程重启，趋势结论仅供参考")
+        # 多段是用户明确接受的判据（分段累计 24h），故不是缺陷。
+        # 但必须如实标注：跨段的"首末相减"类指标不可直接用（已在 D/E/F 中
+        # 改为分段计算再求和），且段间趋势需谨慎解释。
+        record("PASS", "进程连续性（分段累计）",
+               f"{pid_changes} 个 PID / {len(segs)} 段；"
+               f"段间计数器归零，D/E/F 已按分段累计处理")
+    else:
+        record("PASS", "进程连续性", "全程单一 PID，未发生重启")
 
     # ── A. 内存趋势 ─────────────────────────────────────────────────────────
     s = slope_per_hour(rows, lambda r: r["process"]["rss_mb"])
@@ -214,27 +287,45 @@ def main():
         else:
             record("PASS", "C. dns_self_endpoints 水位", detail + " —— 有界，未越界")
 
-    # self_pid 类 map 的值必须等于被测 PID，否则 provenance 过滤失效
+    # self_pid 类 map 的值必须与**该段**被测进程一致，否则 provenance 过滤失效。
+    #
+    # 注意判据不能是"全局只有一个值"：分段证据（重启前/后）本就该有两个 PID，
+    # 那是正常的重启结果。真正要证伪的是「段内漂移」——即某个段中途
+    # 过滤 PID 变成别的进程，那才说明过滤失效。
     bad_pid = []
-    for k in ("http_self_pid_value", "tcp_self_pid_value", "retrans_self_pid_value"):
-        vals = {r["bpf"].get(k) for r in rows if r["bpf"].get(k)}
-        if len(vals) > 1:
-            bad_pid.append(f"{k}={sorted(vals)}")
+    for s in sorted({r["_segment"] for r in rows}):
+        seg_rows = [r for r in rows if r["_segment"] == s]
+        seg_pid = seg_rows[0].get("pid")
+        for k in ("http_self_pid_value", "tcp_self_pid_value", "retrans_self_pid_value"):
+            vals = {r["bpf"].get(k) for r in seg_rows if r["bpf"].get(k)}
+            if vals and vals != {seg_pid}:
+                bad_pid.append(f"{os.path.basename(s)}/{k}={sorted(vals)}（该段 PID={seg_pid}）")
     if bad_pid:
-        record("FAIL", "C2. provenance PID 稳定", "过滤 PID 中途变化: " + "; ".join(bad_pid))
+        record("FAIL", "C2. provenance PID 段内稳定", "过滤 PID 段内漂移: " + "; ".join(bad_pid))
     else:
-        record("PASS", "C2. provenance PID 稳定",
-               "self_pid 类 map 全程指向同一被测进程")
+        record("PASS", "C2. provenance PID 段内稳定",
+               f"各段的 self_pid 均与段内被测进程一致（段数 {len({r['_segment'] for r in rows})}）")
 
     # ── D. 事件丢失 ────────────────────────────────────────────────────────
-    ef = [r["event_loss"]["capture_emit_fail"] for r in rows]
-    pl = [r["event_loss"]["perf_lost_events"] for r in rows]
-    d_ef = ef[-1] - ef[0]
-    d_pl = pl[-1] - pl[0]
+    # 计数器在进程重启后归零，故**必须分段计算净增再求和**。
+    # 直接用 rows[-1]-rows[0] 在分段证据上会得到负数或错误的 0。
+    def seg_delta(key_path):
+        total = 0
+        detail = []
+        for s in sorted({r["_segment"] for r in rows}):
+            seg_rows = [r for r in rows if r["_segment"] == s]
+            a = seg_rows[0]["event_loss"][key_path]
+            b = seg_rows[-1]["event_loss"][key_path]
+            total += max(0, b - a)
+            detail.append(f"{os.path.basename(s)[:24]}:{a}→{b}")
+        return total, " | ".join(detail)
+
+    d_ef, det_ef = seg_delta("capture_emit_fail")
+    d_pl, det_pl = seg_delta("perf_lost_events")
     record("PASS" if d_ef == 0 else "FAIL", "D1. capture emit_fail",
-           f"全程净增 {d_ef}（首 {ef[0]} → 末 {ef[-1]}）")
+           f"分段累计净增 {d_ef}（{det_ef}）")
     record("PASS" if d_pl == 0 else "FAIL", "D2. perf lost_events",
-           f"全程净增 {d_pl}（首 {pl[0]} → 末 {pl[-1]}）")
+           f"分段累计净增 {d_pl}（{det_pl}）")
 
     max_er = max((r["event_loss"]["capture_emit_failure_ratio"] for r in rows), default=0)
     max_lr = max((r["event_loss"]["perf_delivery_loss_ratio"] for r in rows), default=0)
@@ -244,23 +335,34 @@ def main():
            "D4. perf 投递丢失率峰值", f"{max_lr:.4f}（门禁 {PERF_LOSS_RATIO_LIMIT}）")
 
     # ── E. Tracker 健康 ────────────────────────────────────────────────────
-    um = [r["tracker"]["unmatched"] for r in rows]
-    lt = [r["tracker"]["late"] for r in rows]
-    am = [r["tracker"]["ambiguous"] for r in rows]
-    d_um, d_lt, d_am = um[-1] - um[0], lt[-1] - lt[0], am[-1] - am[0]
+    # 同 D：tracker 计数在进程重启后归零，须分段计算净增再求和
+    def tracker_delta(key):
+        total = 0
+        for s in sorted({r["_segment"] for r in rows}):
+            seg_rows = [r for r in rows if r["_segment"] == s]
+            total += max(0, seg_rows[-1]["tracker"][key] - seg_rows[0]["tracker"][key])
+        return total
+
+    d_um, d_lt, d_am = (tracker_delta("unmatched"),
+                        tracker_delta("late"),
+                        tracker_delta("ambiguous"))
     record("PASS" if d_um <= TRACKER_GROWTH_LIMIT else "FAIL",
-           "E1. unmatched 增长", f"净增 {d_um}（上限 {TRACKER_GROWTH_LIMIT}）")
+           "E1. unmatched 增长", f"分段累计净增 {d_um}（上限 {TRACKER_GROWTH_LIMIT}）")
     record("PASS" if d_lt <= TRACKER_GROWTH_LIMIT else "FAIL",
-           "E2. late 增长", f"净增 {d_lt}（上限 {TRACKER_GROWTH_LIMIT}）")
+           "E2. late 增长", f"分段累计净增 {d_lt}（上限 {TRACKER_GROWTH_LIMIT}）")
     record("PASS" if d_am == 0 else "FAIL",
-           "E3. ambiguous", f"净增 {d_am}（匹配歧义应为 0）")
+           "E3. ambiguous", f"分段累计净增 {d_am}（匹配歧义应为 0）")
 
     # ── F. 状态抖动 ────────────────────────────────────────────────────────
-    trans = rows[-1].get("transitions", 0)
-    budget = TRANSITION_BUDGET_PER_DAY * max(span_h / 24.0, 1.0 / 24.0)
+    # transitions 是**每段内累计**的计数器，跨段应求和而非取末值
+    trans = sum(
+        [r for r in rows if r["_segment"] == s][-1].get("transitions", 0)
+        for s in sorted({r["_segment"] for r in rows})
+    )
+    budget = TRANSITION_BUDGET_PER_DAY * max(active_h / 24.0, 1.0 / 24.0)
     record("PASS" if trans <= max(budget, 1) else "FAIL",
            "F. 状态跃迁（flapping）",
-           f"全程 {trans} 次（按 {span_h:.2f}h 折算预算 {budget:.1f} 次）")
+           f"分段累计 {trans} 次（按 {active_h:.2f}h 折算预算 {budget:.1f} 次）")
 
     # ── G. 探测调度 ────────────────────────────────────────────────────────
     # 周期语义（查证 server.cpp:913 start_active_probe_thread）：
@@ -323,8 +425,12 @@ def main():
     print()
 
     # ── 最终裁决 ───────────────────────────────────────────────────────────
-    if args.min_hours and span_h < args.min_hours:
-        print(f"⚠️  观测 {span_h:.2f}h < 要求 {args.min_hours}h —— 仅趋势自检，不下最终结论。")
+    # 判据用 active_h（各段有效运行之和）而非 span_h（含停机的时间跨度）：
+    # 长稳的目标是"设备有效运行 24h 无泄漏/无退化"，停机期间系统并未被观测，
+    # 不应算作已完成的长稳时长。
+    if args.min_hours and active_h < args.min_hours:
+        print(f"⚠️  累计有效观测 {active_h:.2f}h < 要求 {args.min_hours}h "
+              f"—— 仅趋势自检，不下最终结论。")
         return 0
 
     if FAIL:
