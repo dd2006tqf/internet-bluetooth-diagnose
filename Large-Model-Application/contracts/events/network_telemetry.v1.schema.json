@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://industrial-ops.local/contracts/events/network_telemetry.v1.schema.json",
+  "title": "WeakNet edge network telemetry v1",
+  "description": "Edge-to-server network assessment upload. The HTTP body is this document verbatim; the Ed25519 signature in the X-Edge-Signature header covers these exact bytes. Credentials (key id, device token, signature) travel as headers, not as fields, so that nothing has to be extracted from the signed document before verification.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "snapshots"],
+  "properties": {
+    "schema_version": {"const": "network.edge.telemetry.v1"},
+    "snapshots": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {"$ref": "#/$defs/snapshot"}
+    }
+  },
+  "$defs": {
+    "healthState": {"enum": ["GOOD", "DEGRADED", "BAD", "UNKNOWN"]},
+    "coverage": {"enum": ["FULL_FOR_PROFILE", "PARTIAL", "NONE"]},
+    "applicability": {"enum": ["APPLICABLE", "NOT_APPLICABLE"]},
+    "linkType": {
+      "enum": ["WIRED_ETHERNET", "WIFI_2_4G", "WIFI_5G", "WIFI_6G", "CELLULAR", "UNKNOWN"]
+    },
+    "evidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "value"],
+      "properties": {
+        "metric": {"type": "string", "minLength": 1, "maxLength": 128},
+        "value": {"type": "number"},
+        "detail": {"type": "string", "maxLength": 1024}
+      }
+    },
+    "sleResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "coverage"],
+      "properties": {
+        "state": {"$ref": "#/$defs/healthState"},
+        "coverage": {"$ref": "#/$defs/coverage"},
+        "applicability": {"$ref": "#/$defs/applicability"},
+        "reason": {"type": "string", "maxLength": 1024},
+        "capability_level_negative": {
+          "type": "boolean",
+          "description": "True only when the negative finding is a failure of this host's own capability, which is what licenses vetoing internet access. A per-destination failure must leave this false so the server cannot over-claim beyond what the edge concluded."
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "#/$defs/evidenceItem"}
+        }
+      }
+    },
+    "experience": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interface", "overall_state", "overall_coverage", "display_score"],
+      "properties": {
+        "interface": {"type": "string", "minLength": 1, "maxLength": 64},
+        "assessment_profile": {"type": "string", "maxLength": 64},
+        "overall_state": {"$ref": "#/$defs/healthState"},
+        "overall_coverage": {"$ref": "#/$defs/coverage"},
+        "display_score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "network_health": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/sleResult"}
+        },
+        "service_health": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/sleResult"}
+        },
+        "warnings": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {"type": "string", "maxLength": 512}
+        },
+        "primary_issue": {
+          "type": ["string", "null"],
+          "maxLength": 512,
+          "description": "The single root cause shown to operators. Only valid when overall_state is DEGRADED or BAD; a healthy verdict carrying a root cause would surface a fault the evaluator did not find."
+        },
+        "link_type": {"$ref": "#/$defs/linkType"},
+        "mac_address": {"type": ["string", "null"], "maxLength": 32},
+        "ip_address": {"type": ["string", "null"], "maxLength": 64},
+        "gateway_ip": {"type": ["string", "null"], "maxLength": 64},
+        "dns_servers": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"type": "string", "maxLength": 64}
+        },
+        "ap_ssid": {"type": ["string", "null"], "maxLength": 128},
+        "ap_bssid": {"type": ["string", "null"], "maxLength": 32},
+        "hardware_arch": {"type": "string", "maxLength": 64},
+        "os_kernel": {"type": "string", "maxLength": 128}
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "device_id",
+        "sequence_id",
+        "network_epoch",
+        "config_generation",
+        "captured_at",
+        "snapshot"
+      ],
+      "properties": {
+        "device_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+          "description": "Also used as the asset primary key and as the persistence subject of the tenant context built per upload, so it must satisfy the platform boundary identifier charset (which excludes ':')."
+        },
+        "display_name": {"type": ["string", "null"], "maxLength": 255},
+        "location": {"type": ["string", "null"], "maxLength": 255},
+        "sequence_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Monotonic within a network_epoch. Restarts at 1 after a reconnect, which is why idempotency keys include network_epoch."
+        },
+        "network_epoch": {"type": "integer", "minimum": 0},
+        "config_generation": {"type": "integer", "minimum": 1},
+        "captured_at": {"type": "string", "format": "date-time"},
+        "rtt_interval_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 3600},
+        "rtt_probe_targets": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"type": "string", "maxLength": 255}
+        },
+        "snapshot": {"$ref": "#/$defs/experience"}
+      }
+    }
+  }
+}
