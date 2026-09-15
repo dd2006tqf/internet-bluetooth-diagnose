@@ -535,6 +535,17 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     ctx->assessment_store.publish(std::const_pointer_cast<const weaknet::AssessmentSnapshot>(std::move(snap)));
                 }
 
+                // 边缘遥测上报（可选，W-edge）：
+                // publish 之后把同一份快照交给上报器（非阻塞，O(1) enqueue）。
+                // 与 history/D-Bus 消费者一样只读已发布的不可变快照，
+                // 绝不重新 evaluate；enqueue 失败绝不影响评估主循环。
+                if (ctx->edge_exporter && ctx->edge_exporter->isRunning()) {
+                    auto latest = ctx->assessment_store.latest();
+                    if (latest) {
+                        ctx->edge_exporter->enqueue(*latest);
+                    }
+                }
+
                 if (stableState != lastStableState) {
                     auto qualRes = weaknet::LegacyAdapter::toQualityResult(exp);
                     LOG_INFO(LogModule::WEAK_MGR, "网络质量稳定跃迁: " << qualRes.levelName
@@ -1304,6 +1315,14 @@ int start_server(int argc, char** argv) {
         start_history_persistence_thread(&ctx);
     }
 
+    // 启动边缘遥测上报（可选，W-edge）。
+    // 配置不完整/能力缺失时 start() 返回 false 并保持关闭，绝不半启用。
+    ctx.edge_exporter = std::make_unique<weaknet::EdgeTelemetryExporter>(
+        ctx.cfg, /*hostname=*/"edge-node");
+    if (ctx.edge_exporter->start()) {
+        LOG_INFO(LogModule::SYSTEM, "edge telemetry exporter started");
+    }
+
     // 主线程进入阻塞式 looper
     auto* lp = Looper::current();
     lp->attach(ctx.connection);
@@ -1325,6 +1344,12 @@ int start_server(int argc, char** argv) {
     // 历史持久化线程：只读 weak_mgr 快照 + 写 DB，不依赖其他线程资源，最后 join 最安全。
     // 此前缺失该 join，导致 ~ServerContext 析构时该线程可能仍持 ctx* 访问 → 悬垂/terminate。
     if (ctx.history_thread.joinable())                  ctx.history_thread.join();
+
+    // 停止边缘遥测上报：先于 ~ServerContext，保证不再访问 ctx.cfg。
+    if (ctx.edge_exporter) {
+        ctx.edge_exporter->stop();
+        ctx.edge_exporter.reset();
+    }
 
     // 停止文件日志（在 glog 关闭之前）
     Logger::stopFileLog();

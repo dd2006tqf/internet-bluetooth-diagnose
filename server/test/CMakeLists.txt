@@ -164,6 +164,10 @@ add_executable(test_w4_snapshot_lifecycle_gtest
     unit/test_w4_snapshot_lifecycle_gtest.cpp)
 target_link_libraries(test_w4_snapshot_lifecycle_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_edge_telemetry_exporter_gtest
+    unit/test_edge_telemetry_exporter_gtest.cpp)
+target_link_libraries(test_edge_telemetry_exporter_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # ---- CTest 集成 ----
 # enable_testing() 已在根 CMakeLists.txt 中调用
 foreach(test_target
@@ -181,6 +185,7 @@ foreach(test_target
     test_w3_time_dynamics_gtest
     test_w4_fault_matrix_gtest
     test_w4_snapshot_lifecycle_gtest
+    test_edge_telemetry_exporter_gtest
     test_quality_assessor_gtest
     test_anomaly_detector_gtest
     test_audio_fusion_gtest

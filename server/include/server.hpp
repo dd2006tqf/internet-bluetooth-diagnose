@@ -27,6 +27,7 @@
 #include "assurance/dns_transaction_tracker.hpp"
 #include "assessment_snapshot.hpp"
 #include "assurance/dns_service_evaluator.hpp"
+#include "edge_telemetry_exporter.hpp"
 
 // 前置声明，避免强依赖 dbus 头
 struct DBusConnection;
@@ -109,6 +110,9 @@ struct ServerContext {
 
     // ---------- 历史数据持久化 ----------
     std::unique_ptr<DatabaseManager> db_mgr;   ///< SQLite 管理器，持有数据库连接
+
+    // ---------- 边缘遥测上报 ----------
+    std::unique_ptr<weaknet::EdgeTelemetryExporter> edge_exporter;
 
     // ---------- per-monitor stop requests (阶段二) ----------
     // These flags are separate from running: they stop one worker without

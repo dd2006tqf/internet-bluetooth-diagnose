@@ -308,6 +308,39 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
 
 // ---- 服务端 section 字段分发 ----
 
+// ---- 边缘遥测上报 section 字段分发 ----
+
+bool applyEdgeField(WeakNetConfig* cfg, const std::string& field,
+                    const std::string& val, std::string* error) {
+    if (field == "enabled") return setBoolField(cfg->edge.enabled, val, error);
+    if (field == "url") { cfg->edge.url.set(trim(val)); return true; }
+    if (field == "tenant") { cfg->edge.tenant.set(trim(val)); return true; }
+    if (field == "device_id") { cfg->edge.device_id.set(trim(val)); return true; }
+    if (field == "token") { cfg->edge.token.set(trim(val)); return true; }
+    if (field == "private_key_path") { cfg->edge.private_key_path.set(trim(val)); return true; }
+    if (field == "key_id") { cfg->edge.key_id.set(trim(val)); return true; }
+    if (field == "interval" || field == "interval_ms") {
+        uint32_t ms;
+        if (!parseDurationMs(val, &ms) || ms < 1000 || ms > 3600000) {
+            *error = "edge.interval: must be 1000ms~3600000ms";
+            return false;
+        }
+        cfg->edge.interval_ms.store(ms);
+        return true;
+    }
+    if (field == "timeout" || field == "timeout_ms") {
+        uint32_t ms;
+        if (!parseDurationMs(val, &ms) || ms < 100 || ms > 120000) {
+            *error = "edge.timeout: must be 100ms~120000ms";
+            return false;
+        }
+        cfg->edge.timeout_ms.store(ms);
+        return true;
+    }
+    *error = "edge: unknown field '" + field + "'";
+    return false;
+}
+
 bool applyServerField(WeakNetConfig* cfg, const std::string& field,
                       const std::string& val, std::string* error) {
     if (field == "data_dir") { cfg->data_dir.set(trim(val)); return true; }
@@ -396,6 +429,11 @@ bool loadWeakNetConfig(const std::string& path, WeakNetConfig* out, std::string*
         const std::string& section = stack.back().name;
         if (section == "server") {
             if (!applyServerField(out, key, value, error)) {
+                *error = "line " + std::to_string(line_no) + ": " + *error;
+                return false;
+            }
+        } else if (section == "edge") {
+            if (!applyEdgeField(out, key, value, error)) {
                 *error = "line " + std::to_string(line_no) + ": " + *error;
                 return false;
             }
@@ -601,17 +639,48 @@ bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
         if (field == "log_level") { cfg->log_level.set(trim(value)); return true; }
     }
 
+    // 边缘遥测上报的运行时调参。
+    //
+    // 刻意**不**暴露 url/token/private_key_path/tenant/device_id 的运行时修改：
+    // 这些字段改变的是"设备向谁、以什么身份上报"。允许远程改写等于让一次
+    // 配置下发就能把遥测重定向到别处或顶替设备身份，风险远高于调周期。
+    // 它们只能通过 /etc/weaknet/config.yaml 在启动时确定。
+    if (mon == "edge") {
+        if (field == "enabled") {
+            bool b; if (!parseBool(value, &b)) { if (error) *error = "edge.enabled: invalid bool"; return false; }
+            cfg->edge.enabled.store(b); return true;
+        }
+        if (field == "interval" || field == "interval_ms") {
+            uint32_t ms;
+            if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 3600000)) {
+                if (error) *error = "edge.interval: must be 1000ms~3600000ms";
+                return false;
+            }
+            cfg->edge.interval_ms.store(ms);
+            return true;
+        }
+        if (field == "timeout" || field == "timeout_ms") {
+            uint32_t ms;
+            if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 120000)) {
+                if (error) *error = "edge.timeout: must be 100ms~120000ms";
+                return false;
+            }
+            cfg->edge.timeout_ms.store(ms);
+            return true;
+        }
+    }
+
     if (error) *error = "unknown monitor or field: " + key;
     return false;
 }
 
 std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& monitor,
                                  std::string* error) {
-    // 未知 monitor 直接报错（支持 "all" + 13 个监控器 + "server"）
+    // 未知 monitor 直接报错（支持 "all" + 13 个监控器 + "server" + "edge"）
     static const std::set<std::string> valid = {
         "all", "server", "rtt", "jitter", "rssi", "tcp_loss", "traffic", "quality",
         "bluetooth", "dns", "wifi_loss", "http_latency", "process_profiler",
-        "tcp_retrans", "tcp_conn", "skb_drop", "tcp_connect", "active_probe"
+        "tcp_retrans", "tcp_conn", "skb_drop", "tcp_connect", "active_probe", "edge"
     };
     if (valid.find(monitor) == valid.end()) {
         if (error) *error = "unknown monitor: " + monitor;
@@ -713,6 +782,23 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeString("bpf_obj", cfg.tcp_connect.bpf_obj.get());
         writeUint("interval_ms", cfg.tcp_connect.interval_ms.load());
         writeUint("capture_pages", cfg.tcp_connect.capture_pages.load());
+        json.seekp(-1, std::ios_base::cur); json << "},";
+    }
+    if (monitor == "all" || monitor == "edge") {
+        json << "\"edge\":{";
+        writeBool("enabled", cfg.edge.enabled.load());
+        writeUint("interval_ms", cfg.edge.interval_ms.load());
+        writeUint("timeout_ms", cfg.edge.timeout_ms.load());
+        writeString("url", cfg.edge.url.get());
+        writeString("tenant", cfg.edge.tenant.get());
+        writeString("device_id", cfg.edge.device_id.get());
+        writeString("key_id", cfg.edge.key_id.get());
+        // 刻意**不**回显 token 与私钥路径：
+        //   - token 是凭据，序列化出去就等于把它散播到日志/前端；
+        //   - 私钥路径会暴露主机的凭据布局，且对排障无增益。
+        // 需要确认"是否已配置"时，看 enabled + url + device_id 即可。
+        writeBool("token_configured", !cfg.edge.token.get().empty());
+        writeBool("private_key_configured", !cfg.edge.private_key_path.get().empty());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "wifi_loss") {

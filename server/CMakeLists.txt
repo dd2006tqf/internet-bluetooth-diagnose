@@ -101,6 +101,61 @@ else()
     message(STATUS "weaknet TLS: not found; HTTPS probe capability will be NONE")
 endif()
 
+# ---- 边缘遥测上报：libcurl ----
+#
+# 与 OpenSSL 同样的双路径 + 私有 sysroot 纪律：
+#   1. 私有 sysroot ${WEAKNET_CURL_SYSROOT}（ARM64 构建容器的主路径）
+#      容器里 libcurl4 运行时已装（7.74.0-1.3+deb11u13），但**没有开发头文件**
+#      与 libcurl.so 链接名；由 scripts/setup_libcurl_sysroot.sh 以固定 .deb +
+#      SHA256 校验解压得到，不 apt install、不改镜像。
+#   2. 系统 curl（x86 开发机，实测 8.12.1 + /usr/include/curl/curl.h）。
+#
+# 找不到时不 fail：上报能力按项目语义降级为"未启用"
+# （exporter start() 直接返回 false 并写明原因），而不是让整个构建失败——
+# 与 TLS 能力的处理一致。
+set(WEAKNET_CURL_SYSROOT "/opt/weaknet-libcurl"
+    CACHE PATH "libcurl 私有 sysroot（ARM64 构建容器）")
+
+set(WEAKNET_CURL_FOUND FALSE)
+set(WEAKNET_CURL_IS_SYSROOT FALSE)
+
+find_path(WEAKNET_CURL_SYSROOT_INCLUDE_DIR curl/curl.h
+    PATHS "${WEAKNET_CURL_SYSROOT}/usr/include/aarch64-linux-gnu"
+    NO_DEFAULT_PATH)
+find_library(WEAKNET_CURL_SYSROOT_LIB NAMES curl
+    PATHS "${WEAKNET_CURL_SYSROOT}/usr/lib/aarch64-linux-gnu"
+    NO_DEFAULT_PATH)
+
+if(WEAKNET_CURL_SYSROOT_INCLUDE_DIR AND WEAKNET_CURL_SYSROOT_LIB)
+    set(WEAKNET_CURL_FOUND TRUE)
+    set(WEAKNET_CURL_IS_SYSROOT TRUE)
+    set(WEAKNET_CURL_BACKEND "sysroot:${WEAKNET_CURL_SYSROOT}")
+    # Debian multiarch 布局：curl 头文件在 usr/include/aarch64-linux-gnu/curl/ 下，
+    # 同时加两条路径（curl.h 内部 include 的解析依赖 usr/include）。
+    set(WEAKNET_CURL_INCLUDE_DIRS
+        "${WEAKNET_CURL_SYSROOT_INCLUDE_DIR}"
+        "${WEAKNET_CURL_SYSROOT}/usr/include/aarch64-linux-gnu")
+    set(WEAKNET_CURL_LIBRARIES "${WEAKNET_CURL_SYSROOT_LIB}")
+else()
+    find_package(CURL QUIET)
+    if(CURL_FOUND)
+        set(WEAKNET_CURL_FOUND TRUE)
+        set(WEAKNET_CURL_BACKEND "system:${CURL_VERSION_STRING}")
+        set(WEAKNET_CURL_INCLUDE_DIRS "${CURL_INCLUDE_DIRS}")
+        set(WEAKNET_CURL_LIBRARIES CURL::libcurl)
+    endif()
+endif()
+
+if(WEAKNET_CURL_FOUND)
+    message(STATUS "weaknet edge export: enabled (libcurl ${WEAKNET_CURL_BACKEND})")
+    target_include_directories(server_lib PRIVATE ${WEAKNET_CURL_INCLUDE_DIRS})
+    target_link_libraries(server_lib PRIVATE ${WEAKNET_CURL_LIBRARIES})
+    target_compile_definitions(server_lib PRIVATE WEAKNET_HAVE_CURL=1)
+else()
+    message(STATUS
+        "weaknet edge export: libcurl not found; edge telemetry upload will be disabled")
+endif()
+
 # 只有**私有 sysroot** 后端需要剥掉构建期 RPATH。
 #
 # 背景：sysroot 位于 /opt/weaknet-openssl-1.1/...，不在 linker 默认搜索路径内，

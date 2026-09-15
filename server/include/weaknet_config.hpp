@@ -183,6 +183,37 @@ struct WeakNetConfig {
         // oracle 响应正文必须包含的子串；空则不比对正文
         ConfigString portal_expect_body{""};
     } active_probe;
+
+    // ---------- 边缘遥测上报（WeakNet → 中心平台）----------
+    //
+    // 默认 **关闭**，且**不内置任何默认服务端地址**。理由与 active_probe
+    // 的 targets 相同：上报会把"这台设备主动把网络状态发给谁"变成系统事实，
+    // 硬编码一个默认 endpoint 会让每个部署都默认向第三方外发数据。
+    //
+    // 启用时必须同时提供 url / device_id / token / private_key_path，
+    // 缺一不可（否则 exporter 记 error 并保持关闭，不会半启用）。
+    //
+    // 安全语义：请求体是签名覆盖的原始字节，签名走 Ed25519（OpenSSL）。
+    // 服务端用同一份字节验签，因此本端**不得**在签名后重新序列化。
+    struct {
+        std::atomic<bool> enabled{false};
+        // 形如 "http://host:8000/api/v1/network/edge/telemetry"
+        ConfigString url{""};
+        // 租户标识，作为 X-Edge-Tenant 头；服务端据此归属数据
+        ConfigString tenant{""};
+        // 设备唯一标识（同时是服务端资产主键），字符集 [A-Za-z0-9._-]
+        ConfigString device_id{""};
+        // 设备预共享令牌，作为 X-Edge-Token 头（非机密中的机密，仍是凭据）
+        ConfigString token{""};
+        // Ed25519 私钥 PEM 路径；与 token 一起决定上报身份
+        ConfigString private_key_path{""};
+        // 密钥标识（服务端据 X-Edge-Key-Id 选择信任锚）
+        ConfigString key_id{""};
+        // 上报周期；与评估节奏（quality 线程）对齐，一个周期最多一条
+        std::atomic<uint32_t> interval_ms{10000};
+        // 单次 HTTP 请求超时；弱网下不宜过长，失败留待下一轮补发
+        std::atomic<uint32_t> timeout_ms{5000};
+    } edge;
 };
 
 /**
