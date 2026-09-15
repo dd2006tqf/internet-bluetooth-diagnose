@@ -171,16 +171,13 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # 只同步 dist-arm64 编译产物，不同步源码和构建目录
     rsync -az --delete --exclude "data/" --exclude "server/logs/" -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" 2>/dev/null
 
-    # 同步 Web 前端与网关服务
-    if [ -d "${ROOT}/web-dashboard" ]; then
-        ssh "${BOARD}" "mkdir -p /home/radxa/weaknet/web/backend /home/radxa/weaknet/web/frontend" 2>/dev/null || true
-        rsync -az --delete -e ssh "${ROOT}/web-dashboard/backend/" "${BOARD}:/home/radxa/weaknet/web/backend/" 2>/dev/null || true
-        rsync -az --delete -e ssh "${ROOT}/web-dashboard/frontend/" "${BOARD}:/home/radxa/weaknet/web/frontend/" 2>/dev/null || true
-        if [ -f "${ROOT}/AI-assisted analysis/network_knowledge_base.py" ]; then
-            scp "${ROOT}/AI-assisted analysis/network_knowledge_base.py" "${BOARD}:/home/radxa/weaknet/web/backend/" 2>/dev/null || true
-        fi
-        scp "${ROOT}/web-dashboard/backend/weaknet-web.service" "${BOARD}:/tmp/weaknet-web.service" 2>/dev/null || true
-    fi
+    # 旧 web-dashboard 已废弃删除：前端统一由 Large-Model-Application（Next.js）承载，
+    # 开发板只保留 eBPF + C++ 底座。此处顺带停用并清理板上遗留的 weaknet-web 服务，
+    # 避免旧 unit 继续拉起已失去部署来源的旧网关。
+    ssh "${BOARD}" "sudo systemctl disable --now weaknet-web 2>/dev/null || true; \
+        sudo rm -f /etc/systemd/system/weaknet-web.service 2>/dev/null || true; \
+        sudo rm -rf /home/radxa/weaknet/web 2>/dev/null || true; \
+        sudo systemctl daemon-reload 2>/dev/null || true"
 
     # 部署 systemd 单元、D-Bus 系统总线策略、运行时配置并启动服务实例
     scp "${ROOT}/tools/weaknet-server.service" "${BOARD}:/tmp/weaknet-server.service" 2>/dev/null
@@ -189,7 +186,6 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # 客户端动态库安装到系统路径，供 weaknet-cli 链接（服务端走 unit 内 LD_LIBRARY_PATH）
     scp "${DIST_DIR}/client/lib/libweaknet.so" "${BOARD}:/tmp/libweaknet.so" 2>/dev/null
     ssh "${BOARD}" "sudo cp /tmp/weaknet-server.service /etc/systemd/system/weaknet-server.service && \
-        ( [ -f /tmp/weaknet-web.service ] && sudo cp /tmp/weaknet-web.service /etc/systemd/system/weaknet-web.service && sudo systemctl enable weaknet-web || true ) && \
         sudo cp /tmp/com.example.WeakNet.conf /etc/dbus-1/system.d/com.example.WeakNet.conf && \
         sudo mkdir -p /etc/weaknet && sudo cp /tmp/weaknet-config.yaml /etc/weaknet/config.yaml && \
         sudo cp /tmp/libweaknet.so /usr/local/lib/libweaknet.so && sudo ldconfig && \

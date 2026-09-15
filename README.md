@@ -114,11 +114,28 @@ AI-powered-Network-Diagnostics/
 
 # 历史数据查询
 ./build-x86/server/history_query_tool --iface wlan0 --last 1h
-
-# 启动 Web 可视化仪表盘 (开发板或本地)
-python3 -m uvicorn web-dashboard.backend.app:app --host 0.0.0.0 --port 8080
-# 浏览器访问: http://radxa-cubie-a7a.local:8080 (同局域网) 或 http://localhost:8080 (SSH隧道)
 ```
+
+### Web 可视化与智能诊断平台
+
+开发板侧的 `web-dashboard/` 已废弃删除。网络态势可视化与 AI 智能排障统一由
+`Large-Model-Application/`（FastAPI + Next.js + Ant Design）承载，开发板只作为
+边缘事实源（eBPF + C++ 底座）向其上报不可变评估快照。
+
+```bash
+cd Large-Model-Application
+
+# 1) 启动后端与基础设施（PostgreSQL / Redis / MinIO / Keycloak / Vault / OPA）
+./scripts/dev_lite.sh init      # 首次：生成本地运行时配置
+./scripts/dev_lite.sh up -d
+
+# 2) 启动前端工作台
+web/node_modules/.bin/pnpm --dir web dev
+# 浏览器访问: http://localhost:3000
+```
+
+开发板作为网络资产接入平台的具体配置（服务端地址、设备身份、签名密钥）见
+`Large-Model-Application/README.md` 与 `config.yaml` 的 `edge:` 段。
 
 ### C/C++ 编程接口
 

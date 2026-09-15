@@ -1,7 +1,7 @@
 [Unit]
 Description=WeakNet Network Monitor Server
 After=network-online.target dbus.service
-Wants=network-online.target weaknet-web.service
+Wants=network-online.target
 
 [Service]
 Type=simple
