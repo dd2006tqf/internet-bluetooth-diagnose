@@ -218,9 +218,20 @@ def parse_probe_interval(text):
     误报成"周期漂移"。修正做法：先按间隔阈值把时间戳切分成"轮"，
     再取轮首之间的差值中位数。
 
+    跨午夜陷阱（v1 长稳实测踩坑）：日志时间戳不含日期，秒内换算
+    h*3600+mi*60+s 在 23:59→00:00 边界回绕。窗口同时含 23:5x 与 00:0x
+    时，sort 后轮首分组会把 00:0x 排在最前，与 23:5x 的差值变成
+    ~86400s（86332 = 23:59:16 与 00:00:24 的"回绕差"），被误判为
+    调度偏离。修正：对每个轮首差值按 86400s 取模折算（86332 mod 86400
+    无效时丢弃），它们只可能是回绕伪影，不可能是真实调度（真实一轮
+    最多 ~40s）。中位数本身仍抗单点噪声。
+
     纯从既有日志推导，不修改任何生产代码。
     """
     ROUND_GAP_MIN = 10  # 相邻时间戳差 >= 10s 视为新一轮开始（端点间隔 ~1s）
+    # 真实轮间隔上限：interval + 最大轮耗时（实测 33~40s）+ 富余。
+    # 超过它的差值只可能是跨午夜回绕伪影。
+    WRAP_GAP_MAX = 120
 
     stamps = []
     for line in text.splitlines():
@@ -240,8 +251,29 @@ def parse_probe_interval(text):
 
     if len(round_starts) < 2:
         return None
-    gaps = [round_starts[i + 1] - round_starts[i] for i in range(len(round_starts) - 1)]
-    gaps = [g for g in gaps if g > 0]
+    # 跨午夜回绕修正：日志时间戳不含日期，若窗口跨 23:59→00:00，sort 后
+    # 00:0x 轮首排在最前、23:5x 轮首排在最后，二者差值变成 ~86400s
+    # （86332 = 86356-24，即 23:59:16 与 00:00:24 的"回绕差"），被误判为
+    # 调度偏离。真实的"回绕差"语义是 diff - 86400（下一天的 00:0x 相对
+    # 当天 23:5x 只差几十秒），只有当 diff 落在 86400-WRAP_GAP_MAX..86400
+    # 区间时才是回绕伪影，其余大差值丢弃（真实一轮最多 ~40s）。中位数
+    # 本身仍抗单点噪声。
+
+    def _wrap_adjust(diff: int) -> int | None:
+        if 0 < diff <= WRAP_GAP_MAX:
+            return diff
+        # 00:0x 排在最前、23:5x 排在最后：diff = 86356-24 = 86332。
+        # 真实语义是"23:59:16 → 次日 00:00:24"，即 24+86400-86356 = 68s，
+        # 也就是 86400 - diff。
+        if 86400 - WRAP_GAP_MAX < diff < 86400:
+            return 86400 - diff
+        return None
+
+    gaps = []
+    for i in range(len(round_starts) - 1):
+        adjusted = _wrap_adjust(round_starts[i + 1] - round_starts[i])
+        if adjusted is not None:
+            gaps.append(adjusted)
     if not gaps:
         return None
     gaps.sort()
