@@ -1,6 +1,26 @@
 "use client";
 
-import { Badge, Card, Col, Descriptions, Progress, Row, Spin, Tag, Timeline, Typography } from "antd";
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  Col,
+  Descriptions,
+  Form,
+  Input,
+  Modal,
+  Progress,
+  Row,
+  Select,
+  Space,
+  Spin,
+  Tag,
+  Timeline,
+  Typography,
+  message,
+} from "antd";
+import { ControlOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 
@@ -52,8 +72,14 @@ export default function NetworkAssetDetailPage() {
   const [points, setPoints] = useState<TimelinePoint[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  // 远程调参模态框状态
+  const [actionModalOpen, setActionModalOpen] = useState(false);
+  const [submittingAction, setSubmittingAction] = useState(false);
+  const [form] = Form.useForm();
+
+  const fetchDetail = () => {
     if (!assetId) return;
+    setLoading(true);
     Promise.all([apiClient.getAsset(assetId), apiClient.getTimeline(assetId, "15m")])
       .then(([d, t]) => {
         setDetail(d);
@@ -64,7 +90,29 @@ export default function NetworkAssetDetailPage() {
         setPoints([]);
       })
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchDetail();
   }, [assetId]);
+
+  const handleQueueAction = async () => {
+    try {
+      const values = await form.validateFields();
+      if (!assetId) return;
+      setSubmittingAction(true);
+      const res = await apiClient.queueAction(assetId, values.config_key, values.config_value);
+      message.success(`指令已排队入库 (ID: ${res.action_id})，边缘节点将于下次上报时就地执行！`);
+      setActionModalOpen(false);
+      form.resetFields();
+      // 触发一次延时刷新
+      setTimeout(fetchDetail, 2000);
+    } catch (e: any) {
+      message.error(`下发失败: ${e.message || e}`);
+    } finally {
+      setSubmittingAction(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -91,12 +139,28 @@ export default function NetworkAssetDetailPage() {
   return (
     <AppShell>
       <div className="page-stack">
-        <div>
-          <Typography.Title level={2}>{s.display_name ?? s.asset_id}</Typography.Title>
-          <Typography.Text type="secondary">
-            {s.location ?? "未记录位置"} · {s.connection_status} · 最后心跳{" "}
-            {s.last_heartbeat_at ? new Date(s.last_heartbeat_at).toLocaleString() : "无"}
-          </Typography.Text>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <Typography.Title level={2} style={{ marginBottom: 4 }}>
+              {s.display_name ?? s.asset_id}
+            </Typography.Title>
+            <Typography.Text type="secondary">
+              {s.location ?? "未记录位置"} · {s.connection_status} · 最后心跳{" "}
+              {s.last_heartbeat_at ? new Date(s.last_heartbeat_at).toLocaleString() : "无"}
+            </Typography.Text>
+          </div>
+          <Space>
+            <Button icon={<ReloadOutlined />} onClick={fetchDetail}>
+              刷新
+            </Button>
+            <Button
+              type="primary"
+              icon={<ControlOutlined />}
+              onClick={() => setActionModalOpen(true)}
+            >
+              远程调参 / 下发控制
+            </Button>
+          </Space>
         </div>
 
         <Row gutter={[16, 16]}>
@@ -181,6 +245,54 @@ export default function NetworkAssetDetailPage() {
             />
           )}
         </Card>
+
+        {/* 远程调参下发弹窗 */}
+        <Modal
+          title={`远程配置下发 — ${s.display_name ?? s.asset_id}`}
+          open={actionModalOpen}
+          onOk={handleQueueAction}
+          onCancel={() => setActionModalOpen(false)}
+          confirmLoading={submittingAction}
+          okText="排队下发"
+          cancelText="取消"
+        >
+          <Alert
+            style={{ marginBottom: 16 }}
+            message="架构安全约束"
+            description="指令将入库为 QUEUED 状态；由于边缘设备位于 NAT/私网后，变更将在下一次遥测上报响应中随路拉取 (Pull-on-Upload)，并由 C++ 端按白名单安全执行后回执确认。"
+            type="info"
+            showIcon
+          />
+
+          <Form form={form} layout="vertical">
+            <Form.Item
+              name="config_key"
+              label="参数键名 (Config Key)"
+              rules={[{ required: true, message: "请选择或输入参数键" }]}
+              initialValue="rtt.interval"
+            >
+              <Select
+                options={[
+                  { label: "RTT 采样周期 (rtt.interval)", value: "rtt.interval" },
+                  { label: "RTT 探测目标 (rtt.target)", value: "rtt.target" },
+                  { label: "抖动采样周期 (jitter.interval)", value: "jitter.interval" },
+                  { label: "抖动滑动窗口 (jitter.window_size)", value: "jitter.window_size" },
+                  { label: "主动探测周期 (active_probe.interval)", value: "active_probe.interval" },
+                  { label: "主动探测超时 (active_probe.timeout)", value: "active_probe.timeout" },
+                ]}
+              />
+            </Form.Item>
+
+            <Form.Item
+              name="config_value"
+              label="参数值 (Config Value)"
+              rules={[{ required: true, message: "请输入参数值" }]}
+              extra="例如：5s, 10s, 8.8.8.8, 30 等符合对应监控器规范的值"
+            >
+              <Input placeholder="例如: 5s" />
+            </Form.Item>
+          </Form>
+        </Modal>
       </div>
     </AppShell>
   );
