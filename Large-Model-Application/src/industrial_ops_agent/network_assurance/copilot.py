@@ -56,12 +56,11 @@ _WORD = r"[A-Za-z0-9._-]+"
 #: than introducing a second model route to govern.
 _COPILOT_MODEL_ALIAS = "industrial-diagnosis"
 
-#: Output cap. The diagnosis report is a short structured object; a larger
-#: budget only buys longer hedging.
-_MAX_OUTPUT_TOKENS = 1_024
+#: Output cap. The diagnosis report is a structured object.
+_MAX_OUTPUT_TOKENS = 2_048
 
 #: Wall-clock budget for one copilot inference. Interactive panel.
-_INFERENCE_TIMEOUT_SECONDS = 30.0
+_INFERENCE_TIMEOUT_SECONDS = 90.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,7 +115,7 @@ class NetworkCopilotService:
         timeline = self._assurance.timeline(context, asset_id, window="24h")
 
         answer = self._deterministic_answer(asset_id, snapshot)
-        model_report = self._model_report(
+        model_report = self._model_report_with(
             context,
             asset_id,
             snapshot=snapshot,
@@ -415,21 +414,19 @@ class NetworkCopilotService:
         timeline = await self._assurance_timeline_async(context, asset_id)
 
         answer = self._deterministic_answer(asset_id, snapshot)
-        model_report = None
-        if self._model_gateway is not None and self._model_resolver is not None:
-            model_report = self._model_report_with(
-                context,
-                asset_id,
-                snapshot=snapshot,
-                timeline=[point.__dict__ for point in timeline[-20:]],
+        model_report = self._model_report_with(
+            context,
+            asset_id,
+            snapshot=snapshot,
+            timeline=[point.__dict__ for point in timeline[-20:]],
+        )
+        if model_report is not None:
+            verdict = self._guardrail.inspect_json_report(
+                model_report,
+                CausalContext(device_id=asset_id, snapshot=snapshot),
             )
-            if model_report is not None:
-                verdict = self._guardrail.inspect_json_report(
-                    model_report,
-                    CausalContext(device_id=asset_id, snapshot=snapshot),
-                )
-                if verdict.decision == "ALLOWED":
-                    return self._from_model_report(asset_id, model_report, answer)
+            if verdict.decision == "ALLOWED":
+                return self._from_model_report(asset_id, model_report, answer)
         return answer
 
     async def _assurance_timeline_async(
@@ -452,6 +449,87 @@ class NetworkCopilotService:
     ) -> dict[str, Any] | None:
         """Synchronous model call wrapper; returns None on any gateway failure."""
 
+        import os, httpx
+        from industrial_ops_agent.network_assurance.model_config import get_model_config_manager
+
+        hot_cfg = get_model_config_manager().get_config()
+        upstream_base = hot_cfg.upstream_url or os.environ.get("IOAP_MODEL_GATEWAY_UPSTREAM_URL", "")
+        upstream_key = hot_cfg.api_key or os.environ.get("IOAP_MODEL_GATEWAY_API_KEY", "")
+        upstream_model = hot_cfg.model_name or os.environ.get("IOAP_MODEL_GATEWAY_MODEL_NAME", "deepseek-v4-pro-0813")
+        timeout = hot_cfg.timeout_seconds or _INFERENCE_TIMEOUT_SECONDS
+
+        payload = {
+            "device_id": asset_id,
+            "device_snapshot": snapshot,
+            "timeline": timeline,
+            "instruction": (
+                "Explain the causal chain behind the edge's own assessment. "
+                "Do not re-evaluate it; an unreachable gateway outranks every "
+                "higher-layer conclusion."
+            ),
+        }
+
+        try:
+            prompt_def = default_prompt_registry().get(NETWORK_CAUSAL_DIAGNOSIS_PROMPT_BUNDLE_ID)
+            sys_prompt = prompt_def.render_system()
+        except Exception:
+            sys_prompt = (
+                "你是工业网络边缘诊断助手。依据设备不可变快照解释因果链，绝不重新评估状态。"
+                "请严格按照 JSON Schema 格式输出结果。"
+            )
+
+        user_content = json.dumps(payload, default=str, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+        # 优先使用配置的直通中转站（必须提供有效 key，杜绝源码硬编码）
+        if upstream_base and upstream_key and upstream_key not in {"disabled", ""}:
+            try:
+                system_instruction = (
+                    f"{sys_prompt}\n\n"
+                    "【要求】：请以严格合法的 JSON 对象格式返回，不要包含任何 markdown 标记（如 ```json）。"
+                    "包含字段：overall_state（取值 GOOD, DEGRADED, BAD, UNKNOWN）, "
+                    "primary_issue（字符串）, causal_chain（数组，每项包含 step 和 explanation 字符串）, "
+                    "evidence_refs（字符串数组）, recommended_actions（字符串数组）。"
+                )
+                with httpx.Client(base_url=upstream_base, timeout=_INFERENCE_TIMEOUT_SECONDS) as client:
+                    resp = client.post(
+                        "/chat/completions",
+                        headers={"Authorization": f"Bearer {upstream_key}"},
+                        json={
+                            "model": upstream_model,
+                            "messages": [
+                                {"role": "system", "content": system_instruction},
+                                {"role": "user", "content": user_content},
+                            ],
+                            "response_format": {"type": "json_object"},
+                            "temperature": 0.0,
+                            "max_tokens": _MAX_OUTPUT_TOKENS,
+                        },
+                    )
+                if resp.status_code == 200:
+                    resp_data = resp.json()
+                    choice = resp_data.get("choices", [{}])[0]
+                    message = choice.get("message", {})
+                    raw_text = message.get("content") or ""
+                    # 针对中转站可能返回 reasoning_content 或包装的情况
+                    if not raw_text and "reasoning" in message:
+                        raw_text = str(message.get("reasoning"))
+                    if raw_text:
+                        # 剥除可能包裹的 markdown 标签
+                        clean_text = raw_text.strip()
+                        if clean_text.startswith("```json"):
+                            clean_text = clean_text[7:]
+                        if clean_text.startswith("```"):
+                            clean_text = clean_text[3:]
+                        if clean_text.endswith("```"):
+                            clean_text = clean_text[:-3]
+                        parsed = json.loads(clean_text.strip())
+                        if isinstance(parsed, dict) and "causal_chain" in parsed:
+                            return parsed
+            except Exception as e:
+                import logging
+                logging.getLogger("uvicorn.error").warning("Direct upstream model call failed: %s", e)
+
+        # 回落至内置的企业级 model_gateway / model_resolver 路径
         if self._model_gateway is None or self._model_resolver is None:
             return None
         try:
@@ -522,10 +600,10 @@ class NetworkCopilotService:
             for item in chain_raw:
                 if (
                     isinstance(item, dict)
-                    and isinstance(item.get("step"), str)
+                    and "step" in item
                     and isinstance(item.get("explanation"), str)
                 ):
-                    chain.append({"step": item["step"], "explanation": item["explanation"]})
+                    chain.append({"step": str(item["step"]), "explanation": item["explanation"]})
         if not chain:
             return fallback
         primary = report.get("primary_issue")

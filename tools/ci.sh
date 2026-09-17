@@ -113,10 +113,12 @@ cd /src
 
 # 增量编译：保留 build 目录，仅重建改动的文件
 # 使用 ccache 缓存编译结果，减少重复编译
- echo "--- CMake 配置（增量 + ccache）---"
-cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug \
-    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1
+echo "--- CMake 配置（增量）---"
+CCACHE_OPTS=""
+if command -v ccache >/dev/null 2>&1; then
+    CCACHE_OPTS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+fi
+cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug ${CCACHE_OPTS} 2>&1
 
 echo "--- 编译服务端 + eBPF + 客户端 ---"
 cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet test_client_bin test_ebpf ebpf -j1 2>&1

@@ -153,12 +153,18 @@ def create_runtime_app(settings: Settings | None = None) -> FastAPI:
     edge_telemetry_verifier = None
     if resolved.network_assurance_enabled:
         public_key_pem = resolved.network_edge_telemetry_public_key_pem
+        if not public_key_pem and resolved.network_edge_telemetry_public_key_b64:
+            try:
+                public_key_pem = b64decode(
+                    resolved.network_edge_telemetry_public_key_b64, validate=True
+                ).decode("utf-8")
+            except (Base64Error, UnicodeDecodeError) as exc:
+                raise ValueError("network edge telemetry public key must be valid base64-encoded PEM") from exc
         device_token = resolved.network_edge_telemetry_device_token
         if not public_key_pem or not device_token:
             raise ValueError(
                 "network assurance requires both "
-                "IOAP_NETWORK_EDGE_TELEMETRY_PUBLIC_KEY_PEM and "
-                "IOAP_NETWORK_EDGE_TELEMETRY_DEVICE_TOKEN"
+                "public key (PEM or base64) and device token"
             )
         edge_telemetry_verifier = EdgeTelemetryVerifier.from_settings(
             public_key_pem=public_key_pem,

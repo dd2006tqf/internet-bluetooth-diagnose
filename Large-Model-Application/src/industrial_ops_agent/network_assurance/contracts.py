@@ -224,8 +224,8 @@ class NetworkDeviceTelemetry(_ClosedModel):
         root cause would surface a fault that the evaluator did not find.
         """
         stated = self.snapshot.primary_issue
-        if self.snapshot.overall_state in ("GOOD", "UNKNOWN") and stated:
-            raise ValueError("primary_issue is only valid for DEGRADED or BAD overall state")
+        if self.snapshot.overall_state == "GOOD" and stated:
+            raise ValueError("primary_issue is only valid for non-GOOD overall state")
         return self
 
 

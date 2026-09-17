@@ -79,6 +79,14 @@ inline std::string resolveDatabasePath(const std::string& cfg_data_dir) {
     return std::string("/home/radxa/weaknet/data") + "/history.db";
 }
 
+/// 网络代次状态文件路径。与 history.db 同目录 —— 二者都是"这台设备的
+/// 持久身份"，放在一起才能保证备份/迁移时不会只带走一半。
+inline std::string resolveNetworkEpochPath(const std::string& cfg_data_dir) {
+    return resolveDatabasePath(cfg_data_dir).substr(
+               0, resolveDatabasePath(cfg_data_dir).size() - std::string("history.db").size()) +
+           "network-epoch";
+}
+
 /// 默认流量分析接口名。空字符串 "" 表示自动选择当前活动接口
 /// 可通过 WEAKNET_TRAFFIC_IFACE 覆盖（如 WEAKNET_TRAFFIC_IFACE=eth1 强制分析指定网卡）
 inline const std::string kDefaultTrafficInterface = []() {

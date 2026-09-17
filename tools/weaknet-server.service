@@ -15,8 +15,14 @@ User=root
 Group=root
 # eBPF 探针加载/挂载需要 CAP_BPF + CAP_PERFMON（内核 5.8+），
 # 网络诊断（ping raw socket / netlink）需要 CAP_NET_RAW + CAP_NET_ADMIN
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON
+#
+# CAP_DAC_OVERRIDE 是必需的，不是可选加固项：服务以 root 运行，但
+# data/ 目录属于 radxa:radxa 且权限位为 0700/0750 —— root 既不是属主也
+# 不在属组，被当作 "other" 拒绝。没有 DAC_OVERRIDE 时，root 无法创建
+# data/network-epoch，连 history.db 都会 "unable to open database file"，
+# 于是本地历史持久化静默失效（日志里只有一行 failed to open，其余功能照常）。
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_DAC_OVERRIDE
 NoNewPrivileges=false
 LimitNOFILE=65536
 

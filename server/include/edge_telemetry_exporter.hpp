@@ -69,6 +69,7 @@ struct EdgeExporterStats {
     uint64_t dropped_oldest{0};       ///< 因缓冲满而挤掉的旧快照数
     uint64_t actions_applied{0};      ///< 成功落地的下行动作数
     uint64_t actions_rejected{0};     ///< 被白名单/范围校验拒绝的动作数
+    uint64_t action_results_sent{0};  ///< 已回传服务端并获确认的动作结果数
     size_t buffered{0};               ///< 当前缓冲深度
 };
 
@@ -85,6 +86,18 @@ struct EdgeTelemetryRecord {
     uint32_t config_generation{0};
     int64_t wall_timestamp_ms{0};
     std::string body;       ///< 已序列化、且已被签名覆盖的 body 字节
+    std::string signature;  ///< body 的 Ed25519 签名（hex）
+};
+
+/// 一条已就地执行、待回传服务端确认的下行动作结果。
+///
+/// 与遥测记录一样，结果在产生时刻即完成序列化与签名——签名覆盖的是
+/// action-results 报文的最终字节，回传时原样发送，绝不重新序列化。
+struct EdgeActionResultRecord {
+    std::string action_id;
+    std::string status;     ///< "APPLIED" | "REJECTED"
+    std::string detail;
+    std::string body;       ///< network.edge.action-results.v1 报文字节
     std::string signature;  ///< body 的 Ed25519 签名（hex）
 };
 
@@ -148,6 +161,21 @@ private:
     /// 执行服务端下发的动作（走既有白名单校验），并把结果暂存待回传。
     void applyPendingActions(const std::string& response_body);
 
+    /// 序列化并签名一条动作结果，暂存到待回传队列。
+    void queueActionResult(const std::string& action_id, bool applied,
+                           const std::string& detail);
+
+    /// 把待回传的动作结果上报到 /edge/action-results；返回是否全部送达。
+    bool transmitActionResults(std::string* error);
+
+    /// 由 telemetry URL 派生 action-results URL（同主机同前缀，换尾段）。
+    std::string actionResultsUrl() const;
+
+    /// 发送单个已签名 body 到指定 URL，返回 HTTP 状态码与响应体。
+    bool postSigned(const std::string& url, const std::string& body,
+                    const std::string& signature, std::string* response,
+                    std::string* error);
+
     bool configComplete(std::string* error) const;
 
     const weaknet_dbus::WeakNetConfig& config_;
@@ -156,7 +184,8 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<EdgeTelemetryRecord> buffer_;
-    std::deque<std::string> pending_action_results_;  ///< 待随下次上报回传
+    ///< 已就地执行、待回传服务端确认的动作结果（保留至确认送达）。
+    std::deque<EdgeActionResultRecord> pending_action_results_;
 
     std::thread thread_;
     std::atomic<bool> running_{false};

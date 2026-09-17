@@ -193,6 +193,7 @@ class Settings(BaseSettings):
     #: a default, because a shared default key would let any deployment's
     #: device sign for any other.
     network_edge_telemetry_public_key_pem: str | None = None
+    network_edge_telemetry_public_key_b64: str | None = None
     network_edge_telemetry_device_token: str | None = None
     #: A device is reported OFFLINE after this long with no accepted upload.
     #: Must comfortably exceed the edge reporting interval (default 10s) so

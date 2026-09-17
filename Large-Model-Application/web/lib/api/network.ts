@@ -112,6 +112,46 @@ export const apiClient = {
       body: JSON.stringify({ question }),
     });
   },
+  getCopilotConfig(): Promise<{
+    upstream_url: string;
+    model_name: string;
+    has_api_key: boolean;
+    api_key_masked: string;
+    timeout_seconds: number;
+  }> {
+    return request("/api/v1/network/copilot/config");
+  },
+  updateCopilotConfig(payload: {
+    upstream_url: string;
+    model_name: string;
+    api_key?: string;
+    timeout_seconds?: number;
+  }): Promise<{
+    upstream_url: string;
+    model_name: string;
+    has_api_key: boolean;
+    api_key_masked: string;
+    timeout_seconds: number;
+  }> {
+    return request("/api/v1/network/copilot/config", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  testCopilotConfig(payload: {
+    upstream_url: string;
+    model_name: string;
+    api_key?: string;
+  }): Promise<{
+    ok: boolean;
+    message: string;
+    latency_ms: number;
+  }> {
+    return request("/api/v1/network/copilot/config/test", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
 };
 
 export type { NetworkAssetSummary, NetworkAssetDetail, TimelinePoint, CopilotAnswer };

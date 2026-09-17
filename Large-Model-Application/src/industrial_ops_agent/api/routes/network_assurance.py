@@ -57,6 +57,13 @@ from industrial_ops_agent.network_assurance.service import (
     NetworkAssuranceService,
     edge_subject_id,
 )
+from industrial_ops_agent.network_assurance.model_config import (
+    CopilotModelConfigRequest,
+    CopilotModelConfigResponse,
+    CopilotModelTestRequest,
+    CopilotModelTestResponse,
+    get_model_config_manager,
+)
 from industrial_ops_agent.network_assurance.signing import (
     EdgeTelemetryVerifier,
     NetworkSignatureError,
@@ -113,12 +120,14 @@ class CopilotAnswerResponse(BaseModel):
 async def _read_verified_body(
     request: Request,
     verifier: EdgeTelemetryVerifier,
-    *,
-    key_id: Annotated[str | None, Header(alias="X-Edge-Key-Id")] = None,
-    token: Annotated[str | None, Header(alias="X-Edge-Token")] = None,
-    signature: Annotated[str | None, Header(alias="X-Edge-Signature")] = None,
 ) -> bytes:
     """Authenticate a device submission and return the bytes it signed.
+
+    Device credentials travel in headers and are read from the request
+    directly: this helper is awaited inline by the route (not resolved
+    through `Depends`), so `Header(...)` parameter declarations on it would
+    never be populated by FastAPI and every request would fail as
+    `edge_credentials_missing`.
 
     Every rejection is reported identically to the caller. The reason codes
     below appear only in server-side logs; distinguishing "unknown key id"
@@ -126,6 +135,9 @@ async def _read_verified_body(
     enumerate provisioned key ids.
     """
 
+    key_id = request.headers.get("X-Edge-Key-Id")
+    token = request.headers.get("X-Edge-Token")
+    signature = request.headers.get("X-Edge-Signature")
     if key_id is None or token is None or signature is None:
         raise _unauthorized("edge_credentials_missing")
 
@@ -166,6 +178,11 @@ async def _read_verified_body(
 
 
 def _extract_device_id(body: dict[str, object]) -> str:
+    # 优先支持 action-results 报文直接在顶层携带的 device_id
+    top_device_id = body.get("device_id")
+    if isinstance(top_device_id, str) and top_device_id:
+        return top_device_id
+
     snapshots = body.get("snapshots")
     if not isinstance(snapshots, list) or not snapshots:
         raise _bad_request("edge_snapshots_missing")
@@ -223,6 +240,8 @@ async def ingest_edge_telemetry(
         # A signature-valid but structurally invalid payload means the device
         # is running an incompatible version, which is worth failing loudly
         # rather than partially accepting.
+        import logging
+        logging.getLogger("uvicorn.error").error("422 edge validation failure: %s, raw: %s", exc.errors(), raw.decode(errors='replace')[:500])
         raise AppError(
             status_code=422,
             code="edge_payload_invalid",
@@ -433,6 +452,68 @@ async def network_copilot(
         answer=answer.answer,
         model_used=answer.model_used,
     )
+
+
+@router.get(
+    "/copilot/config",
+    response_model=CopilotModelConfigResponse,
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Get current hot model gateway configuration",
+)
+async def get_copilot_model_config(
+    request: Request,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+) -> CopilotModelConfigResponse:
+    authorizer.require(
+        identity,
+        Action.READ_NETWORK_ASSURANCE,
+        ResourceContext(identity.tenant_id),
+        request_id=getattr(request.state, "request_id", "unavailable"),
+    )
+    return get_model_config_manager().get_public_view()
+
+
+@router.post(
+    "/copilot/config",
+    response_model=CopilotModelConfigResponse,
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Update hot model gateway configuration without restart",
+)
+async def update_copilot_model_config(
+    request: Request,
+    body: Annotated[CopilotModelConfigRequest, Body()],
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+) -> CopilotModelConfigResponse:
+    authorizer.require(
+        identity,
+        Action.MANAGE_NETWORK_DEVICE,
+        ResourceContext(identity.tenant_id),
+        request_id=getattr(request.state, "request_id", "unavailable"),
+    )
+    return get_model_config_manager().update_config(body)
+
+
+@router.post(
+    "/copilot/config/test",
+    response_model=CopilotModelTestResponse,
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Test model gateway connection with provided parameters",
+)
+async def test_copilot_model_connection(
+    request: Request,
+    body: Annotated[CopilotModelTestRequest, Body()],
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+) -> CopilotModelTestResponse:
+    authorizer.require(
+        identity,
+        Action.READ_NETWORK_ASSURANCE,
+        ResourceContext(identity.tenant_id),
+        request_id=getattr(request.state, "request_id", "unavailable"),
+    )
+    return await get_model_config_manager().test_connection(body)
 
 
 def _require_read_scope(

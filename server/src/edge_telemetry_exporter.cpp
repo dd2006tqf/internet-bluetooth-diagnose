@@ -153,27 +153,35 @@ bool extractStringField(const std::string& json, const std::string& key, size_t 
     return true;
 }
 
-/// 从响应体中提取全部 pending_actions（顺序为服务端下发顺序）。
-std::vector<std::pair<std::string, std::string>> parsePendingActions(
-    const std::string& body, const std::string& key_field, const std::string& value_field) {
-    std::vector<std::pair<std::string, std::string>> actions;
+/// 从响应体中提取全部 pending_actions（动作对象数组，保序）。
+///
+/// 每个动作对象携带 {action_id, key, value} 三个字段；action_id 是回传
+/// 结果时的唯一凭据，必须与 key/value 一并取出，否则无法回执。
+struct PendingAction {
+    std::string action_id;
+    std::string key;
+    std::string value;
+};
+
+std::vector<PendingAction> parsePendingActions(const std::string& body) {
+    std::vector<PendingAction> actions;
     const std::string array_key = "\"pending_actions\"";
     size_t pos = body.find(array_key);
     if (pos == std::string::npos) return actions;
 
     while (true) {
-        std::string action_id, key, value;
+        PendingAction action;
         size_t cursor = pos;
         // 每个动作对象内同时含 action_id / key / value；用 action_id 作为
         // 分段锚点，避免跨对象误取。
-        if (!extractStringField(body, "action_id", cursor, &action_id, &cursor)) break;
+        if (!extractStringField(body, "action_id", cursor, &action.action_id, &cursor)) break;
         // 该动作对象在本段内查找 key/value；边界取下一个 action_id 之前。
         const size_t next_action = body.find("\"action_id\"", cursor);
         const size_t segment_end = (next_action == std::string::npos) ? body.size() : next_action;
         const std::string segment = body.substr(cursor, segment_end - cursor);
-        if (!extractStringField(segment, key_field, 0, &key, nullptr)) { pos = segment_end; continue; }
-        if (!extractStringField(segment, value_field, 0, &value, nullptr)) { pos = segment_end; continue; }
-        actions.emplace_back(key, value);
+        if (!extractStringField(segment, "key", 0, &action.key, nullptr)) { pos = segment_end; continue; }
+        if (!extractStringField(segment, "value", 0, &action.value, nullptr)) { pos = segment_end; continue; }
+        actions.push_back(std::move(action));
         pos = segment_end;
         if (next_action == std::string::npos) break;
     }
@@ -392,10 +400,9 @@ std::string EdgeTelemetryExporter::signBody(const std::string& body, std::string
 #endif
 }
 
-bool EdgeTelemetryExporter::transmit(const std::vector<EdgeTelemetryRecord>& records,
-                                    std::string* error) {
-    if (records.empty()) return true;
-
+bool EdgeTelemetryExporter::postSigned(const std::string& url, const std::string& body,
+                                        const std::string& signature, std::string* response,
+                                        std::string* error) {
 #ifdef WEAKNET_HAVE_CURL
     CURL* curl = curl_easy_init();
     if (!curl) {
@@ -403,46 +410,62 @@ bool EdgeTelemetryExporter::transmit(const std::vector<EdgeTelemetryRecord>& rec
         return false;
     }
 
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    const std::string key_header = "X-Edge-Key-Id: " + config_.edge.key_id.get();
+    const std::string token_header = "X-Edge-Token: " + config_.edge.token.get();
+    const std::string tenant_header = "X-Edge-Tenant: " + config_.edge.tenant.get();
+    const std::string sig_header = "X-Edge-Signature: " + signature;
+    headers = curl_slist_append(headers, key_header.c_str());
+    headers = curl_slist_append(headers, token_header.c_str());
+    headers = curl_slist_append(headers, tenant_header.c_str());
+    headers = curl_slist_append(headers, sig_header.c_str());
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.data());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+    // 显式超时：绝不允许上报线程因对端无响应而长时间挂起。
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,
+                     static_cast<long>(config_.edge.timeout_ms.load()));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS,
+                     static_cast<long>(config_.edge.timeout_ms.load()));
+
+    const CURLcode code = curl_easy_perform(curl);
+    long http_status = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (code != CURLE_OK || http_status < 200 || http_status >= 300) {
+        *error = std::string("上报失败: ") + curl_easy_strerror(code) +
+                 " http=" + std::to_string(http_status);
+        return false;
+    }
+    return true;
+#else
+    (void)url; (void)body; (void)signature; (void)response;
+    *error = "本构建未链接 libcurl，无法发送";
+    return false;
+#endif
+}
+
+bool EdgeTelemetryExporter::transmit(const std::vector<EdgeTelemetryRecord>& records,
+                                    std::string* error) {
+    if (records.empty()) return true;
+
+#ifdef WEAKNET_HAVE_CURL
     // 批量补发时，body 取"最后一条"的签名对应的字节；因此批量场景下
     // 每条记录单独发送，而不是拼成一个巨大请求——拼接会破坏
     // "签名覆盖发送字节"这一不变式。
-    bool all_ok = true;
     for (const auto& record : records) {
         std::string response;
-        struct curl_slist* headers = nullptr;
-        headers = curl_slist_append(headers, "Content-Type: application/json");
-        const std::string key_header = "X-Edge-Key-Id: " + config_.edge.key_id.get();
-        const std::string token_header = "X-Edge-Token: " + config_.edge.token.get();
-        const std::string tenant_header = "X-Edge-Tenant: " + config_.edge.tenant.get();
-        const std::string sig_header = "X-Edge-Signature: " + record.signature;
-        headers = curl_slist_append(headers, key_header.c_str());
-        headers = curl_slist_append(headers, token_header.c_str());
-        headers = curl_slist_append(headers, tenant_header.c_str());
-        headers = curl_slist_append(headers, sig_header.c_str());
-
-        curl_easy_setopt(curl, CURLOPT_URL, config_.edge.url.get().c_str());
-        curl_easy_setopt(curl, CURLOPT_POST, 1L);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, record.body.data());
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(record.body.size()));
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-        // 显式超时：绝不允许上报线程因对端无响应而长时间挂起。
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,
-                         static_cast<long>(config_.edge.timeout_ms.load()));
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS,
-                         static_cast<long>(config_.edge.timeout_ms.load()));
-
-        const CURLcode code = curl_easy_perform(curl);
-        long http_status = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
-        curl_slist_free_all(headers);
-
-        if (code != CURLE_OK || http_status < 200 || http_status >= 300) {
-            *error = std::string("上报失败: ") + curl_easy_strerror(code) +
-                     " http=" + std::to_string(http_status);
-            all_ok = false;
-            break;
+        if (!postSigned(config_.edge.url.get(), record.body, record.signature,
+                        &response, error)) {
+            return false;
         }
 
         applyPendingActions(response);
@@ -452,9 +475,7 @@ bool EdgeTelemetryExporter::transmit(const std::vector<EdgeTelemetryRecord>& rec
             stats_.snapshots_sent++;
         }
     }
-
-    curl_easy_cleanup(curl);
-    return all_ok;
+    return true;
 #else
     *error = "本构建未链接 libcurl，无法发送";
     return false;
@@ -462,25 +483,132 @@ bool EdgeTelemetryExporter::transmit(const std::vector<EdgeTelemetryRecord>& rec
 }
 
 void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body) {
-    const auto actions = parsePendingActions(response_body, "key", "value");
+    const auto actions = parsePendingActions(response_body);
     if (actions.empty()) return;
 
-    for (const auto& [key, value] : actions) {
+    for (const auto& action : actions) {
         std::string error;
         // 复用既有白名单 + 类型 + 范围校验；本层不做任何"宽松处理"。
         const bool ok = weaknet_dbus::setMonitorParam(
-            const_cast<weaknet_dbus::WeakNetConfig*>(&config_), key, value, &error);
+            const_cast<weaknet_dbus::WeakNetConfig*>(&config_), action.key, action.value, &error);
 
-        std::lock_guard<std::mutex> lock(stats_mutex_);
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            if (ok) {
+                stats_.actions_applied++;
+            } else {
+                stats_.actions_rejected++;
+            }
+        }
+
         if (ok) {
-            stats_.actions_applied++;
-            LOG_INFO(weaknet_dbus::LogModule::SYSTEM, "已应用服务端下发的配置: " << key << "=" << value);
+            LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                     "已应用服务端下发的配置: " << action.key << "=" << action.value
+                     << " (action=" << action.action_id << ")");
         } else {
-            stats_.actions_rejected++;
             LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
-                      "服务端下发配置被拒绝: " << key << "=" << value << " (" << error << ")");
+                      "服务端下发配置被拒绝: " << action.key << "=" << action.value
+                      << " (action=" << action.action_id << ", " << error << ")");
+        }
+
+        // 无论应用成功与否都必须回执：服务端靠它把 action 推进到
+        // APPLIED/REJECTED，缺了回执这条 action 会停在 DELIVERED 永远不完结。
+        queueActionResult(action.action_id, ok, ok ? "applied" : error);
+    }
+}
+
+void EdgeTelemetryExporter::queueActionResult(const std::string& action_id, bool applied,
+                                               const std::string& detail) {
+    EdgeActionResultRecord rec;
+    rec.action_id = action_id;
+    rec.status = applied ? "APPLIED" : "REJECTED";
+    rec.detail = detail;
+
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    std::ostringstream body;
+    body << "{\"schema_version\":\"network.edge.action-results.v1\",";
+    body << "\"device_id\":\"" << weaknet_utils::escapeJsonString(config_.edge.device_id.get()) << "\",";
+    body << "\"results\":[{";
+    body << "\"action_id\":\"" << weaknet_utils::escapeJsonString(action_id) << "\",";
+    body << "\"status\":\"" << rec.status << "\",";
+    body << "\"detail\":\"" << weaknet_utils::escapeJsonString(detail) << "\",";
+    body << "\"reported_at\":\"" << formatRfc3339Utc(now_ms) << "\"}]}";
+    rec.body = body.str();
+
+    std::string sign_error;
+    rec.signature = signBody(rec.body, &sign_error);
+    if (rec.signature.empty()) {
+        LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                  "动作结果签名失败，无法回执: action=" << action_id << " (" << sign_error << ")");
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pending_action_results_.push_back(std::move(rec));
+    }
+    cv_.notify_one();
+}
+
+std::string EdgeTelemetryExporter::actionResultsUrl() const {
+    std::string url = config_.edge.url.get();
+    const std::string suffix = "/telemetry";
+    if (url.size() >= suffix.size() &&
+        url.compare(url.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        url.replace(url.size() - suffix.size(), suffix.size(), "/action-results");
+    } else {
+        // URL 形态不符约定时显式失败，而不是把结果发到一个错误的端点。
+        url.clear();
+    }
+    return url;
+}
+
+bool EdgeTelemetryExporter::transmitActionResults(std::string* error) {
+    std::deque<EdgeActionResultRecord> pending;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pending.swap(pending_action_results_);
+    }
+    if (pending.empty()) return true;
+
+    const std::string url = actionResultsUrl();
+    if (url.empty()) {
+        *error = "action-results URL 无法由 edge.url 派生";
+        // 把结果放回队列，避免丢弃。
+        std::lock_guard<std::mutex> lock(mutex_);
+        while (!pending.empty()) {
+            pending_action_results_.push_front(std::move(pending.back()));
+            pending.pop_back();
+        }
+        return false;
+    }
+
+    bool all_ok = true;
+    std::deque<EdgeActionResultRecord> unsent;
+    for (auto& rec : pending) {
+        std::string response;
+        std::string send_error;
+        if (postSigned(url, rec.body, rec.signature, &response, &send_error)) {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.action_results_sent++;
+        } else {
+            *error = send_error;
+            unsent.push_back(std::move(rec));
+            all_ok = false;
         }
     }
+
+    // 未送达的结果放回队列头部，等下一轮重试（服务端对未知 action_id 幂等）。
+    if (!unsent.empty()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        while (!unsent.empty()) {
+            pending_action_results_.push_front(std::move(unsent.back()));
+            unsent.pop_back();
+        }
+    }
+    return all_ok;
 }
 
 std::vector<EdgeTelemetryRecord> EdgeTelemetryExporter::drain() {
@@ -501,16 +629,25 @@ void EdgeTelemetryExporter::run() {
     while (!stop_requested_.load()) {
         std::unique_lock<std::mutex> lock(mutex_);
         cv_.wait_for(lock, std::chrono::milliseconds(config_.edge.interval_ms.load()),
-                     [this]() { return !buffer_.empty() || stop_requested_.load(); });
+                     [this]() {
+                         return !buffer_.empty() || !pending_action_results_.empty() ||
+                                stop_requested_.load();
+                     });
         lock.unlock();
 
         if (stop_requested_.load()) break;
 
+        const bool has_action_results = [this]() {
+            std::lock_guard<std::mutex> guard(mutex_);
+            return !pending_action_results_.empty();
+        }();
+
         auto records = drain();
-        if (records.empty()) continue;
+        if (records.empty() && !has_action_results) continue;
 
         std::string error;
-        if (!transmit(records, &error)) {
+        const bool telemetry_ok = records.empty() || transmit(records, &error);
+        if (!telemetry_ok) {
             std::lock_guard<std::mutex> slock(stats_mutex_);
             stats_.send_failures++;
             // 失败：把未送达的记录放回缓冲**前面**，保持时序。
@@ -526,6 +663,14 @@ void EdgeTelemetryExporter::run() {
                 buffer_.push_front(std::move(*it));
             }
             LOG_ERROR(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报失败（保留待补发）: " << error);
+        }
+
+        // 动作结果与遥测共用同一轮唤醒：只要任一通道有积压就尝试回传，
+        // 让 APPLIED/REJECTED 尽快到达服务端而不是等下一个遥测周期。
+        std::string results_error;
+        if (!transmitActionResults(&results_error)) {
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                      "动作结果回传失败（保留待重发）: " << results_error);
         }
     }
     LOG_INFO(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报线程已退出");

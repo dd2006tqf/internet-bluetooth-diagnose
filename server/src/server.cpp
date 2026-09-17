@@ -32,6 +32,7 @@
 #include <csignal>
 
 #include "common.hpp"
+#include "network_epoch_store.hpp"
 #include "serializer.hpp"
 #include "weaknet_config.hpp"
 #include "monitor_registry.hpp"
@@ -1137,6 +1138,24 @@ int start_server(int argc, char** argv) {
     ctx.metrics_registry = std::make_unique<weaknet::MetricsRegistry>();
     ctx.dns_tracker = std::make_unique<weaknet::DnsTransactionTracker>();
     ctx.weak_mgr = std::make_unique<WeakNetMgr>(ctx.metrics_registry.get());
+
+    // 网络代次跨重启推进（W-edge 上行去重的正确性前提）。
+    //
+    // 上行遥测按 (tenant, device, network_epoch, sequence_id) 幂等入库，而
+    // sequence_id 是进程内计数器，每次重启都从 1 重新开始。若 network_epoch
+    // 也随重启回到 1，重启后的 (1, 1)、(1, 2)… 会与上一轮运行留下的历史键
+    // 完全重合 —— 服务端判定重复并返回 HTTP 200，数据被静默丢弃，两端日志
+    // 都不报错。因此这里必须让代次在每次启动时前进一格，把新数据放进一个
+    // 全新的键空间。
+    {
+        weaknet::NetworkEpochStore epoch_store(resolveNetworkEpochPath(ctx.cfg.data_dir.get()));
+        const uint64_t epoch = epoch_store.open();
+        ctx.dns_binding_epoch.store(epoch);
+        // dns_tracker 的 binding epoch 初值为 1，运行中由路由/解析器变化推进。
+        // 持久化值只在更大时才生效（advanceBindingEpoch 内部拒绝回退），
+        // 因此这里把两者对齐到同一个下界。
+        ctx.dns_tracker->advanceBindingEpoch(epoch);
+    }
 
     // 启动 UsingInterfaceManager（一次性启动，不重复调用 start()）
     UsingInterfaceManager::getInstance()->start();

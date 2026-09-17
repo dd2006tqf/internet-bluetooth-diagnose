@@ -75,3 +75,24 @@ monitors:
     enabled: true
     bpf_obj: build/skb_drop.bpf.o
     interval_ms: 5000
+
+  active_probe:
+    enabled: true
+    interval_ms: 30000
+    timeout_ms: 3000
+    targets: "baidu|www.baidu.com|443|baidu,alibaba|www.taobao.com|443|alibaba,apple|www.apple.com|443|apple"
+    https_enabled: true
+    portal_check_enabled: true
+    portal_targets: "fx|detectportal.firefox.com|80|mozilla|/success.txt|success,ap|captive.apple.com|80|apple|/hotspot-detect.html|Success,gs|connectivitycheck.gstatic.com|80|google|/generate_204|,ms|www.msftconnecttest.com|80|microsoft|/connecttest.txt|Microsoft Connect Test"
+    portal_path: "/success.txt"
+    portal_expect_body: "success"
+
+edge:
+  enabled: true
+  url: "http://127.0.0.1:8000/api/v1/network/edge/telemetry"
+  tenant: "tenant-m1-demo"
+  device_id: "radxa-cubie-a7a"
+  token: "dev-edge-token-20260915"
+  key_id: "weaknet-edge-telemetry-v1"
+  private_key_path: "/home/radxa/weaknet/config/edge_priv.pem"
+  interval_ms: 10000
