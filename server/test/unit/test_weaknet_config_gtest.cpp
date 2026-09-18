@@ -387,3 +387,173 @@ TEST(WeakNetConfigTest, UnpairedQuoteIsPreserved) {
     EXPECT_EQ(cfg.active_probe.portal_path.get(), "\"/success.txt")
         << "只有成对引号才剥离；单个引号应原样保留";
 }
+
+// ============================================================================
+// ConfigTransaction —— 云端下发配置的三态状态机
+// ============================================================================
+
+namespace {
+
+/// 给 ConfigTransaction 一个独立 state_path，避免测试间互相覆盖。
+std::string makeTxnStatePath() {
+    return "./test_txn_" + std::to_string(::getpid()) + "_" +
+           std::to_string(reinterpret_cast<uintptr_t>(new int{0})) + ".state";
+}
+
+}  // namespace
+
+TEST(ConfigTransactionTest, StartsInStable) {
+    ConfigTransaction txn;
+    EXPECT_EQ(txn.state(), ConfigState::STABLE);
+    EXPECT_EQ(txn.lastAppliedGeneration(), 0u);
+}
+
+TEST(ConfigTransactionTest, StartTrialCapturesPriorAndEntersTrial) {
+    WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    ConfigTransaction txn;
+
+    std::string err;
+    ASSERT_TRUE(txn.startTrial(cfg, "rtt.interval_ms", "5000", "act-1", 1, &err)) << err;
+    EXPECT_EQ(txn.state(), ConfigState::TRIAL);
+    const auto trial = txn.trial();
+    EXPECT_EQ(trial.generation, 1u);
+    EXPECT_EQ(trial.pending_action_id, "act-1");
+    ASSERT_EQ(trial.prior_values.count("rtt.interval_ms"), 1u);
+    EXPECT_EQ(trial.prior_values.at("rtt.interval_ms"), "10000");
+}
+
+TEST(ConfigTransactionTest, ExtendTrialPreservesOriginalPriorValues) {
+    WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    cfg.rtt.timeout_ms.store(800);
+    ConfigTransaction txn;
+
+    std::string err;
+    ASSERT_TRUE(txn.startTrial(cfg, "rtt.interval_ms", "5000", "act-1", 1, &err)) << err;
+    // 在 TRIAL 中再叠一个 key：prior 必须是该 key 在叠入时刻的当前值。
+    ASSERT_TRUE(txn.extendTrial(cfg, "rtt.timeout_ms", "1500", "act-2", 2, &err)) << err;
+    const auto trial = txn.trial();
+    EXPECT_EQ(trial.prior_values.at("rtt.interval_ms"), "10000");
+    // timeout_ms 在 extendTrial 时刻还没被改过，prior 是 cfg 当前的 800
+    EXPECT_EQ(trial.prior_values.at("rtt.timeout_ms"), "800");
+}
+
+TEST(ConfigTransactionTest, RejectsNonTrialableKey) {
+    WeakNetConfig cfg;
+    ConfigTransaction txn;
+    std::string err;
+    EXPECT_FALSE(txn.startTrial(cfg, "edge.token", "abc", "act-1", 1, &err));
+    EXPECT_EQ(err, "key not trialable: edge.token");
+}
+
+TEST(ConfigTransactionTest, RejectsStaleGeneration) {
+    WeakNetConfig cfg;
+    ConfigTransaction txn;
+    std::string err;
+    ASSERT_TRUE(txn.startTrial(cfg, "rtt.interval_ms", "5000", "act-1", 5, &err)) << err;
+    ASSERT_TRUE(txn.confirmStable(5, &err)) << err;
+    // 重放 generation=3（< last_applied=5）必须被拒
+    EXPECT_FALSE(txn.startTrial(cfg, "rtt.interval_ms", "3000", "act-2", 3, &err));
+    EXPECT_EQ(err, "stale_generation");
+}
+
+TEST(ConfigTransactionTest, ConfirmStableClearsTrialAndAdvancesGeneration) {
+    WeakNetConfig cfg;
+    ConfigTransaction txn;
+    std::string err;
+    ASSERT_TRUE(txn.startTrial(cfg, "rtt.interval_ms", "5000", "act-1", 7, &err)) << err;
+    ASSERT_TRUE(txn.confirmStable(7, &err)) << err;
+    EXPECT_EQ(txn.state(), ConfigState::STABLE);
+    EXPECT_EQ(txn.lastAppliedGeneration(), 7u);
+    EXPECT_EQ(txn.trial().prior_values.empty(), true);
+}
+
+TEST(ConfigTransactionTest, ConfirmStableRejectsWrongGeneration) {
+    WeakNetConfig cfg;
+    ConfigTransaction txn;
+    std::string err;
+    ASSERT_TRUE(txn.startTrial(cfg, "rtt.interval_ms", "5000", "act-1", 3, &err)) << err;
+    EXPECT_FALSE(txn.confirmStable(9, &err));
+    EXPECT_EQ(err, "generation_mismatch");
+}
+
+TEST(ConfigTransactionTest, ForceRollbackRestoresPriorValues) {
+    WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    cfg.rtt.timeout_ms.store(800);
+    ConfigTransaction txn;
+
+    std::string err;
+    ASSERT_TRUE(txn.startTrial(cfg, "rtt.interval_ms", "5000", "act-1", 1, &err)) << err;
+    ASSERT_TRUE(txn.extendTrial(cfg, "rtt.timeout_ms", "2000", "act-2", 2, &err)) << err;
+
+    // 应用新值（模拟 exporter 的 apply）
+    ASSERT_TRUE(setMonitorParam(&cfg, "rtt.interval_ms", "5000", &err)) << err;
+    ASSERT_TRUE(setMonitorParam(&cfg, "rtt.timeout_ms", "2000", &err)) << err;
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 5000u);
+    EXPECT_EQ(cfg.rtt.timeout_ms.load(), 2000u);
+
+    ASSERT_TRUE(txn.forceRollback(&cfg, "watchdog_timeout")) << "rollback must succeed";
+    EXPECT_EQ(txn.state(), ConfigState::STABLE);
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 10000u);
+    EXPECT_EQ(cfg.rtt.timeout_ms.load(), 800u);
+    EXPECT_EQ(txn.lastAppliedGeneration(), 2u);
+}
+
+TEST(ConfigTransactionTest, DeadlineExpiresAfterWindow) {
+    WeakNetConfig cfg;
+    ConfigTransaction txn;
+    std::string err;
+    ASSERT_TRUE(txn.startTrial(cfg, "rtt.interval_ms", "5000", "act-1", 1, &err)) << err;
+    const auto armed = txn.trial().armed_at;
+    EXPECT_FALSE(txn.deadlineExpired(armed + std::chrono::seconds(179)));
+    EXPECT_TRUE(txn.deadlineExpired(armed + std::chrono::seconds(181)));
+}
+
+TEST(ConfigTransactionTest, CrashRecoveryFileDetectsPersistedPriorValues) {
+    const std::string path = makeTxnStatePath();
+    {
+        // 模拟崩溃前已写入 prior_values
+        std::ofstream out(path);
+        out << "rtt.interval_ms\t10000\n";
+    }
+    ConfigTransaction txn(path);
+    EXPECT_TRUE(txn.hasCrashRecoveryFile());
+    std::filesystem::remove(path);
+}
+
+TEST(ConfigTransactionTest, PersistedFileClearedOnStable) {
+    const std::string path = makeTxnStatePath();
+    WeakNetConfig cfg;
+    ConfigTransaction txn(path);
+    std::string err;
+    ASSERT_TRUE(txn.startTrial(cfg, "rtt.interval_ms", "5000", "act-1", 1, &err)) << err;
+    ASSERT_TRUE(std::filesystem::exists(path));
+    ASSERT_TRUE(txn.confirmStable(1, &err)) << err;
+    EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+TEST(ConfigTransactionTest, IsTrialableKeyWhitelist) {
+    EXPECT_TRUE(isTrialableKey("rtt.interval_ms"));
+    EXPECT_TRUE(isTrialableKey("rtt.timeout_ms"));
+    EXPECT_TRUE(isTrialableKey("edge.interval_ms"));
+    EXPECT_TRUE(isTrialableKey("edge.timeout_ms"));
+    EXPECT_FALSE(isTrialableKey("edge.url"));
+    EXPECT_FALSE(isTrialableKey("edge.token"));
+    EXPECT_FALSE(isTrialableKey("edge.device_id"));
+    EXPECT_FALSE(isTrialableKey("edge.private_key_path"));
+    EXPECT_FALSE(isTrialableKey("edge.enabled"));
+    EXPECT_FALSE(isTrialableKey("dns.assessment_profile"));
+    EXPECT_FALSE(isTrialableKey("rtt.bpf_obj"));  // bpf_obj 永不在事务内
+}
+
+TEST(ConfigTransactionTest, SnapshotMonitorParamRoundTrip) {
+    WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(2500);
+    std::string v;
+    ASSERT_TRUE(snapshotMonitorParam(cfg, "rtt.interval_ms", &v));
+    EXPECT_EQ(v, "2500");
+    // 未知键返回 false
+    EXPECT_FALSE(snapshotMonitorParam(cfg, "edge.token", &v));
+}

@@ -1298,6 +1298,21 @@ bool DbusService::handleSetMonitorParam(DBusConnection* conn, DBusMessage* msg) 
 
     LOG_INFO(LogModule::DBUS, "SetMonitorParam: " << key << " = " << value);
     std::string cfg_err;
+
+    // TRIAL 中本地调参会让回滚基线失真（trial 期间改过的 key，回滚时
+    // prior_values 已含云端的 trial 前值；本地再写一遍，等回滚来时被
+    // 覆盖成 trial 前 —— 等于把运维在 trial 期间的合法改动吞掉）。
+    // 因此 TRIAL 中显式拒绝本地写，等 confirm/rollback 后再放开。
+    if (ctx_->config_txn &&
+        ctx_->config_txn->state() == weaknet_dbus::ConfigState::TRIAL) {
+        cfg_err = "trial_in_progress";
+        LOG_ERROR(LogModule::DBUS, "SetMonitorParam rejected: " << cfg_err);
+        DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", cfg_err.c_str());
+        dbus_connection_send(conn, reply, nullptr);
+        dbus_message_unref(reply);
+        return false;
+    }
+
     // ctx_->cfg 是线程安全配置，setMonitorParam 内部对目标字段做校验+原子写入
     if (!setMonitorParam(&ctx_->cfg, key, value, &cfg_err)) {
         LOG_ERROR(LogModule::DBUS, "SetMonitorParam rejected: " << cfg_err);

@@ -155,13 +155,39 @@ bool extractStringField(const std::string& json, const std::string& key, size_t 
 
 /// 从响应体中提取全部 pending_actions（动作对象数组，保序）。
 ///
-/// 每个动作对象携带 {action_id, key, value} 三个字段；action_id 是回传
-/// 结果时的唯一凭据，必须与 key/value 一并取出，否则无法回执。
+/// 每个动作对象携带 {action_id, key, value, generation, nonce, claim_token}
+/// 六个字段。generation/nonce 是云端下发的防重放/防乱序元数据；缺失时
+/// 取 0/""（与 v1 schema 兼容）。
 struct PendingAction {
     std::string action_id;
     std::string key;
     std::string value;
+    uint64_t generation{0};
+    std::string nonce;
+    std::string claim_token;
 };
+
+/// 提取 JSON 对象内的 uint64 字段；缺失或非法返回 false。
+bool extractUint64Field(const std::string& json, const std::string& key,
+                        uint64_t* out) {
+    const std::string needle = "\"" + key + "\"";
+    size_t pos = json.find(needle);
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos + needle.size());
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
+    if (pos >= json.size() || !std::isdigit(static_cast<unsigned char>(json[pos]))) {
+        return false;
+    }
+    uint64_t value = 0;
+    while (pos < json.size() && std::isdigit(static_cast<unsigned char>(json[pos]))) {
+        value = value * 10 + static_cast<uint64_t>(json[pos] - '0');
+        ++pos;
+    }
+    *out = value;
+    return true;
+}
 
 std::vector<PendingAction> parsePendingActions(const std::string& body) {
     std::vector<PendingAction> actions;
@@ -172,15 +198,19 @@ std::vector<PendingAction> parsePendingActions(const std::string& body) {
     while (true) {
         PendingAction action;
         size_t cursor = pos;
-        // 每个动作对象内同时含 action_id / key / value；用 action_id 作为
-        // 分段锚点，避免跨对象误取。
+        // 每个动作对象内同时含 action_id / key / value / generation /
+        // nonce / claim_token；用 action_id 作为分段锚点，避免跨对象误取。
         if (!extractStringField(body, "action_id", cursor, &action.action_id, &cursor)) break;
-        // 该动作对象在本段内查找 key/value；边界取下一个 action_id 之前。
+        // 该动作对象在本段内查找其它字段；边界取下一个 action_id 之前。
         const size_t next_action = body.find("\"action_id\"", cursor);
         const size_t segment_end = (next_action == std::string::npos) ? body.size() : next_action;
         const std::string segment = body.substr(cursor, segment_end - cursor);
         if (!extractStringField(segment, "key", 0, &action.key, nullptr)) { pos = segment_end; continue; }
         if (!extractStringField(segment, "value", 0, &action.value, nullptr)) { pos = segment_end; continue; }
+        // v2 元数据可选：缺失视为 0/""（与 v1 兼容）
+        extractUint64Field(segment, "generation", &action.generation);
+        extractStringField(segment, "nonce", 0, &action.nonce, nullptr);
+        extractStringField(segment, "claim_token", 0, &action.claim_token, nullptr);
         actions.push_back(std::move(action));
         pos = segment_end;
         if (next_action == std::string::npos) break;
@@ -190,9 +220,11 @@ std::vector<PendingAction> parsePendingActions(const std::string& body) {
 
 }  // namespace
 
-EdgeTelemetryExporter::EdgeTelemetryExporter(const weaknet_dbus::WeakNetConfig& config,
-                                            std::string hostname)
-    : config_(config), hostname_(std::move(hostname)) {}
+EdgeTelemetryExporter::EdgeTelemetryExporter(
+    const weaknet_dbus::WeakNetConfig& config, std::string hostname,
+    std::shared_ptr<weaknet_dbus::ConfigTransaction> config_txn)
+    : config_(config), hostname_(std::move(hostname)),
+      config_txn_(std::move(config_txn)) {}
 
 EdgeTelemetryExporter::~EdgeTelemetryExporter() {
     stop();
@@ -286,8 +318,19 @@ void EdgeTelemetryExporter::stop() {
     LOG_INFO(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报已停止");
 }
 
+void EdgeTelemetryExporter::injectLatestSnapshot(
+    std::shared_ptr<const AssessmentSnapshot> snap) {
+    std::lock_guard<std::mutex> lock(latest_snapshot_mutex_);
+    latest_snapshot_ = std::move(snap);
+}
+
 bool EdgeTelemetryExporter::enqueue(const AssessmentSnapshot& snapshot) {
     if (!running_.load()) return false;
+
+    // 同时刷新"当前设备健康"视图：TRIAL 到期时 evaluateTrialDeadline
+    // 用这份快照判断 commit/rollback，避免 exporter 反向依赖 ServerContext。
+    injectLatestSnapshot(
+        std::shared_ptr<const AssessmentSnapshot>(&snapshot, [](const AssessmentSnapshot*) {}));
 
     EdgeTelemetryRecord record;
     std::string error;
@@ -488,9 +531,41 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
 
     for (const auto& action : actions) {
         std::string error;
-        // 复用既有白名单 + 类型 + 范围校验；本层不做任何"宽松处理"。
-        const bool ok = weaknet_dbus::setMonitorParam(
-            const_cast<weaknet_dbus::WeakNetConfig*>(&config_), action.key, action.value, &error);
+        bool ok = false;
+
+        const bool trialable = weaknet_dbus::isTrialableKey(action.key);
+        const bool stale = action.generation > 0 &&
+                           config_txn_ &&
+                           action.generation <= config_txn_->lastAppliedGeneration();
+
+        if (stale) {
+            error = "stale_generation";
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                      "云端动作被拒绝（generation 过期）: " << action.key
+                      << " gen=" << action.generation
+                      << " last=" << config_txn_->lastAppliedGeneration());
+        } else if (trialable && config_txn_) {
+            // TRIAL 路径：先记账（含 prior_values 快照），再落值。
+            auto* cfg = const_cast<weaknet_dbus::WeakNetConfig*>(&config_);
+            const auto state = config_txn_->state();
+            if (state == weaknet_dbus::ConfigState::TRIAL) {
+                ok = config_txn_->extendTrial(*cfg, action.key, action.value,
+                                              action.action_id, action.generation,
+                                              &error);
+            } else {
+                ok = config_txn_->startTrial(*cfg, action.key, action.value,
+                                             action.action_id, action.generation,
+                                             &error);
+            }
+            if (ok) {
+                ok = weaknet_dbus::setMonitorParam(cfg, action.key, action.value, &error);
+            }
+        } else {
+            // 直通道：非 trialable key 直接走 setMonitorParam。
+            ok = weaknet_dbus::setMonitorParam(
+                const_cast<weaknet_dbus::WeakNetConfig*>(&config_),
+                action.key, action.value, &error);
+        }
 
         {
             std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -504,7 +579,9 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
         if (ok) {
             LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
                      "已应用服务端下发的配置: " << action.key << "=" << action.value
-                     << " (action=" << action.action_id << ")");
+                     << " (action=" << action.action_id
+                     << " gen=" << action.generation
+                     << (trialable && config_txn_ ? " [TRIAL]" : " [DIRECT]") << ")");
         } else {
             LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
                       "服务端下发配置被拒绝: " << action.key << "=" << action.value
@@ -513,12 +590,15 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
 
         // 无论应用成功与否都必须回执：服务端靠它把 action 推进到
         // APPLIED/REJECTED，缺了回执这条 action 会停在 DELIVERED 永远不完结。
-        queueActionResult(action.action_id, ok, ok ? "applied" : error);
+        queueActionResult(action.action_id, ok, ok ? "applied" : error,
+                          action.claim_token, action.generation);
     }
 }
 
 void EdgeTelemetryExporter::queueActionResult(const std::string& action_id, bool applied,
-                                               const std::string& detail) {
+                                               const std::string& detail,
+                                               const std::string& claim_token,
+                                               uint64_t generation) {
     EdgeActionResultRecord rec;
     rec.action_id = action_id;
     rec.status = applied ? "APPLIED" : "REJECTED";
@@ -528,12 +608,14 @@ void EdgeTelemetryExporter::queueActionResult(const std::string& action_id, bool
         std::chrono::system_clock::now().time_since_epoch()).count();
 
     std::ostringstream body;
-    body << "{\"schema_version\":\"network.edge.action-results.v1\",";
+    body << "{\"schema_version\":\"network.edge.action-results.v2\",";
     body << "\"device_id\":\"" << weaknet_utils::escapeJsonString(config_.edge.device_id.get()) << "\",";
     body << "\"results\":[{";
     body << "\"action_id\":\"" << weaknet_utils::escapeJsonString(action_id) << "\",";
     body << "\"status\":\"" << rec.status << "\",";
     body << "\"detail\":\"" << weaknet_utils::escapeJsonString(detail) << "\",";
+    body << "\"claim_token\":\"" << weaknet_utils::escapeJsonString(claim_token) << "\",";
+    body << "\"generation\":" << generation << ",";
     body << "\"reported_at\":\"" << formatRfc3339Utc(now_ms) << "\"}]}";
     rec.body = body.str();
 
@@ -550,6 +632,67 @@ void EdgeTelemetryExporter::queueActionResult(const std::string& action_id, bool
         pending_action_results_.push_back(std::move(rec));
     }
     cv_.notify_one();
+}
+
+bool EdgeTelemetryExporter::tickWatchdog(std::chrono::steady_clock::time_point now) const {
+    return config_txn_ && config_txn_->deadlineExpired(now);
+}
+
+bool EdgeTelemetryExporter::evaluateTrialDeadline(const AssessmentSnapshot* latest_snapshot) {
+    if (!config_txn_) return false;
+    if (!tickWatchdog(std::chrono::steady_clock::now())) return false;
+
+    const auto trial = config_txn_->trial();
+    const auto generation = trial.generation;
+
+    // fail-safe：没有可用快照也按"未知健康"回滚，不赌设备状态。
+    if (!latest_snapshot) {
+        auto* cfg = const_cast<weaknet_dbus::WeakNetConfig*>(&config_);
+        const std::string reason = "watchdog_timeout_no_snapshot";
+        if (config_txn_->forceRollback(cfg, reason)) {
+            LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                        "TRIAL 看门狗超时 + 无快照 → 已回滚到 prior_values");
+            emitRollbackReceipt(reason);
+        }
+        return true;
+    }
+
+    const auto overall = latest_snapshot->experience.overall;
+    const auto reach = latest_snapshot->experience.ip_reachability.state;
+    const bool healthy = (overall != weaknet::HealthState::BAD) &&
+                         (reach != weaknet::HealthState::BAD);
+
+    if (healthy) {
+        std::string err;
+        if (config_txn_->confirmStable(generation, &err)) {
+            LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                     "TRIAL 看门狗超时 + 健康评估通过 → 已确认 STABLE (gen=" << generation << ")");
+            return true;
+        }
+        LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                  "confirmStable 失败: " << err);
+        return false;
+    }
+
+    auto* cfg = const_cast<weaknet_dbus::WeakNetConfig*>(&config_);
+    const std::string reason = "watchdog_timeout_health_bad";
+    if (config_txn_->forceRollback(cfg, reason)) {
+        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                    "TRIAL 看门狗超时 + 健康 BAD → 已回滚 (overall=" << static_cast<int>(overall)
+                    << " ip_reachability=" << static_cast<int>(reach) << ")");
+        emitRollbackReceipt(reason);
+        return true;
+    }
+    return false;
+}
+
+void EdgeTelemetryExporter::emitRollbackReceipt(const std::string& reason) {
+    // ROLLBACK 回执：sentinel action_id 表示"看门狗触发"，与具体云端 action 解耦。
+    // generation 取 last_applied + 1，与服务端 claim 的 generation 对齐。
+    const std::string sentinel = "watchdog-" + std::to_string(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    queueActionResult(sentinel, false, reason, "", config_txn_ ? config_txn_->lastAppliedGeneration() : 0);
 }
 
 std::string EdgeTelemetryExporter::actionResultsUrl() const {
@@ -636,6 +779,17 @@ void EdgeTelemetryExporter::run() {
         lock.unlock();
 
         if (stop_requested_.load()) break;
+
+        // 看门狗：TRIAL 到期即在此评估最新快照并做 commit/rollback。
+        // evaluateTrialDeadline 内部 fail-safe：无快照视作不健康。
+        if (config_txn_ && tickWatchdog(std::chrono::steady_clock::now())) {
+            std::shared_ptr<const AssessmentSnapshot> latest;
+            {
+                std::lock_guard<std::mutex> lock(latest_snapshot_mutex_);
+                latest = latest_snapshot_;
+            }
+            evaluateTrialDeadline(latest.get());
+        }
 
         const bool has_action_results = [this]() {
             std::lock_guard<std::mutex> guard(mutex_);

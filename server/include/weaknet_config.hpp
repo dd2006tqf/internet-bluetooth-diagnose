@@ -21,6 +21,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <map>
 #include <mutex>
 #include <string>
@@ -253,6 +254,168 @@ bool splitMonitorKey(const std::string& dotted, std::string* monitor, std::strin
  */
 bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
                      const std::string& value, std::string* error);
+
+// ============================================================================
+// ConfigTransaction —— STABLE / TRIAL / ROLLBACK 三态配置事务
+// ============================================================================
+//
+// ## 设计动机
+//
+// 云端下发的「可试行」配置（rtt.interval_ms、dns.interval_ms 等采样/超时
+// 类参数）若直接落地，可能把设备调到亚健康甚至无法回联。引入事务：
+//
+//   STABLE   —— 配置已生效且已通过健康验证（默认状态）
+//   TRIAL    —— 新值已应用，看门狗在跑（默认 180s）；期间可再叠新动作
+//   ROLLBACK —— 看门狗超时或健康判 BAD，正在还原 prior_values
+//
+// 看门狗超时后两条路：
+//   - 健康探针 OK   → confirmStable()，TRIAL 转正
+//   - 健康探针 BAD  → forceRollback()，还原 prior_values 后回到 STABLE，
+//                   并把 ROLLBACK 回执推入 action-results 队列上行
+//
+// ## 持久化 fail-safe
+//
+// startTrial 把 prior_values 写入 data_dir/config_txn_state.json。若进程在
+// TRIAL 中崩溃，重启时 ConfigTransaction::recoverFromDisk() 读回并还原，
+// 等价于把崩溃视作一次隐式回滚。这与 NetworkEpochStore 用同一目录布局。
+//
+// ## 谁可以进 TRIAL
+//
+// 白名单见 isTrialableKey()。identity / 凭据 / eBPF 对象路径永不进 TRIAL
+// —— 这些键一但回滚会让设备失联，不走「试错」语义。
+
+enum class ConfigState : uint8_t {
+    STABLE,   ///< 已生效且已验证
+    TRIAL,    ///< 已应用待验证
+    ROLLBACK, ///< 还原中（瞬态；restore 完成即回 STABLE）
+};
+
+struct TrialWindow {
+    std::chrono::steady_clock::time_point armed_at;   ///< trial 起始时间
+    std::chrono::steady_clock::time_point deadline;   ///< 看门狗到期点
+    uint64_t generation{0};                            ///< 触发本 trial 的动作代次
+    std::string pending_action_id;                     ///< 最近一次动作 ID（追踪用）
+    std::map<std::string, std::string> pending_keys;   ///< 本 trial 内被修改的 key -> 新值
+    std::map<std::string, std::string> prior_values;   ///< key -> trial 前的序列化值
+};
+
+/**
+ * @brief 可试行配置的事务协调器
+ *
+ * 所有公有方法线程安全（内部 mutex）。除 startTrial/confirmStable/forceRollback
+ * 外，「应用一个新值」由调用方负责：事务层只负责记住 prior、控制状态迁移、
+ * 到期后触发回调。
+ */
+class ConfigTransaction {
+public:
+    /// 看门狗默认窗口：180 秒
+    static constexpr std::chrono::seconds kDefaultWindow{180};
+
+    /**
+     * @param state_path prior_values 持久化路径（通常在 data_dir 下）。
+     *                   空字符串 → 不持久化（仅内存态，崩溃即丢）。
+     */
+    explicit ConfigTransaction(std::string state_path = "");
+
+    /// 当前状态（线程安全读）。
+    ConfigState state() const;
+
+    /// 当前 trial 窗口；非 TRIAL 时返回空窗口。
+    TrialWindow trial() const;
+
+    /**
+     * @brief 进入 TRIAL：快照 prior_values，启动看门狗。
+     *
+     * @param cfg        当前配置（用于取 prior 值）
+     * @param key        即将被改的 key（必须 isTrialableKey）
+     * @param new_value  即将写入的新值（仅用于审计/落盘，不在此处写）
+     * @param action_id  云端 action_id（写入 TrialWindow 供回执）
+     * @param generation 动作代次；<= last_applied_generation 时拒绝
+     * @param error      失败原因（白名单/stale_generation/already_in_trial）
+     * @return true 已进入 TRIAL；false 拒绝
+     */
+    bool startTrial(const WeakNetConfig& cfg, const std::string& key,
+                    const std::string& new_value, const std::string& action_id,
+                    uint64_t generation, std::string* error);
+
+    /**
+     * @brief 把另一个 trialable key 叠进当前 TRIAL（仍在同一窗口内）。
+     *
+     * prior_values 只在 key 第一次被叠入时记录，覆盖时保留初值。
+     * deadline 重新武装为 now + window。
+     */
+    bool extendTrial(const WeakNetConfig& cfg, const std::string& key,
+                     const std::string& new_value, const std::string& action_id,
+                     uint64_t generation, std::string* error);
+
+    /**
+     * @brief 显式确认 TRIAL → STABLE（运维确认或看门狗判定健康）。
+     *
+     * @param generation 必须等于当前 trial_.generation
+     * @param error      失败原因
+     */
+    bool confirmStable(uint64_t generation, std::string* error);
+
+    /**
+     * @brief 回滚：还原 prior_values，转入 STABLE。
+     *
+     * @param cfg        要还原到的目标配置（与 startTrial 同一份）
+     * @param reason     进入回执/日志的原因
+     * @return true 已还原；false 未在 TRIAL 或还原失败
+     */
+    bool forceRollback(WeakNetConfig* cfg, const std::string& reason);
+
+    /**
+     * @brief 看门狗心跳。返回 true 表示 deadline 已过且仍在 TRIAL。
+     *
+     * 调用方负责读 latest snapshot 并调 confirmStable 或 forceRollback；
+     * 本函数只判断「时间到了」。
+     */
+    bool deadlineExpired(std::chrono::steady_clock::time_point now) const;
+
+    /**
+     * @brief 启动时从 state_path 恢复 prior_values（如果上次崩溃在 TRIAL 中）。
+     *
+     * @return true 表示读到了残留文件；调用方应立刻 forceRollback。
+     */
+    bool hasCrashRecoveryFile() const;
+
+    /// 删除持久化文件（在 confirmStable / forceRollback 后调用）。
+    void clearPersistedState();
+
+    /// 当前已应用过的最高 action generation（拒绝 stale 重放）。
+    uint64_t lastAppliedGeneration() const { return last_applied_generation_.load(); }
+
+    /// 把 action generation 记入 last_applied（在动作完成回执后调用）。
+    void markGenerationApplied(uint64_t generation) {
+        uint64_t cur = last_applied_generation_.load();
+        while (generation > cur &&
+               !last_applied_generation_.compare_exchange_weak(cur, generation)) {
+        }
+    }
+
+private:
+    /// 把 trial_.prior_values 原子写到 state_path_（tmp + rename）。
+    bool persistPriorValues() const;
+    /// 从 state_path_ 读 prior_values。
+    bool loadPriorValues(std::map<std::string, std::string>* out) const;
+
+    mutable std::mutex mutex_;
+    ConfigState state_{ConfigState::STABLE};
+    TrialWindow trial_;
+    std::string state_path_;
+    std::chrono::seconds window_{kDefaultWindow};
+    std::atomic<uint64_t> last_applied_generation_{0};
+};
+
+/// 是否为「可试行」的安全调参键。非白名单键一律走直通道（应用即生效，
+/// 无回滚语义），禁止把 identity / 凭据 / eBPF 路径放进事务。
+bool isTrialableKey(const std::string& key);
+
+/// 把某个 key 的当前值序列化成字符串（用于 prior_values 快照）。
+/// 不支持的 key 返回 false。
+bool snapshotMonitorParam(const WeakNetConfig& cfg, const std::string& key,
+                          std::string* value_out);
 
 /**
  * @brief 序列化单个监控器当前参数为 JSON

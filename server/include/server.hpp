@@ -48,6 +48,7 @@ class TcpConnectMonitor;    // 前置声明：TCP 建连可观测性（eBPF）
 class ActiveConnectivityMonitor; // 前置声明：受控主动连通性探测
 class SkbDropMonitor;       // 前置声明：Socket 丢包归因监控（eBPF）
 class DatabaseManager;      // 前置声明：SQLite 历史数据持久化
+class ConfigTransaction;    // 前置声明：配置事务状态机（weaknet_config.hpp 中定义）
 
 /**
  * @brief 服务端全局生命周期中枢
@@ -107,6 +108,11 @@ struct ServerContext {
     weaknet::AssessmentSnapshotStore assessment_store;
     std::atomic<uint32_t> config_generation{1};   ///< 配置代（配置变更时递增）
     std::atomic<uint64_t> assessment_sequence{0}; ///< 快照发布序号
+
+    /// 云端下发配置的事务协调器（STABLE / TRIAL / ROLLBACK）。
+    /// 必须在 EdgeTelemetryExporter 之前构造，因为 exporter 持有它的裸指针。
+    /// config_generation 仅由 ConfigTransaction 推进，不允许原子写绕过。
+    std::shared_ptr<ConfigTransaction> config_txn;
 
     // ---------- 历史数据持久化 ----------
     std::unique_ptr<DatabaseManager> db_mgr;   ///< SQLite 管理器，持有数据库连接

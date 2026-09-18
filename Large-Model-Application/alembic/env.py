@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from logging.config import fileConfig
 from typing import Any
 
@@ -87,8 +88,11 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    section = config.get_section(config.config_ini_section, {})
+    if "ALEMBIC_DB_URL" in os.environ:
+        section["sqlalchemy.url"] = os.environ["ALEMBIC_DB_URL"]
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
+        section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )

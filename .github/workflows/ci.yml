@@ -36,6 +36,12 @@ jobs:
             exit 1
           } || echo "✅ 仓库卫生检查通过"
 
+      - name: Edge telemetry contract cross-language check
+        run: |
+          sudo apt-get install -y -qq python3 python3-pip
+          python3 -m pip install --quiet pydantic
+          python3 tools/verify_telemetry_contract.py --strict
+
   build-and-test:
     name: x86 编译与全量单元测试
     runs-on: ubuntu-latest

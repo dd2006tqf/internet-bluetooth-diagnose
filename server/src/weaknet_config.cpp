@@ -16,6 +16,7 @@
 #include "weaknet_config.hpp"
 
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -672,6 +673,317 @@ bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
 
     if (error) *error = "unknown monitor or field: " + key;
     return false;
+}
+
+// ============================================================================
+// ConfigTransaction 实现
+// ============================================================================
+//
+// 状态机语义见头文件注释。实现要点：
+//
+//   - prior_values 在 startTrial / extendTrial 时通过 snapshotMonitorParam
+//     读出并保存。同 key 第二次叠入时不覆盖，保证 ROLLBACK 还原到最初值。
+//   - 持久化用 JSON-ish 的 "key\tvalue\n" 行格式（足够简单，不引入 JSON 库）。
+//     用 tmp + rename 原子写入；读不到就当没有 crash recovery。
+//   - deadlineExpired 只看时间，不看健康——健康判定由 exporter 读最新
+//     snapshot 后调 confirmStable / forceRollback。
+//   - last_applied_generation_ 单调递增；startTrial 会拒绝 <= 当前值的
+//     generation，阻断云端下发的重放。
+// ============================================================================
+
+namespace {
+
+/// prior_values 落盘的极简行格式："key\tvalue\n"。key/value 内禁止 \t\n，
+/// 我们序列化时已经保证（serializeMonitorParam 不产生这两字符）。
+const char kTxnStateFieldSep = '\t';
+
+bool isTrialableKeyImpl(const std::string& key) {
+    // 白名单只放"采样/超时/目标 IP"这类调参键。
+    // 不放 identity（edge.url/token/device_id/key_id/tenant/private_key_path）
+    // 不放 enabled（开关型参数可能直接关闭监控回路）
+    // 不放 bpf_obj（eBPF 程序路径变化需要重启加载，不属于运行时事务）
+    // 不放 active_probe.*（探测目标变更可能让探针失联）
+    static const std::set<std::string> trialable = {
+        "rtt.interval_ms", "rtt.interval", "rtt.timeout_ms", "rtt.timeout", "rtt.target",
+        "jitter.interval_ms", "jitter.interval", "jitter.timeout_ms", "jitter.timeout",
+        "jitter.window_size", "jitter.window", "jitter.target",
+        "rssi.interval_ms", "rssi.interval",
+        "tcp_loss.interval_ms", "tcp_loss.interval",
+        "traffic.interval_ms", "traffic.interval",
+        "quality.interval_ms", "quality.interval",
+        "bluetooth.interval_ms", "bluetooth.interval",
+        "dns.interval_ms", "dns.interval", "dns.capture_pages",
+        "tcp_connect.interval_ms", "tcp_connect.interval", "tcp_connect.capture_pages",
+        "wifi_loss.interval_ms", "wifi_loss.interval",
+        "http_latency.interval_ms", "http_latency.interval",
+        "process_profiler.interval_ms", "process_profiler.interval",
+        "tcp_retrans.interval_ms", "tcp_retrans.interval",
+        "tcp_conn.interval_ms", "tcp_conn.interval",
+        "skb_drop.interval_ms", "skb_drop.interval",
+        "edge.interval_ms", "edge.interval", "edge.timeout_ms", "edge.timeout",
+    };
+    return trialable.find(key) != trialable.end();
+}
+
+/// 序列化某个 trialable key 的当前值（用于 prior_values 快照）。
+/// 不复用 serializeMonitorJson —— 那个序列化整 monitor，这里要单字段。
+bool snapshotMonitorParamImpl(const WeakNetConfig& cfg, const std::string& key,
+                              std::string* value_out) {
+    if (!value_out) return false;
+    std::string mon, field;
+    if (!splitMonitorKey(key, &mon, &field)) return false;
+
+    auto to_str_u32 = [](uint32_t v) { return std::to_string(v); };
+
+    if (mon == "rtt") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.rtt.interval_ms.load()); return true; }
+        if (field == "timeout" || field == "timeout_ms") { *value_out = to_str_u32(cfg.rtt.timeout_ms.load()); return true; }
+        if (field == "target") { *value_out = cfg.rtt.target.get(); return true; }
+    }
+    if (mon == "jitter") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.jitter.interval_ms.load()); return true; }
+        if (field == "timeout" || field == "timeout_ms") { *value_out = to_str_u32(cfg.jitter.timeout_ms.load()); return true; }
+        if (field == "window" || field == "window_size") { *value_out = to_str_u32(cfg.jitter.window_size.load()); return true; }
+        if (field == "target") { *value_out = cfg.jitter.target.get(); return true; }
+    }
+    if (mon == "rssi") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.rssi.interval_ms.load()); return true; }
+    }
+    if (mon == "tcp_loss") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.tcp_loss.interval_ms.load()); return true; }
+    }
+    if (mon == "traffic") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.traffic.interval_ms.load()); return true; }
+    }
+    if (mon == "quality") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.quality.interval_ms.load()); return true; }
+    }
+    if (mon == "bluetooth") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.bluetooth.interval_ms.load()); return true; }
+    }
+    if (mon == "dns") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.dns.interval_ms.load()); return true; }
+        if (field == "capture_pages") { *value_out = to_str_u32(cfg.dns.capture_pages.load()); return true; }
+    }
+    if (mon == "tcp_connect") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.tcp_connect.interval_ms.load()); return true; }
+        if (field == "capture_pages") { *value_out = to_str_u32(cfg.tcp_connect.capture_pages.load()); return true; }
+    }
+    if (mon == "wifi_loss") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.wifi_loss.interval_ms.load()); return true; }
+    }
+    if (mon == "http_latency") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.http_latency.interval_ms.load()); return true; }
+    }
+    if (mon == "process_profiler") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.process_profiler.interval_ms.load()); return true; }
+    }
+    if (mon == "tcp_retrans") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.tcp_retrans.interval_ms.load()); return true; }
+    }
+    if (mon == "tcp_conn") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.tcp_conn.interval_ms.load()); return true; }
+    }
+    if (mon == "skb_drop") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.skb_drop.interval_ms.load()); return true; }
+    }
+    if (mon == "edge") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.edge.interval_ms.load()); return true; }
+        if (field == "timeout" || field == "timeout_ms") { *value_out = to_str_u32(cfg.edge.timeout_ms.load()); return true; }
+    }
+    return false;
+}
+
+}  // namespace
+
+bool isTrialableKey(const std::string& key) {
+    return isTrialableKeyImpl(key);
+}
+
+bool snapshotMonitorParam(const WeakNetConfig& cfg, const std::string& key,
+                          std::string* value_out) {
+    return snapshotMonitorParamImpl(cfg, key, value_out);
+}
+
+ConfigTransaction::ConfigTransaction(std::string state_path)
+    : state_path_(std::move(state_path)) {}
+
+ConfigState ConfigTransaction::state() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_;
+}
+
+TrialWindow ConfigTransaction::trial() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return trial_;
+}
+
+bool ConfigTransaction::startTrial(const WeakNetConfig& cfg, const std::string& key,
+                                    const std::string& new_value,
+                                    const std::string& action_id,
+                                    uint64_t generation, std::string* error) {
+    if (!isTrialableKeyImpl(key)) {
+        if (error) *error = "key not trialable: " + key;
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_ == ConfigState::TRIAL) {
+        if (error) *error = "trial_in_progress";
+        return false;
+    }
+    if (generation <= last_applied_generation_.load()) {
+        if (error) *error = "stale_generation";
+        return false;
+    }
+
+    std::string prior;
+    if (!snapshotMonitorParamImpl(cfg, key, &prior)) {
+        if (error) *error = "cannot snapshot prior value for key: " + key;
+        return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    trial_.armed_at = now;
+    trial_.deadline = now + window_;
+    trial_.generation = generation;
+    trial_.pending_action_id = action_id;
+    trial_.pending_keys.clear();
+    trial_.pending_keys[key] = new_value;
+    trial_.prior_values.clear();
+    trial_.prior_values[key] = prior;
+    state_ = ConfigState::TRIAL;
+
+    persistPriorValues();
+    return true;
+}
+
+bool ConfigTransaction::extendTrial(const WeakNetConfig& cfg, const std::string& key,
+                                     const std::string& new_value,
+                                     const std::string& action_id,
+                                     uint64_t generation, std::string* error) {
+    if (!isTrialableKeyImpl(key)) {
+        if (error) *error = "key not trialable: " + key;
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_ != ConfigState::TRIAL) {
+        if (error) *error = "not_in_trial";
+        return false;
+    }
+    if (generation <= trial_.generation) {
+        if (error) *error = "stale_generation";
+        return false;
+    }
+
+    // 只在该 key 第一次被叠入时记录 prior；覆盖时保留初值。
+    if (trial_.prior_values.find(key) == trial_.prior_values.end()) {
+        std::string prior;
+        if (!snapshotMonitorParamImpl(cfg, key, &prior)) {
+            if (error) *error = "cannot snapshot prior value for key: " + key;
+            return false;
+        }
+        trial_.prior_values[key] = prior;
+    }
+    trial_.pending_keys[key] = new_value;
+    trial_.pending_action_id = action_id;
+    trial_.generation = generation;
+    trial_.deadline = std::chrono::steady_clock::now() + window_;
+
+    persistPriorValues();
+    return true;
+}
+
+bool ConfigTransaction::confirmStable(uint64_t generation, std::string* error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_ != ConfigState::TRIAL) {
+        if (error) *error = "not_in_trial";
+        return false;
+    }
+    if (generation != trial_.generation) {
+        if (error) *error = "generation_mismatch";
+        return false;
+    }
+    markGenerationApplied(generation);
+    trial_ = TrialWindow{};
+    state_ = ConfigState::STABLE;
+    clearPersistedState();
+    return true;
+}
+
+bool ConfigTransaction::forceRollback(WeakNetConfig* cfg, const std::string& reason) {
+    if (!cfg) return false;
+    TrialWindow snapshot;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ != ConfigState::TRIAL) return false;
+        snapshot = trial_;
+    }
+
+    // 还原时按 trial_.prior_values 逆序应用：把每个 key 设回 prior 值。
+    // 失败也要继续——半还原比不还原强，剩余错误进日志。
+    bool all_ok = true;
+    for (const auto& [key, prior] : snapshot.prior_values) {
+        std::string err;
+        if (!setMonitorParam(cfg, key, prior, &err)) {
+            all_ok = false;
+            // 日志由调用方写；这里只汇总。
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // ROLLBACK 是瞬态：restore 完成立即回 STABLE。
+        markGenerationApplied(snapshot.generation);
+        trial_ = TrialWindow{};
+        state_ = ConfigState::STABLE;
+    }
+    clearPersistedState();
+    (void)reason;  // 由调用方写日志/回执
+    return all_ok;
+}
+
+bool ConfigTransaction::deadlineExpired(std::chrono::steady_clock::time_point now) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return state_ == ConfigState::TRIAL && now >= trial_.deadline;
+}
+
+bool ConfigTransaction::hasCrashRecoveryFile() const {
+    std::ifstream probe(state_path_);
+    return probe.is_open();
+}
+
+void ConfigTransaction::clearPersistedState() {
+    if (state_path_.empty()) return;
+    std::remove(state_path_.c_str());
+}
+
+bool ConfigTransaction::persistPriorValues() const {
+    if (state_path_.empty()) return false;
+    const std::string tmp = state_path_ + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        if (!out.is_open()) return false;
+        for (const auto& [k, v] : trial_.prior_values) {
+            out << k << kTxnStateFieldSep << v << '\n';
+        }
+        out.flush();
+        if (!out.good()) return false;
+    }
+    return std::rename(tmp.c_str(), state_path_.c_str()) == 0;
+}
+
+bool ConfigTransaction::loadPriorValues(std::map<std::string, std::string>* out) const {
+    if (!out) return false;
+    std::ifstream in(state_path_);
+    if (!in.is_open()) return false;
+    out->clear();
+    std::string line;
+    while (std::getline(in, line)) {
+        const auto tab = line.find(kTxnStateFieldSep);
+        if (tab == std::string::npos) continue;
+        (*out)[line.substr(0, tab)] = line.substr(tab + 1);
+    }
+    return !out->empty();
 }
 
 std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& monitor,

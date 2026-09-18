@@ -5938,10 +5938,23 @@ class NetworkPendingActionRecord(TenantScopedMixin, Base):
     __tablename__ = "network_pending_actions"
     __table_args__ = (
         Index("ix_network_pending_actions_queue", "tenant_id", "asset_id", "status"),
+        Index("ix_network_pending_actions_nonce", "tenant_id", "nonce"),
     )
 
     action_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     asset_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+
+    #: Monotonically increasing per-device sequence for configuration actions.
+    #: Decoupled from config_generation (which invalidates snapshots).
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    #: Cryptographic anti-replay nonce generated when the action is queued.
+    nonce: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+
+    #: Identity and one-time token assigned at claim time. The device must
+    #: echo claim_token back on action results; mismatched token is rejected.
+    claimed_by_device_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     #: Either a ``monitor.field`` key accepted by the edge's own parameter
     #: whitelist, or the sentinel ``edge.<field>`` for exporter settings.

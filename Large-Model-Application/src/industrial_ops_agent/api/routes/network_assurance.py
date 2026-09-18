@@ -27,7 +27,7 @@ must happen against the bytes that actually arrived. See
 from __future__ import annotations
 
 import json
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError
@@ -83,7 +83,7 @@ class EdgeTelemetryAcceptedResponse(BaseModel):
 
     accepted: int
     duplicates: int
-    pending_actions: list[dict[str, str]] = Field(default_factory=list)
+    pending_actions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class NetworkTimelineResponse(BaseModel):
@@ -400,7 +400,7 @@ async def queue_network_action(
     authorizer.require(
         identity,
         Action.MANAGE_NETWORK_DEVICE,
-        ResourceContext(identity.tenant_id, resource_id=asset_id, asset_id=asset_id),
+        ResourceContext(identity.tenant_id, resource_id=asset_id),
         request_id=getattr(request.state, "request_id", "unavailable"),
     )
     try:
@@ -523,10 +523,14 @@ def _require_read_scope(
     asset_id: str,
 ) -> None:
     validate_boundary_identifier(asset_id, field="asset_id")
+    # 网络设备属于网络基础设施资源（Network Infrastructure Asset），而非
+    # 工业生产线工单设备（Pump/Motor 等工业设备）。操作人员拥有
+    # READ_NETWORK_ASSURANCE 权限即可在租户内按设备标识读取网络体检状态。
+    # 避免将 resource_id 错误绑定到工业 asset_id 导致非工业工单账号因 device_scope_denied 被拒。
     authorizer.require(
         identity,
         Action.READ_NETWORK_ASSURANCE,
-        ResourceContext(identity.tenant_id, resource_id=asset_id, asset_id=asset_id),
+        ResourceContext(identity.tenant_id, resource_id=asset_id),
         request_id=getattr(request.state, "request_id", "unavailable"),
     )
 

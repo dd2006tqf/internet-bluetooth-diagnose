@@ -58,17 +58,29 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 #: The version string appears literally in the ``Literal`` aliases below,
 #: because ``Literal`` cannot be built from a variable. These aliases are the
 #: single place the wire strings are written down.
 TelemetrySchemaVersion = Literal["network.edge.telemetry.v1"]
-ActionResultsSchemaVersion = Literal["network.edge.action-results.v1"]
+ActionResultsSchemaVersion = Literal[
+    "network.edge.action-results.v1",
+    "network.edge.action-results.v2",
+]
 
 NETWORK_TELEMETRY_SCHEMA_VERSION: Final[TelemetrySchemaVersion] = "network.edge.telemetry.v1"
+NETWORK_ACTION_RESULTS_SCHEMA_VERSION_V1: Final = "network.edge.action-results.v1"
+NETWORK_ACTION_RESULTS_SCHEMA_VERSION_V2: Final = "network.edge.action-results.v2"
 NETWORK_ACTION_RESULTS_SCHEMA_VERSION: Final[ActionResultsSchemaVersion] = (
-    "network.edge.action-results.v1"
+    "network.edge.action-results.v2"
 )
 
 #: One batch is at most the edge ring buffer depth, plus headroom for a
@@ -86,6 +98,45 @@ ED25519_SIGNATURE_HEX_LENGTH = 128
 HealthStateLiteral = Literal["GOOD", "DEGRADED", "BAD", "UNKNOWN"]
 CoverageLiteral = Literal["FULL_FOR_PROFILE", "PARTIAL", "NONE"]
 ApplicabilityLiteral = Literal["APPLICABLE", "NOT_APPLICABLE"]
+
+#: Closed key sets for the two SLE groups the edge can emit. These mirror the
+#: literal ``dump_sle("<key>", …)`` strings in
+#: ``server/include/assurance/edge_telemetry_serializer.hpp``. Adding a new key
+#: on the C++ side without widening the matching Literal here will make
+#: ``NetworkExperienceSnapshot`` reject the payload at ingest, and
+#: ``tools/verify_telemetry_contract.py`` will flag the drift in CI.
+NetworkSleKeyLiteral = Literal[
+    "ip_reachability",
+    "responsiveness",
+    "reliability",
+    "rf_health",
+]
+ServiceSleKeyLiteral = Literal[
+    "dns",
+    "tcp_connect",
+    "http_access",
+    "captive_portal",
+    "active_dns",
+    "active_tcp",
+    "active_https",
+    "active_portal",
+]
+
+NETWORK_SLE_KEYS: Final[frozenset[str]] = frozenset(
+    {"ip_reachability", "responsiveness", "reliability", "rf_health"}
+)
+SERVICE_SLE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "dns",
+        "tcp_connect",
+        "http_access",
+        "captive_portal",
+        "active_dns",
+        "active_tcp",
+        "active_https",
+        "active_portal",
+    }
+)
 
 #: Derived connectivity of the device, not a health verdict: a device can be
 #: ``WEAK_NET`` (reachable but degraded) or ``OFFLINE`` (missed heartbeats).
@@ -168,6 +219,29 @@ class NetworkExperienceSnapshot(_ClosedModel):
     # --- edge build/runtime identity -----------------------------------------
     hardware_arch: str = Field(default="", max_length=64)
     os_kernel: str = Field(default="", max_length=128)
+
+    @field_validator("network_health", "service_health", mode="before")
+    @classmethod
+    def _check_sle_keys(cls, value: Any, info: ValidationInfo) -> Any:
+        """Reject any SLE key the edge serializer is not known to emit.
+
+        The C++ emitter writes a fixed set of keys (see the Literal aliases
+        above). A renamed or typo'd key on the wire would otherwise be
+        silently swallowed, leaving the copilot with an empty dict instead of
+        a failed validation. The whitelist lives next to the schema so a
+        contract change is a single edit.
+        """
+
+        if not isinstance(value, dict):
+            return value
+        allowed = NETWORK_SLE_KEYS if info.field_name == "network_health" else SERVICE_SLE_KEYS
+        unknown = set(value) - allowed
+        if unknown:
+            raise ValueError(
+                f"{info.field_name}: unknown SLE keys {sorted(unknown)}; "
+                f"expected subset of {sorted(allowed)}"
+            )
+        return value
 
 
 class NetworkDeviceTelemetry(_ClosedModel):
@@ -264,11 +338,18 @@ class NetworkActionOutcome(_ClosedModel):
     Reported on the next upload rather than through a separate push channel,
     so a device that is offline simply reports late instead of losing the
     record.
+
+    v2 extensions:
+      - ``status`` now accepts ``ROLLBACK`` (watchdog timeout or health failure)
+      - ``claim_token`` binds the ack to the specific claim that produced it
+      - ``generation`` is the per-device monotonic sequence assigned at issue
     """
 
     action_id: str = Field(min_length=1, max_length=128)
-    status: Literal["APPLIED", "REJECTED"]
+    status: Literal["APPLIED", "REJECTED", "ROLLBACK"]
     detail: str = Field(default="", max_length=1024)
+    claim_token: str = Field(default="", max_length=128)
+    generation: int = Field(default=0, ge=0)
     reported_at: datetime
 
     @field_validator("reported_at")

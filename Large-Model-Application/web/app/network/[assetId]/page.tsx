@@ -20,7 +20,6 @@ import {
   Typography,
   message,
 } from "antd";
-import { ControlOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 
@@ -85,7 +84,9 @@ export default function NetworkAssetDetailPage() {
         setDetail(d);
         setPoints(t.points);
       })
-      .catch(() => {
+      .catch((err) => {
+        console.error("加载设备详情失败:", err);
+        message.error(`加载设备失败: ${err.message || err}`);
         setDetail(null);
         setPoints([]);
       })
@@ -150,12 +151,11 @@ export default function NetworkAssetDetailPage() {
             </Typography.Text>
           </div>
           <Space>
-            <Button icon={<ReloadOutlined />} onClick={fetchDetail}>
+            <Button onClick={fetchDetail}>
               刷新
             </Button>
             <Button
               type="primary"
-              icon={<ControlOutlined />}
               onClick={() => setActionModalOpen(true)}
             >
               远程调参 / 下发控制

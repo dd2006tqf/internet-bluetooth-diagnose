@@ -48,7 +48,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from industrial_ops_agent.domain import as_utc
@@ -138,7 +138,7 @@ class IngestResult:
     duplicates: int
     outcomes: tuple[IngestOutcome, ...]
     #: Actions the device should apply before its next upload.
-    pending_actions: tuple[dict[str, str], ...]
+    pending_actions: tuple[dict[str, Any], ...]
 
 
 def _connection_status(
@@ -248,7 +248,18 @@ class NetworkAssuranceService:
         *,
         received_at: datetime | None = None,
     ) -> int:
-        """Mark queued actions as applied or rejected. Returns rows updated."""
+        """Mark queued actions as applied, rejected, or rolled back.
+
+        Verification invariants:
+          - Tenant scoping: ``record.tenant_id == context.tenant_id`` (implicit)
+          - Asset ownership: ``record.asset_id == results.device_id``
+          - One-time token binding: if the stored record has a non-empty
+            ``claim_token``, incoming ``outcome.claim_token`` must match.
+            Empty ``outcome.claim_token`` is tolerated only if the stored record
+            also has none (v1 compatibility window).
+          - Terminal states: once APPLIED, REJECTED, or ROLLBACK, a record is
+            never re-updated.
+        """
 
         now = as_utc(received_at or datetime.now(UTC))
         updated = 0
@@ -256,12 +267,16 @@ class NetworkAssuranceService:
             for outcome in results.results:
                 record = session.get(NetworkPendingActionRecord, outcome.action_id)
                 if record is None or record.asset_id != results.device_id:
-                    # An unknown action id is not an error: the operator may
-                    # have withdrawn it, or the device may be reporting on an
-                    # action issued to a previous registration.
                     continue
-                if record.status in ("APPLIED", "REJECTED"):
+                if record.status in ("APPLIED", "REJECTED", "ROLLBACK"):
                     continue
+
+                # Anti-replay / claim token matching:
+                # If the action was claimed with a token, the device MUST echo
+                # it back. An empty token on a token-claimed action is rejected.
+                if record.claim_token and outcome.claim_token != record.claim_token:
+                    continue
+
                 record.status = outcome.status
                 record.result_detail = outcome.detail[:1024]
                 record.completed_at = now
@@ -366,19 +381,41 @@ class NetworkAssuranceService:
         issued_by: str,
         approved_by: str | None = None,
     ) -> str:
-        """Queue a configuration change for delivery on the device's next upload."""
+        """Queue a configuration change for delivery on the device's next upload.
+
+        Each queued action gets:
+          - A cryptographic anti-replay ``nonce``
+          - A monotonic per-device ``generation`` (independent of config_generation)
+          - Tenant scoping (enforced by TenantScopedMixin)
+        """
 
         now = datetime.now(UTC)
         action_id = f"nact-{uuid4().hex}"
+        nonce = uuid4().hex
         with self._database.transaction(context) as session:
             asset = session.get(NetworkAssetRecord, asset_id)
             if asset is None or asset.tenant_id != context.tenant_id:
                 raise NetworkAssuranceNotFound(asset_id)
+
+            # 动作 generation：每个 asset 维护自己的单调递增序列，与快照失效解耦。
+            max_gen = (
+                session.execute(
+                    select(func.coalesce(func.max(NetworkPendingActionRecord.generation), 0))
+                    .where(
+                        NetworkPendingActionRecord.tenant_id == context.tenant_id,
+                        NetworkPendingActionRecord.asset_id == asset_id,
+                    )
+                ).scalar_one()
+            )
+            next_generation = int(max_gen) + 1
+
             session.add(
                 NetworkPendingActionRecord(
                     action_id=action_id,
                     tenant_id=context.tenant_id,
                     asset_id=asset_id,
+                    generation=next_generation,
+                    nonce=nonce,
                     config_key=config_key,
                     config_value=config_value,
                     status="QUEUED",
@@ -577,15 +614,18 @@ class NetworkAssuranceService:
         asset_id: str,
         *,
         now: datetime,
-    ) -> tuple[dict[str, str], ...]:
+    ) -> tuple[dict[str, Any], ...]:
         """Hand out queued actions and mark them delivered.
 
-        Delivery is marked optimistically at claim time. If the response is
-        lost the device never applies the change and never reports on it, so
-        the action would sit silently in DELIVERED forever. That is the safer
-        failure: the alternative — re-delivering until acknowledged — risks
-        applying an operator change twice on a flaky link. An operator
-        watching the queue can see the stall and re-issue.
+        Delivery uses pessimistic locking (``with_for_update``) on the pending
+        action rows so concurrent ingest batches for the same asset do not
+        claim the same action twice.
+
+        Each delivered action carries:
+          - ``generation``: monotonic per-device sequence for edge-side replay check
+          - ``nonce``: anti-replay token
+          - ``claim_token``: generated here and recorded on the record; the
+            device must echo this exact token back in ``record_action_results``
         """
 
         records = (
@@ -597,20 +637,27 @@ class NetworkAssuranceService:
                     NetworkPendingActionRecord.status == "QUEUED",
                 )
                 .order_by(NetworkPendingActionRecord.issued_at)
+                .with_for_update()
             )
             .scalars()
             .all()
         )
-        delivered: list[dict[str, str]] = []
+        delivered: list[dict[str, Any]] = []
         for record in records:
+            claim_token = uuid4().hex
             record.status = "DELIVERED"
             record.delivered_at = now
+            record.claimed_by_device_id = asset_id
+            record.claim_token = claim_token
             record.version += 1
             delivered.append(
                 {
                     "action_id": record.action_id,
                     "key": record.config_key,
                     "value": record.config_value,
+                    "generation": record.generation,
+                    "nonce": record.nonce,
+                    "claim_token": claim_token,
                 }
             )
         return tuple(delivered)

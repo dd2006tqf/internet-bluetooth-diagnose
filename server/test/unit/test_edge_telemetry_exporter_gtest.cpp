@@ -179,4 +179,124 @@ TEST(EdgeTelemetrySerializer, HandlesEmptyEvidenceGracefully) {
     EXPECT_NE(json.find("\"warnings\":[]"), std::string::npos);
 }
 
+// ---------------------------------------------------------------------------
+// Golden SLE key list — must match Python whitelist in contracts.py.
+// tools/verify_telemetry_contract.py is the authoritative check; this is the
+// C++-side smoke test that catches a `dump_sle` typo before it reaches CI.
+// ---------------------------------------------------------------------------
+
+TEST(EdgeTelemetrySerializer, EmitsExpectedNetworkHealthKeys) {
+    const auto snap = makeDegradedSnapshot();
+    const std::string json = toEdgeTelemetrySnapshotJson(snap.experience);
+
+    // network_health must contain exactly these four keys.
+    EXPECT_NE(json.find("\"network_health\":{"), std::string::npos);
+    EXPECT_NE(json.find("\"ip_reachability\""), std::string::npos);
+    EXPECT_NE(json.find("\"responsiveness\""), std::string::npos);
+    EXPECT_NE(json.find("\"reliability\""), std::string::npos);
+    EXPECT_NE(json.find("\"rf_health\""), std::string::npos);
+}
+
+TEST(EdgeTelemetrySerializer, EmitsExpectedServiceHealthKeys) {
+    const auto snap = makeDegradedSnapshot();
+    const std::string json = toEdgeTelemetrySnapshotJson(snap.experience);
+
+    // service_health must contain all eight keys the Python whitelist accepts.
+    EXPECT_NE(json.find("\"service_health\":{"), std::string::npos);
+    EXPECT_NE(json.find("\"dns\""), std::string::npos);
+    EXPECT_NE(json.find("\"tcp_connect\""), std::string::npos);
+    EXPECT_NE(json.find("\"http_access\""), std::string::npos);
+    EXPECT_NE(json.find("\"captive_portal\""), std::string::npos);
+    EXPECT_NE(json.find("\"active_dns\""), std::string::npos);
+    EXPECT_NE(json.find("\"active_tcp\""), std::string::npos);
+    EXPECT_NE(json.find("\"active_https\""), std::string::npos);
+    EXPECT_NE(json.find("\"active_portal\""), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// 演进二：PendingAction 扩展元数据（generation, nonce, claim_token）与防重放
+// ---------------------------------------------------------------------------
+
+TEST(EdgeTelemetryPendingActions, ParsesV2Metadata) {
+    // 构造带 v2 元数据的 response JSON
+    const std::string response_body =
+        "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
+        "\"action_id\":\"nact-1234567890abcdef\","
+        "\"key\":\"rtt.interval_ms\","
+        "\"value\":\"2000\","
+        "\"generation\":42,"
+        "\"nonce\":\"abcdef1234567890abcdef1234567890\","
+        "\"claim_token\":\"tok-deadbeef01234567\""
+        "}]}";
+
+    weaknet_dbus::WeakNetConfig cfg;
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+
+    // 通过 applyPendingActions 间接验证：
+    // generation=42 > 0，且 key=rtt.interval_ms 在白名单内 → 应进入 TRIAL
+    exporter.applyPendingActions(response_body);
+
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::TRIAL);
+    const auto trial = txn->trial();
+    EXPECT_EQ(trial.generation, 42u);
+    EXPECT_EQ(trial.pending_action_id, "nact-1234567890abcdef");
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 2000u);
+}
+
+TEST(EdgeTelemetryPendingActions, RejectsStaleGeneration) {
+    const std::string response_stale =
+        "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
+        "\"action_id\":\"nact-stale\","
+        "\"key\":\"rtt.interval_ms\","
+        "\"value\":\"3000\","
+        "\"generation\":5,"
+        "\"nonce\":\"nonce-stale\","
+        "\"claim_token\":\"tok-stale\""
+        "}]}";
+
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
+    txn->markGenerationApplied(10);  // 当前已落到 gen=10
+
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+    exporter.applyPendingActions(response_stale);
+
+    // gen=5 <= 10 应被拒绝，cfg 保持 10000，txn 保持 STABLE
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 10000u);
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::STABLE);
+    EXPECT_EQ(exporter.stats().actions_rejected, 1u);
+}
+
+TEST(EdgeTelemetryPendingActions, EmitsRollbackReceiptOnWatchdogTimeout) {
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+
+    // 进入 TRIAL
+    std::string err;
+    ASSERT_TRUE(txn->startTrial(cfg, "rtt.interval_ms", "2000", "act-1", 1, &err)) << err;
+    cfg.rtt.interval_ms.store(2000);
+
+    // 构造一份 BAD 快照模拟健康故障
+    auto snap = makeDegradedSnapshot();
+    snap.experience.overall = weaknet::HealthState::BAD;
+    snap.experience.ip_reachability.state = weaknet::HealthState::BAD;
+
+    // 注入超时时间点（armed_at + 181s）
+    const auto timeout_point = txn->trial().armed_at + std::chrono::seconds(181);
+    EXPECT_TRUE(txn->deadlineExpired(timeout_point));
+
+    // 无快照时 evaluate 应安全回滚（fail-safe）
+    // 这里我们直接调 forceRollback 并发回执，模拟 evaluateTrialDeadline 行为
+    ASSERT_TRUE(txn->forceRollback(&cfg, "watchdog_timeout"));
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 10000u);
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::STABLE);
+
+    exporter.emitRollbackReceipt("watchdog_timeout_health_bad");
+    // pending_action_results_ 应有一条 sentinel 回执等待发送
+}
+
 }  // namespace

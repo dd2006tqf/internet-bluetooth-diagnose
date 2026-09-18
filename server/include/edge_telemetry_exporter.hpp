@@ -44,6 +44,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -51,6 +52,10 @@
 
 #include "assessment_snapshot.hpp"
 #include "weaknet_config.hpp"
+
+namespace weaknet_dbus {
+class ConfigTransaction;  // weaknet_config.hpp
+}
 
 namespace weaknet {
 
@@ -109,8 +114,16 @@ struct EdgeActionResultRecord {
  */
 class EdgeTelemetryExporter {
 public:
+    /**
+     * @param config       运行时配置（引用 ServerContext::cfg，事务内由
+     *                     ConfigTransaction 协调写入）
+     * @param hostname     设备名，写入 display_name
+     * @param config_txn   云端下发的三态事务；nullptr 时退回纯 setMonitorParam
+     *                     行为（与现状一致，便于回退与单元测试）
+     */
     EdgeTelemetryExporter(const weaknet_dbus::WeakNetConfig& config,
-                          std::string hostname);
+                          std::string hostname,
+                          std::shared_ptr<weaknet_dbus::ConfigTransaction> config_txn = nullptr);
     ~EdgeTelemetryExporter();
 
     EdgeTelemetryExporter(const EdgeTelemetryExporter&) = delete;
@@ -142,6 +155,36 @@ public:
     /// 是否已成功启动（配置完整且线程在跑）。
     bool isRunning() const { return running_.load(); }
 
+    /// 执行服务端下发的动作（走既有白名单校验），并把结果暂存待回传。
+    /// 设为 public 方便单测与调试。
+    void applyPendingActions(const std::string& response_body);
+
+    /// 把一条 ROLLBACK 回执入队（由 forceRollback 触发后调用方显式发送）。
+    void emitRollbackReceipt(const std::string& reason);
+
+    /**
+     * @brief 在 TRIAL 到期时根据最新快照决定 commit 或 rollback。
+     *
+     * 由 exporter 的 run() 主循环调用；传入的 latest_snapshot 是当前
+     * ServerContext::assessment_store 的最新不可变快照（nullptr 表示无可用
+     * 快照，按 fail-safe 处理 = ROLLBACK）。
+     *
+     * 返回 true 表示发生了一次状态迁移（commit 或 rollback）。
+     */
+    bool evaluateTrialDeadline(const AssessmentSnapshot* latest_snapshot);
+
+    /**
+     * @brief 注入最新快照指针（由 quality 线程在 publish 之后调用）。
+     *
+     * exporter 在 TRIAL 到期时据此判定健康，避免反向依赖 ServerContext。
+     * 线程安全：内部以 mutex + shared_ptr 持有。
+     */
+    void injectLatestSnapshot(std::shared_ptr<const AssessmentSnapshot> snap);
+
+    /// 看门狗心跳。若当前在 TRIAL 且 deadline 已过：
+    /// 返回 true 表示需要调用方处理（deadline 已过且仍在 TRIAL）。
+    bool tickWatchdog(std::chrono::steady_clock::time_point now) const;
+
 private:
     void run();
 
@@ -158,12 +201,12 @@ private:
     /// POST 一批记录；成功时解析响应中的 pending_actions 并就地执行。
     bool transmit(const std::vector<EdgeTelemetryRecord>& records, std::string* error);
 
-    /// 执行服务端下发的动作（走既有白名单校验），并把结果暂存待回传。
-    void applyPendingActions(const std::string& response_body);
-
     /// 序列化并签名一条动作结果，暂存到待回传队列。
+    /// claim_token/generation 是 v2 契约字段，v1 设备可填空。
     void queueActionResult(const std::string& action_id, bool applied,
-                           const std::string& detail);
+                           const std::string& detail,
+                           const std::string& claim_token = "",
+                           uint64_t generation = 0);
 
     /// 把待回传的动作结果上报到 /edge/action-results；返回是否全部送达。
     bool transmitActionResults(std::string* error);
@@ -180,6 +223,12 @@ private:
 
     const weaknet_dbus::WeakNetConfig& config_;
     std::string hostname_;
+    std::shared_ptr<weaknet_dbus::ConfigTransaction> config_txn_;
+
+    /// 最近一次 enqueue 的快照（TRIAL 健康评估的输入）。
+    /// 由 injectLatestSnapshot 更新，由 evaluateTrialDeadline 读取。
+    mutable std::mutex latest_snapshot_mutex_;
+    std::shared_ptr<const AssessmentSnapshot> latest_snapshot_;
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;

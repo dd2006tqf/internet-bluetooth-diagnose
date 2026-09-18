@@ -1336,8 +1336,27 @@ int start_server(int argc, char** argv) {
 
     // 启动边缘遥测上报（可选，W-edge）。
     // 配置不完整/能力缺失时 start() 返回 false 并保持关闭，绝不半启用。
+    //
+    // 先构造配置事务（STABLE/TRIAL/ROLLBACK 状态机），再把它交给 exporter。
+    // state_path 落在与 history.db 同一目录，崩溃后可由 hasCrashRecoveryFile
+    // 检测到并触发 forceRollback。
+    const std::string txn_state_path =
+        resolveDatabasePath(ctx.cfg.data_dir.get())
+            .substr(0, resolveDatabasePath(ctx.cfg.data_dir.get()).size() -
+                            std::string("history.db").size()) +
+        "config_txn_state";
+    ctx.config_txn = std::make_shared<weaknet_dbus::ConfigTransaction>(txn_state_path);
+
     ctx.edge_exporter = std::make_unique<weaknet::EdgeTelemetryExporter>(
-        ctx.cfg, /*hostname=*/"edge-node");
+        ctx.cfg, /*hostname=*/"edge-node", ctx.config_txn);
+
+    // 启动时若发现残留的 prior_values（上次 TRIAL 中崩溃），立即回滚还原。
+    if (ctx.config_txn->hasCrashRecoveryFile()) {
+        LOG_WARNING(LogModule::SYSTEM,
+                    "检测到上次 TRIAL 中的崩溃残留，立即执行回滚还原: " << txn_state_path);
+        ctx.config_txn->forceRollback(&ctx.cfg, "crash_recovery");
+    }
+
     if (ctx.edge_exporter->start()) {
         LOG_INFO(LogModule::SYSTEM, "edge telemetry exporter started");
     }

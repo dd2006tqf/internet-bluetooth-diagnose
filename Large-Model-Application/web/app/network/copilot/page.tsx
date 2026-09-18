@@ -14,7 +14,6 @@ import {
   Typography,
   message,
 } from "antd";
-import { SettingOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { useEffect, useState } from "react";
 
 import { AppShell } from "@/components/AppShell";
@@ -147,7 +146,7 @@ export default function NetworkCopilotPage() {
               依据 WeakNet 不可变快照做因果解释，输出受物理因果护栏严格约束
             </Typography.Text>
           </div>
-          <Button icon={<SettingOutlined />} onClick={handleOpenDrawer}>
+          <Button onClick={handleOpenDrawer}>
             大模型热配置
           </Button>
         </div>
@@ -246,7 +245,6 @@ export default function NetworkCopilotPage() {
 
             <div style={{ marginBottom: 16 }}>
               <Button
-                icon={<ThunderboltOutlined />}
                 loading={testingConfig}
                 onClick={handleTestConnection}
               >

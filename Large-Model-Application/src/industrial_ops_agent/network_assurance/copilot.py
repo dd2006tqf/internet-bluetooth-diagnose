@@ -62,6 +62,36 @@ _MAX_OUTPUT_TOKENS = 2_048
 #: Wall-clock budget for one copilot inference. Interactive panel.
 _INFERENCE_TIMEOUT_SECONDS = 90.0
 
+#: SLEs emitted by the edge serializer (``edge_telemetry_serializer.hpp``) that
+#: are *advisory* in the causal chain — they can explain a symptom but cannot
+#: veto INTERNET_ACCESS on their own. Anything not in this set and not consumed
+#: by a dedicated step in :meth:`NetworkCopilotService._causal_chain` will trip
+#: the cross-language contract verifier.
+NON_BLOCKING_SLE_KEYS: frozenset[str] = frozenset(
+    {
+        "responsiveness",
+        "reliability",
+        "rf_health",
+        "http_access",
+        "active_https",
+        "active_portal",
+    }
+)
+
+#: SLEs that *do* get a dedicated step in :meth:`_causal_chain`. Together with
+#: ``NON_BLOCKING_SLE_KEYS`` this must cover every key the edge can emit —
+#: ``tools/verify_telemetry_contract.py`` asserts the union is exhaustive.
+CAUSAL_CONSUMED_SLE_KEYS: frozenset[str] = frozenset(
+    {
+        "ip_reachability",
+        "dns",
+        "active_dns",
+        "tcp_connect",
+        "active_tcp",
+        "captive_portal",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class CopilotAnswer:
@@ -191,8 +221,8 @@ class NetworkCopilotService:
 
     def _causal_chain(
         self,
-        network: dict[str, str],
-        service: dict[str, str],
+        network: dict[str, dict[str, Any]],
+        service: dict[str, dict[str, Any]],
         evidence: frozenset[str],
     ) -> tuple[list[dict[str, str]], list[str]]:
         """Derive the causal chain in the evaluator's own ordering.
@@ -202,18 +232,39 @@ class NetworkCopilotService:
         unreachable, never a cause (R1). A received HTTP response of any
         status proves the transport, so a failing service check there is
         reported as server-side (R2).
+
+        The key names below are those actually emitted by
+        ``edge_telemetry_serializer.hpp``. The C++ emitter writes
+        ``ip_reachability``/``dns``/``tcp_connect``/``captive_portal`` plus the
+        host-capability ``active_*`` variants; older copilot code consulted
+        ``reachability``/``dns_resolution``/``transport`` which never appear
+        on the wire, so the gateway veto could never fire.
         """
 
         chain: list[dict[str, str]] = []
         actions: list[str] = []
         step = 1
 
-        reachability = network.get("reachability")
+        def state_of(group: dict[str, dict[str, Any]], key: str) -> str | None:
+            entry = group.get(key)
+            if not isinstance(entry, dict):
+                return None
+            state = entry.get("state")
+            return state if isinstance(state, str) else None
+
+        def capability_negative(group: dict[str, dict[str, Any]], key: str) -> bool:
+            entry = group.get(key)
+            if not isinstance(entry, dict):
+                return False
+            return bool(entry.get("capability_level_negative"))
+
+        # --- R1: gateway reachability is the one-vote veto ---------------------
+        reachability = state_of(network, "ip_reachability")
         if reachability == "BAD":
             chain.append(
                 {
                     "step": str(step),
-                    "explanation": "网关不可达（reachability=BAD），这是边缘评估的一票否决项："
+                    "explanation": "网关不可达（ip_reachability=BAD），这是边缘评估的一票否决项："
                     "在此之下的任何高层症状（解析、传输、服务）都只能视为它的后果，不是原因。",
                 }
             )
@@ -221,30 +272,95 @@ class NetworkCopilotService:
             actions.append("检查设备到网关的链路与网关本身，恢复二层/三层连通后再复核上层结论")
             return chain, actions
 
-        dns = network.get("dns_resolution")
-        if dns in {"BAD", "DEGRADED"}:
+        # --- DNS: passive observation first, host capability second -----------
+        dns_state = state_of(service, "dns")
+        active_dns_state = state_of(service, "active_dns")
+        dns_capability_negative = capability_negative(service, "active_dns") or capability_negative(
+            service, "dns"
+        )
+        if active_dns_state in {"BAD", "DEGRADED"} and dns_capability_negative:
             chain.append(
                 {
                     "step": str(step),
-                    "explanation": f"DNS 解析状态为 {dns}（网关可达），说明解析链路本身出现劣化。",
+                    "explanation": (
+                        f"主机级 DNS 能力为 {active_dns_state}（active_dns，受控目标探测），"
+                        "这意味着本机整体的域名解析能力受损，而非单一域名问题。"
+                    ),
+                }
+            )
+            step += 1
+            actions.append("核对设备 DNS 客户端配置、本机 resolver 与到 DNS 服务器的连通")
+        elif dns_state in {"BAD", "DEGRADED"}:
+            chain.append(
+                {
+                    "step": str(step),
+                    "explanation": (
+                        f"被动 DNS 观测为 {dns_state}（网关可达），说明解析链路出现劣化；"
+                        "被动观测仅反映已捕获流量，不能单独否决上网能力。"
+                    ),
                 }
             )
             step += 1
             actions.append("核对设备配置的 DNS 服务器与解析延迟指标")
 
-        transport = network.get("transport")
-        if transport in {"BAD", "DEGRADED"}:
+        # --- Transport: passive tcp_connect is advisory only ------------------
+        tcp_state = state_of(service, "tcp_connect")
+        active_tcp_state = state_of(service, "active_tcp")
+        tcp_capability_negative = capability_negative(service, "active_tcp") or capability_negative(
+            service, "tcp_connect"
+        )
+        if active_tcp_state in {"BAD", "DEGRADED"} and tcp_capability_negative:
             chain.append(
                 {
                     "step": str(step),
-                    "explanation": f"传输层状态为 {transport}（网关可达）。",
+                    "explanation": (
+                        f"主机级 TCP 能力为 {active_tcp_state}（active_tcp，受控目标探测），"
+                        "本机的 TCP 建连能力受损，可否决 INTERNET_ACCESS。"
+                    ),
+                }
+            )
+            step += 1
+            actions.append("检查设备到受控探测目标的 TCP 路径、防火墙与 NAT 状态")
+        elif tcp_state in {"BAD", "DEGRADED"}:
+            chain.append(
+                {
+                    "step": str(step),
+                    "explanation": (
+                        f"被动 TCP 观测为 {tcp_state}（网关可达）。被动观测只能证明已见连接的状态，"
+                        "不能单独否决上网能力（评估器规则：passive tcp_connect 非否决）。"
+                    ),
                 }
             )
             step += 1
             actions.append("结合重传/时延指标定位传输劣化区段")
 
-        for name, state in sorted(service.items()):
-            if state == "GOOD":
+        # --- Portal interception ------------------------------------------------
+        captive_state = state_of(service, "captive_portal")
+        active_portal_state = state_of(service, "active_portal")
+        portal_state = (
+            active_portal_state if active_portal_state in {"BAD", "DEGRADED"} else captive_state
+        )
+        if portal_state in {"BAD", "DEGRADED"}:
+            chain.append(
+                {
+                    "step": str(step),
+                    "explanation": (
+                        f"门户劫持检测为 {portal_state}，可能存在 captive portal 拦截，"
+                        "会表现为浏览器被强推认证页、HTTPS 站点不可达。"
+                    ),
+                }
+            )
+            step += 1
+            actions.append("确认是否处于需要认证的访客网络；完成 portal 认证或接入白名单")
+
+        # --- Remaining service SLEs (advisory only) -----------------------------
+        for name, entry in sorted(service.items()):
+            if name in CAUSAL_CONSUMED_SLE_KEYS:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            state = entry.get("state")
+            if not isinstance(state, str) or state == "GOOD":
                 continue
             if state == "BAD" and "http" in name:
                 # R2's mirror image: this module never calls the network down
@@ -261,7 +377,9 @@ class NetworkCopilotService:
                 chain.append(
                     {
                         "step": str(step),
-                        "explanation": f"服务检查 {name}={state}。",
+                        "explanation": (
+                            f"服务检查 {name}={state}（建议性指标，不能单独否决上网能力）。"
+                        ),
                     }
                 )
             step += 1
@@ -285,14 +403,32 @@ class NetworkCopilotService:
 
         return chain, actions
 
-    def _sle_states(self, snapshot: dict[str, Any], group: str) -> dict[str, str]:
+    def _sle_states(
+        self, snapshot: dict[str, Any], group: str
+    ) -> dict[str, dict[str, Any]]:
+        """Return per-SLE info for one group, preserving capability bits.
+
+        The copilot needs ``capability_level_negative`` to decide whether a
+        ``BAD`` SLE is allowed to veto INTERNET_ACCESS (host-level) or is
+        merely an advisory observation (passive). The wire already carries
+        the bit; the previous implementation dropped it, which is why the
+        gateway veto and the passive/active distinction could not be made.
+        """
+
         section = snapshot.get(group)
         if not isinstance(section, dict):
             return {}
-        states: dict[str, str] = {}
+        states: dict[str, dict[str, Any]] = {}
         for name, result in section.items():
             if isinstance(result, dict) and isinstance(result.get("state"), str):
-                states[name] = result["state"]
+                states[name] = {
+                    "state": result["state"],
+                    "capability_level_negative": bool(
+                        result.get("capability_level_negative", False)
+                    ),
+                    "reason": result.get("reason", ""),
+                    "applicability": result.get("applicability", "APPLICABLE"),
+                }
         return states
 
     def _evidence_metrics(self, snapshot: dict[str, Any]) -> frozenset[str]:
