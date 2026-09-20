@@ -297,16 +297,14 @@ std::vector<std::pair<std::string, BtTrafficStats>> BtAudioAnalyzer::getAllStats
 
     auto started = std::chrono::steady_clock::now();
 
-    // 第一次遍历：获取第一个 key
+    // 第一次遍历：获取第一个 key（紧凑 7 字节，与 BPF 端 struct device_key packed 一致）
     struct {
         uint8_t bdaddr[6];
         uint8_t direction;
-        uint8_t padding;
     } __attribute__((packed)) key = {};
     struct {
         uint8_t bdaddr[6];
         uint8_t direction;
-        uint8_t padding;
     } __attribute__((packed)) next_key = {};
 
     int ret = bpf_map_get_next_key(statsMapFd_, nullptr, &next_key);

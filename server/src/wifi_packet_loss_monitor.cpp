@@ -148,6 +148,7 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
     }
 
     if (bpf_object__load(obj) != 0) {
+        bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
         stateSupport_.setState(EbpfMonitorState::Error, false, "failed to load BPF object");

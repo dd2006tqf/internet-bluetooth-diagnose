@@ -870,9 +870,13 @@ int trace_dns_egress_skb(struct pt_regs *ctx)
     ev.rcode = header[3] & 0x0f;
     ev.timestamp_ns = bpf_ktime_get_ns();
     ev.fingerprint_quality = 0;
-    bpf_perf_event_output(ctx, &dns_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
-    dns_stat_inc(DNS_STAT_SEND_EMITTED);
-    dns_stat_inc(DNS_STAT_EMITTED);
+    long ret = bpf_perf_event_output(ctx, &dns_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+    if (ret == 0) {
+        dns_stat_inc(DNS_STAT_SEND_EMITTED);
+        dns_stat_inc(DNS_STAT_EMITTED);
+    } else {
+        dns_stat_inc(DNS_STAT_EMIT_FAIL);
+    }
     return 0;
 }
 
@@ -1075,7 +1079,12 @@ int trace_dns_queue_rcv(struct pt_regs *ctx)
     ev.rcode = header[3] & 0x0f;
     ev.timestamp_ns = bpf_ktime_get_ns();
     ev.fingerprint_quality = 0;
-    bpf_perf_event_output(ctx, &dns_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
-    dns_stat_inc(DNS_STAT_QUEUE_EMITTED);
+    long ret = bpf_perf_event_output(ctx, &dns_events, BPF_F_CURRENT_CPU, &ev, sizeof(ev));
+    if (ret == 0) {
+        dns_stat_inc(DNS_STAT_QUEUE_EMITTED);
+        dns_stat_inc(DNS_STAT_EMITTED);
+    } else {
+        dns_stat_inc(DNS_STAT_EMIT_FAIL);
+    }
     return 0;
 }

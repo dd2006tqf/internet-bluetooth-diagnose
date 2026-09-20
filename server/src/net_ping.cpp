@@ -241,61 +241,71 @@ int NetPing::ping(const std::string& host, const std::string& ifaceName, int tim
     auto t1 = std::chrono::steady_clock::now();
     int sendMs = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count());
 
-    // ========== 5. select() 等待 Echo Reply ==========
-    fd_set rfds;
-    FD_ZERO(&rfds);
-    FD_SET(sockfd, &rfds);
-    struct timeval tv{};
-    tv.tv_sec = timeoutMs / 1000;
-    tv.tv_usec = (timeoutMs % 1000) * 1000;
-
-    int rv = select(sockfd + 1, &rfds, nullptr, nullptr, &tv);
-    if (rv <= 0) {
-        if (rv == 0) {
-            LOG_ERROR(LogModule::PING, "select() timeout after " << timeoutMs << "ms for host " << host);
-        } else {
-            LOG_ERROR(LogModule::PING, "select() error: " << strerror(errno));
-        }
-        close(sockfd);
-        return (rv == 0) ? -5 : -6; // 超时 / select 内部错误
-    }
-
-    // ========== 6. 接收并解析 Echo Reply ==========
+    // ========== 5. select() + 循环接收等待 Echo Reply ==========
+    // 原始 socket 会收到发往本机的所有 ICMP 报文，需循环排空直到匹配本进程 id 或超时
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     char buf[kPacketSize];
     struct sockaddr_in src{};
-    socklen_t slen = sizeof(src);
-    ssize_t n = recvfrom(sockfd, buf, sizeof(buf), 0, reinterpret_cast<struct sockaddr*>(&src), &slen);
-    if (n <= 0) {
-        LOG_ERROR(LogModule::PING, "recvfrom() failed for host " << host << ": " << strerror(errno));
-        close(sockfd);
-        return -7;
-    }
+    bool matched = false;
+    long rttMs = -1;
 
-    // 内核返回的数据包含完整 IPv4 头 + ICMP 报文
-    // ip_hl × 4 得到 IPv4 头长度（IP 头是 4 字节对齐的，ip_hl 以 4 字节为单位）
-    struct ip* iphdr = reinterpret_cast<struct ip*>(buf);
-    int iphdrlen = iphdr->ip_hl * 4;
-    if (n < iphdrlen + static_cast<ssize_t>(sizeof(struct icmp))) {
-        LOG_ERROR(LogModule::PING, "reply too short: n=" << n << " iphdrlen=" << iphdrlen);
-        close(sockfd);
-        return -8;
-    }
-    struct icmp* ricmp = reinterpret_cast<struct icmp*>(buf + iphdrlen);
-    // 校验：必须是 Echo Reply，且 icmp_id 匹配自己的 PID
-    if (ricmp->icmp_type != ICMP_ECHOREPLY || ricmp->icmp_id != id) {
-        LOG_ERROR(LogModule::PING, "icmp validation failed: type=" << static_cast<int>(ricmp->icmp_type) << " id=" << ricmp->icmp_id);
-        close(sockfd);
-        return -9;
-    }
+    while (true) {
+        auto now_mono = std::chrono::steady_clock::now();
+        if (now_mono >= deadline) {
+            LOG_ERROR(LogModule::PING, "select() timeout after " << timeoutMs << "ms for host " << host);
+            close(sockfd);
+            return -5;
+        }
 
-    // ========== 7. 从嵌入时间戳计算 RTT ==========
-    // 取出发送时刻的 timeval，与当前时刻比较
-    struct timeval* sendTv = reinterpret_cast<struct timeval*>(ricmp->icmp_data);
-    struct timeval now{};
-    gettimeofday(&now, nullptr);
-    long rttMs = (now.tv_sec - sendTv->tv_sec) * 1000 + (now.tv_usec - sendTv->tv_usec) / 1000;
+        auto remMs = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now_mono).count();
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(sockfd, &rfds);
+        struct timeval tv{};
+        tv.tv_sec = remMs / 1000;
+        tv.tv_usec = (remMs % 1000) * 1000;
+
+        int rv = select(sockfd + 1, &rfds, nullptr, nullptr, &tv);
+        if (rv <= 0) {
+            if (rv == 0) {
+                LOG_ERROR(LogModule::PING, "select() timeout after " << timeoutMs << "ms for host " << host);
+            } else {
+                LOG_ERROR(LogModule::PING, "select() error: " << strerror(errno));
+            }
+            close(sockfd);
+            return (rv == 0) ? -5 : -6;
+        }
+
+        socklen_t slen = sizeof(src);
+        ssize_t n = recvfrom(sockfd, buf, sizeof(buf), 0, reinterpret_cast<struct sockaddr*>(&src), &slen);
+        if (n <= 0) {
+            LOG_ERROR(LogModule::PING, "recvfrom() failed for host " << host << ": " << strerror(errno));
+            close(sockfd);
+            return -7;
+        }
+
+        struct ip* iphdr = reinterpret_cast<struct ip*>(buf);
+        int iphdrlen = iphdr->ip_hl * 4;
+        if (n < iphdrlen + static_cast<ssize_t>(sizeof(struct icmp))) {
+            continue; // 报文不完整，继续尝试下一包
+        }
+        struct icmp* ricmp = reinterpret_cast<struct icmp*>(buf + iphdrlen);
+
+        // 仅处理属于当前请求且 ID 匹配的 ICMP Echo Reply，忽略非目标或杂散报文
+        if (ricmp->icmp_type == ICMP_ECHOREPLY && ricmp->icmp_id == id) {
+            struct timeval* sendTv = reinterpret_cast<struct timeval*>(ricmp->icmp_data);
+            struct timeval now{};
+            gettimeofday(&now, nullptr);
+            rttMs = (now.tv_sec - sendTv->tv_sec) * 1000 + (now.tv_usec - sendTv->tv_usec) / 1000;
+            matched = true;
+            break;
+        }
+    }
 
     close(sockfd);
+    if (!matched) {
+        return -9;
+    }
     // 如果时间戳差值为负（时钟漂移），退回使用 send 调用耗时作兜底
     return static_cast<int>(rttMs >= 0 ? rttMs : sendMs);
 }

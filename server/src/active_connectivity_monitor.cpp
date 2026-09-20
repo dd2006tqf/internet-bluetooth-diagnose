@@ -255,8 +255,12 @@ std::string readConfiguredResolver() {
             char* end = p;
             while (*end && *end != '\n' && *end != ' ' && *end != '\t') ++end;
             *end = '\0';
-            found = p;
-            break;   // 取第一个 nameserver
+            // 确保是有效的 IPv4 地址（排除 IPv6 nameserver，如 fe80:: 或 2400::）
+            struct in_addr test_addr;
+            if (::inet_pton(AF_INET, p, &test_addr) == 1) {
+                found = p;
+                break;   // 取第一个合法的 IPv4 nameserver
+            }
         }
     }
     ::fclose(f);

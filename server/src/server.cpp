@@ -363,6 +363,7 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
 
                 weaknet::NetworkExperience exp;
                 uint64_t newest_rev = 0;
+                bool dns_bypass = false;
 
                 if (ctx->metrics_registry) {
                     using namespace std::chrono_literals;
@@ -379,7 +380,6 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     auto rel_sle = weaknet::ReliabilityEvaluator::evaluate(wifi_samples, tcp_samples, is_wireless);
                     auto rf_sle = weaknet::RfHealthEvaluator::evaluate(rssi_samples, is_wireless);
                     weaknet::SleResult dns_sle;
-                    bool dns_bypass = false;
                     if (ctx->dns_tracker) {
                         auto snap = ctx->dns_tracker->getSnapshot();
                         auto dns_window = ctx->dns_tracker->getWindowMetrics(120s, snap.cutoff);
@@ -517,7 +517,9 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                 }
 
                 // CR-2: 状态防抖（只有出现新 evidence 时才推进，发生稳定跃迁时发射信号）
-                weaknet::HealthState stableState = stabilizer.update(exp.overall, newest_rev);
+                // SR-9 单杀时传 is_critical_bypass=true，立即穿透防抖滞后
+                weaknet::HealthState stableState = stabilizer.update(
+                    exp.overall, newest_rev, std::chrono::steady_clock::now(), dns_bypass);
                 exp.overall = stableState;
 
                 // W2: 发布权威评估快照（单一事实源）。
@@ -1381,7 +1383,9 @@ int start_server(int argc, char** argv) {
         ctx.monitor_manager->stopAll();
     }
 
-    // 服务级历史线程仍由 ServerContext 统一 join；插件线程已由各自 stop() 完成。
+    // 服务级历史线程与受控主动探测线程由 ServerContext 统一 join；插件线程已由各自 stop() 完成。
+    if (ctx.active_probe_thread.joinable())             ctx.active_probe_thread.join();
+
     // 历史持久化线程：只读 weak_mgr 快照 + 写 DB，不依赖其他线程资源，最后 join 最安全。
     // 此前缺失该 join，导致 ~ServerContext 析构时该线程可能仍持 ctx* 访问 → 悬垂/terminate。
     if (ctx.history_thread.joinable())                  ctx.history_thread.join();

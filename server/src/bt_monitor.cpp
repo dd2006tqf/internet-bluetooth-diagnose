@@ -1375,6 +1375,9 @@ void start_bt_monitor_thread(ServerContext* ctx, std::thread* worker, BtMonitor*
             monitor->refreshAdapterState();
 
             if (monitor->hasAdapter()) {
+                // 处理并分发 D-Bus 信号队列（PropertiesChanged / InterfacesAdded/Removed）
+                monitor->processPendingSignals();
+
                 // 周期刷新设备状态与 A2DP 音频状态
                 monitor->refreshDeviceStates();
 

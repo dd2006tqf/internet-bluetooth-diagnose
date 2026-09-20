@@ -254,6 +254,10 @@ public:
     }
     bool start(ServerContext* ctx) override {
         if (!monitor_) return false;
+        if (ctx && !ctx->cfg.skb_drop.enabled.load()) {
+            LOG_INFO(LogModule::NETWORK, "SkbDropPlugin: disabled by configuration");
+            return true;
+        }
         std::string path = "build/skb_drop.bpf.o";
         if (ctx) {
             path = ctx->cfg.skb_drop.bpf_obj.get();

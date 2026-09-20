@@ -915,11 +915,20 @@ bool ConfigTransaction::forceRollback(WeakNetConfig* cfg, const std::string& rea
     TrialWindow snapshot;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (state_ != ConfigState::TRIAL) return false;
-        snapshot = trial_;
+        if (state_ != ConfigState::TRIAL) {
+            // 支持崩溃恢复路径：若当前不是 TRIAL，尝试从持久化磁盘文件加载 prior_values
+            std::map<std::string, std::string> disk_priors;
+            if (loadPriorValues(&disk_priors)) {
+                snapshot.prior_values = std::move(disk_priors);
+            } else {
+                return false;
+            }
+        } else {
+            snapshot = trial_;
+        }
     }
 
-    // 还原时按 trial_.prior_values 逆序应用：把每个 key 设回 prior 值。
+    // 还原时按 prior_values 应用：把每个 key 设回 prior 值。
     // 失败也要继续——半还原比不还原强，剩余错误进日志。
     bool all_ok = true;
     for (const auto& [key, prior] : snapshot.prior_values) {
@@ -933,7 +942,9 @@ bool ConfigTransaction::forceRollback(WeakNetConfig* cfg, const std::string& rea
     {
         std::lock_guard<std::mutex> lock(mutex_);
         // ROLLBACK 是瞬态：restore 完成立即回 STABLE。
-        markGenerationApplied(snapshot.generation);
+        if (snapshot.generation > 0) {
+            markGenerationApplied(snapshot.generation);
+        }
         trial_ = TrialWindow{};
         state_ = ConfigState::STABLE;
     }

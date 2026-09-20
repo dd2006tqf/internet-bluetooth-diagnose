@@ -770,8 +770,11 @@ std::vector<EdgeTelemetryRecord> EdgeTelemetryExporter::drain() {
 void EdgeTelemetryExporter::run() {
     LOG_INFO(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报线程已启动");
     while (!stop_requested_.load()) {
+        // 看门狗唤醒上限为 5 秒，避免 edge.interval_ms 调大（如设为 1h）时看门狗超时停摆
+        const uint32_t interval = config_.edge.interval_ms.load();
+        const auto wait_ms = std::chrono::milliseconds(std::min(interval, 5000u));
         std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait_for(lock, std::chrono::milliseconds(config_.edge.interval_ms.load()),
+        cv_.wait_for(lock, wait_ms,
                      [this]() {
                          return !buffer_.empty() || !pending_action_results_.empty() ||
                                 stop_requested_.load();

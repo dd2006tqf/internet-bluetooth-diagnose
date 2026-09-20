@@ -55,12 +55,13 @@ namespace weaknet_dbus {
 
 /**
  * @brief TCP 连接四元组键（与 BPF 端 http_txn_stats Map 的 key 一致）
+ * IPv4 低 32 位有效（网络序）；IPv6 完整 128 位
  */
 struct tcp_conn_key {
-    __u32 saddr;   // 源 IP（网络字节序）
-    __u32 daddr;   // 目的 IP（网络字节序）
-    __u16 sport;   // 源端口
-    __u16 dport;   // 目的端口
+    __u32 saddr[4];   // 源 IP（IPv4 低 32 位有效，网络序）
+    __u32 daddr[4];   // 目的 IP（网络序）
+    __u16 sport;      // 源端口（网络序）
+    __u16 dport;      // 目的端口（网络序）
 };
 
 /**
@@ -313,10 +314,18 @@ std::vector<HttpTxnInfo> HttpLatencyMonitor::getRecentTxns(size_t limit) {
             // 只取已完成的事务（有响应：recv_ns > 0 且 send_ns > 0）
             if (record.recv_ns > 0 && record.send_ns > 0) {
                 HttpTxnInfo info;
-                char src_buf[INET_ADDRSTRLEN], dst_buf[INET_ADDRSTRLEN];
-                struct in_addr sa{next_key.saddr}, da{next_key.daddr};
-                inet_ntop(AF_INET, &sa, src_buf, sizeof(src_buf));
-                inet_ntop(AF_INET, &da, dst_buf, sizeof(dst_buf));
+                char src_buf[INET6_ADDRSTRLEN], dst_buf[INET6_ADDRSTRLEN];
+                if (next_key.saddr[1] == 0 && next_key.saddr[2] == 0 && next_key.saddr[3] == 0 &&
+                    next_key.daddr[1] == 0 && next_key.daddr[2] == 0 && next_key.daddr[3] == 0) {
+                    // IPv4 路径
+                    struct in_addr sa{next_key.saddr[0]}, da{next_key.daddr[0]};
+                    inet_ntop(AF_INET, &sa, src_buf, sizeof(src_buf));
+                    inet_ntop(AF_INET, &da, dst_buf, sizeof(dst_buf));
+                } else {
+                    // IPv6 路径
+                    inet_ntop(AF_INET6, next_key.saddr, src_buf, sizeof(src_buf));
+                    inet_ntop(AF_INET6, next_key.daddr, dst_buf, sizeof(dst_buf));
+                }
                 info.srcIp = src_buf;
                 info.dstIp = dst_buf;
                 info.srcPort = ntohs(next_key.sport);

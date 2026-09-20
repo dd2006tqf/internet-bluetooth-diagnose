@@ -733,7 +733,7 @@ bool DatabaseManager::insertBtSnapshot(const std::string& adapter_mac,
             connected, rssi_dbm, distance_m, audio_active,
             quality_score, suspected_stall, bytes_per_sec, max_gap_ms
         ) VALUES (
-            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?, ?,
+            ?, ?, ?, ?,
             ?, ?, ?, ?,
             ?, ?, ?, ?
         );
@@ -746,17 +746,19 @@ bool DatabaseManager::insertBtSnapshot(const std::string& adapter_mac,
         return false;
     }
 
-    sqlite3_bind_text(stmt, 1, adapter_mac.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 2, device_mac.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 3, device_name.c_str(), -1, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 4, connected ? 1 : 0);
-    sqlite3_bind_double(stmt, 5, static_cast<double>(rssi_dbm));
-    sqlite3_bind_double(stmt, 6, distance_m);
-    sqlite3_bind_int(stmt, 7, audio_active ? 1 : 0);
-    sqlite3_bind_double(stmt, 8, quality_score);
-    sqlite3_bind_int(stmt, 9, suspected_stall ? 1 : 0);
-    sqlite3_bind_int64(stmt, 10, static_cast<int64_t>(bytes_per_sec));
-    sqlite3_bind_int64(stmt, 11, static_cast<int64_t>(max_gap_ms));
+    std::string timestamp = currentTimestamp();
+    sqlite3_bind_text(stmt, 1, timestamp.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, adapter_mac.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, device_mac.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 4, device_name.c_str(), -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 5, connected ? 1 : 0);
+    sqlite3_bind_double(stmt, 6, static_cast<double>(rssi_dbm));
+    sqlite3_bind_double(stmt, 7, distance_m);
+    sqlite3_bind_int(stmt, 8, audio_active ? 1 : 0);
+    sqlite3_bind_double(stmt, 9, quality_score);
+    sqlite3_bind_int(stmt, 10, suspected_stall ? 1 : 0);
+    sqlite3_bind_int64(stmt, 11, static_cast<int64_t>(bytes_per_sec));
+    sqlite3_bind_int64(stmt, 12, static_cast<int64_t>(max_gap_ms));
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
