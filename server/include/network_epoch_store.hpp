@@ -67,6 +67,9 @@ public:
     /// 最近一次 open() 返回的代次；未 open 时为 0。
     uint64_t current() const { return current_; }
 
+    /// 最近一次 open() 中的磁盘写回是否成功。写失败时已在内存中恢复代次并继续运行。
+    bool isPersisted() const { return persisted_; }
+
 private:
     /// 读取状态文件；不存在或内容非法时返回 false。
     bool readState(uint64_t* out) const;
@@ -76,6 +79,7 @@ private:
 
     std::string state_path_;
     uint64_t current_{0};
+    bool persisted_{false};
 };
 
 }  // namespace weaknet

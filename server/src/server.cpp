@@ -1080,6 +1080,9 @@ int start_server(int argc, char** argv) {
     // 启动带时间戳的文件日志
     Logger::startFileLog("./server/log");
 
+    // 全局网络与通信库初始化（单线程早期调用）
+    weaknet::EdgeTelemetryExporter::initGlobal();
+
     // 启动时清理 7 天前的日志文件
     int cleaned = Logger::cleanOldLogs("./logs/server", 7);
     if (cleaned > 0) {
@@ -1394,6 +1397,9 @@ int start_server(int argc, char** argv) {
 
     // 清理glog。资源（DBus 连接 / service / weak_mgr）由 ~ServerContext 统一释放。
     google::ShutdownGoogleLogging();
+
+    // 清理全局网络通信库（libcurl 全局资源释放）
+    weaknet::EdgeTelemetryExporter::cleanupGlobal();
 
     return 0;
 }

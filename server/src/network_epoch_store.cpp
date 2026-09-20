@@ -107,6 +107,7 @@ uint64_t NetworkEpochStore::open() {
     }
 
     if (!writeState(next)) {
+        persisted_ = false;
         // 写盘失败 ⇒ 本次用掉的代次无法被记住，下次重启就不会推进。
         // 此时返回低位代次有实质风险（epoch=1 必然已用过），故升到恢复位；
         // 但仍继续上报——停止上报的代价比一次代次跳变大得多。
@@ -115,6 +116,8 @@ uint64_t NetworkEpochStore::open() {
         }
         LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
                     "network epoch state could not be persisted: " << state_path_);
+    } else {
+        persisted_ = true;
     }
 
     current_ = next;

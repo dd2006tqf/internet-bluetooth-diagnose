@@ -141,11 +141,19 @@ TEST_F(NetworkEpochStoreTest, ZeroOrNegativeStateIsRejected) {
 
 TEST_F(NetworkEpochStoreTest, MissingDirectoryDoesNotCrashAndStillAdvances) {
     // 目录不存在（例如 data_dir 尚未创建）：open() 必须仍返回可用值，
-    // 且不得因为无法写盘就把代次退回。
+    // 且不得因为无法写盘就把代次退回。同时 isPersisted 必须明确指示失败。
     const std::string missing = dir_ + "/does-not-exist/network-epoch";
     weaknet::NetworkEpochStore store(missing);
     const uint64_t epoch = store.open();
     EXPECT_GT(epoch, 1u);
+    EXPECT_FALSE(store.isPersisted());
+}
+
+TEST_F(NetworkEpochStoreTest, SuccessfulOpenMarksPersistedTrue) {
+    weaknet::NetworkEpochStore store(statePath());
+    const uint64_t epoch = store.open();
+    EXPECT_EQ(epoch, 1u);
+    EXPECT_TRUE(store.isPersisted());
 }
 
 }  // namespace

@@ -124,9 +124,6 @@ public:
         const bool http_app = (http_access.applicability == Applicability::APPLICABLE &&
                                profile == AssessmentProfile::INTERNET_ACCESS &&
                                (http_access.state != HealthState::UNKNOWN || http_access.coverage != Coverage::NONE));
-        const bool portal_app = (captive_portal.applicability == Applicability::APPLICABLE &&
-                                 profile == AssessmentProfile::INTERNET_ACCESS &&
-                                 captive_portal.state != HealthState::UNKNOWN);
 
         // 计算整体 coverage：在适用的核心 SLE 上求值
         size_t core_applicable = 0, core_full = 0, core_none = 0;

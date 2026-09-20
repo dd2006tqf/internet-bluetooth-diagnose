@@ -126,6 +126,10 @@ public:
                           std::shared_ptr<weaknet_dbus::ConfigTransaction> config_txn = nullptr);
     ~EdgeTelemetryExporter();
 
+    /// 全局 libcurl 初始化与清理（供服务主入口在单线程上下文显式调用）
+    static void initGlobal();
+    static void cleanupGlobal();
+
     EdgeTelemetryExporter(const EdgeTelemetryExporter&) = delete;
     EdgeTelemetryExporter& operator=(const EdgeTelemetryExporter&) = delete;
 

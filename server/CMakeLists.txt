@@ -79,7 +79,9 @@ if(WEAKNET_OPENSSL_SYSROOT_INCLUDE_DIR
         "${WEAKNET_OPENSSL_SYSROOT_SSL_LIB}"
         "${WEAKNET_OPENSSL_SYSROOT_CRYPTO_LIB}")
 else()
-    # 2) 回退系统 OpenSSL
+    # 2) 回退系统 OpenSSL。
+    # 开发机（x86）若安装有特定版本的 OpenSSL（如 /usr/local 下 1.1），
+    # 保持 find_package(OpenSSL) 的标准查找行为。
     find_package(OpenSSL QUIET)
     if(OpenSSL_FOUND)
         set(WEAKNET_TLS_FOUND TRUE)

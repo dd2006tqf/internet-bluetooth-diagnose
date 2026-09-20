@@ -830,4 +830,16 @@ void EdgeTelemetryExporter::run() {
     LOG_INFO(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报线程已退出");
 }
 
+void EdgeTelemetryExporter::initGlobal() {
+#ifdef WEAKNET_HAVE_CURL
+    ensureCurlGlobalInit();
+#endif
+}
+
+void EdgeTelemetryExporter::cleanupGlobal() {
+#ifdef WEAKNET_HAVE_CURL
+    curl_global_cleanup();
+#endif
+}
+
 }  // namespace weaknet
