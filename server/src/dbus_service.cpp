@@ -101,6 +101,14 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
         self->handleHealthCheck(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetDiagnosis)) {
+        self->handleGetDiagnosis(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodExecuteAction)) {
+        self->handleExecuteAction(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
     if (dbus_message_is_method_call(msg, kInterface, kMethodPing)) {
         self->handlePing(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
@@ -496,6 +504,104 @@ bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
     DBusMessageIter args;
     dbus_message_iter_init_append(reply, &args);
     const char* s = reply_text.c_str();
+    if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s)) { dbus_message_unref(reply); return false; }
+    if (!dbus_connection_send(conn, reply, nullptr)) { dbus_message_unref(reply); return false; }
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+/**
+ * @brief DBus 方法实现：GetDiagnosis —— 返回端侧确定性机器诊断事实 JSON
+ */
+bool DbusService::handleGetDiagnosis(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetDiagnosis called");
+
+    std::string reply_text = "{}";
+    if (ctx_ && ctx_->diagnosis_engine && ctx_->evidence_id_generator) {
+        auto snap = ctx_->assessment_store.latest();
+        if (snap) {
+            auto facts = ctx_->diagnosis_engine->diagnose(*snap, *ctx_->evidence_id_generator);
+            reply_text = facts.toJson();
+        } else {
+            reply_text = "{\"status\":\"no_assessment_snapshot_available\"}";
+        }
+    } else {
+        reply_text = "{\"status\":\"diagnosis_engine_not_initialized\"}";
+    }
+
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = reply_text.c_str();
+    if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s)) { dbus_message_unref(reply); return false; }
+    if (!dbus_connection_send(conn, reply, nullptr)) { dbus_message_unref(reply); return false; }
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+/**
+ * @brief DBus 方法实现：ExecuteAction —— 安全执行白名单建议动作
+ */
+bool DbusService::handleExecuteAction(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleExecuteAction called");
+
+    DBusError err;
+    dbus_error_init(&err);
+    const char* action_id = nullptr;
+    const char* param_key = nullptr;
+    const char* param_val = nullptr;
+
+    // 支持参数格式：action_id, param_key, param_val (空则忽略)
+    if (!dbus_message_get_args(msg, &err, DBUS_TYPE_STRING, &action_id,
+                               DBUS_TYPE_STRING, &param_key,
+                               DBUS_TYPE_STRING, &param_val,
+                               DBUS_TYPE_INVALID)) {
+        dbus_error_free(&err);
+        // 也尝试仅单个 action_id
+        dbus_error_init(&err);
+        if (!dbus_message_get_args(msg, &err, DBUS_TYPE_STRING, &action_id, DBUS_TYPE_INVALID)) {
+            dbus_error_free(&err);
+            DBusMessage* reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", "Invalid arguments: expected action_id");
+            dbus_connection_send(conn, reply, nullptr);
+            dbus_message_unref(reply);
+            return false;
+        }
+    }
+
+    std::map<std::string, std::string> params;
+    if (param_key && strlen(param_key) > 0 && param_val) {
+        params[param_key] = param_val;
+    }
+
+    std::string result_json;
+    if (ctx_ && ctx_->action_registry) {
+        auto val_res = ctx_->action_registry->validate(action_id, params);
+        if (!val_res.ok) {
+            result_json = "{\"success\":false,\"error\":\"" + val_res.error + "\"}";
+        } else {
+            auto spec_opt = ctx_->action_registry->buildExecSpec(action_id, params);
+            if (!spec_opt.has_value()) {
+                result_json = "{\"success\":false,\"error\":\"Failed to build ExecSpec\"}";
+            } else {
+                auto exec_res = weaknet::ActionRegistry::safeExec(*spec_opt);
+                result_json = "{\"success\":" + std::string(exec_res.exit_code == 0 ? "true" : "false")
+                            + ",\"exit_code\":" + std::to_string(exec_res.exit_code)
+                            + ",\"stdout\":\"" + exec_res.stdout_output.substr(0, 500) + "\""
+                            + ",\"error\":\"" + exec_res.error + "\"}";
+            }
+        }
+    } else {
+        result_json = "{\"success\":false,\"error\":\"ActionRegistry not initialized\"}";
+    }
+
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = result_json.c_str();
     if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s)) { dbus_message_unref(reply); return false; }
     if (!dbus_connection_send(conn, reply, nullptr)) { dbus_message_unref(reply); return false; }
     dbus_connection_flush(conn);

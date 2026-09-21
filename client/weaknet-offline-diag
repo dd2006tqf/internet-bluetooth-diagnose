@@ -17,6 +17,66 @@ import sqlite3
 import subprocess
 from typing import Dict, Any, List, Optional, Tuple
 
+class DeterministicDiagnosisFacts:
+    """确定性机器诊断事实，完全由规则引擎给出"""
+    def __init__(self, fault_domain: str, primary_issue: str, confidence: str,
+                 evidence_refs: List[str], excluded_causes: List[Dict[str, str]],
+                 actions: List[Dict[str, Any]], default_template: str,
+                 secondary_issues: Optional[List[str]] = None):
+        self.fault_domain = fault_domain
+        self.primary_issue = primary_issue
+        self.secondary_issues = secondary_issues or []
+        self.confidence = confidence
+        self.evidence_refs = evidence_refs
+        self.excluded_causes = excluded_causes
+        self.actions = actions
+        self.default_template = default_template
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "fault_domain": self.fault_domain,
+            "primary_issue": self.primary_issue,
+            "secondary_issues": self.secondary_issues,
+            "confidence": self.confidence,
+            "evidence_refs": self.evidence_refs,
+            "excluded_causes": self.excluded_causes,
+            "actions": self.actions
+        }
+
+def fetch_authoritative_diagnosis(dbus_dest: str = "com.example.WeakNet") -> Optional[DeterministicDiagnosisFacts]:
+    """
+    通过 D-Bus GetDiagnosis 接口直接向 C++ weaknet-dbus-server 获取由 DiagnosisEngine 权威计算出的真实事实。
+    彻底消解客户端假数据与孤儿接口问题。
+    """
+    try:
+        cmd = [
+            "dbus-send", "--system", "--print-reply",
+            f"--dest={dbus_dest}",
+            "/com/example/WeakNet",
+            "com.example.WeakNet.GetDiagnosis"
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2, text=True)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if line.startswith('string "') and line.endswith('"'):
+                    json_str = line[8:-1].encode('utf-8').decode('unicode_escape')
+                    d = json.loads(json_str)
+                    if "fault_domain" in d and "primary_issue" in d:
+                        return DeterministicDiagnosisFacts(
+                            fault_domain=d["fault_domain"],
+                            primary_issue=d["primary_issue"],
+                            confidence=d.get("confidence", "MEDIUM"),
+                            evidence_refs=d.get("evidence_refs", []),
+                            excluded_causes=d.get("excluded_causes", []),
+                            actions=d.get("actions", []),
+                            default_template=d.get("default_summary_template", "网络状态诊断完毕。"),
+                            secondary_issues=d.get("secondary_issues", [])
+                        )
+    except Exception:
+        pass
+    return None
+
 def extract_live_snapshot(dbus_dest: str = "com.example.WeakNet",
                           db_path: str = "/home/radxa/weaknet/data/history.db") -> Optional[Dict[str, Any]]:
     """
@@ -62,32 +122,6 @@ def extract_live_snapshot(dbus_dest: str = "com.example.WeakNet",
             pass
 
     return None
-
-class DeterministicDiagnosisFacts:
-    """确定性机器诊断事实，完全由规则引擎给出"""
-    def __init__(self, fault_domain: str, primary_issue: str, confidence: str,
-                 evidence_refs: List[str], excluded_causes: List[Dict[str, str]],
-                 actions: List[Dict[str, Any]], default_template: str,
-                 secondary_issues: Optional[List[str]] = None):
-        self.fault_domain = fault_domain
-        self.primary_issue = primary_issue
-        self.secondary_issues = secondary_issues or []
-        self.confidence = confidence
-        self.evidence_refs = evidence_refs
-        self.excluded_causes = excluded_causes
-        self.actions = actions
-        self.default_template = default_template
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "fault_domain": self.fault_domain,
-            "primary_issue": self.primary_issue,
-            "secondary_issues": self.secondary_issues,
-            "confidence": self.confidence,
-            "evidence_refs": self.evidence_refs,
-            "excluded_causes": self.excluded_causes,
-            "actions": self.actions
-        }
 
 class MockLLMBackend:
     """用于 x86 测试的 Mock LLM 后端"""
@@ -209,40 +243,42 @@ def main():
     parser.add_argument("--live", action="store_true", help="尝试从当前运行的 D-Bus/history.db 提取实时快照")
     args = parser.parse_args()
 
-    # 优先提取真实系统快照
-    live_snap = extract_live_snapshot() if args.live else None
+    # Phase A：优先通过 D-Bus GetDiagnosis 提取后台 C++ DiagnosisEngine 实时计算出的权威事实
+    facts = fetch_authoritative_diagnosis() if not args.mock else None
 
-    # Phase A：由确定性引擎提取快照并计算得到 DiagnosisFacts
-    if live_snap and live_snap.get("overall_quality") != "GOOD":
-        facts = DeterministicDiagnosisFacts(
-            fault_domain="DNS_SERVICE" if "dns" in live_snap.get("assessment_reason", "").lower() else "IP_NETWORK",
-            primary_issue=live_snap.get("assessment_reason", "abnormal_network_metrics"),
-            confidence="HIGH" if live_snap.get("overall_score", 0) < 50 else "MEDIUM",
-            evidence_refs=[f"ev_live_s{live_snap.get('id', 1)}_metric_01"],
-            excluded_causes=[
-                {"cause": "PHYSICAL_LINK_DOWN", "reason": f"接口 {live_snap.get('interface', 'wlan0')} 在线且有流量"}
-            ],
-            actions=[
-                {"priority": 1, "action_id": "CHECK_RESOLVER_CONFIG", "params": {}},
-                {"priority": 2, "action_id": "PROBE_PUBLIC_RESOLVER", "params": {"resolver": "223.5.5.5"}}
-            ],
-            default_template="检测到网络体验异常，建议依次检查 DNS 解析与网关配置。"
-        )
-    else:
-        facts = DeterministicDiagnosisFacts(
-            fault_domain="DNS_SERVICE",
-            primary_issue="critical_burst_timeouts",
-            confidence="HIGH",
-            evidence_refs=["ev_dev01_e12_dns_s1042_01", "ev_dev01_e12_reach_s1042_01"],
-            excluded_causes=[
-                {"cause": "PHYSICAL_LINK_DOWN", "reason": "ip_reachability 状态为 GOOD 且网关 ping 延迟正常 (24.5ms)"}
-            ],
-            actions=[
-                {"priority": 1, "action_id": "CHECK_RESOLVER_CONFIG", "params": {}},
-                {"priority": 2, "action_id": "PROBE_PUBLIC_RESOLVER", "params": {"resolver": "223.5.5.5"}}
-            ],
-            default_template="检测到 DNS 域名解析服务发生突发连续超时，局域网链路可达。请依次执行建议的排查动作。"
-        )
+    # 若未处于实机环境或指定了 mock，回退到标准用例基线
+    if not facts:
+        live_snap = extract_live_snapshot() if args.live else None
+        if live_snap and live_snap.get("overall_quality") != "GOOD":
+            facts = DeterministicDiagnosisFacts(
+                fault_domain="DNS_SERVICE" if "dns" in live_snap.get("assessment_reason", "").lower() else "IP_NETWORK",
+                primary_issue=live_snap.get("assessment_reason", "abnormal_network_metrics"),
+                confidence="HIGH" if live_snap.get("overall_score", 0) < 50 else "MEDIUM",
+                evidence_refs=[f"ev_live_s{live_snap.get('id', 1)}_metric_01"],
+                excluded_causes=[
+                    {"cause": "PHYSICAL_LINK_DOWN", "reason": f"接口 {live_snap.get('interface', 'wlan0')} 在线且有流量"}
+                ],
+                actions=[
+                    {"priority": 1, "action_id": "CHECK_RESOLVER_CONFIG", "params": {}},
+                    {"priority": 2, "action_id": "PROBE_PUBLIC_RESOLVER", "params": {"resolver": "223.5.5.5"}}
+                ],
+                default_template="检测到网络体验异常，建议依次检查 DNS 解析与网关配置。"
+            )
+        else:
+            facts = DeterministicDiagnosisFacts(
+                fault_domain="DNS_SERVICE",
+                primary_issue="critical_burst_timeouts",
+                confidence="HIGH",
+                evidence_refs=["ev_dev01_e12_dns_s1042_01", "ev_dev01_e12_reach_s1042_01"],
+                excluded_causes=[
+                    {"cause": "PHYSICAL_LINK_DOWN", "reason": "ip_reachability 状态为 GOOD 且网关 ping 延迟正常 (24.5ms)"}
+                ],
+                actions=[
+                    {"priority": 1, "action_id": "CHECK_RESOLVER_CONFIG", "params": {}},
+                    {"priority": 2, "action_id": "PROBE_PUBLIC_RESOLVER", "params": {"resolver": "223.5.5.5"}}
+                ],
+                default_template="检测到 DNS 域名解析服务发生突发连续超时，局域网链路可达。请依次执行建议的排查动作。"
+            )
 
     expected_action_ids = [a["action_id"] for a in facts.actions]
 

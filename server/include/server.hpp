@@ -27,6 +27,9 @@
 #include "assurance/dns_transaction_tracker.hpp"
 #include "assessment_snapshot.hpp"
 #include "assurance/dns_service_evaluator.hpp"
+#include "assurance/diagnosis_engine.hpp"
+#include "assurance/evidence_id_generator.hpp"
+#include "assurance/action_registry.hpp"
 #include "edge_telemetry_exporter.hpp"
 
 // 前置声明，避免强依赖 dbus 头
@@ -119,6 +122,11 @@ struct ServerContext {
 
     // ---------- 边缘遥测上报 ----------
     std::unique_ptr<weaknet::EdgeTelemetryExporter> edge_exporter;
+
+    // ---------- 端侧确定性诊断引擎与证据生成服务 ----------
+    std::shared_ptr<weaknet::ActionRegistry> action_registry;
+    std::unique_ptr<weaknet::DiagnosisEngine> diagnosis_engine;
+    std::unique_ptr<weaknet::EvidenceIdGenerator> evidence_id_generator;
 
     // ---------- per-monitor stop requests (阶段二) ----------
     // These flags are separate from running: they stop one worker without

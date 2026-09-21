@@ -39,6 +39,47 @@ struct DiagnosisFacts {
     std::vector<ExcludedCauseFact> excluded_causes;
     std::vector<ActionRequest> actions;
     std::string default_summary_template;
+
+    std::string toJson() const {
+        std::ostringstream oss;
+        oss << "{\"fault_domain\":\"" << fault_domain << "\","
+            << "\"primary_issue\":\"" << primary_issue << "\","
+            << "\"confidence\":\"" << (confidence == DiagnosisConfidence::HIGH ? "HIGH" : (confidence == DiagnosisConfidence::MEDIUM ? "MEDIUM" : "LOW")) << "\",";
+
+        oss << "\"secondary_issues\":[";
+        for (size_t i = 0; i < secondary_issues.size(); ++i) {
+            oss << "\"" << secondary_issues[i] << "\"" << (i + 1 < secondary_issues.size() ? "," : "");
+        }
+        oss << "],";
+
+        oss << "\"evidence_refs\":[";
+        for (size_t i = 0; i < evidence_refs.size(); ++i) {
+            oss << "\"" << evidence_refs[i] << "\"" << (i + 1 < evidence_refs.size() ? "," : "");
+        }
+        oss << "],";
+
+        oss << "\"excluded_causes\":[";
+        for (size_t i = 0; i < excluded_causes.size(); ++i) {
+            oss << "{\"cause\":\"" << excluded_causes[i].cause << "\",\"reason\":\"" << excluded_causes[i].reason << "\"}"
+                << (i + 1 < excluded_causes.size() ? "," : "");
+        }
+        oss << "],";
+
+        oss << "\"actions\":[";
+        for (size_t i = 0; i < actions.size(); ++i) {
+            oss << "{\"priority\":" << actions[i].priority
+                << ",\"action_id\":\"" << actions[i].action_id << "\",\"params\":{";
+            size_t p_idx = 0;
+            for (const auto& [k, v] : actions[i].params) {
+                oss << "\"" << k << "\":\"" << v << "\"" << (++p_idx < actions[i].params.size() ? "," : "");
+            }
+            oss << "}}" << (i + 1 < actions.size() ? "," : "");
+        }
+        oss << "],";
+
+        oss << "\"default_summary_template\":\"" << default_summary_template << "\"}";
+        return oss.str();
+    }
 };
 
 class DiagnosisEngine {

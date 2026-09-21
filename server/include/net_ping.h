@@ -44,12 +44,6 @@ public:
      */
     int ping(const std::string& host, const std::string& ifaceName, int timeoutMs = 1000);
 
-    /// 可选初始化（预留扩展点，目前 ping() 会自动按需创建 socket）
-    void Init();
-
-    /// 可选关闭（预留扩展点）
-    void Shutdown();
-
 private:
     // ---- ICMP 协议辅助 ----
     /// 计算 ICMP 校验和（RFC 1071）

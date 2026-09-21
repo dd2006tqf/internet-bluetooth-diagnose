@@ -1145,21 +1145,29 @@ int start_server(int argc, char** argv) {
     ctx.weak_mgr = std::make_unique<WeakNetMgr>(ctx.metrics_registry.get());
 
     // 网络代次跨重启推进（W-edge 上行去重的正确性前提）。
-    //
-    // 上行遥测按 (tenant, device, network_epoch, sequence_id) 幂等入库，而
-    // sequence_id 是进程内计数器，每次重启都从 1 重新开始。若 network_epoch
-    // 也随重启回到 1，重启后的 (1, 1)、(1, 2)… 会与上一轮运行留下的历史键
-    // 完全重合 —— 服务端判定重复并返回 HTTP 200，数据被静默丢弃，两端日志
-    // 都不报错。因此这里必须让代次在每次启动时前进一格，把新数据放进一个
-    // 全新的键空间。
+    uint64_t persistent_epoch = 1;
     {
         weaknet::NetworkEpochStore epoch_store(resolveNetworkEpochPath(ctx.cfg.data_dir.get()));
-        const uint64_t epoch = epoch_store.open();
-        ctx.dns_binding_epoch.store(epoch);
+        persistent_epoch = epoch_store.open();
+        ctx.dns_binding_epoch.store(persistent_epoch);
         // dns_tracker 的 binding epoch 初值为 1，运行中由路由/解析器变化推进。
         // 持久化值只在更大时才生效（advanceBindingEpoch 内部拒绝回退），
         // 因此这里把两者对齐到同一个下界。
-        ctx.dns_tracker->advanceBindingEpoch(epoch);
+        ctx.dns_tracker->advanceBindingEpoch(persistent_epoch);
+    }
+
+    // 初始化端侧确定性诊断引擎与证据生成服务
+    {
+        std::string dev_id = ctx.cfg.edge.device_id.get();
+        if (dev_id.empty()) {
+            dev_id = "radxa-cubie-a7a";
+        }
+        ctx.action_registry = std::make_shared<weaknet::ActionRegistry>();
+        ctx.diagnosis_engine = std::make_unique<weaknet::DiagnosisEngine>(
+            weaknet::RuleLoader::loadDefaultRules(), ctx.action_registry);
+        ctx.evidence_id_generator = std::make_unique<weaknet::EvidenceIdGenerator>(
+            dev_id, persistent_epoch, true);
+        LOG_INFO(LogModule::SYSTEM, "DiagnosisEngine & ActionRegistry initialized for device: " << dev_id);
     }
 
     // 启动 UsingInterfaceManager（一次性启动，不重复调用 start()）

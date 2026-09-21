@@ -68,9 +68,6 @@ std::shared_ptr<NetPing> NetPing::getInstance() {
 NetPing::NetPing() = default;
 NetPing::~NetPing() = default;
 
-void NetPing::Init() {}
-void NetPing::Shutdown() {}
-
 /**
  * @brief 计算 ICMP 报文的 RFC 1071 标准 16 位互联网校验和
  *
@@ -319,8 +316,6 @@ int NetPing::ping(const std::string& host, const std::string& ifaceName, int tim
 // 非 Linux 平台的空实现
 NetPing::NetPing() {}
 NetPing::~NetPing() {}
-void NetPing::Init() {}
-void NetPing::Shutdown() {}
 uint16_t NetPing::checksum(uint16_t*, int) { return 0; }
 bool NetPing::resolveHostIPv4(const std::string&, struct sockaddr_in&) { return false; }
 int NetPing::packIcmp(struct icmp*, uint16_t, uint16_t) { return 0; }
