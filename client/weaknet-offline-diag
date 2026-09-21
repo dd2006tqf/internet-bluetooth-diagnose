@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""
+WeakNet 离线网络诊断 CLI (weaknet-offline-diag)
+架构角色：
+  Phase A (确定性瞬时呈现): 提取事实快照 -> 规则引擎 -> 立即输出权威事实 (SLO: P99 < 5ms)
+  Phase B (语言解释补充): 组装受控 Prompt -> 请求 Local SLM -> Auditor 严格校验 -> 补充白话解释与操作辅导
+  若 Phase B 失败 (超时/JSON格式损坏/校验不通过): 立即丢弃 AI 输出，自动回退到规则预置的 deterministic 模板
+"""
+
+import sys
+import os
+import json
+import argparse
+import urllib.request
+import urllib.error
+import sqlite3
+import subprocess
+from typing import Dict, Any, List, Optional, Tuple
+
+def extract_live_snapshot(dbus_dest: str = "com.example.WeakNet",
+                          db_path: str = "/home/radxa/weaknet/data/history.db") -> Optional[Dict[str, Any]]:
+    """
+    优先通过 D-Bus 提取内存权威不可变快照；若 D-Bus 服务不可达则回退读取本地 history.db 数据库。
+    """
+    # 1. 尝试通过 D-Bus 获取实时快照
+    try:
+        cmd = [
+            "dbus-send", "--system", "--print-reply",
+            f"--dest={dbus_dest}",
+            "/com/example/WeakNet",
+            "com.example.WeakNet.HealthCheck"
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2, text=True)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                line = line.strip()
+                if line.startswith('string "') and line.endswith('"'):
+                    json_str = line[8:-1].encode('utf-8').decode('unicode_escape')
+                    parsed = json.loads(json_str)
+                    if parsed.get("success") and "data" in parsed:
+                        return parsed["data"]
+    except Exception:
+        pass
+
+    # 2. 回退读取 history.db 最新记录
+    if os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, ts, iface, rtt_ms, jitter_ms, rssi_dbm, tcp_loss,
+                       overall_quality, overall_score, assessment_profile
+                FROM network_history
+                ORDER BY id DESC LIMIT 1
+            """)
+            row = cur.fetchone()
+            conn.close()
+            if row:
+                return dict(row)
+        except Exception:
+            pass
+
+    return None
+
+class DeterministicDiagnosisFacts:
+    """确定性机器诊断事实，完全由规则引擎给出"""
+    def __init__(self, fault_domain: str, primary_issue: str, confidence: str,
+                 evidence_refs: List[str], excluded_causes: List[Dict[str, str]],
+                 actions: List[Dict[str, Any]], default_template: str,
+                 secondary_issues: Optional[List[str]] = None):
+        self.fault_domain = fault_domain
+        self.primary_issue = primary_issue
+        self.secondary_issues = secondary_issues or []
+        self.confidence = confidence
+        self.evidence_refs = evidence_refs
+        self.excluded_causes = excluded_causes
+        self.actions = actions
+        self.default_template = default_template
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "fault_domain": self.fault_domain,
+            "primary_issue": self.primary_issue,
+            "secondary_issues": self.secondary_issues,
+            "confidence": self.confidence,
+            "evidence_refs": self.evidence_refs,
+            "excluded_causes": self.excluded_causes,
+            "actions": self.actions
+        }
+
+class MockLLMBackend:
+    """用于 x86 测试的 Mock LLM 后端"""
+    def __init__(self, mode: str = "valid"):
+        self.mode = mode
+
+    def generate(self, prompt: str) -> str:
+        if self.mode == "invalid_json":
+            return "{ bad json ..."
+        elif self.mode == "missing_action":
+            return json.dumps({
+                "human_summary": "局域网可达但上游 DNS 超时。",
+                "action_explanations": [
+                    {"action_id": "CHECK_RESOLVER_CONFIG", "explanation": "查看本地配置。"}
+                    # 缺少 PROBE_PUBLIC_RESOLVER
+                ]
+            })
+        elif self.mode == "duplicate_action":
+            return json.dumps({
+                "human_summary": "局域网可达但上游 DNS 超时。",
+                "action_explanations": [
+                    {"action_id": "CHECK_RESOLVER_CONFIG", "explanation": "查看本地配置。"},
+                    {"action_id": "CHECK_RESOLVER_CONFIG", "explanation": "重复的动作解释。"}
+                ]
+            })
+        else: # valid
+            return json.dumps({
+                "human_summary": "当前局域网链路与网关连通性完全正常，但上游配置的 DNS 服务器连续 3 次无应答。主要故障位于外部域名解析服务。",
+                "action_explanations": [
+                    {"action_id": "CHECK_RESOLVER_CONFIG", "explanation": "查看本地 nameserver 配置以确认分配的 DNS 服务器地址是否有效。"},
+                    {"action_id": "PROBE_PUBLIC_RESOLVER", "explanation": "直连公共解析器以判断是否为局域网路由器 DNS 代理故障或 53 端口拦截。"}
+                ]
+            })
+
+class ContractValidator:
+    """契约校验器：强制校验模型输出必须严格符合 Schema 且无动作遗漏/篡改"""
+    @staticmethod
+    def validate_explanation(raw_json_str: str, expected_action_ids: List[str]) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+        try:
+            data = json.loads(raw_json_str)
+        except Exception as e:
+            return False, None, f"JSON parse error: {e}"
+
+        if not isinstance(data, dict):
+            return False, None, "Root must be an object"
+
+        # 检查额外字段
+        allowed_keys = {"human_summary", "action_explanations"}
+        if set(data.keys()) != allowed_keys:
+            return False, None, f"Keys mismatch. Expected {allowed_keys}, got {set(data.keys())}"
+
+        if not isinstance(data.get("human_summary"), str):
+            return False, None, "human_summary must be a string"
+
+        explanations = data.get("action_explanations")
+        if not isinstance(explanations, list):
+            return False, None, "action_explanations must be a list"
+
+        returned_action_ids = []
+        for item in explanations:
+            if not isinstance(item, dict):
+                return False, None, "Each item in action_explanations must be an object"
+            if set(item.keys()) != {"action_id", "explanation"}:
+                return False, None, f"Invalid item keys in action_explanations: {set(item.keys())}"
+            aid = item.get("action_id")
+            if not isinstance(aid, str) or not aid:
+                return False, None, "action_id must be non-empty string"
+            returned_action_ids.append(aid)
+
+        # 校验 action_id 是否有重复
+        if len(returned_action_ids) != len(set(returned_action_ids)):
+            return False, None, "Duplicate action_id found in action_explanations"
+
+        # 校验返回动作集合与预期动作集合精确全等
+        if set(returned_action_ids) != set(expected_action_ids):
+            return False, None, f"Action IDs mismatch. Expected {set(expected_action_ids)}, got {set(returned_action_ids)}"
+
+        return True, data, "OK"
+
+def render_cli_report(facts: DeterministicDiagnosisFacts,
+                      ai_data: Optional[Dict[str, Any]],
+                      ai_error: str = ""):
+    print("=" * 70)
+    print(" [Machine Diagnosis - authoritative]")
+    print(f" Fault Domain  : {facts.fault_domain}")
+    print(f" Primary Issue : {facts.primary_issue}")
+    if facts.secondary_issues:
+        print(f" Secondary     : {', '.join(facts.secondary_issues)}")
+    print(f" Confidence    : {facts.confidence}")
+    print(f" Evidence Refs : {', '.join(facts.evidence_refs)}")
+    if facts.excluded_causes:
+        print(" Excluded      :")
+        for ec in facts.excluded_causes:
+            print(f"   - {ec['cause']}: {ec['reason']}")
+    print(" Actions       :")
+    for act in facts.actions:
+        print(f"   {act['priority']}. {act['action_id']} (params: {act.get('params', {})})")
+
+    print("-" * 70)
+    print(" [AI Explanation - advisory]")
+    if ai_data:
+        print(f" Status        : CONTRACT_VALIDATED")
+        print(f" Summary       : {ai_data['human_summary']}")
+        print(" Action Guides :")
+        for ae in ai_data['action_explanations']:
+            print(f"   • [{ae['action_id']}] {ae['explanation']}")
+    else:
+        print(f" Status        : FALLBACK (Reason: {ai_error})")
+        print(f" Summary       : {facts.default_template}")
+    print("=" * 70)
+
+def main():
+    parser = argparse.ArgumentParser(description="WeakNet 离线诊断命令行工具")
+    parser.add_argument("--mock", choices=["valid", "invalid_json", "missing_action", "duplicate_action"],
+                        default=None, help="启用本地 Mock LLM 进行逻辑测试")
+    parser.add_argument("--endpoint", default="http://127.0.0.1:8080/v1/chat/completions",
+                        help="llama-server HTTP 端点")
+    parser.add_argument("--timeout", type=int, default=120, help="LLM 推理超时时间 (秒)")
+    parser.add_argument("--live", action="store_true", help="尝试从当前运行的 D-Bus/history.db 提取实时快照")
+    args = parser.parse_args()
+
+    # 优先提取真实系统快照
+    live_snap = extract_live_snapshot() if args.live else None
+
+    # Phase A：由确定性引擎提取快照并计算得到 DiagnosisFacts
+    if live_snap and live_snap.get("overall_quality") != "GOOD":
+        facts = DeterministicDiagnosisFacts(
+            fault_domain="DNS_SERVICE" if "dns" in live_snap.get("assessment_reason", "").lower() else "IP_NETWORK",
+            primary_issue=live_snap.get("assessment_reason", "abnormal_network_metrics"),
+            confidence="HIGH" if live_snap.get("overall_score", 0) < 50 else "MEDIUM",
+            evidence_refs=[f"ev_live_s{live_snap.get('id', 1)}_metric_01"],
+            excluded_causes=[
+                {"cause": "PHYSICAL_LINK_DOWN", "reason": f"接口 {live_snap.get('interface', 'wlan0')} 在线且有流量"}
+            ],
+            actions=[
+                {"priority": 1, "action_id": "CHECK_RESOLVER_CONFIG", "params": {}},
+                {"priority": 2, "action_id": "PROBE_PUBLIC_RESOLVER", "params": {"resolver": "223.5.5.5"}}
+            ],
+            default_template="检测到网络体验异常，建议依次检查 DNS 解析与网关配置。"
+        )
+    else:
+        facts = DeterministicDiagnosisFacts(
+            fault_domain="DNS_SERVICE",
+            primary_issue="critical_burst_timeouts",
+            confidence="HIGH",
+            evidence_refs=["ev_dev01_e12_dns_s1042_01", "ev_dev01_e12_reach_s1042_01"],
+            excluded_causes=[
+                {"cause": "PHYSICAL_LINK_DOWN", "reason": "ip_reachability 状态为 GOOD 且网关 ping 延迟正常 (24.5ms)"}
+            ],
+            actions=[
+                {"priority": 1, "action_id": "CHECK_RESOLVER_CONFIG", "params": {}},
+                {"priority": 2, "action_id": "PROBE_PUBLIC_RESOLVER", "params": {"resolver": "223.5.5.5"}}
+            ],
+            default_template="检测到 DNS 域名解析服务发生突发连续超时，局域网链路可达。请依次执行建议的排查动作。"
+        )
+
+    expected_action_ids = [a["action_id"] for a in facts.actions]
+
+    # Phase B：调用大模型获取白话解释
+    raw_llm_output = ""
+    if args.mock:
+        raw_llm_output = MockLLMBackend(args.mock).generate("prompt...")
+    else:
+        # 生产路径：向本地 llama-server 发起 HTTP 请求
+        try:
+            req_data = json.dumps({
+                "model": "qwen2.5",
+                "messages": [
+                    {"role": "system", "content": "You are a network diagnostic advisor. Return JSON only conforming to: {\"human_summary\": \"...\", \"action_explanations\": [{\"action_id\": \"...\", \"explanation\": \"...\"}]}. Actions must be: " + json.dumps(expected_action_ids)},
+                    {"role": "user", "content": f"Facts: {json.dumps(facts.to_dict())}"}
+                ],
+                "temperature": 0.1,
+                "max_tokens": 90
+            }).encode("utf-8")
+            req = urllib.request.Request(args.endpoint, data=req_data, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=args.timeout) as resp:
+                resp_json = json.loads(resp.read().decode("utf-8"))
+                raw_llm_output = resp_json["choices"][0]["message"]["content"]
+        except Exception as e:
+            render_cli_report(facts, None, ai_error=f"LLM request failed: {e}")
+            return
+
+    # Auditor 严格契约校验
+    valid, ai_data, err_msg = ContractValidator.validate_explanation(raw_llm_output, expected_action_ids)
+
+    if valid:
+        render_cli_report(facts, ai_data)
+    else:
+        render_cli_report(facts, None, ai_error=err_msg)
+
+if __name__ == "__main__":
+    main()

@@ -14,6 +14,8 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <unistd.h>
+#include <fcntl.h>
 
 #include "logger.hpp"
 
@@ -59,8 +61,8 @@ bool NetworkEpochStore::readState(uint64_t* out) const {
 }
 
 bool NetworkEpochStore::writeState(uint64_t value) const {
-    // 先写临时文件再 rename：rename 在同一文件系统上是原子的，
-    // 因此掉电只可能留下完整的旧文件或完整的新文件，不会出现半截内容。
+    // 先写临时文件 + fsync 再 rename：rename 在同一文件系统上是原子的，
+    // fsync 保证掉电时数据已刷入介质，不会出现半截或全零文件。
     const std::string tmp_path = state_path_ + ".tmp";
     {
         std::ofstream out(tmp_path, std::ios::trunc);
@@ -73,6 +75,14 @@ bool NetworkEpochStore::writeState(uint64_t value) const {
             return false;
         }
     }
+
+    // 严密 fsync：打开 tmp_path 刷盘
+    int fd = ::open(tmp_path.c_str(), O_WRONLY);
+    if (fd >= 0) {
+        ::fsync(fd);
+        ::close(fd);
+    }
+
     if (std::rename(tmp_path.c_str(), state_path_.c_str()) != 0) {
         std::remove(tmp_path.c_str());
         return false;

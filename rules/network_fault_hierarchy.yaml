@@ -1,0 +1,116 @@
+schema_version: "weaknet.rules.v1"
+
+rules:
+  - id: "RULE_GATEWAY_UNREACHABLE"
+    domain: "IP_NETWORK"
+    priority: 100
+    suppresses:
+      - "RULE_DNS_CRITICAL_BURST_TIMEOUTS"
+      - "RULE_HTTP_LATENCY_EXCESSIVE"
+    trigger:
+      sle: "ip_reachability"
+      reason: "frequent_or_consecutive_probe_failures"
+    preconditions:
+      all:
+        - field: "ip_reachability.state"
+          op: "eq"
+          value: "BAD"
+    confidence:
+      base: "HIGH"
+    hypothesis: "默认网关连续探测失败或丢包严重，本地到局域网出口链路断开"
+    excluded_candidates:
+      - cause: "DNS_SERVER_CRASH"
+        when:
+          all:
+            - field: "ip_reachability.state"
+              op: "eq"
+              value: "BAD"
+        explanation: "IP 路由连通性已完全丧失，上层 DNS/HTTP 故障均为派生症状"
+    actions:
+      - action_id: "INSPECT_DEFAULT_GATEWAY"
+        priority: 1
+        params: {}
+      - action_id: "RESTART_NETWORK_INTERFACE"
+        priority: 2
+        params:
+          interface: "wlan0"
+    default_summary_template: "局域网网关不可达，底层 IP 链路已中断。建议检查本地网络硬件或网关。"
+
+  - id: "RULE_DNS_CRITICAL_BURST_TIMEOUTS"
+    domain: "DNS_SERVICE"
+    priority: 80
+    suppresses: []
+    coexists_with:
+      - "RULE_WIFI_WEAK_SIGNAL"
+    trigger:
+      sle: "dns_service"
+      reason: "critical_burst_timeouts"
+    preconditions:
+      all:
+        - field: "ip_reachability.state"
+          op: "eq"
+          value: "GOOD"
+    confidence:
+      base: "MEDIUM"
+      upgrade_to_high_if:
+        all:
+          - field: "ip_reachability.state"
+            op: "eq"
+            value: "GOOD"
+          - field: "dns.consecutive_timeouts"
+            op: "gte"
+            value: 3
+    hypothesis: "本地网关及物理链路正常，但配置的上游 DNS 解析器连续超时，无任何成功应答"
+    excluded_candidates:
+      - cause: "WEAK_WIFI_SIGNAL"
+        when:
+          all:
+            - field: "link_type"
+              op: "eq"
+              value: "WIFI"
+            - field: "rf_health.rssi_dbm"
+              op: "gt"
+              value: -65
+        explanation: "空口 Wi-Fi 信号极佳 (RSSI > -65dBm)"
+      - cause: "GATEWAY_UNREACHABLE"
+        when:
+          all:
+            - field: "ip_reachability.state"
+              op: "eq"
+              value: "GOOD"
+        explanation: "网关 ping 连通性正常且丢包率为 0"
+    actions:
+      - action_id: "CHECK_RESOLVER_CONFIG"
+        priority: 1
+        params: {}
+      - action_id: "PROBE_PUBLIC_RESOLVER"
+        priority: 2
+        params:
+          resolver: "223.5.5.5"
+    default_summary_template: "检测到 DNS 域名解析服务发生突发连续超时，局域网链路可达。请依次执行建议的排查动作。"
+
+  - id: "RULE_WIFI_WEAK_SIGNAL"
+    domain: "PHYSICAL_LINK"
+    priority: 40
+    coexists_with:
+      - "RULE_DNS_CRITICAL_BURST_TIMEOUTS"
+    trigger:
+      sle: "rf_health"
+      reason: "weak_signal_coverage"
+    preconditions:
+      all:
+        - field: "link_type"
+          op: "eq"
+          value: "WIFI"
+        - field: "rf_health.state"
+          op: "eq"
+          value: "BAD"
+    confidence:
+      base: "MEDIUM"
+    hypothesis: "Wi-Fi 空口信号强度极低 (RSSI <= -80dBm)，易产生空口丢包或抖动"
+    actions:
+      - action_id: "RESTART_NETWORK_INTERFACE"
+        priority: 1
+        params:
+          interface: "wlan0"
+    default_summary_template: "Wi-Fi 信号强度衰减严重，可能导致连接质量劣化。建议缩减与 AP 距离。"

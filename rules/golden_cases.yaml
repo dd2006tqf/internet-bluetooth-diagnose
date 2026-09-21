@@ -1,0 +1,62 @@
+schema_version: "weaknet.test_cases.v1"
+
+test_cases:
+  - id: "CASE_DNS_BURST_TIMEOUT_GOOD_GATEWAY"
+    description: "本地网关正常且 Wi-Fi 信号极佳，但上游 DNS 连续 3 次突发超时"
+    expected_diagnosis:
+      fault_domain: "DNS_SERVICE"
+      primary_issue: "critical_burst_timeouts"
+      confidence: "HIGH"
+      secondary_issues: []
+    expected_actions:
+      - "CHECK_RESOLVER_CONFIG"
+      - "PROBE_PUBLIC_RESOLVER"
+    excluded_causes:
+      - "WEAK_WIFI_SIGNAL"
+      - "GATEWAY_UNREACHABLE"
+    allowed_fact_tags:
+      - "FACT_GATEWAY_REACHABLE"
+      - "FACT_DNS_TIMEOUT_CONSECUTIVE_3"
+      - "FACT_WIFI_RSSI_GOOD"
+    forbidden_fact_tags:
+      - "CLAIM_PHYSICAL_LINK_DOWN"
+      - "CLAIM_GATEWAY_UNREACHABLE"
+    required_fact_tags:
+      - "FACT_DNS_SERVICE_BURST_TIMEOUT"
+
+  - id: "CASE_GATEWAY_UNREACHABLE_SUPPRESSES_DNS"
+    description: "网关探测失败导致底层断网，因果抑制高层派生症状 DNS 超时"
+    expected_diagnosis:
+      fault_domain: "IP_NETWORK"
+      primary_issue: "frequent_or_consecutive_probe_failures"
+      confidence: "HIGH"
+    expected_actions:
+      - "INSPECT_DEFAULT_GATEWAY"
+      - "RESTART_NETWORK_INTERFACE"
+    allowed_fact_tags:
+      - "FACT_GATEWAY_DOWN"
+    forbidden_fact_tags:
+      - "CLAIM_DNS_SERVER_CRASH"
+    required_fact_tags:
+      - "FACT_IP_ROUTING_FAILED"
+
+  - id: "CASE_MULTI_FAULT_DNS_AND_WIFI"
+    description: "Wi-Fi 弱信号与上游独立 DNS 故障并发共存，DNS 为主因，Wi-Fi 为次因，互不吞并"
+    expected_diagnosis:
+      fault_domain: "DNS_SERVICE"
+      primary_issue: "critical_burst_timeouts"
+      secondary_issues:
+        - "weak_signal_coverage"
+      confidence: "HIGH"
+    expected_actions:
+      - "CHECK_RESOLVER_CONFIG"
+      - "PROBE_PUBLIC_RESOLVER"
+    allowed_fact_tags:
+      - "FACT_GATEWAY_REACHABLE"
+      - "FACT_DNS_TIMEOUT_CONSECUTIVE_3"
+      - "FACT_WIFI_RSSI_POOR"
+    forbidden_fact_tags:
+      - "CLAIM_PHYSICAL_LINK_DOWN"
+      - "CLAIM_ISP_BACKBONE_DOWN"
+    required_fact_tags:
+      - "FACT_DNS_RESOLUTION_FAILURE"
