@@ -7,6 +7,7 @@
 #include "assurance/action_registry.hpp"
 #include "assurance/diagnosis_rules.hpp"
 #include "assurance/causal_resolver.hpp"
+#include "utils/json_escape.hpp"
 #include <string>
 #include <vector>
 #include <map>
@@ -41,26 +42,28 @@ struct DiagnosisFacts {
     std::string default_summary_template;
 
     std::string toJson() const {
+        using weaknet_utils::escapeJsonString;
         std::ostringstream oss;
-        oss << "{\"fault_domain\":\"" << fault_domain << "\","
-            << "\"primary_issue\":\"" << primary_issue << "\","
+        oss << "{\"fault_domain\":\"" << escapeJsonString(fault_domain) << "\","
+            << "\"primary_issue\":\"" << escapeJsonString(primary_issue) << "\","
             << "\"confidence\":\"" << (confidence == DiagnosisConfidence::HIGH ? "HIGH" : (confidence == DiagnosisConfidence::MEDIUM ? "MEDIUM" : "LOW")) << "\",";
 
         oss << "\"secondary_issues\":[";
         for (size_t i = 0; i < secondary_issues.size(); ++i) {
-            oss << "\"" << secondary_issues[i] << "\"" << (i + 1 < secondary_issues.size() ? "," : "");
+            oss << "\"" << escapeJsonString(secondary_issues[i]) << "\"" << (i + 1 < secondary_issues.size() ? "," : "");
         }
         oss << "],";
 
         oss << "\"evidence_refs\":[";
         for (size_t i = 0; i < evidence_refs.size(); ++i) {
-            oss << "\"" << evidence_refs[i] << "\"" << (i + 1 < evidence_refs.size() ? "," : "");
+            oss << "\"" << escapeJsonString(evidence_refs[i]) << "\"" << (i + 1 < evidence_refs.size() ? "," : "");
         }
         oss << "],";
 
         oss << "\"excluded_causes\":[";
         for (size_t i = 0; i < excluded_causes.size(); ++i) {
-            oss << "{\"cause\":\"" << excluded_causes[i].cause << "\",\"reason\":\"" << excluded_causes[i].reason << "\"}"
+            oss << "{\"cause\":\"" << escapeJsonString(excluded_causes[i].cause)
+                << "\",\"reason\":\"" << escapeJsonString(excluded_causes[i].reason) << "\"}"
                 << (i + 1 < excluded_causes.size() ? "," : "");
         }
         oss << "],";
@@ -68,16 +71,16 @@ struct DiagnosisFacts {
         oss << "\"actions\":[";
         for (size_t i = 0; i < actions.size(); ++i) {
             oss << "{\"priority\":" << actions[i].priority
-                << ",\"action_id\":\"" << actions[i].action_id << "\",\"params\":{";
+                << ",\"action_id\":\"" << escapeJsonString(actions[i].action_id) << "\",\"params\":{";
             size_t p_idx = 0;
             for (const auto& [k, v] : actions[i].params) {
-                oss << "\"" << k << "\":\"" << v << "\"" << (++p_idx < actions[i].params.size() ? "," : "");
+                oss << "\"" << escapeJsonString(k) << "\":\"" << escapeJsonString(v) << "\"" << (++p_idx < actions[i].params.size() ? "," : "");
             }
             oss << "}}" << (i + 1 < actions.size() ? "," : "");
         }
         oss << "],";
 
-        oss << "\"default_summary_template\":\"" << default_summary_template << "\"}";
+        oss << "\"default_summary_template\":\"" << escapeJsonString(default_summary_template) << "\"}";
         return oss.str();
     }
 };

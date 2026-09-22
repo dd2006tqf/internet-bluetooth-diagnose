@@ -217,8 +217,9 @@ std::vector<FlowRate> NetTrafficAnalyzer::sampleTopFlows(int intervalSec, int to
 	#if !HAVE_LIBBPF
 	    return out;
 	#else
-	    // 与内核态 BPF map key/val 布局一致的结构体
-	    struct conn_key { __u32 saddr, daddr; __u16 sport, dport; __u8 protocol; } key{}, next_key{};
+	    // 与内核态 BPF map key/val 布局一致的结构体（使用 packed 消除对齐 padding，保证 13 字节 ABI 精确匹配）
+	    struct __attribute__((packed)) conn_key { __u32 saddr, daddr; __u16 sport, dport; __u8 protocol; } key{}, next_key{};
+	    static_assert(sizeof(key) == 13, "conn_key must match kernel map key layout (13 bytes)");
 	    struct flow_data { __u64 bytes; __u64 packets; __u32 pid; } val{};
 
 	    // ========== 清空 map：确保采样窗口只包含新产生的流量 ==========

@@ -445,6 +445,50 @@ bool weaknet_get_coexistence_conflict(char* buffer, size_t buffer_size, char* er
 bool weaknet_get_network_experience(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
 
 /**
+ * @brief 查询端侧确定性机器诊断事实 JSON
+ *
+ * 通过 D-Bus 调用 GetDiagnosis 方法，返回当前快照经由 C++ DiagnosisEngine
+ * 权威判定出的 DiagnosisFacts（包含故障域、首要问题、置信度、因果证据引用、
+ * 排除原因及排查动作白名单）。
+ *
+ * D-Bus 调用：
+ *   - Method: GetDiagnosis
+ *   - Returns: STRING（DiagnosisFacts JSON）
+ *
+ * @param buffer       结果缓冲区
+ * @param buffer_size  缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size   错误缓冲区大小
+ * @return true  - 成功
+ * @return false - D-Bus 调用失败
+ */
+bool weaknet_get_diagnosis(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
+/**
+ * @brief 执行白名单安全排查动作
+ *
+ * 通过 D-Bus 调用 ExecuteAction 方法。服务端以 root 权限运行，通过
+ * ActionRegistry 严格校验动作白名单及强类型参数，以 posix_spawn 隔离安全执行。
+ *
+ * D-Bus 调用：
+ *   - Method: ExecuteAction
+ *   - Args: STRING action_id, STRING param_key, STRING param_val
+ *   - Returns: STRING（ExecutionResult JSON）
+ *
+ * @param action_id    动作标识符（如 "CHECK_RESOLVER_CONFIG"、"PROBE_PUBLIC_RESOLVER"）
+ * @param param_key    参数键（如 "resolver"，无参数传 NULL 或空字符串）
+ * @param param_val    参数值（如 "223.5.5.5"，无参数传 NULL 或空字符串）
+ * @param buffer       结果缓冲区（返回 JSON 执行结果）
+ * @param buffer_size  缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size   错误缓冲区大小
+ * @return true  - 成功接收执行结果
+ * @return false - 权限不足、参数非法或 D-Bus 调用失败
+ */
+bool weaknet_execute_action(const char* action_id, const char* param_key, const char* param_val,
+                            char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
+/**
  * @brief 订阅蓝牙设备变化事件
  *
  * 通过 D-Bus add_match 订阅 BluetoothDeviceChanged 信号。

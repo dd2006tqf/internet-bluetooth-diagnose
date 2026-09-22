@@ -75,9 +75,18 @@ TEST(ActionRegistryTest, StrongTypingAndNoShell) {
     // 验证 SafeExec 真实调用能力（例如执行 /bin/cat 查看 resolv.conf）
     auto cat_spec = reg.buildExecSpec("CHECK_RESOLVER_CONFIG", {});
     ASSERT_TRUE(cat_spec.has_value());
-    auto exec_res = ActionRegistry::safeExec(*cat_spec);
+    auto exec_res = ActionRegistry::safeExec(*cat_spec, 5);
     EXPECT_EQ(exec_res.exit_code, 0);
     EXPECT_FALSE(exec_res.stdout_output.empty());
+    EXPECT_FALSE(exec_res.timed_out);
+
+    // 验证 SafeExec 超时杀进程机制（执行 sleep 2 并设置 1 秒超时）
+    ExecSpec timeout_spec;
+    timeout_spec.executable = "/bin/sleep";
+    timeout_spec.argv = {"/bin/sleep", "2"};
+    auto timeout_res = ActionRegistry::safeExec(timeout_spec, 1);
+    EXPECT_TRUE(timeout_res.timed_out);
+    EXPECT_NE(timeout_res.error.find("timed out"), std::string::npos);
 }
 
 // 4. RuleLoader 环形抑制检测
@@ -225,4 +234,9 @@ TEST(DiagnosisEngineTest, Determinism10000Runs) {
         ASSERT_EQ(run.evidence_refs, baseline.evidence_refs);
         ASSERT_EQ(run.actions.size(), baseline.actions.size());
     }
+
+    // 验证 toJson 序列化包含转义且非空
+    std::string json = baseline.toJson();
+    EXPECT_NE(json.find("\"fault_domain\":\"DNS_SERVICE\""), std::string::npos);
+    EXPECT_NE(json.find("\"primary_issue\":\"critical_burst_timeouts\""), std::string::npos);
 }

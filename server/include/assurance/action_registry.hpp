@@ -9,6 +9,12 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <chrono>
+#include <cstring>
+#include <cerrno>
 
 extern char** environ;
 
@@ -152,8 +158,9 @@ public:
     /**
      * @brief 严格通过 posix_spawn / execve 数组直接调用外部命令
      * 绝不经过任何 shell，彻底消除 shell 元字符与命令注入隐患。
+     * 使用 poll() 并行异步读取 stdout 与 stderr 管道，避免死锁并实施超时强杀机制。
      */
-    static ExecutionResult safeExec(const ExecSpec& spec, int /*timeout_seconds*/ = 5) {
+    static ExecutionResult safeExec(const ExecSpec& spec, int timeout_seconds = 5) {
         ExecutionResult result;
         if (spec.executable.empty() || spec.argv.empty()) {
             result.error = "Executable or argv empty";
@@ -194,6 +201,7 @@ public:
         int ret = posix_spawn(&pid, spec.executable.c_str(), &actions, nullptr, c_argv.data(), ::environ);
         posix_spawn_file_actions_destroy(&actions);
 
+        // 父进程关闭写端
         close(out_pipe[1]);
         close(err_pipe[1]);
 
@@ -204,21 +212,79 @@ public:
             return result;
         }
 
-        // 读取管道输出
-        auto read_all = [](int fd) -> std::string {
-            std::string out;
-            char buf[512];
-            ssize_t n = 0;
-            while ((n = read(fd, buf, sizeof(buf))) > 0) {
-                out.append(buf, n);
+        // 将读端设置为非阻塞，防止 read() 阻塞
+        auto set_nonblocking = [](int fd) {
+            int flags = fcntl(fd, F_GETFL, 0);
+            if (flags >= 0) {
+                fcntl(fd, F_SETFL, flags | O_NONBLOCK);
             }
-            return out;
         };
+        set_nonblocking(out_pipe[0]);
+        set_nonblocking(err_pipe[0]);
 
-        result.stdout_output = read_all(out_pipe[0]);
-        result.stderr_output = read_all(err_pipe[0]);
-        close(out_pipe[0]);
-        close(err_pipe[0]);
+        struct pollfd pfd[2];
+        pfd[0].fd = out_pipe[0];
+        pfd[0].events = POLLIN;
+        pfd[1].fd = err_pipe[0];
+        pfd[1].events = POLLIN;
+
+        int open_fds = 2;
+        auto start_time = std::chrono::steady_clock::now();
+        const auto timeout_duration = std::chrono::seconds(std::max(1, timeout_seconds));
+
+        while (open_fds > 0) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start_time);
+            auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(timeout_duration);
+            int remaining_ms = static_cast<int>(total_ms.count() - elapsed.count());
+
+            if (remaining_ms <= 0) {
+                // 超时强制杀死子进程
+                kill(pid, SIGKILL);
+                result.timed_out = true;
+                result.error = "Execution timed out after " + std::to_string(timeout_seconds) + " seconds";
+                break;
+            }
+
+            int pr = poll(pfd, 2, std::min(remaining_ms, 200));
+            if (pr < 0) {
+                if (errno == EINTR) continue;
+                result.error = "poll failed: " + std::string(strerror(errno));
+                kill(pid, SIGKILL);
+                break;
+            }
+
+            // 读取 stdout
+            if (pfd[0].fd >= 0 && (pfd[0].revents & (POLLIN | POLLHUP | POLLERR))) {
+                char buf[512];
+                ssize_t n = 0;
+                while ((n = read(pfd[0].fd, buf, sizeof(buf))) > 0) {
+                    result.stdout_output.append(buf, n);
+                }
+                if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+                    close(pfd[0].fd);
+                    pfd[0].fd = -1;
+                    open_fds--;
+                }
+            }
+
+            // 读取 stderr
+            if (pfd[1].fd >= 0 && (pfd[1].revents & (POLLIN | POLLHUP | POLLERR))) {
+                char buf[512];
+                ssize_t n = 0;
+                while ((n = read(pfd[1].fd, buf, sizeof(buf))) > 0) {
+                    result.stderr_output.append(buf, n);
+                }
+                if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+                    close(pfd[1].fd);
+                    pfd[1].fd = -1;
+                    open_fds--;
+                }
+            }
+        }
+
+        if (pfd[0].fd >= 0) close(pfd[0].fd);
+        if (pfd[1].fd >= 0) close(pfd[1].fd);
 
         int status = 0;
         waitpid(pid, &status, 0);

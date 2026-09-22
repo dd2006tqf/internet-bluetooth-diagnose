@@ -524,10 +524,20 @@ bool DbusService::handleGetDiagnosis(DBusConnection* conn, DBusMessage* msg) {
             auto facts = ctx_->diagnosis_engine->diagnose(*snap, *ctx_->evidence_id_generator);
             reply_text = facts.toJson();
         } else {
-            reply_text = "{\"status\":\"no_assessment_snapshot_available\"}";
+            weaknet::DiagnosisFacts fallback;
+            fallback.fault_domain = "NONE";
+            fallback.primary_issue = "snapshot_not_ready";
+            fallback.confidence = weaknet::DiagnosisConfidence::LOW;
+            fallback.default_summary_template = "系统监控评估快照正在采集中，尚未生成，请稍候。";
+            reply_text = fallback.toJson();
         }
     } else {
-        reply_text = "{\"status\":\"diagnosis_engine_not_initialized\"}";
+        weaknet::DiagnosisFacts fallback;
+        fallback.fault_domain = "NONE";
+        fallback.primary_issue = "diagnosis_engine_not_initialized";
+        fallback.confidence = weaknet::DiagnosisConfidence::LOW;
+        fallback.default_summary_template = "端侧诊断引擎尚未初始化就绪。";
+        reply_text = fallback.toJson();
     }
 
     DBusMessage* reply = dbus_message_new_method_return(msg);
@@ -547,6 +557,30 @@ bool DbusService::handleGetDiagnosis(DBusConnection* conn, DBusMessage* msg) {
  */
 bool DbusService::handleExecuteAction(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleExecuteAction called");
+
+    // 严格安全防线：校验调用者 UID 必须为 root (UID 0)，防止非特权本地用户通过系统总线触发特权网络动作
+    const char* sender = dbus_message_get_sender(msg);
+    unsigned long caller_uid = 1000; // 默认普通用户
+    DBusError uid_err;
+    dbus_error_init(&uid_err);
+    if (sender) {
+        caller_uid = dbus_bus_get_unix_user(conn, sender, &uid_err);
+        if (dbus_error_is_set(&uid_err)) {
+            LOG_WARNING(LogModule::DBUS, "Failed to get caller UID: " << uid_err.message);
+            dbus_error_free(&uid_err);
+            caller_uid = 1000;
+        }
+    }
+    if (caller_uid != 0) {
+        LOG_ERROR(LogModule::DBUS, "ExecuteAction rejected: caller UID " << caller_uid << " != 0 (permission denied)");
+        DBusMessage* reply = dbus_message_new_error(msg, DBUS_ERROR_ACCESS_DENIED,
+            "Permission denied: only root (UID 0) is authorized to execute diagnostic actions");
+        if (reply) {
+            dbus_connection_send(conn, reply, nullptr);
+            dbus_message_unref(reply);
+        }
+        return false;
+    }
 
     DBusError err;
     dbus_error_init(&err);

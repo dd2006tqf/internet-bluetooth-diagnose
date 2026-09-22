@@ -784,6 +784,53 @@ public:
         return requestStringData(kMethodGetNetworkExperience, "网络体验评估", result, errorMsg);
     }
 
+    /** @brief 调用 GetDiagnosis 获取端侧确定性机器诊断事实 JSON */
+    bool getDiagnosis(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        return requestStringData(kMethodGetDiagnosis, "端侧确定性诊断事实", result, errorMsg);
+    }
+
+    /** @brief 调用 ExecuteAction 安全执行白名单排查动作 */
+    bool executeAction(const std::string& action_id, const std::string& param_key, const std::string& param_val,
+                       std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+
+        DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath, kInterface, kMethodExecuteAction);
+        if (!msg) return fail("创建 ExecuteAction 方法调用消息失败", errorMsg);
+
+        DBusMessageIter args;
+        dbus_message_iter_init_append(msg, &args);
+        const char* aid_cstr = action_id.c_str();
+        const char* pkey_cstr = param_key.c_str();
+        const char* pval_cstr = param_val.c_str();
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &aid_cstr);
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &pkey_cstr);
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &pval_cstr);
+
+        DBusError err;
+        dbus_error_init(&err);
+        // 执行命令预留 8 秒超时
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 8000, &err);
+        dbus_message_unref(msg);
+
+        if (dbus_error_is_set(&err)) {
+            errorMsg = "ExecuteAction 失败: " + std::string(err.message);
+            dbus_error_free(&err);
+            return false;
+        }
+        if (!reply) return fail("未收到 ExecuteAction 应答", errorMsg);
+
+        const char* val = nullptr;
+        if (dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &val, DBUS_TYPE_INVALID)) {
+            result = val ? val : "";
+            dbus_message_unref(reply);
+            return true;
+        }
+        errorMsg = "解析 ExecuteAction 应答失败";
+        dbus_message_unref(reply);
+        return false;
+    }
+
     /** @brief 调用 GetWifiLossStats 获取 Wi-Fi 丢包统计 */
     bool getWifiLossStats(std::string& result, std::string& errorMsg) {
         if (!isConnected()) return fail("客户端未连接", errorMsg);
@@ -1504,6 +1551,47 @@ extern "C" bool weaknet_get_network_experience(char* buffer, size_t buffer_size,
     }
     std::string result, errorMsg;
     if (weaknet_dbus::g_client->getNetworkExperience(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    } else {
+        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+        return false;
+    }
+}
+
+/** @brief C 接口包装：调用 GetDiagnosis 方法 */
+extern "C" bool weaknet_get_diagnosis(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getDiagnosis(result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    } else {
+        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+        return false;
+    }
+}
+
+/** @brief C 接口包装：调用 ExecuteAction 方法 */
+extern "C" bool weaknet_execute_action(const char* action_id, const char* param_key, const char* param_val,
+                                       char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    if (!action_id || strlen(action_id) == 0) {
+        snprintf(error_buffer, error_size, "action_id 不能为空");
+        return false;
+    }
+    std::string result, errorMsg;
+    std::string pkey = param_key ? param_key : "";
+    std::string pval = param_val ? param_val : "";
+    if (weaknet_dbus::g_client->executeAction(action_id, pkey, pval, result, errorMsg)) {
         snprintf(buffer, buffer_size, "%s", result.c_str());
         return true;
     } else {

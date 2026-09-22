@@ -246,6 +246,17 @@ def main():
     # Phase A：优先通过 D-Bus GetDiagnosis 提取后台 C++ DiagnosisEngine 实时计算出的权威事实
     facts = fetch_authoritative_diagnosis() if not args.mock else None
 
+    # 特殊状态处理：快照采集中尚未就绪
+    if facts and facts.primary_issue == "snapshot_not_ready":
+        print("=" * 70)
+        print(" [Machine Diagnosis - authoritative]")
+        print(" Fault Domain  : NONE")
+        print(" Status        : SNAPSHOT_NOT_READY")
+        print(f" Summary       : {facts.default_template}")
+        print(" Hint          : 诊断引擎正在采集首轮网络评估快照，请等待数秒后重试。")
+        print("=" * 70)
+        sys.exit(0)
+
     # 若未处于实机环境或指定了 mock，回退到标准用例基线
     if not facts:
         live_snap = extract_live_snapshot() if args.live else None
