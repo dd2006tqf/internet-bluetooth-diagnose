@@ -134,7 +134,7 @@ struct ServerContext {
     std::atomic<bool> iface_stop{false};
     std::atomic<bool> using_iface_stop{false};
     std::atomic<bool> rtt_stop{false};
-    std::atomic<bool> jitter_stop{false};
+    // jitter_stop 已废弃：jitter 作为 rtt 的衍生指标合并进 rtt_monitor
     std::atomic<bool> rssi_stop{false};
     std::atomic<bool> tcp_loss_stop{false};
     std::atomic<bool> traffic_stop{false};

@@ -1,6 +1,8 @@
 // test_jitter_monitor_gtest.cpp
-// Jitter Monitor tests (Google Test version)
-// Tests: JitterMonitor data structures and configuration
+// Jitter 指标测试（Google Test 版本）
+// 说明：jitter 监控器已合并进 rtt_monitor，本测试仅覆盖
+//   - NetInfo 的 jitter 字段与序列化（数据模型不变）
+//   - ResponsivenessEvaluator 对 jitter 样本的评估逻辑（assurance 层不变）
 
 #include <gtest/gtest.h>
 #include "net_info.hpp"

@@ -105,7 +105,7 @@ ci-reports/
 | test_net_iface_gtest | 网络接口检测 |
 | test_rtt_monitor_gtest | RTT 质量评估 |
 | test_bt_monitor_extra_gtest | 蓝牙数据结构 |
-| test_jitter_monitor_gtest | 抖动监控 |
+| test_jitter_monitor_gtest | 抖动指标（数据模型 + evaluator；监控器已合并进 rtt） |
 | test_dns_monitor_gtest | DNS 监控 |
 
 ### 功能测试

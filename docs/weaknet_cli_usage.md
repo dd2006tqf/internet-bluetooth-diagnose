@@ -95,8 +95,9 @@ $ weaknet-cli monitor restart rtt
 $ weaknet-cli monitor save
 ```
 
-依赖约束：`jitter` 依赖 `rtt`，`quality` 依赖 `rtt/jitter/rssi/tcp_loss/traffic`；
-停止仍被依赖的上游监控器会被拒绝，避免依赖方读取过期数据。
+依赖约束：`jitter` 已合并进 `rtt`（作为 RTT 采样的衍生指标在同一线程内计算）；
+`quality` 依赖 `rtt/rssi/tcp_loss/traffic` 等上游指标。停止仍被依赖的上游监控器会被拒绝，
+避免依赖方读取过期数据。
 
 
 ### 3.3 `weaknet-cli list`
@@ -106,7 +107,6 @@ $ weaknet-cli monitor save
 ```bash
 $ weaknet-cli list
 rtt
-jitter
 rssi
 tcp_loss
 traffic
@@ -133,19 +133,18 @@ all
 ```bash
 # 查询单个监控器
 $ weaknet-cli get rtt
-{"rtt":{"enabled":true,"target":"223.5.5.5","interval_ms":10000,"timeout_ms":800}}
+{"rtt":{"enabled":true,"target":"223.5.5.5","interval_ms":10000,"timeout_ms":800,"window_size":30}}
 
 # 查询全部监控器
 $ weaknet-cli get all
 {
   "server":{"data_dir":"/home/radxa/weaknet/data","log_level":"info"},
-  "rtt":{"enabled":true,"target":"223.5.5.5","interval_ms":10000,"timeout_ms":800},
-  "jitter":{"enabled":true,"target":"223.5.5.5","interval_ms":2000,"timeout_ms":800,"window_size":30},
+  "rtt":{"enabled":true,"target":"223.5.5.5","interval_ms":10000,"timeout_ms":800,"window_size":30},
   ...
 }
 ```
 
-**支持的监控器名**：`rtt` `jitter` `rssi` `tcp_loss` `traffic` `quality` `bluetooth` `dns` `wifi_loss` `http_latency` `process_profiler` `tcp_retrans` `tcp_conn` `server` `all`
+**支持的监控器名**：`rtt` `rssi` `tcp_loss` `traffic` `quality` `bluetooth` `dns` `wifi_loss` `http_latency` `process_profiler` `tcp_retrans` `tcp_conn` `server` `all`
 
 **输出字段说明**（以 `rtt` 为例）：
 
@@ -155,7 +154,7 @@ $ weaknet-cli get all
 | `target` | string | 探测目标 IP/域名 |
 | `interval_ms` | uint32 | 采样周期（毫秒） |
 | `timeout_ms` | uint32 | 单次超时（毫秒） |
-| `window_size` | uint32 | 滑动窗口大小（仅 jitter） |
+| `window_size` | uint32 | RTT 样本滑动窗口大小，用于在 rtt 线程内计算 Jitter |
 | `bpf_obj` | string | eBPF 对象路径（仅 eBPF 监控器） |
 
 ---
@@ -192,7 +191,7 @@ ok
 | `rtt` | `target` | string | IPv4 / 域名 | 探测目标 |
 | `rtt` | `interval_ms` | duration | `100ms` ~ `600000ms` | 采样周期，支持 `ms`/`s`/`m` 后缀 |
 | `rtt` | `timeout_ms` | duration | `100ms` ~ `60000ms` | 单次超时 |
-| `jitter` | `window_size` | uint | `2` ~ `1000` | 滑动窗口大小 |
+| `rtt` | `window_size` | uint | `2` ~ `1000` | RTT 滑动窗口大小（jitter 计算窗口） |
 | `rssi`/`tcp_loss`/... | `interval_ms` | duration | `1000ms` ~ `600000ms` | 采样周期 |
 | `bluetooth` | `interval_ms` | duration | `1000ms` ~ `60000ms` | 采样周期 |
 | `bluetooth` | `bpf_obj` | string | 路径 | Phase2 eBPF 对象路径 |
@@ -221,11 +220,8 @@ ok
 ### 4.1 调整采样频率（不重启）
 
 ```bash
-# RTT 默认 10s，改为 3 秒快速捕捉抖动
+# RTT 默认 10s，改为 3 秒高频采样（同一次采样同步刷新 Jitter）
 weaknet-cli set rtt.interval 3s
-
-# Jitter 默认 2s，改为 1 秒
-weaknet-cli set jitter.interval 1s
 
 # 恢复默认
 weaknet-cli set rtt.interval 10s
@@ -269,13 +265,11 @@ weaknet-cli get all | jq '.dns, .wifi_loss, .http_latency'
 
 HOUR=$(date +%H)
 if (( HOUR >= 9 && HOUR <= 18 )); then
-    # 工作时间：高频采样
+    # 工作时间：高频采样（jitter 由 rtt 同一次采样同步计算）
     weaknet-cli set rtt.interval 2s
-    weaknet-cli set jitter.interval 1s
 else
     # 非工作时间：低频省电
     weaknet-cli set rtt.interval 30s
-    weaknet-cli set jitter.interval 10s
 fi
 ```
 

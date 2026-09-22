@@ -81,3 +81,6 @@ server/test/reports/
 openspec/changes/*/harness/project-command-evidence/
 openspec/changes/*/harness/change-footprint.json
 ci-reports/
+
+# 个人知识库（本地维护，不提交）
+简历知识库.md

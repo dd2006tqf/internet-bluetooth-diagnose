@@ -66,8 +66,6 @@ TEST(WeakNetConfigTest, ValidFileParsesAllSections) {
         "    target: 8.8.8.8\n"
         "    interval: 5s\n"
         "    timeout: 500ms\n"
-        "  jitter:\n"
-        "    interval: 2s\n"
         "    window: 50\n"
         "  dns:\n"
         "    bpf_obj: /usr/lib/weaknet/dns_monitor.bpf.o\n",
@@ -79,8 +77,8 @@ TEST(WeakNetConfigTest, ValidFileParsesAllSections) {
     EXPECT_EQ(cfg.rtt.target.get(), "8.8.8.8");
     EXPECT_EQ(cfg.rtt.interval_ms.load(), 5000u);
     EXPECT_EQ(cfg.rtt.timeout_ms.load(), 500u);
-    EXPECT_EQ(cfg.jitter.interval_ms.load(), 2000u);
-    EXPECT_EQ(cfg.jitter.window_size.load(), 50u);
+    // jitter 已合并进 rtt：滑动窗口归 rtt 所有
+    EXPECT_EQ(cfg.rtt.window_size.load(), 50u);
     EXPECT_EQ(cfg.dns.bpf_obj.get(), "/usr/lib/weaknet/dns_monitor.bpf.o");
     // 未覆盖字段保持默认
     EXPECT_EQ(cfg.traffic.interval_ms.load(), 10000u);
@@ -95,13 +93,12 @@ TEST(WeakNetConfigTest, NewNsKeysParseAlias) {
         "  rtt:\n"
         "    interval_ms: 7000\n"
         "    timeout_ms: 900\n"
-        "  jitter:\n"
         "    window_size: 20\n",
         &cfg);
     EXPECT_TRUE(ok);
     EXPECT_EQ(cfg.rtt.interval_ms.load(), 7000u);
     EXPECT_EQ(cfg.rtt.timeout_ms.load(), 900u);
-    EXPECT_EQ(cfg.jitter.window_size.load(), 20u);
+    EXPECT_EQ(cfg.rtt.window_size.load(), 20u);
 }
 
 // setMonitorParam 新旧命名空间均可设置
@@ -112,8 +109,8 @@ TEST(WeakNetConfigTest, SetMonitorParamNsAlias) {
     EXPECT_EQ(cfg.rtt.interval_ms.load(), 5000u);
     EXPECT_TRUE(setMonitorParam(&cfg, "rtt.interval", "3s", &err));
     EXPECT_EQ(cfg.rtt.interval_ms.load(), 3000u);
-    EXPECT_TRUE(setMonitorParam(&cfg, "jitter.window_size", "40", &err));
-    EXPECT_EQ(cfg.jitter.window_size.load(), 40u);
+    EXPECT_TRUE(setMonitorParam(&cfg, "rtt.window_size", "40", &err));
+    EXPECT_EQ(cfg.rtt.window_size.load(), 40u);
 }
 
 // 时长后缀解析：裸整数=ms、s、m
@@ -123,12 +120,12 @@ TEST(WeakNetConfigTest, DurationSuffixParsing) {
         "monitors:\n"
         "  rtt:\n"
         "    interval: 700\n"
-        "  jitter:\n"
+        "  traffic:\n"
         "    interval: 2m\n",
         &cfg);
     EXPECT_TRUE(ok);
     EXPECT_EQ(cfg.rtt.interval_ms.load(), 700u);
-    EXPECT_EQ(cfg.jitter.interval_ms.load(), 120000u);
+    EXPECT_EQ(cfg.traffic.interval_ms.load(), 120000u);
 }
 
 // 注释（整行 + 行内）
@@ -243,8 +240,8 @@ TEST(WeakNetConfigTest, SetMonitorParamValidRange) {
     EXPECT_EQ(cfg.rtt.target.get(), "1.1.1.1");
     EXPECT_TRUE(setMonitorParam(&cfg, "rtt.enabled", "false", &err));
     EXPECT_FALSE(cfg.rtt.enabled.load());
-    EXPECT_TRUE(setMonitorParam(&cfg, "jitter.window", "100", &err));
-    EXPECT_EQ(cfg.jitter.window_size.load(), 100u);
+    EXPECT_TRUE(setMonitorParam(&cfg, "rtt.window", "100", &err));
+    EXPECT_EQ(cfg.rtt.window_size.load(), 100u);
     EXPECT_TRUE(setMonitorParam(&cfg, "dns.bpf_obj", "/lib/dns.bpf.o", &err));
     EXPECT_EQ(cfg.dns.bpf_obj.get(), "/lib/dns.bpf.o");
 }
@@ -263,7 +260,7 @@ TEST(WeakNetConfigTest, SetMonitorParamRejectsBad) {
 
     // 区间过小
     EXPECT_FALSE(setMonitorParam(&cfg, "rtt.interval", "50ms", &err));
-    EXPECT_FALSE(setMonitorParam(&cfg, "jitter.window", "1", &err));
+    EXPECT_FALSE(setMonitorParam(&cfg, "rtt.window", "1", &err));
 
     // 非 enabled 的 bool 字段不接受 random
     EXPECT_FALSE(setMonitorParam(&cfg, "rtt.enabled", "maybe", &err));

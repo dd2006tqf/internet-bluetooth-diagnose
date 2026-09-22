@@ -164,18 +164,12 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "target") { cfg->rtt.target.set(trim(val)); return true; }
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->rtt.interval_ms, val, error);
         if (field == "timeout" || field == "timeout_ms") return setDurationField(cfg->rtt.timeout_ms, val, error);
+        if (field == "window" || field == "window_size") return setDurationField(cfg->rtt.window_size, val, error);
         *error = "rtt: unknown field '" + field + "'";
         return false;
     }
-    if (mon == "jitter") {
-        if (field == "enabled") return setBoolField(cfg->jitter.enabled, val, error);
-        if (field == "target") { cfg->jitter.target.set(trim(val)); return true; }
-        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->jitter.interval_ms, val, error);
-        if (field == "timeout" || field == "timeout_ms") return setDurationField(cfg->jitter.timeout_ms, val, error);
-        if (field == "window" || field == "window_size") return setDurationField(cfg->jitter.window_size, val, error);
-        *error = "jitter: unknown field '" + field + "'";
-        return false;
-    }
+    // jitter 已合并进 rtt：作为 RTT 的衍生指标在同一次 ping 采样上计算，
+    // 不再是独立监控项；配置迁移到 rtt.window_size。此处返回未知监控器。
     if (mon == "rssi") {
         if (field == "enabled") return setBoolField(cfg->rssi.enabled, val, error);
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->rssi.interval_ms, val, error);
@@ -492,7 +486,6 @@ bool getMonitorEnabled(const WeakNetConfig& cfg, const std::string& monitor, boo
     if (!enabled) return false;
     if (monitor == "iface" || monitor == "using_iface") *enabled = true;
     else if (monitor == "rtt") *enabled = cfg.rtt.enabled.load();
-    else if (monitor == "jitter") *enabled = cfg.jitter.enabled.load();
     else if (monitor == "rssi") *enabled = cfg.rssi.enabled.load();
     else if (monitor == "tcp_loss") *enabled = cfg.tcp_loss.enabled.load();
     else if (monitor == "traffic") *enabled = cfg.traffic.enabled.load();
@@ -515,7 +508,6 @@ bool setMonitorEnabled(WeakNetConfig* cfg, const std::string& monitor, bool enab
     if (!cfg) return false;
     if (monitor == "iface" || monitor == "using_iface") return true;
     if (monitor == "rtt") cfg->rtt.enabled.store(enabled);
-    else if (monitor == "jitter") cfg->jitter.enabled.store(enabled);
     else if (monitor == "rssi") cfg->rssi.enabled.store(enabled);
     else if (monitor == "tcp_loss") cfg->tcp_loss.enabled.store(enabled);
     else if (monitor == "traffic") cfg->traffic.enabled.store(enabled);
@@ -549,14 +541,10 @@ bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
         if (field == "target") { if (!isValidIPv4(trim(value))) { if (error) *error = "rtt.target: invalid IPv4"; return false; } cfg->rtt.target.set(trim(value)); return true; }
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 600000)) { if (error) *error = "rtt.interval: must be 100ms~600000ms"; return false; } cfg->rtt.interval_ms.store(ms); return true; }
         if (field == "timeout" || field == "timeout_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 60000)) { if (error) *error = "rtt.timeout: must be 100ms~60000ms"; return false; } cfg->rtt.timeout_ms.store(ms); return true; }
+        if (field == "window" || field == "window_size") { uint32_t w; if (!parseUint(value, &w) || !checkRange(w, 2, 1000)) { if (error) *error = "rtt.window_size: must be 2~1000"; return false; } cfg->rtt.window_size.store(w); return true; }
     }
-    if (mon == "jitter") {
-        if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "jitter.enabled: invalid bool"; return false; } cfg->jitter.enabled.store(b); return true; }
-        if (field == "target") { if (!isValidIPv4(trim(value))) { if (error) *error = "jitter.target: invalid IPv4"; return false; } cfg->jitter.target.set(trim(value)); return true; }
-        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 600000)) { if (error) *error = "jitter.interval: must be 100ms~600000ms"; return false; } cfg->jitter.interval_ms.store(ms); return true; }
-        if (field == "timeout" || field == "timeout_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 60000)) { if (error) *error = "jitter.timeout: must be 100ms~60000ms"; return false; } cfg->jitter.timeout_ms.store(ms); return true; }
-        if (field == "window" || field == "window_size") { uint32_t w; if (!parseUint(value, &w) || !checkRange(w, 2, 1000)) { if (error) *error = "jitter.window: must be 2~1000"; return false; } cfg->jitter.window_size.store(w); return true; }
-    }
+    // jitter 已合并进 rtt：抖动不再作为独立监控项下发参数，
+    // 调参入口改为 rtt.window_size / rtt.interval_ms 等。
     if (mon == "rssi") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "rssi.enabled: invalid bool"; return false; } cfg->rssi.enabled.store(b); return true; }
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "rssi.interval: must be 1000ms~600000ms"; return false; } cfg->rssi.interval_ms.store(ms); return true; }
@@ -705,8 +693,7 @@ bool isTrialableKeyImpl(const std::string& key) {
     // 不放 active_probe.*（探测目标变更可能让探针失联）
     static const std::set<std::string> trialable = {
         "rtt.interval_ms", "rtt.interval", "rtt.timeout_ms", "rtt.timeout", "rtt.target",
-        "jitter.interval_ms", "jitter.interval", "jitter.timeout_ms", "jitter.timeout",
-        "jitter.window_size", "jitter.window", "jitter.target",
+        "rtt.window_size", "rtt.window",
         "rssi.interval_ms", "rssi.interval",
         "tcp_loss.interval_ms", "tcp_loss.interval",
         "traffic.interval_ms", "traffic.interval",
@@ -739,13 +726,9 @@ bool snapshotMonitorParamImpl(const WeakNetConfig& cfg, const std::string& key,
         if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.rtt.interval_ms.load()); return true; }
         if (field == "timeout" || field == "timeout_ms") { *value_out = to_str_u32(cfg.rtt.timeout_ms.load()); return true; }
         if (field == "target") { *value_out = cfg.rtt.target.get(); return true; }
+        if (field == "window" || field == "window_size") { *value_out = to_str_u32(cfg.rtt.window_size.load()); return true; }
     }
-    if (mon == "jitter") {
-        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.jitter.interval_ms.load()); return true; }
-        if (field == "timeout" || field == "timeout_ms") { *value_out = to_str_u32(cfg.jitter.timeout_ms.load()); return true; }
-        if (field == "window" || field == "window_size") { *value_out = to_str_u32(cfg.jitter.window_size.load()); return true; }
-        if (field == "target") { *value_out = cfg.jitter.target.get(); return true; }
-    }
+    // jitter 已合并进 rtt：不再作为独立监控项提供快照
     if (mon == "rssi") {
         if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.rssi.interval_ms.load()); return true; }
     }
@@ -1001,7 +984,7 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
                                  std::string* error) {
     // 未知 monitor 直接报错（支持 "all" + 13 个监控器 + "server" + "edge"）
     static const std::set<std::string> valid = {
-        "all", "server", "rtt", "jitter", "rssi", "tcp_loss", "traffic", "quality",
+        "all", "server", "rtt", "rssi", "tcp_loss", "traffic", "quality",
         "bluetooth", "dns", "wifi_loss", "http_latency", "process_profiler",
         "tcp_retrans", "tcp_conn", "skb_drop", "tcp_connect", "active_probe", "edge"
     };
@@ -1035,15 +1018,7 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeString("target", cfg.rtt.target.get());
         writeUint("interval_ms", cfg.rtt.interval_ms.load());
         writeUint("timeout_ms", cfg.rtt.timeout_ms.load());
-        json.seekp(-1, std::ios_base::cur); json << "},";
-    }
-    if (monitor == "all" || monitor == "jitter") {
-        json << "\"jitter\":{";
-        writeBool("enabled", cfg.jitter.enabled.load());
-        writeString("target", cfg.jitter.target.get());
-        writeUint("interval_ms", cfg.jitter.interval_ms.load());
-        writeUint("timeout_ms", cfg.jitter.timeout_ms.load());
-        writeUint("window_size", cfg.jitter.window_size.load());
+        writeUint("window_size", cfg.rtt.window_size.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "rssi") {

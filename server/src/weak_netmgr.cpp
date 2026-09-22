@@ -6,7 +6,7 @@
  *   - 从 NetInterfaceManager 获取系统 Internet 接口列表
  *   - 使用 UsingInterfaceManager 标记"当前上网接口"（唯一事实源）
  *   - 为每个接口填充 RTT（通过 NetPing 主动探测）、Wi-Fi RSSI（通过 wpa_supplicant ctrl socket）、
- *     TCP 丢包率（内核 tcp_retransmit_monitor）、抖动（jitter_monitor）、流量统计（TrafficAnalyzer）
+ *     TCP 丢包率（内核 tcp_retransmit_monitor）、抖动（rtt_monitor 衍生）、流量统计（TrafficAnalyzer）
  *   - 线程安全：所有对 current_interfaces_ 的读写通过 std::mutex 保护（*Safe 系列方法）
  *
  * 依赖的外部接口：
@@ -406,6 +406,46 @@ bool WeakNetMgr::updateRttAndStateSafe(const std::string& host, int timeoutMs) {
             } else {
                 metrics_registry_->publish(item.first, weaknet::MetricId::REACHABILITY_SUCCESS, weaknet::MetricSample::valid(0.0));
             }
+        }
+    }
+    return result;
+}
+
+bool WeakNetMgr::updateRttAndStateForIfaceSafe(const std::string& iface_name, int rtt_ms) {
+    LOG_DEBUG(LogModule::WEAK_MGR, "updateRttAndStateForIfaceSafe: acquiring lock, iface=" << iface_name << " rtt=" << rtt_ms);
+    bool result = false;
+    int rtt_for_publish = rtt_ms;
+    {
+        std::lock_guard<std::mutex> lock(iface_mutex_);
+        for (auto& x : current_interfaces_) {
+            if (x.ifName() != iface_name) continue;
+            int prev = x.rttMs();
+            const bool rttChanged = x.rttMs() != rtt_ms;
+            x.setPrevRttMs(prev);
+            x.setRttMs(rtt_ms);
+            if (rttChanged) { result = true; }
+            x.setRttSampleTsMs(metricTimestampMs());
+            LinkQuality q = classifyQualityFromRtt(rtt_ms, prev);
+            if (x.quality() != q) { x.setQuality(q); result = true; }
+            NetState ns = (rtt_ms >= 0) ? NetState::Up : NetState::Down;
+            if (x.state() != ns) { x.setState(ns); result = true; }
+            if (result) {
+                ++snapshot_generation_;
+                const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                x.markMetricUpdated(snapshot_generation_, now);
+            }
+            break;
+        }
+    }
+
+    // MR-2 铁律：必须在释放 iface_mutex_ 后再向 MetricsRegistry 发布
+    if (metrics_registry_) {
+        if (rtt_for_publish >= 0) {
+            metrics_registry_->publish(iface_name, weaknet::MetricId::RTT_MS, weaknet::MetricSample::valid(rtt_for_publish));
+            metrics_registry_->publish(iface_name, weaknet::MetricId::REACHABILITY_SUCCESS, weaknet::MetricSample::valid(1.0));
+        } else {
+            metrics_registry_->publish(iface_name, weaknet::MetricId::REACHABILITY_SUCCESS, weaknet::MetricSample::valid(0.0));
         }
     }
     return result;

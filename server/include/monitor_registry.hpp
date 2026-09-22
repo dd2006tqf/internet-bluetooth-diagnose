@@ -46,7 +46,8 @@ std::vector<std::unique_ptr<IMonitorPlugin>> instantiateAllPlugins();
 
 // ---- 内置插件注册入口（server.cpp 启动前调用） ----
 
-/// 注册 9 个传统监控器插件（iface/using_iface/rtt/jitter/rssi/tcp_loss/traffic/quality/bluetooth）
+/// 注册 8 个传统监控器插件（iface/using_iface/rtt/rssi/tcp_loss/traffic/quality/bluetooth）
+/// 注：jitter 已合并进 rtt（同一次 ping 采样上计算滑动窗口标准差），不再是独立插件。
 void registerBuiltinPlugins();
 
 /// 注册 6 个 eBPF 监控器插件（dns/wifi_loss/http_latency/process_profiler/tcp_retrans/tcp_conn）

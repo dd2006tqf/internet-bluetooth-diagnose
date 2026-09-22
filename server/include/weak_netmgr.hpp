@@ -159,6 +159,19 @@ public:
     uint64_t snapshotGeneration() const { return snapshot_generation_; }
 
     bool updateRttAndStateSafe(const std::string& host, int timeoutMs = 800);
+    /**
+     * @brief 用**已测得**的 RTT 值更新指定接口（不发 ping，纯数据写回）
+     *
+     * 供 rtt_monitor 在自行 ping 完拿到样本后调用：
+     *   - 更新 NetInfo::rttMs / prevRttMs / rttSampleTsMs / quality / state
+     *   - 向 MetricsRegistry 发布 RTT_MS 与 REACHABILITY_SUCCESS
+     *   - 推进 snapshot_generation_
+     *
+     * @param iface_name 目标接口名
+     * @param rtt_ms     已测得的 RTT（ms），负值表示超时/失败
+     * @return true 有任何字段发生变化
+     */
+    bool updateRttAndStateForIfaceSafe(const std::string& iface_name, int rtt_ms);
     bool markMetricUnavailable(const std::string& metric);
     bool updateWifiRssiSafe(const std::string& ctrlDir = "");
     bool updateTcpLossRateSafe(const std::string& iface_name, double loss_rate, const std::string& loss_level);

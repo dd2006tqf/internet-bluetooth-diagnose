@@ -61,15 +61,13 @@ struct WeakNetConfig {
         ConfigString target{"223.5.5.5"};
         std::atomic<uint32_t> interval_ms{10000};
         std::atomic<uint32_t> timeout_ms{800};
+        /// RTT 样本滑动窗口大小（样本数），用于在 rtt 监控线程内计算 Jitter。
+        /// <=0 表示不启用抖动统计；原独立 jitter_monitor 已合并进 rtt_monitor。
+        std::atomic<uint32_t> window_size{30};
     } rtt;
 
-    struct {
-        std::atomic<bool> enabled{true};
-        ConfigString target{"223.5.5.5"};
-        std::atomic<uint32_t> interval_ms{2000};
-        std::atomic<uint32_t> timeout_ms{800};
-        std::atomic<uint32_t> window_size{30};
-    } jitter;
+    // 抖动（Jitter）不再是独立监控项：作为 RTT 的衍生指标，
+    // 由 rtt_monitor 在同一次 ping 采样上直接计算滑动窗口标准差。
 
     struct {
         std::atomic<bool> enabled{true};

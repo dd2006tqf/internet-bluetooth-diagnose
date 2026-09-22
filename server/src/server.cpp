@@ -45,7 +45,6 @@
 #include "rtt_monitor.hpp"
 #include "rssi_monitor.hpp"
 #include "tcp_loss_monitor.hpp"
-#include "jitter_monitor.hpp"
 #include "event_manager.hpp"
 #include "logger.hpp"
 #include "network_quality_result.hpp"

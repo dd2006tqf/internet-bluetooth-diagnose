@@ -20,7 +20,6 @@
 #include "weak_netmgr.hpp"
 #include "bt_monitor.hpp"
 #include "rtt_monitor.hpp"
-#include "jitter_monitor.hpp"
 #include "rssi_monitor.hpp"
 #include "tcp_loss_monitor.hpp"
 
@@ -71,7 +70,7 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// RTT 延迟监控（order 10）
+// RTT 延迟 + 抖动监控（order 10；jitter 已合并为本插件的派生指标）
 // ---------------------------------------------------------------------------
 class RttPlugin : public IMonitorPlugin {
     ServerContext* ctx_ = nullptr;
@@ -89,46 +88,19 @@ public:
         start_rtt_monitor_thread(ctx, &worker_,
             ctx->cfg.rtt.target.get(),
             ctx->cfg.rtt.interval_ms.load(),
-            ctx->cfg.rtt.timeout_ms.load());
+            ctx->cfg.rtt.timeout_ms.load(),
+            ctx->cfg.rtt.window_size.load());
         return true;
     }
     void stop() override {
         if (!ctx_) return;
         ctx_->rtt_stop.store(true);
         if (worker_.joinable()) worker_.join();
-        if (ctx_->weak_mgr) ctx_->weak_mgr->markMetricUnavailable("rtt");
-    }
-};
-
-// ---------------------------------------------------------------------------
-// Jitter 抖动监控（order 10）
-// ---------------------------------------------------------------------------
-class JitterPlugin : public IMonitorPlugin {
-    ServerContext* ctx_ = nullptr;
-    std::thread worker_;
-public:
-    const char* name() const override { return "jitter"; }
-    int order() const override { return 10; }
-    std::vector<std::string> dependencies() const override { return {"rtt"}; }
-    bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
-    bool start(ServerContext* ctx) override {
-        if (!ctx->cfg.jitter.enabled.load()) {
-            LOG_INFO(LogModule::NETWORK, "Jitter monitor disabled by config");
-            return true;
+        if (ctx_->weak_mgr) {
+            ctx_->weak_mgr->markMetricUnavailable("rtt");
+            // jitter 作为 rtt 的衍生指标同生命周期：rtt 停则 jitter 数据不可用
+            ctx_->weak_mgr->markMetricUnavailable("jitter");
         }
-        ctx->jitter_stop.store(false);
-        start_jitter_monitor_thread(ctx, &worker_,
-            ctx->cfg.jitter.target.get(),
-            ctx->cfg.jitter.interval_ms.load(),
-            ctx->cfg.jitter.timeout_ms.load(),
-            ctx->cfg.jitter.window_size.load());
-        return true;
-    }
-    void stop() override {
-        if (!ctx_) return;
-        ctx_->jitter_stop.store(true);
-        if (worker_.joinable()) worker_.join();
-        if (ctx_->weak_mgr) ctx_->weak_mgr->markMetricUnavailable("jitter");
     }
 };
 
@@ -282,7 +254,8 @@ void registerBuiltinPlugins() {
     registerPlugin("iface",        [] { return std::make_unique<IfacePlugin>(); });
     registerPlugin("using_iface",  [] { return std::make_unique<UsingIfacePlugin>(); });
     registerPlugin("rtt",          [] { return std::make_unique<RttPlugin>(); });
-    registerPlugin("jitter",       [] { return std::make_unique<JitterPlugin>(); });
+    // jitter 已合并进 rtt：作为 rtt 监控线程内的衍生指标计算，
+    // 不再是独立插件（原 dependencies()={"rtt"} 的显式依赖关系随之消解）
     registerPlugin("rssi",         [] { return std::make_unique<RssiPlugin>(); });
     registerPlugin("tcp_loss",     [] { return std::make_unique<TcpLossPlugin>(); });
     registerPlugin("traffic",      [] { return std::make_unique<TrafficPlugin>(); });

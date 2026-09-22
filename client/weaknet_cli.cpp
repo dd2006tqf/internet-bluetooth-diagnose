@@ -33,7 +33,7 @@ static void printUsage(const char* prog) {
         "  %s monitor enable|disable|restart <name>\n"
         "  %s monitor save                # 保存运行时启停状态\n"
         "\n"
-        "监控器名：rtt, jitter, rssi, tcp_loss, traffic, quality,\n"
+        "监控器名：rtt, rssi, tcp_loss, traffic, quality,\n"
         "        bluetooth, dns, wifi_loss, http_latency, process_profiler,\n"
         "        tcp_retrans, tcp_conn, server, all\n"
         "\n"
@@ -144,7 +144,7 @@ int main(int argc, char** argv) {
             return 1;
         }
     } else if (strcmp(cmd, "list") == 0) {
-        printf("rtt\njitter\nrssi\ntcp_loss\ntraffic\nquality\n"
+        printf("rtt\nrssi\ntcp_loss\ntraffic\nquality\n"
                "bluetooth\ndns\nwifi_loss\nhttp_latency\nprocess_profiler\n"
                "tcp_retrans\ntcp_conn\nserver\nall\n");
         ok = true;
