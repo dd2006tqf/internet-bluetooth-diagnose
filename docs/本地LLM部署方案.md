@@ -238,9 +238,9 @@ file "$LLAMA_SRC/build/bin/llama-server"
 | `LLAMA_CURL=OFF` | 关闭 | 开发板不需要从 HF 下载模型 |
 | `-j2` | 2 线程 | QEMU 模拟下高并行度会崩溃 |
 
-### 3.4 步骤 3：扩展 dev-deploy.sh 增加 LLM 产物
+### 3.4 步骤 3：扩展部署脚本增加 LLM 产物
 
-在你的部署脚本（当前在 `tools/dev-deploy.sh`）中追加 llama.cpp 的同步逻辑，使其成为统一部署流程的一部分。或者采用更简洁的方式——**单独写 LLM 部署脚本**，保持职责分离：
+在部署脚本（当前唯一入口是 `tools/ci.sh`，见 CLAUDE.md 快速操作指南）中追加 llama.cpp 的同步逻辑，使其成为统一部署流程的一部分。或者采用更简洁的方式——**单独写 LLM 部署脚本**，保持职责分离：
 
 新建 `scripts/deploy_llm_to_board.sh`：
 

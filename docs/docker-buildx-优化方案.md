@@ -52,7 +52,7 @@ CentOS host 的 aarch64-linux-gnu-g++ 与 Debian 11 sysroot ABI 不兼容，链�
 ### 中期
 1. 租用一台 ARM64 云服务器（如 AWS Graviton、阿里云 ARM）
 2. 配置 Docker Buildx remote builder
-3. 修改 `deploy_and_test.sh` 支持远程编译
+3. 修改 `tools/ci.sh` 的 `CONTAINER` 指向以支持远程编译
 
 ### 长期
 1. 购买专用 ARM64 编译服务器

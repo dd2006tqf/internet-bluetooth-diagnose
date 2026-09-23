@@ -524,8 +524,8 @@ Skills 是来自 [superpowers](https://github.com/obra/superpowers) 框架的技
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
 | "编译一下" / "build" | `cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build-x86 -j$(nproc)` | x86 本地快速编译 |
-| "容器内编译" / "ARM64 编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-x86 -j1'` | 需要 ~10 分钟（QEMU 模拟） |
-| "编译 eBPF" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake --build build-x86 --target ebpf -j1'` | 单独编译 eBPF 程序 |
+| "容器内编译" / "ARM64 编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-arm64 -j1'` | 需要 ~10 分钟（QEMU 模拟） |
+| "编译 eBPF" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake --build build-arm64 --target ebpf -j1'` | 单独编译 eBPF 程序 |
 
 ### 4.2 测试
 

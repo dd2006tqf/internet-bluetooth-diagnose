@@ -76,7 +76,9 @@
 
 1. **PARTIAL 事件噪声**：capture 无法关联 fd→resolver endpoint（sys_enter_sendmsg 时 connect 细节不可见），query 与 response 均以 TxID-only PARTIAL 匹配。tracker_query_accepted 远大于真实 DNS query 数（recvmsg 方向的其他 UDP 流量也计入），failure_ratio 被稀释/抬高，DNS 判定偏保守（持续 BAD）。改进方向：connect/sendto fd→endpoint 关联表、按 payload_len/QR 位过滤、方向归一化强化
 2. emit_fail/lost：perf buffer 8 页在高频下不足，建议调至 64+ 页并评估 wakeup
-3. GetNetworkExperience 独立 D-Bus 方法（toExperienceJsonV2 已备好）尚未暴露
+3. ~~GetNetworkExperience 独立 D-Bus 方法（toExperienceJsonV2 已备好）尚未暴露~~
+   **已完成**：`kMethodGetNetworkExperience` 已注册（`dbus_service.cpp`）并实现，
+   返回 schema v2 权威快照（只读、不重新 evaluate）。
 4. NetworkQualityChanged DNS 跃迁 exactly-once 未单独验证
 5. DNS_BAD 稳定态下 SR-9 突发语义与 failure_ratio 路径的真机区分度需在 1 修复后复测
 6. NXDOMAIN 语义（域名不存在 ≠ DNS 服务失败）已由 capture→Tracker 正确分类，SLE 语义待 1 修复后调阈值验证
@@ -124,11 +126,14 @@ x86 CTest：28/28 通过
 
 ## 四、部署速查
 
+> 用 mDNS 主机名而非 IPv4（见 CLAUDE.md「开发板 SSH 连接约定」）：热点重连后
+> DHCP 地址会变，硬编码地址下次就会失效。
+
 ```bash
 docker exec weaknet-arm64-dev bash -c 'cd /src && cmake --build build-arm64 --target weaknet-dbus-server history_query_tool ebpf -j1'
-rsync -az -e ssh build-arm64/server/weaknet-dbus-server build-arm64/server/history_query_tool radxa@192.168.137.210:/home/radxa/weaknet/server/bin/
-rsync -az -e ssh build-arm64/server/build/dns_monitor.bpf.o radxa@192.168.137.210:/home/radxa/weaknet/server/build/
-ssh radxa@192.168.137.210 'sudo systemctl restart weaknet-server'
+rsync -az -e ssh build-arm64/server/weaknet-dbus-server build-arm64/server/history_query_tool radxa@radxa-cubie-a7a.local:/home/radxa/weaknet/server/bin/
+rsync -az -e ssh build-arm64/server/build/dns_monitor.bpf.o radxa@radxa-cubie-a7a.local:/home/radxa/weaknet/server/build/
+ssh radxa@radxa-cubie-a7a.local 'sudo systemctl restart weaknet-server'
 # 诊断
-ssh radxa@192.168.137.210 'sudo journalctl -u weaknet-server | grep "dns-capture diag" | tail -1'
+ssh radxa@radxa-cubie-a7a.local 'sudo journalctl -u weaknet-server | grep "dns-capture diag" | tail -1'
 ```

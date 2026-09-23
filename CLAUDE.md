@@ -244,7 +244,6 @@
 | "归档后部署" | `./tools/ci.sh --commit` | git commit + push + 编译 + 部署 + 测试 |
 | "只编译不部署" | `./tools/ci.sh --local-only` | ARM64 编译 + 打包，不 rsync |
 | "部署但不测试" | `./tools/ci.sh --skip-test` | 跳过开发板测试 |
-| "用旧 Makefile 部署" | `BUILD_SYSTEM=make ./tools/ci.sh` | 兼容旧 Makefile 流程 |
 
 ### ARM64 编译
 

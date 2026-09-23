@@ -1,6 +1,9 @@
 # 演进一/演进二 实施计划 — 因果防线契约化 + 边端配置事务看门狗
 
 > 由 Plan 代理产出并经用户确认。本文档是 Planner 阶段的工作底稿，进入 OpenSpec 流程后由 Planner 角色转为正式 proposal/design/specs。
+>
+> **状态：本文档所述演进一/演进二已实施完毕**（提交 `01cbf42`）。保留作为规划决策记录。
+> ⚠️ 注意：文中「Trialable 白名单」列出的 `jitter.interval_ms` 已失效 —— 原独立 `jitter_monitor` 后续被裁撤，Jitter 改为 RTT 的衍生指标，配置键迁移为 `rtt.window_size`。以 `server/src/weaknet_config.cpp` 的白名单为准。
 
 ## 决策记录（用户已确认）
 

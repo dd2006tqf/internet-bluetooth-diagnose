@@ -307,8 +307,8 @@ fi
 ### 6.2 开发机调试（连开发板 D-Bus）
 
 ```bash
-# 开发机通过 SSH 隧道连接开发板 D-Bus
-ssh -L 9999:localhost:9999 radxa@192.168.137.210 \
+# 开发机通过 SSH 隧道连接开发板 D-Bus（用 mDNS 主机名，勿硬编码 DHCP 地址）
+ssh -L 9999:localhost:9999 radxa@radxa-cubie-a7a.local \
   'sudo dbus-daemon --system --address=unix:path=/run/dbus/system_bus_socket --nofork --print-address' &
 
 # 本地 weaknet_cli 指向隧道

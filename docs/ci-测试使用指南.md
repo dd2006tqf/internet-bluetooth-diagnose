@@ -18,7 +18,7 @@
 1. 在 ARM64 容器内编译（ccache 加速）
 2. 打包部署目录（dist-arm64/）
 3. rsync 部署到开发板
-4. 远程运行 19 个 Google Test 单元测试套件
+4. 远程运行 40 个 Google Test 单元测试套件
 5. 远程运行功能测试（health/get/eBPF/指标）
 6. 生成报告到 `ci-reports/`
 
@@ -32,22 +32,23 @@
 ./tools/ci.sh --skip-deploy
 ```
 
-只在本地容器内编译和跑单元测试，不部署到开发板。
+只在本地容器内编译并打包 `dist-arm64/`，不部署到开发板。
 
-### 只跑单元测试
+> 注意：`ci.sh` **不在本地跑单元测试**——单元测试是在开发板上由
+> `tools/weaknet-test-full.sh` 运行的。本地想跑单测请直接用
+> `ctest --test-dir build-x86/server`（x86）或容器内 `ctest --test-dir build-arm64`。
 
-```bash
-./tools/ci.sh --unit-only
-./tools/ci.sh --skip-build --unit-only   # 跳过编译
-```
+### 完整参数列表
 
-### 只跑功能测试
+`ci.sh` 只接受以下参数（其它参数会以"未知参数"退出）：
 
-```bash
-./tools/ci.sh --func-only
-```
-
-部署后只运行功能测试（health/get/eBPF/指标），不跑单元测试。
+| 参数 | 作用 |
+|------|------|
+| `--commit` | 归档后使用：先 git commit + push，再编译部署测试 |
+| `--local-only` | 只编译打包，不部署、不推送、不测试 |
+| `--skip-push` | 配合 `--commit`：只提交不推送 |
+| `--skip-deploy` | 跳过部署步骤 |
+| `--skip-test` | 跳过开发板测试步骤 |
 
 ### 手动在开发板测试
 
@@ -61,7 +62,9 @@ ssh -t radxa@radxa-cubie-a7a.local 'sudo /home/radxa/weaknet/weaknet-test-full.s
 |------|--------|------|
 | `CONTAINER` | `weaknet-arm64-dev` | ARM64 构建容器名 |
 | `BOARD` | `radxa@radxa-cubie-a7a.local` | 开发板 SSH 地址 |
-| `JOBS` | `1` | 编译并行度（QEMU 下不要超过 1） |
+
+> 编译并行度在 `ci.sh` 内**硬编码为 `-j1`**（QEMU 模拟下高并行度会导致编译器
+> segfault），不提供 `JOBS` 环境变量。
 
 示例：
 ```bash
@@ -79,13 +82,13 @@ ci-reports/
 
 报告包含：
 - 编译状态
-- 19 个单元测试套件结果
+- 40 个单元测试套件结果
 - 功能测试指标（health JSON、eBPF 数量、RSSI、RTT、质量分数）
 - 汇总统计
 
 ## 测试覆盖
 
-### 单元测试（19 个套件，约 250 个用例）
+### 单元测试（40 个套件，约 360 个用例）
 
 | 套件 | 覆盖模块 |
 |------|----------|
@@ -141,7 +144,7 @@ ci-reports/
 ## 常见问题
 
 ### Q: 编译超时怎么办？
-A: 首次编译约 30 分钟（QEMU 模拟），之后 ccache 加速，增量编译只需几秒。用 `--skip-build` 可跳过编译。
+A: 首次编译约 30 分钟（QEMU 模拟），之后 ccache 加速，增量编译只需几秒。`ci.sh` 每次都会执行增量 CMake 构建，未修改的目标由 CMake/ccache 复用；只想打包不部署可用 `--local-only`。
 
 ### Q: 开发板连不上？
 A: 检查 `ssh radxa@radxa-cubie-a7a.local echo ok`。连不上会自动跳过远程测试。
