@@ -13,7 +13,7 @@
 #   C4  Snapshot 一致性   同一快照在 HealthCheck 与 GetNetworkExperience 必须同源
 #
 # 用法：
-#   BOARD=radxa@192.168.137.210 ./tools/verify_v1_contract.sh
+#   BOARD=radxa@radxa-cubie-a7a.local ./tools/verify_v1_contract.sh
 #   BOARD=... ./tools/verify_v1_contract.sh --skip-c1   # 跳过需 70s 的 C1
 #
 # 计数器策略：生产计数器单调递增，本脚本用 before/after 快照取差，
@@ -21,7 +21,8 @@
 
 set -uo pipefail
 
-BOARD="${BOARD:-radxa@192.168.137.210}"
+# 默认用 mDNS 主机名（见 CLAUDE.md「开发板 SSH 连接约定」），不硬编码 DHCP 地址。
+BOARD="${BOARD:-radxa@radxa-cubie-a7a.local}"
 SSH="ssh -o ConnectTimeout=10 -o BatchMode=yes ${BOARD}"
 WEAKNET_DIR="${WEAKNET_DIR:-/home/radxa/weaknet}"
 PROBE_WAIT="${PROBE_WAIT:-70}"     # C1 观测窗口，需覆盖至少 2 个 30s 探测周期

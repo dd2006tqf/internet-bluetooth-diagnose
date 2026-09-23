@@ -554,3 +554,73 @@ TEST(ConfigTransactionTest, SnapshotMonitorParamRoundTrip) {
     // 未知键返回 false
     EXPECT_FALSE(snapshotMonitorParam(cfg, "edge.token", &v));
 }
+
+// ============================================================================
+// 回归：配置代推进（config_generation）
+//
+// 缺陷背景：ServerContext 曾持有一份只初始化、无人推进的 config_generation
+// 副本，导致 AssessmentSnapshotStore::isCurrent() 退化为「只比网络代」，
+// 「配置变更 → 旧快照失效」整条生命周期成死代码：改了配置，HealthCheck /
+// GetNetworkExperience / 历史持久化仍继续返回旧配置下的结论。
+// 修法：代次移入 WeakNetConfig，由 setMonitorParam() 在写入成功后单点推进。
+// ============================================================================
+TEST(ConfigGenerationTest, SuccessfulWriteAdvancesGeneration) {
+    WeakNetConfig cfg;
+    const uint32_t before = cfg.config_generation.load();
+    std::string err;
+    ASSERT_TRUE(setMonitorParam(&cfg, "rtt.interval_ms", "5000", &err)) << err;
+    EXPECT_EQ(cfg.config_generation.load(), before + 1);
+}
+
+TEST(ConfigGenerationTest, EachSuccessfulWriteAdvancesMonotonically) {
+    WeakNetConfig cfg;
+    const uint32_t start = cfg.config_generation.load();
+    std::string err;
+    ASSERT_TRUE(setMonitorParam(&cfg, "rtt.interval_ms", "5000", &err));
+    ASSERT_TRUE(setMonitorParam(&cfg, "rssi.interval_ms", "3000", &err));
+    ASSERT_TRUE(setMonitorParam(&cfg, "dns.capture_pages", "128", &err));
+    EXPECT_EQ(cfg.config_generation.load(), start + 3);
+}
+
+TEST(ConfigGenerationTest, RejectedWriteDoesNotAdvanceGeneration) {
+    WeakNetConfig cfg;
+    const uint32_t before = cfg.config_generation.load();
+    std::string err;
+    // 未知字段：必须被拒绝，且不得推进代次
+    EXPECT_FALSE(setMonitorParam(&cfg, "rtt.no_such_field", "1", &err));
+    EXPECT_EQ(cfg.config_generation.load(), before);
+    // 非法值：区间外，同样不得推进
+    EXPECT_FALSE(setMonitorParam(&cfg, "rtt.interval_ms", "1", &err));
+    EXPECT_EQ(cfg.config_generation.load(), before);
+    // 未知监控器
+    EXPECT_FALSE(setMonitorParam(&cfg, "nosuchmonitor.interval_ms", "1", &err));
+    EXPECT_EQ(cfg.config_generation.load(), before);
+}
+
+// ============================================================================
+// 回归：assessment_profile 的运行时写入必须真正生效
+//
+// 缺陷背景：ServerContext 曾在启动时把 cfg.dns.assessment_profile 拷贝进一个
+// 独立成员，评估线程只读那份拷贝。运行时 SetMonitorParam("dns.assessment_profile")
+// 写进 cfg 却永远不生效——D-Bus 回 ok、GetMonitorParam 显示新值，OverallPolicy
+// 仍用旧 profile，造成「看起来成功、实际无效」。
+// 修法：删除拷贝，评估线程每轮现读 cfg.dns.assessment_profile。
+// 本测试锁定该键的写入语义（可写、值可读回、非法值被拒）。
+// ============================================================================
+TEST(AssessmentProfileConfigTest, RuntimeWriteIsAcceptedAndReadableBack) {
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(setMonitorParam(&cfg, "dns.assessment_profile", "NETWORK_ONLY", &err)) << err;
+    // 权威来源（评估线程每轮现读的位置）必须立即可见新值
+    EXPECT_EQ(cfg.dns.assessment_profile.get(), "NETWORK_ONLY");
+    ASSERT_TRUE(setMonitorParam(&cfg, "dns.assessment_profile", "INTERNET_ACCESS", &err)) << err;
+    EXPECT_EQ(cfg.dns.assessment_profile.get(), "INTERNET_ACCESS");
+}
+
+TEST(AssessmentProfileConfigTest, InvalidProfileIsRejectedAndLeavesValueUnchanged) {
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(setMonitorParam(&cfg, "dns.assessment_profile", "NETWORK_ONLY", &err));
+    EXPECT_FALSE(setMonitorParam(&cfg, "dns.assessment_profile", "BOGUS_PROFILE", &err));
+    EXPECT_EQ(cfg.dns.assessment_profile.get(), "NETWORK_ONLY");
+}

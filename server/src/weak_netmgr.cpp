@@ -6,7 +6,8 @@
  *   - 从 NetInterfaceManager 获取系统 Internet 接口列表
  *   - 使用 UsingInterfaceManager 标记"当前上网接口"（唯一事实源）
  *   - 为每个接口填充 RTT（通过 NetPing 主动探测）、Wi-Fi RSSI（通过 wpa_supplicant ctrl socket）、
- *     TCP 丢包率（内核 tcp_retransmit_monitor）、抖动（rtt_monitor 衍生）、流量统计（TrafficAnalyzer）
+ *     TCP 丢包率（netlink SOCK_DIAG 采样 tcp_info；eBPF 的 tcp_retrans 监控器是独立的
+ *     连接级消费者，其输出不经本路径）、抖动（rtt_monitor 衍生）、流量统计（TrafficAnalyzer）
  *   - 线程安全：所有对 current_interfaces_ 的读写通过 std::mutex 保护（*Safe 系列方法）
  *
  * 依赖的外部接口：
@@ -374,9 +375,10 @@ std::optional<std::string> WeakNetMgr::getCurrentUsingInterface() const {
             return iface.ifName();
         }
     }
-    if (!current_interfaces_.empty()) {
-        return current_interfaces_[0].ifName(); // 稳定回退到首个网卡
-    }
+    // 无上行时如实返回 nullopt，**不再回退到 current_interfaces_[0]**。
+    // 回退会凭空造出一个"正在上网"的网卡：启动早期或路由抖动期间，
+    // 所有 SLE 结论、D-Bus 快照的 interface 字段与历史行都会被归到那张
+    // 列表首位的网卡上，而设备和它毫无关系。调用方必须显式处理"无上行"。
     return std::nullopt;
 }
 
@@ -548,27 +550,34 @@ bool WeakNetMgr::updateTrafficAnalysisSafe() {
 
     bool changed = false;
     if (hasStats) {
+        // 归因必须用分析器**实际绑定**的网卡，而不是"当前恰好是上行"的网卡。
+        // 分析器在启动时绑定一次（TrafficAnalyzer::start 的 running_ 守卫使重绑定
+        // 需要拆建 BPF，不在本函数职责内），此后一直采样那一张网卡。若按
+        // usingNow() 归因，上行从 wlan0 切到 eth0 后，wlan0 的采样值会被写到
+        // eth0 上——history.db 里 eth0 出现凭空捏造的流量，而 wlan0 的真实流量
+        // 消失，且没有任何日志能暴露这个错位。
+        const std::string bound_iface = traffic_analyzer_->boundInterface();
         for (auto& net : current_interfaces_) {
-            if (net.usingNow()) {
-                net.setTrafficStats(stats.totalBps, stats.totalPps, stats.activeFlows);
-                net.setTrafficSampleTsMs(metricTimestampMs());
+            if (net.ifName() != bound_iface) continue;
 
-                if (!anomalies.empty()) {
-                    LOG_INFO(LogModule::WEAK_MGR, "Traffic anomalies detected on " << net.ifName()
-                        << ": " << anomalies.size() << " anomalies");
-                    for (const auto& anomaly : anomalies) {
-                        LOG_INFO(LogModule::WEAK_MGR, "Anomaly: " << anomaly.anomalyType
-                            << " severity: " << (anomaly.severity * 100) << "%");
-                    }
+            net.setTrafficStats(stats.totalBps, stats.totalPps, stats.activeFlows);
+            net.setTrafficSampleTsMs(metricTimestampMs());
+
+            if (!anomalies.empty()) {
+                LOG_INFO(LogModule::WEAK_MGR, "Traffic anomalies detected on " << net.ifName()
+                    << ": " << anomalies.size() << " anomalies");
+                for (const auto& anomaly : anomalies) {
+                    LOG_INFO(LogModule::WEAK_MGR, "Anomaly: " << anomaly.anomalyType
+                        << " severity: " << (anomaly.severity * 100) << "%");
                 }
-
-                LOG_INFO(LogModule::WEAK_MGR, "Updated traffic stats for " << net.ifName()
-                    << ": " << (stats.totalBps / (1024*1024)) << " MB/s, "
-                    << stats.activeFlows << " flows, " << stats.totalPps << " pps");
-
-                changed = true;
-                break;
             }
+
+            LOG_INFO(LogModule::WEAK_MGR, "Updated traffic stats for " << net.ifName()
+                << ": " << (stats.totalBps / (1024*1024)) << " MB/s, "
+                << stats.activeFlows << " flows, " << stats.totalPps << " pps");
+
+            changed = true;
+            break;
         }
     }
 
@@ -581,6 +590,18 @@ bool WeakNetMgr::updateCurrentUsingSafe() {
     std::lock_guard<std::mutex> lock(iface_mutex_);
     LOG_DEBUG(LogModule::WEAK_MGR, "updateCurrentUsingSafe: lock acquired, calling updateCurrentUsing");
     bool result = updateCurrentUsing(current_interfaces_, true);
+    // 上行网卡切换同样是"快照内容变了"，必须推进代次并刷新各接口的
+    // markMetricUpdated。此前这里漏了，导致切换前后 history.db 里两条
+    // 记录可能携带相同的 generation/last_updated_ms，而它们描述的却是
+    // 不同的活动网卡，削弱了采样一致性元数据的可信度。
+    if (result) {
+        ++snapshot_generation_;
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        for (auto& iface : current_interfaces_) {
+            iface.markMetricUpdated(snapshot_generation_, now);
+        }
+    }
     LOG_DEBUG(LogModule::WEAK_MGR, "updateCurrentUsingSafe: updateCurrentUsing completed, releasing lock");
     return result;
 }

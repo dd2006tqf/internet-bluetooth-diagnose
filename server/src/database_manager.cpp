@@ -331,7 +331,8 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
                                       uint64_t generation, int64_t snapshot_ts_ms,
                                       int64_t rtt_sample_ts, int64_t rssi_sample_ts,
                                       int64_t jitter_sample_ts, int64_t tcp_loss_sample_ts,
-                                      int64_t traffic_sample_ts) {
+                                      int64_t traffic_sample_ts,
+                                      const char* assessment_profile) {
     if (!db_) return false;
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -431,9 +432,12 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
     sqlite3_bind_int64(stmt, 27, jitter_sample_ts);
     sqlite3_bind_int64(stmt, 28, tcp_loss_sample_ts);
     sqlite3_bind_int64(stmt, 29, traffic_sample_ts);
-    // HR-9 & SR-6: 评分语义版本升级为 assurance_v2，并持久化当前 assessment_profile
+    // HR-9 & SR-6: 评分语义版本 assurance_v2；assessment_profile 取调用方传入的
+    // 真实评估 Profile，不再写死 INTERNET_ACCESS。
     sqlite3_bind_text(stmt, 30, "assurance_v2", -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 31, "INTERNET_ACCESS", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 31,
+                      (assessment_profile && *assessment_profile) ? assessment_profile : "UNSPECIFIED",
+                      -1, SQLITE_TRANSIENT);
     LOG_INFO(LogModule::SYSTEM, "snapshot metadata: generation=" << generation
              << " snapshot_ts=" << snapshot_ts_ms
              << " rtt=" << rtt_sample_ts << " rssi=" << rssi_sample_ts
@@ -465,7 +469,7 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
                            info.rttSampleTsMs(), info.rssiSampleTsMs(),
                            info.jitterSampleTsMs(), info.tcpLossSampleTsMs(),
                            info.trafficSampleTsMs());
-    (void)score_model; // score_model 由主 insert 路径统一写入 'assurance_v1'（HR-9）
+    (void)score_model; // score_model 由主 insert 路径统一写入 'assurance_v2'（HR-9）
     return ok;
 }
 

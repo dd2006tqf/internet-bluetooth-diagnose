@@ -605,12 +605,19 @@ std::string DnsMonitor::getCaptureDiagnostics() {
     // Two transport stages are reported separately and never summed: capture-stage
     // emit failure and perf-stage delivery loss are different failure points, and
     // whether they describe the same congestion episode is unverified.
-    const uint64_t capture_attempts = impl_->last_counters.values[DNS_STAT_SENDTO_ENTER]
-        + impl_->last_counters.values[DNS_STAT_SENDMSG_ENTER]
-        + impl_->last_counters.values[DNS_STAT_SENDMMSG_ENTER]
-        + impl_->last_counters.values[DNS_STAT_RECVFROM_ENTER]
-        + impl_->last_counters.values[DNS_STAT_RECVMSG_ENTER]
-        + impl_->last_counters.values[DNS_STAT_RECVMMSG_EXIT];
+    //
+    // 分子分母必须来自**同一次** read_capture_counters 快照。此前 capture_attempts
+    // 读的是 impl_->last_counters（只在 feedTransportDelta 里每秒更新一次），而
+    // emit_fail 读的是本次新读的 counters——两者不是同一时刻的量。后果：
+    // 首轮 last_counters 全零 → 比值恒报 0.0（"无失败"），之后又变成
+    // "新绝对计数 / 旧子集"，真实的 emit 失败激增会被报成错误的量级。
+    // 这个诊断正是用来回答"DNS 证据为什么缺失"的，错值会直接污染 RCA。
+    const uint64_t capture_attempts = counters.values[DNS_STAT_SENDTO_ENTER]
+        + counters.values[DNS_STAT_SENDMSG_ENTER]
+        + counters.values[DNS_STAT_SENDMMSG_ENTER]
+        + counters.values[DNS_STAT_RECVFROM_ENTER]
+        + counters.values[DNS_STAT_RECVMSG_ENTER]
+        + counters.values[DNS_STAT_RECVMMSG_EXIT];
     const uint64_t emit_fail = counters.values[DNS_STAT_EMIT_FAIL];
     const uint64_t delivered = counters.values[DNS_STAT_EMITTED];
     const uint64_t perf_lost = s.lost_events;

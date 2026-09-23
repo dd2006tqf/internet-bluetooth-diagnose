@@ -51,6 +51,10 @@ public:
 
     /// 是否处于降级模式（eBPF 初始化失败，但线程仍在跑，返回空数据）
     bool isDegradedMode() const { return degraded_mode_.load(); }
+
+    /// 实际绑定的网卡名（start() 传入）。用于把统计值归到正确的接口，
+    /// 而不是归到"当前恰好是上行"的那个接口。
+    std::string boundInterface() const { return interface_; }
     
     /**
      * @brief 获取缓存的实时流量统计

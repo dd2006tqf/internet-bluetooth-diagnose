@@ -55,6 +55,17 @@ struct WeakNetConfig {
     ConfigString data_dir{""};        ///< 空 → 走 WEAKNET_DATA_DIR / 内置默认
     ConfigString log_level{"info"};
 
+    /**
+     * @brief 配置代：任何一次成功的配置写入都会递增。
+     *
+     * 用途：已发布的 AssessmentSnapshot 带发布时的代次；代次不符即表示
+     * 该快照基于旧配置，消费者必须按「过期」处理，不得继续返回旧结论。
+     *
+     * 由 setMonitorParam() 在写入成功后统一推进，因此本地 D-Bus 调参、
+     * 云端下发与事务回滚三条路径都被覆盖，无需各调用点自己记账。
+     */
+    std::atomic<uint32_t> config_generation{1};
+
     // ---------- 传统监控线程 ----------
     struct {
         std::atomic<bool> enabled{true};

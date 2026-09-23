@@ -60,6 +60,9 @@ public:
      * @param iface  接口名（NetInfo::ifName()）
      * @param info   完整 NetInfo 快照
      * @param score  综合质量评分（由 NetworkQualityAssessor 计算，0.0 表示未评分）
+     * @param assessment_profile 写出该行时的评估 Profile 字符串
+     *        （"NETWORK_ONLY"/"INTERNET_ACCESS"）。此前恒写死 INTERNET_ACCESS，
+     *        设备实际跑 NETWORK_ONLY 时历史审计元数据是错的。
      */
     bool insertSnapshot(const std::string& iface, const NetInfo& info,
                         const NetworkQualityResult& overall,
@@ -69,7 +72,8 @@ public:
                         int64_t rssi_sample_ts = 0,
                         int64_t jitter_sample_ts = 0,
                         int64_t tcp_loss_sample_ts = 0,
-                        int64_t traffic_sample_ts = 0);
+                        int64_t traffic_sample_ts = 0,
+                        const char* assessment_profile = "UNSPECIFIED");
     bool insertSnapshot(const std::string& iface, const NetInfo& info, double score = 0.0);
     bool insertSnapshot(const std::string& iface, const NetInfo& info, double score, const char* score_model);
 

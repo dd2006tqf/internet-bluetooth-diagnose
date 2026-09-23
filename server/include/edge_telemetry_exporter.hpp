@@ -149,9 +149,17 @@ public:
      * 由 quality 线程在 publish 之后调用。此方法**不做**任何网络 I/O，
      * 也**不抛异常**：上报绝不能拖慢或中断评估主循环。
      *
+     * @param snapshot 以 shared_ptr 传入并**由 exporter 共同持有**。
+     *        这一点是正确性要求，不是风格选择：exporter 会把该指针暂存
+     *        供后续看门狗（evaluateTrialDeadline）使用，而调用方持有的
+     *        shared_ptr 在调用返回后可能被释放——若此处只收 const& 再以
+     *        空 deleter 包装，暂存的就是裸悬垂指针，TRIAL 到期时读已释放
+     *        内存。传 shared_ptr 使 exporter 成为共同所有者，从根上消除
+     *        该悬垂。
+     *
      * @return true 表示已入队（含挤掉最旧项的情形）；false 表示未启用。
      */
-    bool enqueue(const AssessmentSnapshot& snapshot);
+    bool enqueue(std::shared_ptr<const AssessmentSnapshot> snapshot);
 
     /// 当前统计快照（线程安全，用于日志/健康检查）。
     EdgeExporterStats stats() const;

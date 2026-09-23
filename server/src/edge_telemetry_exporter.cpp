@@ -324,17 +324,22 @@ void EdgeTelemetryExporter::injectLatestSnapshot(
     latest_snapshot_ = std::move(snap);
 }
 
-bool EdgeTelemetryExporter::enqueue(const AssessmentSnapshot& snapshot) {
+bool EdgeTelemetryExporter::enqueue(std::shared_ptr<const AssessmentSnapshot> snapshot) {
     if (!running_.load()) return false;
+    if (!snapshot) return false;
 
     // 同时刷新"当前设备健康"视图：TRIAL 到期时 evaluateTrialDeadline
     // 用这份快照判断 commit/rollback，避免 exporter 反向依赖 ServerContext。
-    injectLatestSnapshot(
-        std::shared_ptr<const AssessmentSnapshot>(&snapshot, [](const AssessmentSnapshot*) {}));
+    //
+    // 注入一份**共同持有**的 shared_ptr：exporter 与调用方共享所有权，
+    // 调用方随后释放自己的引用也不会让 latest_snapshot_ 变悬垂。
+    // 这里不能 move——本地仍需 *snapshot 构造记录，且成员只能经
+    // latest_snapshot_mutex_ 访问，无锁读成员会是数据竞争。
+    injectLatestSnapshot(snapshot);
 
     EdgeTelemetryRecord record;
     std::string error;
-    if (!buildRecord(snapshot, &record, &error)) {
+    if (!buildRecord(*snapshot, &record, &error)) {
         // 序列化/签名失败不应影响评估主循环，只记日志并跳过这一条。
         LOG_ERROR(weaknet_dbus::LogModule::SYSTEM, "边缘遥测记录构造失败: " << error);
         return false;
@@ -358,12 +363,13 @@ bool EdgeTelemetryExporter::enqueue(const AssessmentSnapshot& snapshot) {
 }
 
 EdgeExporterStats EdgeTelemetryExporter::stats() const {
+    // 加锁顺序必须是 mutex_ → stats_mutex_，与 enqueue() 及 run() 的补发路径
+    // 保持一致。反过来先取 stats_mutex_ 再取 mutex_ 会与它们构成 ABBA 死锁：
+    // 本函数持 stats_mutex_ 等 mutex_，而 enqueue 持 mutex_ 等 stats_mutex_。
+    std::lock_guard<std::mutex> block(mutex_);
     std::lock_guard<std::mutex> lock(stats_mutex_);
     EdgeExporterStats copy = stats_;
-    {
-        std::lock_guard<std::mutex> block(mutex_);
-        copy.buffered = buffer_.size();
-    }
+    copy.buffered = buffer_.size();
     return copy;
 }
 

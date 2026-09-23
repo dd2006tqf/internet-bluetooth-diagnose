@@ -135,7 +135,8 @@ public:
     /**
      * @brief 更新指定接口的网络抖动
      *
-     * 由 JitterMonitor 计算 RTT 样本标准差后调用。
+     * 由 rtt_monitor 在同一次 ping 采样上计算 RTT 滑动窗口标准差后调用
+     * （原独立 jitter_monitor 已裁撤，抖动是 RTT 的衍生指标）。
      */
     bool updateJitter(std::vector<NetInfo>& list,
                       const std::string& iface_name,

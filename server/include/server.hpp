@@ -87,7 +87,11 @@ struct ServerContext {
     std::unique_ptr<weaknet::MetricsRegistry> metrics_registry; ///< 权威度量注册表 (HR-4)
     std::unique_ptr<weaknet::DnsTransactionTracker> dns_tracker; ///< DNS userspace lifecycle authority (SR-11)
     std::atomic<uint64_t> dns_binding_epoch{1};
-    weaknet::AssessmentProfile assessment_profile{weaknet::AssessmentProfile::INTERNET_ACCESS};
+    // 评估 Profile **不在此处缓存副本**：权威值始终是 cfg.dns.assessment_profile。
+    // 曾经这里存一份启动时拷贝，导致运行时 SetMonitorParam("dns.assessment_profile")
+    // 写进 cfg 却永远不生效（D-Bus 回 ok、GetMonitorParam 显示新值，OverallPolicy
+    // 仍用旧值）。ConfigString 由 mutex 保护，评估线程每轮直读即可，无需副本。
+    // 读取统一走 currentAssessmentProfile()。
 
     // 监控器对象由对应插件拥有；这些裸指针仅为现有查询/聚合调用提供
     // non-owning 兼容视图，插件 stop 完成后必须清空。
@@ -109,12 +113,13 @@ struct ServerContext {
     // HealthCheck / GetNetworkExperience / history persistence 全部只读，
     // 绝不重新拉 metrics、重新 evaluate、重新调 OverallPolicy。
     weaknet::AssessmentSnapshotStore assessment_store;
-    std::atomic<uint32_t> config_generation{1};   ///< 配置代（配置变更时递增）
+    // 配置代已移至 WeakNetConfig::config_generation（由 setMonitorParam 统一推进）。
+    // ServerContext 不再持有副本——副本无人推进，会让"配置变更即失效"整条
+    // 生命周期静默失效（旧快照永不判过期）。读取用 ctx.cfg.config_generation。
     std::atomic<uint64_t> assessment_sequence{0}; ///< 快照发布序号
 
     /// 云端下发配置的事务协调器（STABLE / TRIAL / ROLLBACK）。
     /// 必须在 EdgeTelemetryExporter 之前构造，因为 exporter 持有它的裸指针。
-    /// config_generation 仅由 ConfigTransaction 推进，不允许原子写绕过。
     std::shared_ptr<ConfigTransaction> config_txn;
 
     // ---------- 历史数据持久化 ----------
@@ -169,6 +174,17 @@ struct ServerContext {
      */
     ~ServerContext();
 };
+
+/**
+ * @brief 读取当前评估 Profile（权威来源：cfg.dns.assessment_profile）。
+ *
+ * 每次调用都现读配置，因此运行时 SetMonitorParam("dns.assessment_profile")
+ * 会立刻对下一轮评估生效。未知值回落 INTERNET_ACCESS（与 parseAssessmentProfile
+ * 及启动期告警行为一致）。
+ */
+inline weaknet::AssessmentProfile currentAssessmentProfile(const ServerContext& ctx) {
+    return weaknet::parseAssessmentProfile(ctx.cfg.dns.assessment_profile.get());
+}
 
 /**
  * @brief 初始化 D-Bus 会话总线连接

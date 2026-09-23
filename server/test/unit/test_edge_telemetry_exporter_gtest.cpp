@@ -147,7 +147,7 @@ TEST(EdgeTelemetryBuffer, DisabledExporterAcceptsNothing) {
     // edge.enabled 默认 false：未启用时绝不入队、绝无出站流量
     weaknet::EdgeTelemetryExporter exporter(cfg, "test-node");
 
-    const auto snap = makeDegradedSnapshot();
+    auto snap = std::make_shared<const AssessmentSnapshot>(makeDegradedSnapshot());
     EXPECT_FALSE(exporter.enqueue(snap));
     EXPECT_FALSE(exporter.isRunning());
 
@@ -297,6 +297,42 @@ TEST(EdgeTelemetryPendingActions, EmitsRollbackReceiptOnWatchdogTimeout) {
 
     exporter.emitRollbackReceipt("watchdog_timeout_health_bad");
     // pending_action_results_ 应有一条 sentinel 回执等待发送
+}
+
+// ============================================================================
+// 回归：exporter 必须与调用方**共同持有**快照
+//
+// 缺陷背景：enqueue 曾接收 `const AssessmentSnapshot&`，再用空 deleter 把它
+// 包装成 shared_ptr 暂存进 latest_snapshot_。调用方（quality 线程）持有的
+// shared_ptr 在 enqueue 返回后出作用域释放，而 exporter 侧留下的是一个
+// **不拥有对象**的悬垂指针；TRIAL 到期时 evaluateTrialDeadline 读它即
+// use-after-free，表现为非确定的错误 commit/rollback 决策或崩溃。
+// 修法：enqueue 直接接收 shared_ptr，exporter 成为共同所有者。
+// ============================================================================
+
+// 编译期契约：enqueue 的参数必须是一个**拥有所有权**的 shared_ptr。
+// 若退回 const& 形态，下面的成员指针别名将无法绑定，编译失败。
+TEST(EdgeTelemetrySnapshotOwnership, EnqueueSignatureTakesOwningSharedPtr) {
+    using ExpectedSig = bool (weaknet::EdgeTelemetryExporter::*)(
+        std::shared_ptr<const AssessmentSnapshot>);
+    constexpr ExpectedSig kEnqueue = &weaknet::EdgeTelemetryExporter::enqueue;
+    (void)kEnqueue;
+    SUCCEED();
+}
+
+// 行为契约：注入后调用方释放自己的引用，快照仍须存活（exporter 是共同所有者）。
+TEST(EdgeTelemetrySnapshotOwnership, InjectedSnapshotOutlivesCallerReference) {
+    weaknet_dbus::WeakNetConfig cfg;
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node");
+
+    std::weak_ptr<const AssessmentSnapshot> observer;
+    {
+        auto snap = std::make_shared<const AssessmentSnapshot>(makeDegradedSnapshot());
+        observer = snap;
+        exporter.injectLatestSnapshot(snap);
+    }
+    EXPECT_FALSE(observer.expired())
+        << "exporter 未与调用方共同持有快照：latest_snapshot_ 会变悬垂";
 }
 
 }  // namespace

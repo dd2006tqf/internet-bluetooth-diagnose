@@ -260,8 +260,11 @@ RssiSample readNl80211RssiWithBssid(const std::string& iface, const std::array<u
 
 RssiSample readNl80211Rssi(const std::string& iface) {
     auto client = WiFiRssiClient::getInstance();
-    if (!client->connect(iface)) return {};
-    return readNl80211RssiWithBssid(iface, client->getAssociatedBssid());
+    // 单次持锁完成 connect + BSSID：本函数在逐网卡循环里被调用，若拆成两次
+    // 加锁调用，另一张网卡的 connect 会插进中间，导致 BSSID 与 iface 错配。
+    std::array<uint8_t, 6> bssid{};
+    if (!client->connectAndGetBssid(iface, "/var/run/wpa_supplicant", &bssid)) return {};
+    return readNl80211RssiWithBssid(iface, bssid);
 }
 
 int readProcWirelessRssi(const std::string& iface, const std::string& procPath) {
@@ -447,7 +450,22 @@ WiFiRssiClient::~WiFiRssiClient() {
  * @return true  - 成功建立连接
  *         false - 创建 socket、bind、connect 全部失败
  */
+bool WiFiRssiClient::connectAndGetBssid(const std::string& ifaceName, const std::string& ctrlDir,
+                                        std::array<uint8_t, 6>* bssid_out) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!connectLocked(ifaceName, ctrlDir)) return false;
+    const auto bssid = getAssociatedBssidLocked();
+    if (bssid_out) *bssid_out = bssid;
+    return true;
+}
+
 bool WiFiRssiClient::connect(const std::string& ifaceName, const std::string& ctrlDir) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return connectLocked(ifaceName, ctrlDir);
+}
+
+/// 不加锁实现：调用方必须已持 mutex_（见头文件约定）。
+bool WiFiRssiClient::connectLocked(const std::string& ifaceName, const std::string& ctrlDir) {
     LOG_INFO(LogModule::NETWORK, "connect: starting, iface=" << ifaceName << ", ctrlDir=" << ctrlDir);
 
     // 先释放上一轮的 socket 与本地绑定路径：本方法每个采集周期都会被调用，
@@ -641,6 +659,12 @@ std::string WiFiRssiClient::sendCommand(const std::string& cmd) {
  *         连接失败或非 Wi-Fi 接口返回 -1000（哨兵值）
  */
 std::array<uint8_t, 6> WiFiRssiClient::getAssociatedBssid() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return getAssociatedBssidLocked();
+}
+
+/// 不加锁实现：调用方必须已持 mutex_（见头文件约定）。
+std::array<uint8_t, 6> WiFiRssiClient::getAssociatedBssidLocked() {
     std::array<uint8_t, 6> bssid{};
     const std::string status = sendCommand("STATUS\n");
     const std::string key = "bssid=";
@@ -661,6 +685,7 @@ std::array<uint8_t, 6> WiFiRssiClient::getAssociatedBssid() {
 }
 
 int WiFiRssiClient::getFrequency() {
+    std::lock_guard<std::mutex> lock(mutex_);
     const std::string status = sendCommand("STATUS\n");
     const std::string key = "freq=";
     const size_t pos = status.find(key);
@@ -677,6 +702,7 @@ int WiFiRssiClient::getFrequency() {
 }
 
 int WiFiRssiClient::getRssi() {
+    std::lock_guard<std::mutex> lock(mutex_);
     std::string resp = sendCommand("SIGNAL_POLL\n");
     if (resp.empty()) return -1000;
     return parseWifiRssiResponse(resp);

@@ -354,10 +354,28 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
         while ((ctx->running.load() && !ctx->quality_stop.load())) {
             loop_count++;
             try {
-                std::string active_iface = "wlan0";
+                // 无上行网卡时**不编造**一张网卡来评估：宁可本轮跳过并给出
+                // 显式日志，也不要把某个不相关网卡的指标当成"当前网络体验"。
+                // 此前默认 "wlan0" 再被列表首位覆盖，会在启动早期/路由抖动期间
+                // 产出一份与实际链路无关的权威快照。
+                std::string active_iface;
                 if (ctx->weak_mgr) {
                     auto opt = ctx->weak_mgr->getCurrentUsingInterface();
                     if (opt.has_value()) active_iface = opt.value();
+                }
+                if (active_iface.empty()) {
+                    LOG_WARNING(LogModule::WEAK_MGR,
+                                "no interface is currently using the network; "
+                                "skipping this assessment round (no fabricated iface)");
+                    // 与循环尾部同样的 100ms 分片等待：整段睡眠会让停止请求
+                    // 最长等待一个完整 interval 才被响应。
+                    for (int i = 0;
+                         i < static_cast<int>(ctx->cfg.quality.interval_ms.load() / 100)
+                             && (ctx->running.load() && !ctx->quality_stop.load());
+                         ++i) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    }
+                    continue;
                 }
 
                 weaknet::NetworkExperience exp;
@@ -505,8 +523,7 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                                                          http_sle, portal_sle,
                                                          active.dns, active.tcp,
                                                          active.https, active.portal,
-                                                         ctx->assessment_profile);
-
+                                                         currentAssessmentProfile(*ctx));
                     if (!rtt_samples.empty()) newest_rev = rtt_samples.back().sequence;
                     else if (!reach_samples.empty()) newest_rev = reach_samples.back().sequence;
                 } else {
@@ -529,8 +546,8 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     snap->sequence_id = ++ctx->assessment_sequence; // 每轮都发布（含 UNKNOWN），消费者可见评估节奏
                     snap->evaluated_at_monotonic = std::chrono::steady_clock::now();
                     snap->wall_timestamp = std::chrono::system_clock::now();
-                    snap->profile = ctx->assessment_profile;
-                    snap->config_generation = ctx->config_generation.load();
+                    snap->profile = currentAssessmentProfile(*ctx);
+                    snap->config_generation = ctx->cfg.config_generation.load();
                     snap->network_epoch = ctx->dns_tracker ? ctx->dns_tracker->currentBindingEpoch() : ctx->dns_binding_epoch.load();
                     snap->experience = exp;
                     // 以 const 指针发布：读侧拿到后不可修改（不可变快照语义）
@@ -544,7 +561,9 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                 if (ctx->edge_exporter && ctx->edge_exporter->isRunning()) {
                     auto latest = ctx->assessment_store.latest();
                     if (latest) {
-                        ctx->edge_exporter->enqueue(*latest);
+                        // 传 shared_ptr 而非 *latest：exporter 需要共同持有该快照，
+                        // 否则本作用域结束后它会留下悬垂指针（详见 enqueue 声明处）。
+                        ctx->edge_exporter->enqueue(std::move(latest));
                     }
                 }
 
@@ -958,7 +977,10 @@ void start_history_persistence_thread(ServerContext* ctx) {
 
             // 获取当前接口快照并计算质量评分 (CR-3, HR-9)
             auto snapshot = ctx->weak_mgr->getCurrentInterfaces();
-            std::string active_iface = "wlan0";
+            // 无上行时不编造网卡名：写进行里的 iface 必须是真的在用的那张。
+            // 真正决定写入哪一行的是下面 isCurrent() + usingNow() 判定，
+            // 这里的 active_iface 只服务于"无有效快照"时的占位说明。
+            std::string active_iface;
             auto opt = ctx->weak_mgr->getCurrentUsingInterface();
             if (opt.has_value()) active_iface = opt.value();
 
@@ -971,7 +993,7 @@ void start_history_persistence_thread(ServerContext* ctx) {
             weaknet::NetworkExperience exp;
             auto snap = ctx->assessment_store.latest();
             const bool snap_valid = snap && weaknet::AssessmentSnapshotStore::isCurrent(*snap,
-                    ctx->config_generation.load(),
+                    ctx->cfg.config_generation.load(),
                     ctx->dns_tracker ? ctx->dns_tracker->currentBindingEpoch()
                                      : ctx->dns_binding_epoch.load());
             if (snap_valid) {
@@ -981,6 +1003,10 @@ void start_history_persistence_thread(ServerContext* ctx) {
                 exp.overall = weaknet::HealthState::UNKNOWN;
                 exp.display_score = 50;
                 exp.primary_issue = snap ? "stale_assessment" : "no_assessment_yet";
+                // 无有效快照时 exp 是默认构造的，其 assessment_profile 会回落
+                // 到结构体默认值 INTERNET_ACCESS —— 那是一个编造的 profile。
+                // 审计元数据必须如实反映设备实际配置，故这里显式取权威值。
+                exp.assessment_profile = currentAssessmentProfile(*ctx);
             }
 
             double cur_jitter = 0.0;
@@ -998,7 +1024,9 @@ void start_history_persistence_thread(ServerContext* ctx) {
                                                                iface.generation(), iface.lastUpdatedMs(),
                                                                iface.rttSampleTsMs(), iface.rssiSampleTsMs(),
                                                                iface.jitterSampleTsMs(), iface.tcpLossSampleTsMs(),
-                                                               iface.trafficSampleTsMs())) {
+                                                               iface.trafficSampleTsMs(),
+                                                               weaknet::assessmentProfileToString(
+                                                                   exp.assessment_profile))) {
                         written++;
                     }
                 }
@@ -1117,16 +1145,14 @@ int start_server(int argc, char** argv) {
                 "Unknown log_level '" << ctx.cfg.log_level.get() << "', keeping default INFO");
         }
 
-        // IR-3: 运行时 assessment profile 来源（非法值记录错误并回落默认）
+        // IR-3: assessment profile 合法性校验（权威值始终是 cfg.dns.assessment_profile，
+        // 不再拷贝到独立成员——拷贝会让运行时 SetMonitorParam 静默失效）。
+        // 非法值仅告警并按 INTERNET_ACCESS 回落，由 parseAssessmentProfile 统一实现。
         {
             const std::string p = ctx.cfg.dns.assessment_profile.get();
-            if (p == "NETWORK_ONLY") {
-                ctx.assessment_profile = weaknet::AssessmentProfile::NETWORK_ONLY;
-                LOG_INFO(LogModule::SYSTEM, "Assessment profile from config: NETWORK_ONLY");
-            } else if (p == "INTERNET_ACCESS") {
-                ctx.assessment_profile = weaknet::AssessmentProfile::INTERNET_ACCESS;
-                LOG_INFO(LogModule::SYSTEM, "Assessment profile from config: INTERNET_ACCESS");
-            } else if (!p.empty()) {
+            if (p == "NETWORK_ONLY" || p == "INTERNET_ACCESS") {
+                LOG_INFO(LogModule::SYSTEM, "Assessment profile from config: " << p);
+            } else {
                 LOG_WARNING(LogModule::SYSTEM, "Unknown assessment_profile '" << p
                             << "', falling back to INTERNET_ACCESS");
             }

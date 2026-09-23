@@ -9,13 +9,15 @@
 # 同一表象必须给出不同结论，这是 Evidence Quality 层的存在意义。
 #
 # 用法：
-#   BOARD=radxa@192.168.137.210 ./tools/dns-assurance-acceptance.sh
+#   BOARD=radxa@radxa-cubie-a7a.local ./tools/dns-assurance-acceptance.sh
 #
 # 计数器策略：生产计数器单调递增，本脚本用 before/after 快照取差，不重置任何生产状态。
 
 set -uo pipefail
 
-BOARD="${BOARD:-radxa@192.168.137.210}"
+# 默认用 mDNS 主机名（见 CLAUDE.md「开发板 SSH 连接约定」）：热点重连后 DHCP 地址会
+# 变化，硬编码 IPv4 会让脚本在下次重连后静默失联。
+BOARD="${BOARD:-radxa@radxa-cubie-a7a.local}"
 SSH="ssh -o ConnectTimeout=10 -o BatchMode=yes ${BOARD}"
 RESOLVER="${RESOLVER:-192.168.137.1}"
 PROBE_HOST="${PROBE_HOST:-www.baidu.com}"

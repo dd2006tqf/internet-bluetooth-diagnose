@@ -150,6 +150,18 @@ public:
 
 private:
     /**
+     * @brief 内部辅助：要求调用方为 root (UID 0)，否则回 ACCESS_DENIED 并返回 false。
+     *
+     * 用于所有"改变设备行为"的方法（执行动作、运行时调参、监控器生命周期）。
+     * 这些方法会改变设备主动连接谁、探测频率或评估是否运行，而
+     * `com.example.WeakNet.conf` 的 default 上下文允许任意本地用户发送调用，
+     * 因此必须逐方法校验，不能只依赖总线策略。
+     *
+     * 只读查询方法（Get/HealthCheck/GetDiagnosis 等）不调用本函数。
+     */
+    bool requireRootCaller(DBusConnection* conn, DBusMessage* msg, const char* method_name);
+
+    /**
      * @brief 内部辅助：向调用方回复字符串数组
      * @param conn D-Bus 连接
      * @param msg  原始方法调用消息（用于创建 reply）

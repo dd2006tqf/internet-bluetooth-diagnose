@@ -80,7 +80,42 @@ public:
     /// 读取当前关联 AP 的频率（MHz，如 2462、5180）；失败返回 0。
     int getFrequency();
 
+    /**
+     * @brief 在**单次持锁**内完成 connect + 取 BSSID。
+     *
+     * readNl80211Rssi 需要"连上某张网卡并读取它的 BSSID"这一原子组合。
+     * 若拆成 connect() 再 getAssociatedBssid() 两次调用，中间会被另一线程
+     * （逐网卡采集时对别的网卡调 connect）插入，于是取到的是另一张网卡的
+     * BSSID——RSSI 采样会被归到错误的 AP 上。
+     *
+     * @param ifaceName  网卡名
+     * @param ctrlDir    控制目录
+     * @param bssid_out  成功时写入 BSSID；失败时不修改
+     * @return true 连接成功（BSSID 可能仍为全零，表示尚未关联）
+     */
+    bool connectAndGetBssid(const std::string& ifaceName, const std::string& ctrlDir,
+                            std::array<uint8_t, 6>* bssid_out);
+
 private:
+    /**
+     * @brief 串行化对 wpa_supplicant 控制通道的所有访问。
+     *
+     * 本类是**进程级单例**，但有两个线程同时使用它：rssi 采集线程
+     * （readNl80211Rssi → connect）与网络质量线程（getFrequency）。
+     * connect() 每次都会 close 并重建 sockfd_，若不加锁，另一个线程会在
+     * fd 被关闭的窗口里 send/recv——轻则失败，重则写入一个已被其它子系统
+     * 复用的 fd；iface_/ctrlDir_/localSockPath_ 的 std::string 竞争同理。
+     *
+     * 约定：仅在公共入口（connect/getRssi/getAssociatedBssid/getFrequency）
+     * 加锁；sendCommand/bindLocal/connectRemote 等私有 helper 假定调用方已持锁，
+     * 因此本互斥无需可重入。
+     */
+    mutable std::mutex mutex_;
+
+    /// 不加锁实现：调用方必须已持 mutex_（供 connectAndGetBssid 组合调用）。
+    bool connectLocked(const std::string& ifaceName, const std::string& ctrlDir);
+    std::array<uint8_t, 6> getAssociatedBssidLocked();
+
     int sockfd_ = -1;              ///< UNIX DGRAM socket fd（连接后有效）
     std::string iface_;            ///< 当前绑定的网卡名
     std::string ctrlDir_;          ///< 控制目录

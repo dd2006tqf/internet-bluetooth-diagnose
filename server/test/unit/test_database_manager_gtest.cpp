@@ -252,3 +252,54 @@ TEST_F(DatabaseManagerTest, InsertAndQueryBtSnapshot) {
     EXPECT_EQ(singleRes.find("OtherPhone"), std::string::npos);
 }
 
+
+// ============================================================================
+// 回归：历史行写入的 assessment_profile 必须是调用方传入的真实 Profile
+//
+// 缺陷背景：insertSnapshot 曾把 assessment_profile 列写死为 "INTERNET_ACCESS"，
+// 忽略设备实际的评估 Profile。设备跑 NETWORK_ONLY 时，GetHistory /
+// getQualityReport 读到的审计元数据是错的——而这条元数据正是用来解释
+// 「当时的结论是在哪个模型下得出的」。
+// ============================================================================
+TEST_F(DatabaseManagerTest, InsertsCallerSuppliedAssessmentProfile) {
+    DatabaseManager db(dbPath_);
+    ASSERT_TRUE(db.isOpen());
+
+    auto info = makeTestIface("wlan0", 20, 1.0, -50);
+    NetworkQualityResult overall;
+    overall.level = NetworkQualityLevel::GOOD;
+    overall.levelName = "GOOD";
+    overall.score = 80.0;
+
+    ASSERT_TRUE(db.insertSnapshot("wlan0", info, overall, /*generation=*/1, /*snapshot_ts_ms=*/0,
+                                  info.rttSampleTsMs(), info.rssiSampleTsMs(),
+                                  info.jitterSampleTsMs(), info.tcpLossSampleTsMs(),
+                                  info.trafficSampleTsMs(),
+                                  /*assessment_profile=*/"NETWORK_ONLY"));
+
+    const std::string result = db.queryHistory("wlan0", "", "", 10);
+    EXPECT_NE(result.find("\"assessment_profile\":\"NETWORK_ONLY\""), std::string::npos);
+    // 不得再出现写死的 INTERNET_ACCESS
+    EXPECT_EQ(result.find("\"assessment_profile\":\"INTERNET_ACCESS\""), std::string::npos);
+}
+
+TEST_F(DatabaseManagerTest, DefaultsNullOrEmptyAssessmentProfileToUnspecified) {
+    DatabaseManager db(dbPath_);
+    ASSERT_TRUE(db.isOpen());
+
+    auto info = makeTestIface("wlan0", 20, 1.0, -50);
+    NetworkQualityResult overall;
+    overall.level = NetworkQualityLevel::GOOD;
+    overall.levelName = "GOOD";
+    overall.score = 80.0;
+
+    // 显式传 nullptr：必须落到 UNSPECIFIED，而不是空串或编造的 profile
+    ASSERT_TRUE(db.insertSnapshot("wlan0", info, overall, 1, 0,
+                                  info.rttSampleTsMs(), info.rssiSampleTsMs(),
+                                  info.jitterSampleTsMs(), info.tcpLossSampleTsMs(),
+                                  info.trafficSampleTsMs(),
+                                  /*assessment_profile=*/nullptr));
+
+    const std::string result = db.queryHistory("wlan0", "", "", 10);
+    EXPECT_NE(result.find("\"assessment_profile\":\"UNSPECIFIED\""), std::string::npos);
+}

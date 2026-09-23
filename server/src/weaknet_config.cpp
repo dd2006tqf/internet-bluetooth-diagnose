@@ -526,8 +526,11 @@ bool setMonitorEnabled(WeakNetConfig* cfg, const std::string& monitor, bool enab
     return true;
 }
 
-bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
-                     const std::string& value, std::string* error) {
+// 内部实现：只做校验与写入，不推进 config_generation。
+// 由 setMonitorParam() 包一层并在成功后统一推进代次——这样 57 个 return true
+// 的出口与全部调用路径（本地 D-Bus / 云端下发 / 事务回滚）都被一处覆盖。
+static bool applyMonitorParam(WeakNetConfig* cfg, const std::string& key,
+                       const std::string& value, std::string* error) {
     if (!cfg) return false;
     std::string mon, field;
     if (!splitMonitorKey(key, &mon, &field)) {
@@ -661,6 +664,16 @@ bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
 
     if (error) *error = "unknown monitor or field: " + key;
     return false;
+}
+
+bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
+                     const std::string& value, std::string* error) {
+    if (!applyMonitorParam(cfg, key, value, error)) return false;
+    // 写入成功 → 配置代递增。已发布的 AssessmentSnapshot 由此被判为过期，
+    // 消费者转为显式 UNKNOWN 而不是继续返回基于旧配置的结论。
+    // 放在这里而不是各调用点：覆盖本地调参、云端下发与回滚三条路径。
+    cfg->config_generation.fetch_add(1);
+    return true;
 }
 
 // ============================================================================

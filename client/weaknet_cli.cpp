@@ -35,7 +35,8 @@ static void printUsage(const char* prog) {
         "\n"
         "监控器名：rtt, rssi, tcp_loss, traffic, quality,\n"
         "        bluetooth, dns, wifi_loss, http_latency, process_profiler,\n"
-        "        tcp_retrans, tcp_conn, server, all\n"
+        "        tcp_retrans, tcp_conn, skb_drop, tcp_connect,\n"
+        "        active_probe, edge, server, all\n"
         "\n"
         "示例：\n"
         "  %s set rtt.interval 5s\n"
@@ -144,9 +145,13 @@ int main(int argc, char** argv) {
             return 1;
         }
     } else if (strcmp(cmd, "list") == 0) {
+        // 必须与 serializers 端的有效名集合保持一致（weaknet_config.cpp 的
+        // serializeMonitorJson）。此前这里漏了 skb_drop / tcp_connect /
+        // active_probe / edge——它们可以被 `set` 但 `list` 不显示，用户无从发现。
         printf("rtt\nrssi\ntcp_loss\ntraffic\nquality\n"
                "bluetooth\ndns\nwifi_loss\nhttp_latency\nprocess_profiler\n"
-               "tcp_retrans\ntcp_conn\nserver\nall\n");
+               "tcp_retrans\ntcp_conn\nskb_drop\ntcp_connect\n"
+               "active_probe\nedge\nserver\nall\n");
         ok = true;
     } else {
         fprintf(stderr, "未知命令: %s\n", cmd);

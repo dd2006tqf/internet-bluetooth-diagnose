@@ -421,7 +421,9 @@ bool DbusService::handleListInterfaces(DBusConnection* conn, DBusMessage* msg) {
 bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleHealthCheck called (CR-1 LegacyAdapter route)");
 
-    std::string active_iface = "wlan0";
+    // 无上行时不编造网卡名（此前默认 "wlan0"）：返回的 interface 字段必须
+    // 要么是真实在用的网卡，要么为空并由 overall=UNKNOWN 表达"无结论"。
+    std::string active_iface;
     if (ctx_ && ctx_->weak_mgr) {
         auto opt = ctx_->weak_mgr->getCurrentUsingInterface();
         if (opt.has_value()) active_iface = opt.value();
@@ -436,7 +438,9 @@ bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
     double median_rtt_val = -1.0;
     std::string resp_reason = "";
 
-    if (ctx_ && ctx_->metrics_registry) {
+    // 无上行网卡时不查 registry（空串查不到任何样本），直接给显式 UNKNOWN：
+    // 返回一份"不知道"比返回一份基于无关网卡的结论更诚实。
+    if (ctx_ && ctx_->metrics_registry && !active_iface.empty()) {
         using namespace std::chrono_literals;
         auto reach_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::REACHABILITY_SUCCESS, 120s);
         auto rtt_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::RTT_MS, 120s);
@@ -458,7 +462,7 @@ bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
             const uint64_t cur_epoch = ctx_->dns_tracker ? ctx_->dns_tracker->currentBindingEpoch()
                                                          : ctx_->dns_binding_epoch.load();
             if (weaknet::AssessmentSnapshotStore::isCurrent(*snap,
-                    ctx_->config_generation.load(), cur_epoch)) {
+                    ctx_->cfg.config_generation.load(), cur_epoch)) {
                 exp = snap->experience;
             } else {
                 // snapshot 过期：显式 UNKNOWN，等下一轮评估，不返回旧 profile 结论
@@ -553,34 +557,48 @@ bool DbusService::handleGetDiagnosis(DBusConnection* conn, DBusMessage* msg) {
 }
 
 /**
+ * @brief 校验调用方为 root (UID 0)，否则回 ACCESS_DENIED。
+ *
+ * 覆盖面：一切能改变设备行为的写方法。理由见头文件声明。
+ * 取不到 sender 或 UID 查询失败时**保守拒绝**——把"无法确定身份"当作非特权，
+ * 而不是放行。
+ */
+bool DbusService::requireRootCaller(DBusConnection* conn, DBusMessage* msg,
+                                    const char* method_name) {
+    const char* sender = dbus_message_get_sender(msg);
+    unsigned long caller_uid = 1000;  // 默认按普通用户处理
+    DBusError uid_err;
+    dbus_error_init(&uid_err);
+    if (sender) {
+        caller_uid = dbus_bus_get_unix_user(conn, sender, &uid_err);
+        if (dbus_error_is_set(&uid_err)) {
+            LOG_WARNING(LogModule::DBUS, method_name
+                        << ": failed to get caller UID: " << uid_err.message);
+            dbus_error_free(&uid_err);
+            caller_uid = 1000;
+        }
+    }
+    if (caller_uid == 0) return true;
+
+    LOG_ERROR(LogModule::DBUS, method_name << " rejected: caller UID " << caller_uid
+              << " != 0 (permission denied)");
+    DBusMessage* reply = dbus_message_new_error(msg, DBUS_ERROR_ACCESS_DENIED,
+        "Permission denied: only root (UID 0) is authorized to modify WeakNet state");
+    if (reply) {
+        dbus_connection_send(conn, reply, nullptr);
+        dbus_message_unref(reply);
+    }
+    return false;
+}
+
+/**
  * @brief DBus 方法实现：ExecuteAction —— 安全执行白名单建议动作
  */
 bool DbusService::handleExecuteAction(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleExecuteAction called");
 
     // 严格安全防线：校验调用者 UID 必须为 root (UID 0)，防止非特权本地用户通过系统总线触发特权网络动作
-    const char* sender = dbus_message_get_sender(msg);
-    unsigned long caller_uid = 1000; // 默认普通用户
-    DBusError uid_err;
-    dbus_error_init(&uid_err);
-    if (sender) {
-        caller_uid = dbus_bus_get_unix_user(conn, sender, &uid_err);
-        if (dbus_error_is_set(&uid_err)) {
-            LOG_WARNING(LogModule::DBUS, "Failed to get caller UID: " << uid_err.message);
-            dbus_error_free(&uid_err);
-            caller_uid = 1000;
-        }
-    }
-    if (caller_uid != 0) {
-        LOG_ERROR(LogModule::DBUS, "ExecuteAction rejected: caller UID " << caller_uid << " != 0 (permission denied)");
-        DBusMessage* reply = dbus_message_new_error(msg, DBUS_ERROR_ACCESS_DENIED,
-            "Permission denied: only root (UID 0) is authorized to execute diagnostic actions");
-        if (reply) {
-            dbus_connection_send(conn, reply, nullptr);
-            dbus_message_unref(reply);
-        }
-        return false;
-    }
+    if (!requireRootCaller(conn, msg, "ExecuteAction")) return false;
 
     DBusError err;
     dbus_error_init(&err);
@@ -610,11 +628,15 @@ bool DbusService::handleExecuteAction(DBusConnection* conn, DBusMessage* msg) {
         params[param_key] = param_val;
     }
 
+    // 所有内插字符串一律经 escapeJsonString：命令输出（如 /etc/resolv.conf 的
+    // 注释与换行、ip route 的缩进）与 caller 提供的 action_id 都可能含引号或
+    // 控制字符，裸拼进 JSON 字面量会产出客户端无法解析的畸形 JSON。
     std::string result_json;
     if (ctx_ && ctx_->action_registry) {
         auto val_res = ctx_->action_registry->validate(action_id, params);
         if (!val_res.ok) {
-            result_json = "{\"success\":false,\"error\":\"" + val_res.error + "\"}";
+            result_json = "{\"success\":false,\"error\":\""
+                        + weaknet_utils::escapeJsonString(val_res.error) + "\"}";
         } else {
             auto spec_opt = ctx_->action_registry->buildExecSpec(action_id, params);
             if (!spec_opt.has_value()) {
@@ -623,8 +645,10 @@ bool DbusService::handleExecuteAction(DBusConnection* conn, DBusMessage* msg) {
                 auto exec_res = weaknet::ActionRegistry::safeExec(*spec_opt);
                 result_json = "{\"success\":" + std::string(exec_res.exit_code == 0 ? "true" : "false")
                             + ",\"exit_code\":" + std::to_string(exec_res.exit_code)
-                            + ",\"stdout\":\"" + exec_res.stdout_output.substr(0, 500) + "\""
-                            + ",\"error\":\"" + exec_res.error + "\"}";
+                            + ",\"stdout\":\""
+                            + weaknet_utils::escapeJsonString(exec_res.stdout_output.substr(0, 500)) + "\""
+                            + ",\"error\":\""
+                            + weaknet_utils::escapeJsonString(exec_res.error) + "\"}";
             }
         }
     } else {
@@ -1018,7 +1042,7 @@ bool DbusService::handleGetNetworkExperience(DBusConnection* conn, DBusMessage* 
         const uint64_t cur_epoch = ctx_->dns_tracker ? ctx_->dns_tracker->currentBindingEpoch()
                                                      : ctx_->dns_binding_epoch.load();
         if (!weaknet::AssessmentSnapshotStore::isCurrent(*snap,
-                ctx_->config_generation.load(), cur_epoch)) {
+                ctx_->cfg.config_generation.load(), cur_epoch)) {
             stale = true;
         }
     }
@@ -1388,6 +1412,22 @@ bool DbusService::handleGetHistory(DBusConnection* conn, DBusMessage* msg) {
     }
     }  // hasArgs
 
+    // 钳制 limit：该接口对本地任意用户开放（见 com.example.WeakNet.conf 的
+    // default 上下文），而 SQLite 把负 LIMIT 解释为"无上限"。若把 -1 直接
+    // 透传，queryHistory 会把整张历史表拼成一个 std::ostringstream 并作为
+    // 单条 D-Bus 字符串回发，足以耗尽内存或触发 128MB 消息上限。
+    // 0 同样危险（静默返回空集），故一并归一为下限 1。
+    constexpr int32_t kMaxHistoryLimit = 10000;
+    if (limit <= 0) {
+        LOG_WARNING(LogModule::DBUS, "GetHistory limit=" << limit
+                    << " is non-positive; clamped to 1");
+        limit = 1;
+    } else if (limit > kMaxHistoryLimit) {
+        LOG_WARNING(LogModule::DBUS, "GetHistory limit=" << limit
+                    << " exceeds cap; clamped to " << kMaxHistoryLimit);
+        limit = kMaxHistoryLimit;
+    }
+
     std::string result = "[]";
     if (ctx_ && ctx_->db_mgr && ctx_->db_mgr->isOpen()) {
         result = ctx_->db_mgr->queryHistory(iface_filter, start_time, end_time, limit);
@@ -1414,6 +1454,10 @@ bool DbusService::handleGetHistory(DBusConnection* conn, DBusMessage* msg) {
 
 bool DbusService::handleSetMonitorParam(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleSetMonitorParam called");
+
+    // 运行时调参能改变设备行为（例如 active_probe.targets 决定它主动连接谁），
+    // 因此与 ExecuteAction 同级：仅 root 可写。
+    if (!requireRootCaller(conn, msg, "SetMonitorParam")) return false;
 
     DBusError err;
     dbus_error_init(&err);
@@ -1613,6 +1657,10 @@ bool DbusService::handleRestartMonitor(DBusConnection* conn, DBusMessage* msg) {
 // The lifecycle handlers share the same argument validation and reply contract.
 bool DbusService::handleMonitorOperation(DBusConnection* conn, DBusMessage* msg,
                                          const char* operation) {
+    // enable/disable/restart 会改变评估管线的运行态（例如停掉 quality 即静默
+    // 关闭整套评估），与运行时调参同级：仅 root 可写。
+    if (!requireRootCaller(conn, msg, operation)) return false;
+
     DBusError err;
     dbus_error_init(&err);
     const char* name = nullptr;
@@ -1654,6 +1702,9 @@ bool DbusService::handleMonitorOperation(DBusConnection* conn, DBusMessage* msg,
 }
 
 bool DbusService::handleSaveMonitorOverrides(DBusConnection* conn, DBusMessage* msg) {
+    // 持久化运行时启停状态，影响后续启动行为：仅 root 可写。
+    if (!requireRootCaller(conn, msg, "SaveMonitorOverrides")) return false;
+
     std::string error;
     if (!ctx_ || !ctx_->monitor_manager || !ctx_->monitor_manager->saveOverrides(&error)) {
         DBusMessage* reply = dbus_message_new_error(
