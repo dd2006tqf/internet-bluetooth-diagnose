@@ -170,8 +170,8 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # 清理板上源码、构建中间文件和旧部署残留；保留持久化 data/ 数据
     ssh "${BOARD}" "sudo systemctl stop weaknet-server 2>/dev/null || true; sudo killall weaknet-dbus-server 2>/dev/null || true; sudo rm -rf /home/radxa/weaknet/server/src /home/radxa/weaknet/server/include /home/radxa/weaknet/build /home/radxa/weaknet/server/build /home/radxa/weaknet/client/src /home/radxa/weaknet/CMakeFiles /home/radxa/weaknet/logs /home/radxa/weaknet/server/server 2>/dev/null || true"
 
-    # 只同步 dist-arm64 编译产物，不同步源码和构建目录
-    rsync -az --delete --exclude "data/" --exclude "server/logs/" -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" 2>/dev/null
+    # 只同步 dist-arm64 编译产物，不同步源码和构建目录（保留持久化 data/、config/ 密钥及日志）
+    rsync -az --delete --exclude "data/" --exclude "config/" --exclude "server/logs/" -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" 2>/dev/null
 
     # 旧 web-dashboard 已废弃删除：前端统一由 Large-Model-Application（Next.js）承载，
     # 开发板只保留 eBPF + C++ 底座。此处顺带停用并清理板上遗留的 weaknet-web 服务，
