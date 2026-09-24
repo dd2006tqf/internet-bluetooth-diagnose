@@ -79,6 +79,8 @@
 #include "using_iface.h"
 #include "net_wifiriss.h"
 #include <iomanip>
+#include <map>
+#include "metrics/metric_normalizer.hpp"
 
 using namespace std::chrono_literals;
 
@@ -809,14 +811,22 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx, std::thread* worker, Wif
         // The plugin owns this monitor; the worker borrows it until join.
         if (!monitor) return;
         LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor thread started");
+        // 每接口独立的累计计数器归一化器：把驱动层 since-boot 计数器转成
+        // 采样周期增量丢包率。处理首轮基线、计数器倒退（probe 重载/网卡重置）
+        // 与零活动（无发包周期不产出伪 rate）。
+        std::map<uint32_t, weaknet::CounterNormalizer> normalizers;
         while ((ctx->running.load() && !ctx->wifi_loss_stop.load())) {
             auto stats = monitor->getStats();
             for (auto& [ifindex, s] : stats) {
-                double txLoss = s.txLossRate();
+                // 驱动计数分母 = 成功发包 + 丢包（txDrops 不含在 txPkts 内）
+                auto rate = normalizers[ifindex].update(
+                    s.txPkts + s.txDrops, s.txDrops);
+                if (!rate.has_value()) continue;  // 首轮基线 / 计数器回退 / 无活动
+                double txLoss = rate->rate_percent;
                 if (txLoss > 0.1) {
                     LOG_INFO(LogModule::NETWORK, "Wi-Fi loss tick: ifindex=" << ifindex
                         << " txLoss=" << txLoss << "%"
-                        << " txDrops=" << s.txDrops << "/" << s.txPkts);
+                        << " Δdrops=" << rate->delta_drops << "/" << rate->delta_packets);
                 }
 
                 char ifname[IF_NAMESIZE] = {0};

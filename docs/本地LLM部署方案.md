@@ -1,5 +1,9 @@
 # Cubie A7A 本地 LLM 部署方案
 
+> **⚠️ 版本说明（2026-09-24 更新）**：本文档撰写时规划目标为 Qwen2.5-3B，但板端**实测选型为 Qwen2.5-0.5B-Instruct-Q4_K_M**（469MB，解码 ~3.49 tok/s，详见 `架构设计.md` §12.4 实测基线）。下文 3B 的容量/性能数字为规划预估值，非实测值。
+>
+> **SoC 拓扑**：Radxa Cubie A7A 搭载 Allwinner A733（`sun60iw2`），为 **2× Cortex-A76 + 6× Cortex-A55** big.LITTLE（§1.1 正确）。注意 `AI_EDGE_DEPLOYMENT_PLAN.md` §3 误写为 "8 核 Cortex-A55"，以本节为准。
+
 ## 一、硬件能力分析
 
 ### 1.1 关键资源
@@ -652,6 +656,18 @@ client = OpenAI(
 └── docs/
     └── 本地LLM部署方案.md             # 本文档
 ```
+
+### tools/ 下已有的基准与压测脚本（手工工具，非 CI 入口）
+
+以下脚本已存在但**不接入 `tools/ci.sh` 自动化流水线**，用于手工测量与调参：
+
+| 脚本 | 用途 | 运行方式 |
+|------|------|---------|
+| `tools/benchmark_models.py` | 板端多模型能效基准矩阵（权重/RSS/TTFT/tok/s/温升/契约通过率） | `python3 tools/benchmark_models.py --help`，需板端 llama-server 在线 |
+| `tools/interference_test.py` | 物理资源争用干扰测试（并发 DNS/TCP + LLM 满载下测 D-Bus P99、RSS 波动、核心温度） | `python3 tools/interference_test.py`，需服务+LLM 同时运行 |
+| `tools/soak_monitor.py` | 24h 长稳 soak 监控（v1 FROZEN 判据用） | `python3 tools/soak_monitor.py` |
+| `tools/dns_oracle.py` | DNS 断言 oracle（Phase2A 验证用） | 见 `Phase2A-DNS-Service-Assurance-验证记录.md` |
+| `tools/verify_telemetry_contract.py` | 上行遥测契约校验 | 见 `edge-telemetry-evolutions-1-2-implementation-plan.md` |
 
 ### 开发板新增文件
 

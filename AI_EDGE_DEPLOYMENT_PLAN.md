@@ -95,7 +95,7 @@ flows
 | 项目 | 已确认情况 |
 |---|---|
 | SoC | Allwinner A733 / `sun60iw2` |
-| CPU | 8 核 Cortex-A55，约 2 GHz |
+| CPU | 2× Cortex-A76 + 6× Cortex-A55（big.LITTLE），约 2 GHz |
 | GPU | PowerVR BXM-4-64 MC1 |
 | NPU | Vivante VIP9000，约 3 TOPS |
 | NPU 内核驱动 | `vipcore.ko` |
