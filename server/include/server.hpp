@@ -9,7 +9,6 @@
  * 设计约束：
  *   - 所有捕获 ServerContext 的线程必须可 join（禁止 std::thread::detach）
  *   - eBPF 监控器由 unique_ptr 持有 ownership，线程仅通过裸指针访问
- *   - 共享数据 iface_list 受 iface_mutex 保护
  */
 
 #pragma once
@@ -61,7 +60,6 @@ class ConfigTransaction;    // 前置声明：配置事务状态机（weaknet_co
  *
  * 线程安全约束：
  *   - running_: 原子变量，所有线程轮询检查退出信号
- *   - iface_list: 多线程并发读写，必须通过 iface_mutex_ 保护
  *   - service/weak_mgr/bt_monitor/dns_monitor 等 unique_ptr: 启动后只读访问，无需额外锁
  */
 struct ServerContext {
@@ -73,10 +71,6 @@ struct ServerContext {
     // MonitorManager/各插件分别持有监控 worker；这里只保留历史持久化线程。
     std::thread history_thread;                 ///< 每 5 秒将 iface_list 快照写入 DB
     std::thread active_probe_thread;            ///< 受控主动连通性探测
-
-    // ---------- 共享数据 ----------
-    std::mutex iface_mutex;                   ///< 保护 iface_list 的并发访问（多写多读场景）
-    std::vector<NetInfo> iface_list;          ///< 当前所有具备上网能力的网卡列表（共享状态）
 
     // ---------- 监控器插件生命周期 ----------
     std::unique_ptr<MonitorManager> monitor_manager; ///< 静态插件实例与生命周期协调器

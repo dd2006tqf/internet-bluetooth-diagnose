@@ -17,10 +17,6 @@ add_executable(test_quality_assessor_gtest
     unit/test_quality_assessor_gtest.cpp)
 target_link_libraries(test_quality_assessor_gtest PRIVATE ${TEST_COMMON_LIBS})
 
-add_executable(test_anomaly_detector_gtest
-    unit/test_anomaly_detector_gtest.cpp)
-target_link_libraries(test_anomaly_detector_gtest PRIVATE ${TEST_COMMON_LIBS})
-
 add_executable(test_audio_fusion_gtest
     unit/test_audio_fusion_gtest.cpp)
 target_link_libraries(test_audio_fusion_gtest PRIVATE ${TEST_COMMON_LIBS})
@@ -196,7 +192,6 @@ foreach(test_target
     test_edge_telemetry_exporter_gtest
     test_diagnosis_engine_gtest
     test_quality_assessor_gtest
-    test_anomaly_detector_gtest
     test_audio_fusion_gtest
     test_band_conflict_gtest
     test_serializer_gtest

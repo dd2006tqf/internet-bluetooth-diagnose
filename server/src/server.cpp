@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <mutex>
 #include <csignal>
+#include <net/if.h>
 
 #include "common.hpp"
 #include "network_epoch_store.hpp"
@@ -816,6 +817,17 @@ void start_wifi_loss_monitor_thread(ServerContext* ctx, std::thread* worker, Wif
                     LOG_INFO(LogModule::NETWORK, "Wi-Fi loss tick: ifindex=" << ifindex
                         << " txLoss=" << txLoss << "%"
                         << " txDrops=" << s.txDrops << "/" << s.txPkts);
+                }
+
+                char ifname[IF_NAMESIZE] = {0};
+                if (if_indextoname(ifindex, ifname) != nullptr && ifname[0] != '\0') {
+                    if (ctx->metrics_registry) {
+                        ctx->metrics_registry->publish(
+                            ifname,
+                            weaknet::MetricId::WIFI_LOSS_RATE,
+                            weaknet::MetricSample::valid(txLoss)
+                        );
+                    }
                 }
             }
             for (int i = 0; i < static_cast<int>(ctx->cfg.wifi_loss.interval_ms.load() / 100) && (ctx->running.load() && !ctx->wifi_loss_stop.load()); ++i)

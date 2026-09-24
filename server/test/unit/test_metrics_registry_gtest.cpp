@@ -85,3 +85,19 @@ TEST(MetricsRegistryTest, ConcurrentAccessSafety) {
     EXPECT_GT(wlan_win.size(), 0u);
     EXPECT_LE(wlan_win.size(), MetricSeries::kDefaultCapacity);
 }
+
+TEST(MetricsRegistryTest, WifiLossRatePublishAndWindow) {
+    MetricsRegistry registry;
+    registry.publish("wlan0", MetricId::WIFI_LOSS_RATE, MetricSample::valid(0.25));
+    registry.publish("wlan0", MetricId::WIFI_LOSS_RATE, MetricSample::valid(0.40));
+
+    auto latest = registry.latest("wlan0", MetricId::WIFI_LOSS_RATE);
+    ASSERT_TRUE(latest.has_value());
+    EXPECT_DOUBLE_EQ(latest->value, 0.40);
+    EXPECT_EQ(latest->state, MetricState::VALID);
+
+    auto win = registry.window("wlan0", MetricId::WIFI_LOSS_RATE, 120s);
+    ASSERT_EQ(win.size(), 2u);
+    EXPECT_DOUBLE_EQ(win[0].value, 0.25);
+    EXPECT_DOUBLE_EQ(win[1].value, 0.40);
+}

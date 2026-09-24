@@ -150,7 +150,6 @@ public:
     void stopTrafficAnalysis();
     /// 将 TrafficAnalyzer 最新结果回写到 NetInfo（traffic_total_bps/pps/active_flows）
     bool updateTrafficAnalysis(std::vector<NetInfo>& list);
-    std::shared_ptr<TrafficAnalyzer> getTrafficAnalyzer() const;
 
     // ==================== 线程安全版本（Safe）====================
     // 这些方法内部持有 iface_mutex_ 锁，监控线程直接调用即可

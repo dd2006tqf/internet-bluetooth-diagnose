@@ -7,7 +7,7 @@
  *   - 活动流数量（activeFlows）
  *   - 总包速率（PPS）
  *   - 顶 N 流量连接（Top 5 flows）：协议/源/目的 IP 端口/带宽/包速
- *   - 异常流量检测：突发流量 / 可疑连接模式（委托 TrafficAnomalyDetector）
+ *   - 异常流量检测：突发流量 / 可疑连接模式（由 NetTrafficAnalyzer 实现）
  *
  * 数据源：
  *   - eBPF：通过 NetTrafficAnalyzer（封装 flow_rate.bpf.o）从 BPF Map 读取流量统计

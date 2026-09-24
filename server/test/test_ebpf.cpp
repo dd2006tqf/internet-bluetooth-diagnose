@@ -1,7 +1,7 @@
 // test_ebpf.cpp
 // eBPF 功能专项测试
 // 测试 BPF 程序加载、kprobe 挂载、流量数据采集
-// 编译: g++ -std=c++17 -O2 -Wall -Iinclude -o test/test_ebpf test/test_ebpf.cpp src/net_traffic.cpp src/traffic_analyzer.cpp src/traffic_anomaly_detector.cpp src/serializer.cpp src/net_info.cpp src/logger.cpp $(pkg-config --cflags --libs libbpf) -lglog -lbpf
+// 编译: g++ -std=c++17 -O2 -Wall -Iinclude -o test/test_ebpf test/test_ebpf.cpp src/net_traffic.cpp src/traffic_analyzer.cpp src/serializer.cpp src/net_info.cpp src/logger.cpp $(pkg-config --cflags --libs libbpf) -lglog -lbpf
 
 #include <iostream>
 #include <fstream>

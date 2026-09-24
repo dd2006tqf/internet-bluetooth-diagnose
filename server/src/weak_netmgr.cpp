@@ -327,12 +327,8 @@ bool WeakNetMgr::updateTrafficAnalysis(std::vector<NetInfo>& list) {
     } catch (const std::exception& e) {
         LOG_ERROR(LogModule::WEAK_MGR, "Traffic analysis update error: " << e.what());
     }
-    
-    return changed;
-}
 
-std::shared_ptr<TrafficAnalyzer> WeakNetMgr::getTrafficAnalyzer() const {
-    return traffic_analyzer_;
+    return changed;
 }
 
 // 线程安全的接口列表操作方法实现

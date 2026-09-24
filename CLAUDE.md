@@ -234,7 +234,7 @@
 |---------|---------|------|
 | "编译一下" / "build" | `cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build-x86 -j$(nproc)` | x86 本地快速编译 |
 | "跑测试" / "test" | `build-x86/server/test/test_database_manager_gtest` | 运行指定测试 |
-| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server -R "test_net_info\|test_quality\|test_anomaly\|test_audio\|test_band\|test_serializer\|test_event\|test_bt_full\|test_bt_monitor$\|test_iface\|test_logger\|test_traffic\|test_database"` | x86 单元测试（排除需要 D-Bus 的集成测试） |
+| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server -R "test_net_info\|test_quality\|test_audio\|test_band\|test_serializer\|test_event\|test_bt_full\|test_bt_monitor$\|test_iface\|test_logger\|test_traffic\|test_database"` | x86 单元测试（排除需要 D-Bus 的集成测试） |
 
 ### 部署到开发板
 

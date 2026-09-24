@@ -74,7 +74,17 @@ TEST(ReliabilityTest, AsymmetricEvidenceDecision) {
     auto res = ReliabilityEvaluator::evaluate(wifi_bad, {}, true);
     EXPECT_EQ(res.state, HealthState::BAD);
 
-    // 2. 有线环境无需 Wi-Fi，NOT_APPLICABLE 算作 FULL_FOR_PROFILE
+    // 2. 无线环境下 wifi_loss 与 tcp_loss 均正常 -> GOOD 且达成 FULL_FOR_PROFILE
+    std::vector<MetricSample> wifi_good = { MetricSample::valid(0.1) };
+    std::vector<MetricSample> tcp_good_wl = { MetricSample::valid(0.3) };
+    auto res_wireless_good = ReliabilityEvaluator::evaluate(wifi_good, tcp_good_wl, true);
+    EXPECT_EQ(res_wireless_good.state, HealthState::GOOD);
+    EXPECT_EQ(res_wireless_good.coverage, Coverage::FULL_FOR_PROFILE);
+    ASSERT_EQ(res_wireless_good.evidence.size(), 2u);
+    EXPECT_EQ(res_wireless_good.evidence[0].metric, "wifi_loss_rate");
+    EXPECT_DOUBLE_EQ(res_wireless_good.evidence[0].value, 0.1);
+
+    // 3. 有线环境无需 Wi-Fi，NOT_APPLICABLE 算作 FULL_FOR_PROFILE
     std::vector<MetricSample> tcp_good = { MetricSample::valid(0.2) };
     auto res_wired = ReliabilityEvaluator::evaluate({}, tcp_good, false);
     EXPECT_EQ(res_wired.state, HealthState::GOOD);
