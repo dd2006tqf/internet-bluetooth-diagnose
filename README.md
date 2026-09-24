@@ -1,259 +1,232 @@
-# AI-powered Network Diagnostics
+# AI-powered Network Diagnostics (WeakNet)
 
-一个基于 eBPF 和 D-Bus 的实时网络监控系统，提供网络接口状态监控、流量分析、网络质量评估、蓝牙设备监控等功能。
+本项目由“tanqf”开发。
 
-## 🚀 快速开始
+一个面向 Linux 嵌入式设备（Radxa Cubie A7A ARM64）与通用服务器的高性能、内核态无感知实时网络可观测与诊断系统。系统以 eBPF（CO-RE）为底层无侵入探针，结合系统总线 D-Bus IPC、多源指标注册中心、分层服务水平评价体系（SLE），以及与大模型智能排障平台（Large-Model-Application）的边缘遥测导出闭环，实现全方位的网络质量监测、弱网诊断与根因分析。
 
-### 安装依赖
+---
 
-```bash
-# Ubuntu/Debian
-sudo apt-get update
-sudo apt-get install -y build-essential cmake pkg-config clang llvm \
-    libdbus-1-dev libgoogle-glog-dev libelf-dev zlib1g-dev libcap-dev \
-    libbpf-dev libsqlite3-dev libgtest-dev
-```
+## 🌟 核心特性与架构亮点
 
-### 编译项目
+### 1. 内核级单源可观测底座（eBPF CO-RE）
+- **TCP 连接状态机跟踪** (`tcp_connect`, `tcp_conn`): 挂载 `sock:inet_sock_set_state` 等跟踪点，微秒级捕获握手耗时、三次握手丢包与连接生命周期。
+- **TCP 协议栈异常诊断** (`tcp_retrans`, `skb_drop`): 精准监控内核快速重传、超时重传（RTO），并在 `kfree_skb` 处捕获丢包 drop reason 代码。
+- **应用层协议延迟分析** (`http_latency`, `dns_monitor`): 基于 `sys_enter_write/sendto` 等系统调用与套接字探针，无侵入重组 HTTP 请求往返时延（RTT）及 DNS 解析耗时。
+- **单一事实源与跨探针安全**：严格遵循单源捕获原则，严禁跨探针 join 与脆弱内存跨域推断；支持针对本地自采样流量的智能回环抑制与协议过滤。
 
-```bash
-# x86 虚拟机本地构建（跳过 eBPF，产物位于 build-x86/）
-cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
-cmake --build build-x86 -j$(nproc)
+### 2. 丰富的主被动多源指标监控（Metrics Registry）
+- **网络质量与链路监控**：
+  - **RTT & Jitter**: 集成 ICMP 探测线程，单次采样下基于滑动窗口实时推导抖动（Jitter），杜绝双倍 ICMP 探测开销。
+  - **Wi-Fi 射频态势**: 优先通过 Netlink `nl80211` 查询真实 RSSI，在无射频接口时回落至启发式评估，并支持 `wifi_loss` 帧级监测。
+  - **网络流量吞吐**: 实时统计网卡吞吐率（bps）、包速率（pps）及活动流数量。
+  - **蓝牙设备监控**: 基于 BlueZ D-Bus 接口异步监测蓝牙适配器、设备配对、连接状态与 RSSI 变化。
+- **配置化与热调参（weaknet-cli）**:
+  - 全局参数支持 YAML 持久化配置与运行时 D-Bus 动态调参，改动实时生效无需重启服务。
+  - 安全鉴权保护：调参及监控器启停接口强校验调用方权限（仅 UID 0 / root 授权修改）。
 
-# ARM64 容器内构建（增量构建，产物位于 build-arm64/）
-docker exec weaknet-arm64-dev bash -c \
-    'cd /src && cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-arm64 -j1'
-```
+### 3. 分层网络体验评价体系（Assurance v2 / SLE）
+- **Profile 驱动**：根据业务场景（`NETWORK_ONLY` 纯局域网 / `INTERNET_ACCESS` 互联网接入）动态调整评估标准。
+- **Evidence-First 证据判决**：多维度置信度门禁，防止弱网误报；区分链路物理质量（Link Quality）与端到端网络体验（Overall Quality）。
+- **历史数据持久化**：SQLite 高效持久化网卡健康、RTT、Jitter、丢包率等全维度数据，并配备专用查询 CLI。
 
-### 启动服务器
+### 4. 边缘遥测与 AI 智能诊断平台闭环
+- **边缘安全上报**：板端内置轻量签名与导出管道，通过 Ed25519/HMAC 签名与 TLS 双向加密，向云端安全上送不可变评估快照。
+- **云端大模型工作台**（`Large-Model-Application`）：基于 Next.js + FastAPI + 大语言模型，接收边缘上报数据，提供暗黑风态势大屏、拓扑下钻以及一键式 AI 根因诊断。
 
-```bash
-# 直接启动
-./build-x86/server/weaknet-dbus-server
+---
 
-# 或使用 CI 脚本一键部署到开发板
-./tools/ci.sh
-```
-
-## 📁 项目结构
+## 📁 目录结构
 
 ```
 AI-powered-Network-Diagnostics/
-├── server/                    # 服务端
-│   ├── src/                   # C++ 源码（45 个 .cpp + 9 个 eBPF）
-│   ├── include/               # 头文件
-│   ├── test/                  # 单元测试（40 个 Google Test）
-│   └── CMakeLists.txt         # 服务端构建配置
-├── client/                    # 客户端
-│   ├── client.cpp             # 客户端实现
-│   ├── weaknet_client.h       # C API 接口
-│   └── CMakeLists.txt         # 客户端构建配置
-├── tools/                     # 工具脚本
-│   ├── ci.sh                  # 编译+部署+测试（唯一入口）
-│   └── weaknet-test-full.sh   # 开发板端测试脚本
-├── cmake/                     # CMake 工具链
-├── docs/                      # 项目文档
-│   ├── ai/                    # 工作流相关文档（openspec、workflow 等）
-│   ├── ideas/                 # 功能设想与技术草案（孵化区）
-│   └── ...                    # 架构设计、部署指南等
-├── scripts/                   # harness 工作流脚本
-├── openspec/                  # OpenSpec 变更管理
-├── .github/workflows/         # GitHub Actions CI/CD
-├── CMakeLists.txt             # 根构建配置
-└── README.md                  # 本文件
+├── server/                     # C++ 服务端与 eBPF 探针源码
+│   ├── src/                    # 服务端实现（WeakNetMgr, D-Bus Adapter, Registry 等）
+│   ├── include/                # 服务端内部头文件
+│   ├── bpf/                    # eBPF 内核态源码（*.bpf.c 及 vmlinux.h）
+│   ├── test/                   # 单元测试与组件测试（Google Test）
+│   └── CMakeLists.txt          # 服务端构建规则
+├── client/                     # 客户端库与 CLI 工具
+│   ├── client.cpp              # 客户端核心实现与 D-Bus 通信
+│   ├── weaknet_cli.cpp         # 运维调参命令行工具（weaknet-cli）
+│   ├── weaknet_client.h        # 纯 C 兼容 API 头文件
+│   └── CMakeLists.txt          # 客户端编译规则
+├── Large-Model-Application/    # 智能诊断云端平台（Next.js + FastAPI + LLM Agent）
+├── tools/                      # 部署、测试与运维工具
+│   ├── ci.sh                   # 一键 CI 脚本：增量编译 + 打包 + 部署 + 真机测试（唯一入口）
+│   ├── weaknet-server.service  # systemd 服务单元
+│   ├── com.example.WeakNet.conf# D-Bus 系统总线安全策略
+│   └── weaknet-test-full.sh    # 开发板真机全量冒烟测试脚本
+├── docs/                       # 项目全景技术文档
+│   ├── ai/                     # OpenSpec 工作流、铁律与规范
+│   ├── 架构设计.md             # 系统全局架构与模块设计
+│   ├── 网络体验评价体系.md      # 分层 SLE 评估体系模型
+│   ├── 交叉编译与开发板部署.md  # ARM64 开发板环境与编译规范
+│   └── weaknet_cli_usage.md    # 调参 CLI 使用手册
+├── config.yaml                 # 运行时监控器与边缘上报配置文件
+├── CMakeLists.txt              # 根 CMake 配置
+└── README.md                   # 项目介绍文档
 ```
 
-## 🔧 功能特性
+---
 
-### 服务器端功能
-- **网络接口监控**: 实时监控网络接口状态变化
-- **RTT监控**: 基于ping的网络延迟监控
-- **RSSI监控**: Wi-Fi信号强度监控
-- **TCP丢包率监控**: 基于eBPF的内核级丢包监控
-- **流量分析**: 基于eBPF的实时流量分析
-- **网络质量评估**: 综合多指标的网络质量评估（支持环境变量配置阈值）
-- **蓝牙监控**: 蓝牙设备发现、连接状态、信号强度监控
-- **事件系统**: 基于D-Bus的事件通知机制（支持重试）
-- **历史数据持久化**: SQLite 存储历史监控数据（支持忙超时）
+## 🚀 快速上手
 
-### 客户端功能
-- **C/C++ API**: 提供完整的C和C++接口
-- **动态库**: 可链接的动态库 `libweaknet.so`
-- **Web 可视化仪表盘**: 现代暗黑风 SPA 态势感知大屏（FastAPI + ECharts + AI 一键根因诊断）
-- **命令行工具**: 命令行测试工具
-- **事件订阅**: 支持多种网络事件订阅
-- **健康检查**: 网络健康状态检查
-- **历史数据查询**: 查询历史监控数据
+### 环境依赖
 
-### 开发工具
-- **Superpowers Skills**: 集成的技能框架，提供设计、测试、调试等最佳实践
-- **OpenSpec 工作流**: 完整的变更管理流程，确保代码质量
-- **CI/CD**: 自动化编译、部署和测试
+- **开发宿主机（x86_64）**：Linux 环境，支持 Docker、QEMU binfmt（用于 ARM64 模拟构建）、CMake 3.16+、Clang/LLVM、D-Bus、Glog、SQLite3、GTest。
+- **目标设备（ARM64）**：Radxa Cubie A7A（内核 5.15+ 支持 BTF 与 eBPF，开启 mDNS / Avahi，预装 libdbus、libbpf、glibc 2.31+）。
 
-## 📖 使用方法
+### 1. 本地快速构建与测试（x86 验证）
 
-### 启动服务器
+仅需本地开发机快速跑单元测试或校验服务端逻辑时：
 
 ```bash
-# 直接启动
-./build-x86/server/weaknet-dbus-server
+# 生成 x86 构建目录（跳过需要内核环境的 eBPF 探针）
+cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
 
-# 部署到开发板（ARM64）
-./tools/ci.sh
+# 编译全部组件
+cmake --build build-x86 -j$(nproc)
+
+# 运行本地全量单元测试（40 个用例全部通过）
+ctest --test-dir build-x86/server --output-on-failure
 ```
 
-### 客户端测试
+### 2. ARM64 交叉编译与一键部署到开发板
 
+本项目目标运行平台为 ARM64。为保证内核头文件（`vmlinux.h`）与 glibc 二进制兼容性，**严禁在 x86 宿主机直接交叉编译**，统一使用常驻 Docker 容器 `weaknet-arm64-dev` 进行增量编译。
+
+#### （1）确保 ARM64 容器正常运行
 ```bash
-# 获取网络接口信息
-./build-x86/client/bin/test_client_bin get
+# 若宿主重启过，先重置 binfmt 解释器注册并启动容器
+docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+docker start weaknet-arm64-dev
 
-# 网络健康检查
-./build-x86/client/bin/test_client_bin health
-
-# 历史数据查询
-./build-x86/server/history_query_tool --iface wlan0 --last 1h
+# 验证容器环境
+docker exec weaknet-arm64-dev uname -m   # 应输出: aarch64
 ```
 
-### Web 可视化与智能诊断平台
+#### （2）一键流水线（编译 + 打包 + 部署 + 真机测试）
+```bash
+# 自动通过 SSH 部署到开发板（优先通过 mDNS 解析或指定 BOARD 环境变量）
+BOARD=radxa@radxa-cubie-a7a.local ./tools/ci.sh
 
-开发板侧的 `web-dashboard/` 已废弃删除。网络态势可视化与 AI 智能排障统一由
-`Large-Model-Application/`（FastAPI + Next.js + Ant Design）承载，开发板只作为
-边缘事实源（eBPF + C++ 底座）向其上报不可变评估快照。
+# 若处于跨网段环境，直接指定开发板实际 IP：
+BOARD=radxa@192.168.2.77 ./tools/ci.sh
+```
+
+流水线会自动完成：
+- 容器内 ARM64 增量编译与 BPF 探针编译
+- 打包输出 `dist-arm64/`
+- rsync 增量同步产物至板端 `/home/radxa/weaknet/`（自动保留板端持久化数据库与密钥）
+- 配置 systemd 服务与 D-Bus 系统总线并热重启
+- 远程执行板端真机冒烟套件（`health`, `get`, `test-basic`, `test-network`, `test-ping`）
+
+---
+
+## 💻 运维与管理（weaknet-cli）
+
+开发板服务端部署成功后，系统通过 D-Bus System Bus 监听请求。
+
+### 查看配置
+```bash
+# 列出所有可用监控器
+weaknet-cli list
+
+# 查询指定监控器当前参数（JSON 输出）
+weaknet-cli get rtt
+# 输出示例: {"rtt":{"enabled":true,"target":"223.5.5.5","interval_ms":5000,"timeout_ms":800,"window_size":30}}
+
+# 查看全部运行中配置
+weaknet-cli get all
+```
+
+### 实时调参（需 root 权限）
+为保证网络服务安全，修改系统状态的方法已收紧至仅 root 允许：
+```bash
+# 实时修改 RTT 采样周期为 5 秒
+sudo weaknet-cli set rtt.interval 5s
+
+# 修改 RTT 探测目标地址
+sudo weaknet-cli set rtt.target 8.8.8.8
+
+# 动态启停指定监控器
+sudo weaknet-cli disable bluetooth
+sudo weaknet-cli enable bluetooth
+
+# 保存当前运行时参数到持久化覆盖配置
+sudo weaknet-cli save
+```
+
+### 历史数据查询工具
+```bash
+# 查询数据库整体统计信息
+sudo /home/radxa/weaknet/server/bin/history_query_tool --info
+
+# 按网卡及时间窗口导出历史记录
+sudo /home/radxa/weaknet/server/bin/history_query_tool --iface wlan0 --last 1h
+```
+
+---
+
+## 🌐 云端协同：Large-Model-Application 大模型排障
+
+系统解耦了边缘实时监测与云端海量智能分析：
+- **开发板（边缘设备）**：充当高可靠不可变事实源，按指定周期采样与评估，生成签名遥测帧推送到后端；
+- **云端排障工作台**：启动位于 `Large-Model-Application/` 的全功能诊断套件：
 
 ```bash
 cd Large-Model-Application
 
-# 1) 启动后端与基础设施（PostgreSQL / Redis / MinIO / Keycloak / Vault / OPA）
-./scripts/dev_lite.sh init      # 首次：生成本地运行时配置
+# 1. 启动微服务底座（PostgreSQL / Redis / MinIO / Keycloak / OPA / FastAPI）
+./scripts/dev_lite.sh init
 ./scripts/dev_lite.sh up -d
 
-# 2) 启动前端工作台
+# 2. 启动前端 SPA 工作台
 web/node_modules/.bin/pnpm --dir web dev
-# 浏览器访问: http://localhost:3000
+# 打开浏览器访问: http://localhost:3000
 ```
 
-开发板作为网络资产接入平台的具体配置（服务端地址、设备身份、签名密钥）见
-`Large-Model-Application/README.md` 与 `config.yaml` 的 `edge:` 段。
+---
 
-### C/C++ 编程接口
+## 🔌 C / C++ 客户端二次集成
+
+动态链接库 `libweaknet.so` 与头文件 `weaknet_client.h` 为第三方应用提供了极简的接入方式：
 
 ```cpp
+#include <iostream>
 #include "client/weaknet_client.h"
 
-// 初始化
-if (!weaknet_init()) {
-    std::cerr << "初始化失败" << std::endl;
-    return -1;
-}
+int main() {
+    // 1. 初始化客户端总线连接
+    if (!weaknet_init()) {
+        std::cerr << "WeakNet 客户端初始化失败" << std::endl;
+        return -1;
+    }
 
-// 获取网络接口信息
-char buffer[1024], error_buffer[256];
-if (weaknet_get_interfaces(buffer, sizeof(buffer), error_buffer, sizeof(error_buffer))) {
-    std::cout << "网络接口: " << buffer << std::endl;
-}
+    // 2. 发起健康评估调用
+    char result_buf[2048] = {0};
+    if (weaknet_health_check(result_buf, sizeof(result_buf))) {
+        std::cout << "当前健康状态快照:\n" << result_buf << std::endl;
+    }
 
-// 清理
-weaknet_cleanup();
+    // 3. 释放资源
+    weaknet_cleanup();
+    return 0;
+}
 ```
 
-## 🛠️ 编译选项
+---
 
-```bash
-# 编译所有组件
-cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-x86 -j$(nproc)
+## 🛠️ 工程规范与 Harness 纪律
 
-# 仅编译服务器
-cmake --build build-x86 --target weaknet-dbus-server
+本项目遵循严格的 **OpenSpec 规范驱动开发** 与 **Superpowers Skills** 流程：
+1. **单一事实源**：以 OpenSpec 变更（`openspec/changes/`）为需求、设计与任务拆解的唯一标准。
+2. **严禁在未冻结基线下修改代码**：遵循 `Planner → Generator → Evaluator` 三权分立角色体系，确保行为变更拥有完整的 RED-GREEN 证据链。
+3. **真实真机闭环**：代码改动必须经过 x86 单元测试、ARM64 容器增量构建、Radxa 开发板真机部署测试全绿后方可合并。
 
-# 仅编译客户端
-cmake --build build-x86 --target weaknet test_client_bin
+---
 
-# 清理本机 x86 编译产物（ARM64 缓存和部署包独立保留）
-rm -rf build-x86
+## 📄 许可证与权利声明
 
-# 运行测试
-ctest --test-dir build-x86/server
-```
-
-## 📊 监控指标
-
-### 网络接口指标
-- 接口名称和状态
-- IP地址和子网掩码
-- 网络标志位
-- 当前使用状态
-
-### 网络质量指标
-- RTT (往返时间)
-- TCP丢包率
-- RSSI (信号强度)
-- 流量统计
-- 综合质量评分
-
-### 事件类型
-- `InterfaceChanged`: 网络接口变化
-- `ConnectionModeChanged`: 上网方式变化
-- `NetworkQualityChanged`: 网络质量变化
-- `BluetoothDeviceChanged`: 蓝牙设备变化
-
-## 🔍 故障排除
-
-### 常见问题
-
-1. **编译失败**
-   ```bash
-   # 清理重新编译
-   rm -rf build-x86 && cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-x86 -j$(nproc)
-   ```
-
-2. **服务器启动失败**
-   ```bash
-   # 检查DBus服务
-   systemctl status dbus
-   
-   # 检查端口占用
-   lsof -i :session
-   ```
-
-3. **客户端连接失败**
-   ```bash
-   # 检查服务器是否运行
-   pgrep -f weaknet-dbus-server
-   
-   # 检查DBus连接
-   dbus-send --session --dest=com.example.WeakNet --type=method_call --print-reply /com/example/WeakNet com.example.WeakNet.Get
-   ```
-
-### 日志文件
-
-- 服务器日志: `./logs/server/`
-- 编译日志: 查看终端输出
-- 系统日志: `journalctl -f`
-
-## 📚 详细文档
-
-- [架构设计文档](docs/架构设计.md) - 系统架构和技术细节
-- [网络体验评价体系](docs/网络体验评价体系.md) - Profile 驱动 / 分层 SLE / Evidence-first / Coverage Gate 评价模型
-- [交叉编译与开发板部署](docs/交叉编译与开发板部署.md) - ARM64 部署指南
-- [蓝牙监控优化方案](docs/蓝牙监控优化实现方案.md) - 蓝牙功能优化
-- [Skills 与 OpenSpec 工作流使用指南](docs/skills-and-openspec-guide.md) - Skills 和工作流详细使用方法
-- [功能设想与技术草案](docs/ideas/) - 新功能孵化区，记录灵感与方案
-- [客户端API文档](client/README_CLIENT.md)
-- [动态库使用指南](client/README_LIBRARY.md)
-
-## 🤝 贡献
-
-欢迎提交Issue和Pull Request来改进项目。
-
-## 📄 许可证
-
-本项目采用MIT许可证，详见LICENSE文件。
-
-## 🔗 相关链接
-
-- [eBPF官方文档](https://ebpf.io/)
-- [DBus官方文档](https://dbus.freedesktop.org/)
-- [libbpf项目](https://github.com/libbpf/libbpf)
+- 本项目开发与核心维护者：“tanqf”。
+- 开源协议：本项目遵循 [MIT 许可证](LICENSE)。
