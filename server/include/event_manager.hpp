@@ -84,9 +84,10 @@ struct ServerContext;
  * 单例设计，通过 getEventManager() 访问。
  * 内部按 EventType 维护 7 组回调向量，emitEvent 时遍历并依次调用。
  *
- * 线程安全：所有公开方法在 cb_mutex_ 保护下运行。
- * 设计注意：回调中若嵌套调用 emitEvent 会产生锁重入，当前实现在 emitEvent
- *   中先拷贝回调向量再解锁，避免回调中触发新事件时的死锁。
+ * 线程安全：回调注册表由 cb_mutex_ 保护，但**回调本身在锁外执行**。
+ *   invokeCallbacks() 先在锁内拷贝该类型的回调列表，释放锁后再逐个调用，
+ *   因此回调内部可以安全地 registerCallback / unregisterCallback，
+ *   也可以嵌套 emitEvent，都不会重入死锁。
  */
 class NetworkEventManager {
 public:
@@ -142,13 +143,11 @@ public:
      */
     void startEventMonitoring(struct ServerContext* ctx);
 
-    /**
-     * @brief 解除与 ServerContext 的绑定
-     *
-     * 调用后 emitXxxChanged() 不再发射 D-Bus 信号（仅调用回调）。
-     * 用于服务关闭或测试场景。
-     */
-    void stopEventMonitoring();
+    // 说明：此前这里有一个 stopEventMonitoring() —— 它只把 monitoring_active_
+    // 置 false，而 emitEvent 从不读该标志，因此调用后信号照发，属于"看起来能
+    // 停止、实际无效"的假接口。它无任何调用者（服务关闭走 ServerContext 析构，
+    // 测试直接 unregisterCallback），故连同只写不读的 monitoring_active_ 一并删除。
+    // 若将来确需停止事件监控，必须让 emitEvent 真正检查该状态并定义清楚语义。
 
 private:
     std::mutex cb_mutex_;   ///< 保护所有 callback 向量的并发访问
@@ -163,7 +162,6 @@ private:
     std::vector<EventCallback> bluetooth_callbacks_;
 
     struct ServerContext* server_ctx_ = nullptr;  ///< 集成层：emit 时需通过 service 发 D-Bus 信号
-    bool monitoring_active_ = false;               ///< 是否已绑定 ServerContext
 
     /**
      * @brief 内部：遍历并调用指定类型的所有回调（先拷贝再解锁，防死锁）

@@ -76,9 +76,8 @@ static bool isSafePath(const std::string& filepath) {
 }
 
 /**
- * @brief 以"不跟随符号链接"的方式打开安全路径下的文件
+ * @brief 以"不跟随符号链接"的方式打开安全路径下的文件（只读）
  * @param filepath      完整文件路径（须通过 isSafePath 校验）
- * @param forWrite      true=写（O_WRONLY|O_CREAT|O_TRUNC，0600）；false=读
  * @param error_message [out] 失败原因（可传 nullptr）
  * @return fd 成功；-1 路径不安全或打开失败（含符号链接攻击场景）
  *
@@ -86,9 +85,14 @@ static bool isSafePath(const std::string& filepath) {
  *   - 目录用 open(O_DIRECTORY|O_NOFOLLOW) 打开 —— 私有目录本身被替换为符号链接时直接失败；
  *   - 文件用 openat(...O_NOFOLLOW) 打开 —— 目标是符号链接（含悬空链接）时返回 ELOOP；
  *   - 打开与读写之间不存在"检查后再打开"的窗口：openat 相对 dirfd 定位，攻击者无法
- *     通过替换父目录组件把写入重定向到别的目录。
+ *     通过替换父目录组件把读取重定向到别的目录。
+ *
+ * 说明：写入路径不共用本函数。writeBufferToFile 需要 tmp+fsync+rename 三步，
+ * 本函数的单次 openat 无法表达，因此写入已独立实现。此前这里保留的
+ * forWrite=true 分支（O_CREAT|O_TRUNC 直写目标）在没有调用者之后成为死代码，
+ * 且正是"非原子写"缺陷的来源，已删除。
  */
-static int openSafeFile(const std::string& filepath, bool forWrite, std::string* error_message) {
+static int openSafeFile(const std::string& filepath, std::string* error_message) {
     if (!isSafePath(filepath)) {
         if (error_message) *error_message = "路径不安全，必须直接位于 $XDG_RUNTIME_DIR/weaknet/ 或 /tmp/weaknet/ 下: " + filepath;
         return -1;
@@ -97,17 +101,13 @@ static int openSafeFile(const std::string& filepath, bool forWrite, std::string*
     const std::string dir = filepath.substr(0, pos);
     const std::string name = filepath.substr(pos + 1);
 
-    if (forWrite) ensureParentDir(dir);
-
     const int dirfd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (dirfd < 0) {
         LOG_ERROR(LogModule::WEAK_MGR, "openSafeFile: open dir " << dir << " failed: " << strerror(errno));
         if (error_message) *error_message = "无法安全打开私有目录: " + dir + " (" + strerror(errno) + ")";
         return -1;
     }
-    const int fd = ::openat(dirfd, name.c_str(),
-                            (forWrite ? (O_WRONLY | O_CREAT | O_TRUNC) : O_RDONLY) | O_NOFOLLOW | O_CLOEXEC,
-                            forWrite ? 0600 : 0);
+    const int fd = ::openat(dirfd, name.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     ::close(dirfd);
     if (fd < 0) {
         const std::string reason = (errno == ELOOP) ? "路径包含符号链接（已拒绝）" : strerror(errno);
@@ -126,8 +126,42 @@ static int openSafeFile(const std::string& filepath, bool forWrite, std::string*
  */
 bool writeBufferToFile(const std::vector<uint8_t>& buffer, const std::string& filepath, std::string* error_message) {
     LOG_INFO(LogModule::WEAK_MGR, "writeBufferToFile: writing " << buffer.size() << " bytes to " << filepath);
-    const int fd = openSafeFile(filepath, /*forWrite=*/true, error_message);
-    if (fd < 0) return false;
+    if (!isSafePath(filepath)) {
+        if (error_message) *error_message = "路径不安全，必须直接位于 $XDG_RUNTIME_DIR/weaknet/ 或 /tmp/weaknet/ 下: " + filepath;
+        return false;
+    }
+
+    const size_t pos = filepath.find_last_of('/');
+    const std::string dir = filepath.substr(0, pos);
+    const std::string name = filepath.substr(pos + 1);
+    ensureParentDir(dir);
+
+    const int dirfd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (dirfd < 0) {
+        LOG_ERROR(LogModule::WEAK_MGR, "writeBufferToFile: open dir " << dir << " failed: " << strerror(errno));
+        if (error_message) *error_message = "无法安全打开私有目录: " + dir + " (" + strerror(errno) + ")";
+        return false;
+    }
+
+    // 原子写：写临时文件 → fsync → renameat 覆盖目标。
+    //
+    // 此前实现是 O_CREAT|O_TRUNC 直写目标文件，进程在写入中途被终止就会留下
+    // 半截文件，而头文件一直宣称"先写临时文件再 rename"。这里补上真实实现。
+    //
+    // 临时名带 pid，避免同一进程的并发写互相踩；O_EXCL 保证不与残留文件混用。
+    // renameat 的目标若是指向别处的符号链接，替换的是链接本身而非其指向的
+    // 文件（不会写入 /etc/passwd 之类），比原先 O_NOFOLLOW 直接报 ELOOP 更宽容，
+    // 但同样不会越权写入。
+    const std::string tmpname = name + ".tmp." + std::to_string(::getpid());
+    const int fd = ::openat(dirfd, tmpname.c_str(),
+                            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        const std::string reason = (errno == ELOOP) ? "路径包含符号链接（已拒绝）" : strerror(errno);
+        LOG_ERROR(LogModule::WEAK_MGR, "writeBufferToFile: open temp " << tmpname << " failed: " << reason);
+        if (error_message) *error_message = "无法创建临时文件: " + tmpname + " (" + reason + ")";
+        ::close(dirfd);
+        return false;
+    }
 
     size_t off = 0;
     bool ok = true;
@@ -140,13 +174,26 @@ bool writeBufferToFile(const std::vector<uint8_t>& buffer, const std::string& fi
         }
         off += static_cast<size_t>(n);
     }
+    // 先落盘再 rename：否则崩溃后可能出现"rename 完成但数据未落盘"的空文件。
+    if (ok && ::fsync(fd) != 0) ok = false;
     if (::close(fd) != 0) ok = false;
 
+    if (ok && ::renameat(dirfd, tmpname.c_str(), dirfd, name.c_str()) != 0) {
+        LOG_ERROR(LogModule::WEAK_MGR, "writeBufferToFile: renameat failed: " << strerror(errno));
+        ok = false;
+    }
     if (!ok) {
+        // 失败时清掉临时文件，不留残渣（目录项本身的持久化不在此保证范围）。
+        ::unlinkat(dirfd, tmpname.c_str(), 0);
+        ::close(dirfd);
         LOG_ERROR(LogModule::WEAK_MGR, "writeBufferToFile: write failed for " << filepath);
         if (error_message) *error_message = "写入失败: " + filepath;
+        return false;
     }
-    return ok;
+    // 目录 fsync：让 rename 产生的目录项变更也落盘（否则掉电后可能回退到旧内容）。
+    ::fsync(dirfd);
+    ::close(dirfd);
+    return true;
 }
 
 /**
@@ -158,7 +205,7 @@ bool writeBufferToFile(const std::vector<uint8_t>& buffer, const std::string& fi
  */
 bool readFileToBuffer(const std::string& filepath, std::vector<uint8_t>* buffer, std::string* error_message) {
     LOG_INFO(LogModule::WEAK_MGR, "readFileToBuffer: reading from " << filepath);
-    const int fd = openSafeFile(filepath, /*forWrite=*/false, error_message);
+    const int fd = openSafeFile(filepath, error_message);
     if (fd < 0) return false;
 
     // 循环读至 EOF（不信任文件预读大小，处理读取中途文件变化/部分读）

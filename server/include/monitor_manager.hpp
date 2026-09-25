@@ -2,9 +2,12 @@
  * @file monitor_manager.hpp
  * @brief 进程内监控器插件生命周期协调器
  *
- * 阶段一实现：长期持有静态注册表实例，统一初始化、启动、状态记录和收尾。
- * 线程和监控器资源的独立所有权迁移在后续阶段完成；当前 stopAll 仍在
- * server.cpp join 线程之后调用，保持既有退出顺序。
+ * 长期持有静态注册表实例，统一初始化、启动、状态记录和收尾。
+ * 插件对象与 worker 线程句柄均由插件自身持有：`stop()` 内部置停止标志并
+ * join 自己的 worker，因此 `stopAll()` 返回后所有插件线程已经退出，
+ * 调用方无需（也不应）在它之后再 join 插件线程。
+ * server.cpp 只需在 `stopAll()` 之后 join 两个服务级线程
+ * （active_probe_thread / history_thread）。
  */
 
 #pragma once
@@ -64,7 +67,9 @@ public:
     /// 按插件 order 初始化并启动；单个失败不会阻止其他插件尝试启动。
     bool startConfigured();
 
-    /// 当前阶段用于服务退出；调用者必须先确保 worker 已 join。
+    /// 逆序停止全部处于 Running/Starting/Failed 的插件。
+    /// 每个插件的 stop() 内部会置停止标志并 join 自己的 worker，
+    /// 因此本调用返回后插件线程均已退出（无需外部再 join）。
     bool stopAll();
 
     /// 返回全部插件的稳定状态快照。

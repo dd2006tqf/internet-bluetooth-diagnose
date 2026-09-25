@@ -7,7 +7,6 @@
 #include <set>
 #include <optional>
 #include <stdexcept>
-#include <fstream>
 #include <sstream>
 #include <cctype>
 
@@ -152,15 +151,12 @@ public:
         return rules;
     }
 
-    static std::vector<DiagnosisRule> loadFromFile(const std::string& path) {
-        std::ifstream in(path);
-        if (!in.is_open()) {
-            return loadDefaultRules();
-        }
-        // 当 rules 文件存在时，优先解析并校验；若解析遇未知语法回落至默认规则并抛出/记录
-        auto rules = loadDefaultRules();
-        return rules;
-    }
+    // 说明：此前这里有一个 loadFromFile(path) —— 它打开文件后不做任何解析，
+    // 无条件返回 loadDefaultRules()，即"看起来支持外部规则文件、实际永远是
+    // 硬编码规则"的伪装路径。它无生产调用者（server.cpp 直接用
+    // loadDefaultRules()），也无测试覆盖，属于孤儿接口，已删除。
+    // 若将来确需从文件加载规则，必须连同 rules/*.yaml 的真实解析、
+    // 未知语法处理与失败语义一起设计，而不是留一个静默回落默认值的空壳。
 
     static void validateRuleSet(const std::vector<DiagnosisRule>& rules) {
         std::set<std::string> rule_ids;

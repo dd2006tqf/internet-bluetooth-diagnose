@@ -20,7 +20,7 @@
  * 数据流向：
  *   collectCurrentInterfaces() → 构建初始 NetInfo 列表（含 usingNow 标记）
  *       ↓
- *   updateRttAndStateSafe()  ── pinger → RTT
+ *   updateRttAndStateForIfaceSafe() ── rtt_monitor 锁外 ping 后的样本 → RTT
  *   updateWifiRssiSafe()     ── wpa ctrl socket → RSSI（仅 WiFi 接口）
  *   updateTcpLossRateSafe()  ── 外部 monitor 推送 → TCP 丢包率
  *   updateJitterSafe()       ── 外部 monitor 推送 → 抖动
@@ -86,32 +86,15 @@ static LinkQuality classifyQualityFromRtt(int rttMs, int /*prevMs*/) {
     return LinkQuality::Bad;
 }
 
-bool WeakNetMgr::updateRttAndState(std::vector<NetInfo>& list, const std::string& host, int timeoutMs) {
-    LOG_INFO(LogModule::WEAK_MGR, "updateRttAndState: starting, host=" << host << ", timeout=" << timeoutMs << ", size=" << list.size());
-    auto pinger = NetPing::getInstance();
-    LOG_INFO(LogModule::WEAK_MGR, "updateRttAndState: got pinger instance");
-    bool anyChanged = false;
-    for (auto& x : list) {
-        LOG_INFO(LogModule::WEAK_MGR, "updateRttAndState: processing interface " << x.ifName());
-        int prev = x.rttMs();
-        LOG_INFO(LogModule::WEAK_MGR, "updateRttAndState: calling ping for " << x.ifName());
-        int r = pinger->ping(host, x.ifName(), timeoutMs);
-        LOG_INFO(LogModule::WEAK_MGR, "updateRttAndState: ping returned " << r << " for " << x.ifName());
-        const bool rttChanged = x.rttMs() != r;
-        x.setPrevRttMs(prev);
-        x.setRttMs(r);
-        if (rttChanged) { anyChanged = true; }
-        x.setRttSampleTsMs(metricTimestampMs());
-        LinkQuality q = classifyQualityFromRtt(r, prev);
-        if (x.quality() != q) { x.setQuality(q); anyChanged = true; }
-        // 状态根据 RTT 粗略判断（可扩展更多信号）
-        NetState ns = (r >= 0) ? NetState::Up : NetState::Down;
-        if (x.state() != ns) { x.setState(ns); anyChanged = true; }
-        LOG_INFO(LogModule::WEAK_MGR, "iface=" << x.ifName() << " rtt=" << r << "ms quality=" << static_cast<int>(x.quality()) << " state=" << static_cast<int>(x.state()));
-    }
-    LOG_INFO(LogModule::WEAK_MGR, "updateRttAndState: completed, anyChanged=" << anyChanged);
-    return anyChanged;
-}
+// 说明：这里原有两个函数 —— updateRttAndStateSafe() 与它独占的
+// updateRttAndState() —— 已随 RTT 采集路径改造一并删除：
+//   - updateRttAndStateSafe() 持 iface_mutex_ 期间对**每个**接口做 ICMP ping
+//     （多接口 × timeout 可达数秒），期间 getCurrentInterfaces() 的所有读者
+//     ——含 D-Bus 的 ListInterfaces / HealthCheck——全部被阻塞；
+//   - RTT 更新现已改走 updateRttAndStateForIfaceSafe()：由 rtt_monitor 在
+//     **锁外**完成 ping，再持锁写回单个接口（见 rtt_monitor.cpp）。
+// 两者在改造后均无任何调用者，属于"锁内做 I/O"缺陷的遗留并行路径，
+// 删除以免保留第二个 RTT 写入入口。
 
 bool WeakNetMgr::updateWifiRssi(std::vector<NetInfo>& list, const std::string& ctrlDir) {
     LOG_INFO(LogModule::WEAK_MGR, "updateWifiRssi: starting, ctrlDir=" << ctrlDir << " size=" << list.size());
@@ -376,37 +359,6 @@ std::optional<std::string> WeakNetMgr::getCurrentUsingInterface() const {
     // 所有 SLE 结论、D-Bus 快照的 interface 字段与历史行都会被归到那张
     // 列表首位的网卡上，而设备和它毫无关系。调用方必须显式处理"无上行"。
     return std::nullopt;
-}
-
-bool WeakNetMgr::updateRttAndStateSafe(const std::string& host, int timeoutMs) {
-    LOG_DEBUG(LogModule::WEAK_MGR, "updateRttAndStateSafe: acquiring lock");
-    std::vector<std::pair<std::string, int>> rtt_snapshots;
-    bool result = false;
-    {
-        std::lock_guard<std::mutex> lock(iface_mutex_);
-        LOG_DEBUG(LogModule::WEAK_MGR, "updateRttAndStateSafe: lock acquired, calling updateRttAndState");
-        result = updateRttAndState(current_interfaces_, host, timeoutMs);
-        ++snapshot_generation_;
-        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-        for (auto& iface : current_interfaces_) {
-            iface.markMetricUpdated(snapshot_generation_, now);
-            rtt_snapshots.emplace_back(iface.ifName(), iface.rttMs());
-        }
-        LOG_DEBUG(LogModule::WEAK_MGR, "updateRttAndStateSafe: updateRttAndState completed, releasing lock");
-    }
-
-    // MR-2 铁律：必须在释放 iface_mutex_ 后再向 MetricsRegistry 发布
-    if (metrics_registry_) {
-        for (const auto& item : rtt_snapshots) {
-            if (item.second >= 0) {
-                metrics_registry_->publish(item.first, weaknet::MetricId::RTT_MS, weaknet::MetricSample::valid(item.second));
-                metrics_registry_->publish(item.first, weaknet::MetricId::REACHABILITY_SUCCESS, weaknet::MetricSample::valid(1.0));
-            } else {
-                metrics_registry_->publish(item.first, weaknet::MetricId::REACHABILITY_SUCCESS, weaknet::MetricSample::valid(0.0));
-            }
-        }
-    }
-    return result;
 }
 
 bool WeakNetMgr::updateRttAndStateForIfaceSafe(const std::string& iface_name, int rtt_ms) {

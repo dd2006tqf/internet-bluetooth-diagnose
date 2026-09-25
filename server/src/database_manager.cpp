@@ -674,7 +674,12 @@ std::string DatabaseManager::getQualityReport() {
         json << "\"rssi\":" << statuses(s.status[0]) << ",\"rtt\":" << statuses(s.status[1])
              << ",\"jitter\":" << statuses(s.status[2]) << ",\"tcp_loss\":" << statuses(s.status[3])
              << ",\"traffic\":" << statuses(s.status[4]) << "},\"timestamp_zero_counts\":{";
-        json << "\"rtt\":" << s.zero[1] << ",\"rssi\":" << s.zero[0]
+        // zero[i] 按 SELECT 列序填充：i 对应 8+i 列，而列 8..12 依次是
+        // rtt / rssi / jitter / tcp_loss / traffic_sample_ts。
+        // 这里曾把 zero[1] 输出到 "rtt"、zero[0] 输出到 "rssi"，与 status[]
+        // 的键序（0=rssi, 1=rtt）混用了两套下标，导致整个 timestamp_zero_counts
+        // 的键值对错位。必须按 SELECT 列序命名，不能沿用 status[] 的键序。
+        json << "\"rtt\":" << s.zero[0] << ",\"rssi\":" << s.zero[1]
              << ",\"jitter\":" << s.zero[2] << ",\"tcp_loss\":" << s.zero[3]
              << ",\"traffic\":" << s.zero[4] << "}}";
     }

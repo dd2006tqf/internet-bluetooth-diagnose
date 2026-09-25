@@ -804,10 +804,22 @@ void BtMonitor::processPendingSignals() {
                     }
                 }
                 // 2. 接口添加 InterfacesAdded (发现新设备)
+                //
+                // 注意：这两个 ObjectManager 信号的**消息路径是 /org/bluez**
+                // （ObjectManager 根），新增/移除对象的路径在**第一个参数**里
+                // （签名 "oa{sa{sv}}" / "oas"）。此前直接用 dbus_message_get_path()
+                // 去查属性，等于每次都去查 /org/bluez 自身，永远拿不到设备属性，
+                // 信号驱动的设备发现/离站因此从未生效——被 30s 轮询掩盖着。
                 else if (std::strcmp(iface, DBUS_OBJMGR_IFACE) == 0 &&
                          std::strcmp(member, "InterfacesAdded") == 0) {
-                    if (path) {
-                        BtDeviceInfo dev = parseDeviceProperties(sysConn_, path);
+                    const char* addedPath = nullptr;
+                    DBusMessageIter it;
+                    if (dbus_message_iter_init(msg, &it) &&
+                        dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_OBJECT_PATH) {
+                        dbus_message_iter_get_basic(&it, &addedPath);
+                    }
+                    if (addedPath) {
+                        BtDeviceInfo dev = parseDeviceProperties(sysConn_, addedPath);
                         if (!dev.macAddress.empty()) {
                             auto now = std::chrono::system_clock::now();
                             std::lock_guard<std::mutex> lock(deviceMutex_);
@@ -833,24 +845,30 @@ void BtMonitor::processPendingSignals() {
                 // 3. 接口移除 InterfacesRemoved (设备离开)
                 else if (std::strcmp(iface, DBUS_OBJMGR_IFACE) == 0 &&
                          std::strcmp(member, "InterfacesRemoved") == 0) {
-                    if (path) {
+                    const char* removedPath = nullptr;
+                    DBusMessageIter it;
+                    if (dbus_message_iter_init(msg, &it) &&
+                        dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_OBJECT_PATH) {
+                        dbus_message_iter_get_basic(&it, &removedPath);
+                    }
+                    if (removedPath) {
                         std::lock_guard<std::mutex> lock(deviceMutex_);
-                        for (auto it = devices_.begin(); it != devices_.end(); ++it) {
-                            std::string expectedPath = "/dev_" + it->first;
+                        for (auto it2 = devices_.begin(); it2 != devices_.end(); ++it2) {
+                            std::string expectedPath = "/dev_" + it2->first;
                             std::replace(expectedPath.begin(), expectedPath.end(), ':', '_');
-                            if (std::string(path).find(expectedPath) != std::string::npos) {
+                            if (std::string(removedPath).find(expectedPath) != std::string::npos) {
                                 BtEvent ev;
                                 ev.type = BtEvent::Type::DeviceLost;
                                 ev.adapterMac = adapterState_.macAddress;
-                                ev.deviceMac = it->second.macAddress;
-                                ev.deviceName = it->second.name.empty() ? it->second.alias : it->second.name;
-                                ev.message = "Device lost (signal): " + ev.deviceName + " (" + it->second.macAddress + ")";
+                                ev.deviceMac = it2->second.macAddress;
+                                ev.deviceName = it2->second.name.empty() ? it2->second.alias : it2->second.name;
+                                ev.message = "Device lost (signal): " + ev.deviceName + " (" + it2->second.macAddress + ")";
                                 ev.timestamp = std::chrono::system_clock::now();
                                 {
                                     std::lock_guard<std::mutex> evLock(eventMutex_);
                                     pendingEvents_.push_back(ev);
                                 }
-                                devices_.erase(it);
+                                devices_.erase(it2);
                                 break;
                             }
                         }

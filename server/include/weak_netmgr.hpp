@@ -97,15 +97,6 @@ public:
                             uint32_t* outFlags = nullptr);
 
     /**
-     * @brief 对当前上网网卡执行 ICMP Ping 并更新 RTT 和链路质量
-     * @param list     接口列表（按引用更新每个条目的 rttMs/quality）
-     * @param host     目标域名/IP（通常是公共 DNS 如 223.5.5.5）
-     * @param timeoutMs 单次 Ping 超时（默认 800ms）
-     * @return true 有任何条目发生变化
-     */
-    bool updateRttAndState(std::vector<NetInfo>& list, const std::string& host, int timeoutMs = 800);
-
-    /**
      * @brief 对所有 WiFi 类型接口查询 RSSI 信号强度
      *
      * 通过 wpa_supplicant ctrl_interface（UNIX DGRAM socket）发送 SIGNAL_POLL 命令。
@@ -158,7 +149,6 @@ public:
     void updateInterfaces(const std::vector<NetInfo>& new_interfaces); ///< 替换整个列表
     uint64_t snapshotGeneration() const { return snapshot_generation_; }
 
-    bool updateRttAndStateSafe(const std::string& host, int timeoutMs = 800);
     /**
      * @brief 用**已测得**的 RTT 值更新指定接口（不发 ping，纯数据写回）
      *

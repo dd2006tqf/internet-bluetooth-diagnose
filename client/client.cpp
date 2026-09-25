@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <memory>
 #include <mutex>
 
 #include "common.hpp"
@@ -293,9 +294,11 @@ public:
                     LOG_INFO(LogModule::CLIENT, "收到网络状态变化: '" << (text ? text : "<null>") << "', counter=" << counter);
                     
                     // 调用回调函数（如果提供）
-                    if (callback && callback(text ? std::string(text) : "", counter)) {
+                    // 契约（见 weaknet_client.h）：返回 true = 继续监听，false = 停止。
+                    // 此前条件写反成 `if (callback(...)) break`，导致"返回继续"反而立刻退出。
+                    if (callback && !callback(text ? std::string(text) : "", counter)) {
                         dbus_message_unref(msg);
-                        break; // 回调返回true时停止监听
+                        break; // 回调返回 false：停止监听
                     }
                 } else if (dbus_error_is_set(&e)) {
                     LOG_ERROR(LogModule::CLIENT, "解析信号失败: " << e.message);
@@ -560,9 +563,11 @@ public:
                         << "', details='" << (details ? details : "<null>") << "', counter=" << counter);
                     
                     // 调用回调函数（如果提供）
-                    if (callback && callback(quality ? std::string(quality) : "", details ? std::string(details) : "", counter)) {
+                    // 契约（见 weaknet_client.h）：返回 true = 继续监听，false = 停止。
+                    // 此前条件写反成 `if (callback(...)) break`，导致"返回继续"反而立刻退出。
+                    if (callback && !callback(quality ? std::string(quality) : "", details ? std::string(details) : "", counter)) {
                         dbus_message_unref(msg);
-                        break; // 回调返回true时停止监听
+                        break; // 回调返回 false：停止监听
                     }
                 } else if (dbus_error_is_set(&e)) {
                     LOG_ERROR(LogModule::CLIENT, "解析网络质量信号失败: " << e.message);
@@ -1170,7 +1175,12 @@ private:
 };
 
 // ===== 全局单例客户端实例 =====
-static WeakNetClient* g_client = nullptr;
+// 用 shared_ptr 而非裸指针：阻塞式订阅接口需要在**释放 g_client_mutex 之后**
+// 才能调用回调（否则：回调里再调任何 weaknet_* API 都会因重入同一把非递归锁
+// 而死锁，且整个订阅期间其他线程的调用全部被阻塞）。锁外使用必须保证对象
+// 存活，shared_ptr 的引用计数提供这一点，同时 weaknet_cleanup 可以安全地
+// 把全局指针置空而不会让正在使用它的线程悬垂。
+static std::shared_ptr<WeakNetClient> g_client;
 static std::mutex g_client_mutex;
 
 // ========== C 接口实现（weaknet_client.h 中声明） ==========
@@ -1186,7 +1196,7 @@ extern "C" bool weaknet_init() {
     // 初始化日志系统（客户端使用独立的日志目录）
     Logger::init("weaknet-client", "./logs/client");
 
-    g_client = new WeakNetClient();
+    g_client = std::make_shared<WeakNetClient>();
     bool result = g_client->connect();
     LOG_INFO(LogModule::CLIENT, "weaknet_init: connect result=" << result);
     return result;
@@ -1194,13 +1204,17 @@ extern "C" bool weaknet_init() {
 
 /** @brief 清理 WeakNet 客户端库资源 */
 extern "C" void weaknet_cleanup() {
-    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-    LOG_INFO(LogModule::CLIENT, "weaknet_cleanup: cleaning up");
-    if (g_client) {
-        g_client->disconnect();
-        delete g_client;
-        g_client = nullptr;
+    std::shared_ptr<weaknet_dbus::WeakNetClient> doomed;
+    {
+        std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+        LOG_INFO(LogModule::CLIENT, "weaknet_cleanup: cleaning up");
+        // 先在锁内置空全局指针（此后新调用立即看到"未初始化"），再把对象移出
+        // 锁外析构：若此时仍有线程在锁外使用它（如阻塞订阅正在跑回调），
+        // shared_ptr 的引用计数会推迟真正的析构，避免 use-after-free。
+        doomed = std::move(weaknet_dbus::g_client);
+        weaknet_dbus::g_client = nullptr;
     }
+    if (doomed) doomed->disconnect();
     Logger::shutdown();
 }
 
@@ -1405,17 +1419,26 @@ extern "C" bool weaknet_get_build_info(char* buffer, size_t buffer_size) {
  * 传给 WeakNetClient::subscribeToNetworkQuality()。
  */
 extern "C" bool weaknet_subscribe_network_quality(weaknet_network_quality_callback_t callback) {
-    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+    // 这个接口是**阻塞**的：整段监听循环都在本函数内，直到回调返回 false。
+    // 因此绝不能持有 g_client_mutex —— 否则订阅期间其他线程的任何 weaknet_*
+    // 调用都会阻塞；更严重的是回调内若再调 weaknet_* API，会重入同一把非递归
+    // 锁而自死锁。这里改为只持 shared_ptr 副本保活（对象在循环期间不会被
+    // weaknet_cleanup 释放），然后释放锁再进入监听循环。
+    std::shared_ptr<weaknet_dbus::WeakNetClient> client;
+    {
+        std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+        client = weaknet_dbus::g_client;
+    }
+    if (!client || !client->isConnected()) {
         LOG_ERROR(LogModule::CLIENT, "weaknet_subscribe_network_quality: client not connected");
         return false;
     }
     LOG_INFO(LogModule::CLIENT, "weaknet_subscribe_network_quality: subscribing");
-    
+
     // 用静态变量保存用户回调指针（注意：这只支持一次订阅，多次调用会覆盖）
     static weaknet_network_quality_callback_t s_callback = nullptr;
     s_callback = callback;
-    
+
     // 构造 C++ lambda，把 std::string 转换回 const char* 后调用用户 C 回调
     auto cpp_callback = [](const std::string& quality, const std::string& details, int32_t counter) -> bool {
         if (s_callback) {
@@ -1423,8 +1446,8 @@ extern "C" bool weaknet_subscribe_network_quality(weaknet_network_quality_callba
         }
         return false;
     };
-    
-    return weaknet_dbus::g_client->subscribeToNetworkQuality(cpp_callback);
+
+    return client->subscribeToNetworkQuality(cpp_callback);
 }
 
 /**

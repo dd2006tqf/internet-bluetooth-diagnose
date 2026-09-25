@@ -13,7 +13,7 @@
  *          - 采样流程：清空 map → sleep 采样窗口 → 遍历读取 map → 计算速率
  *          - 接口过滤：通过 `cfg_iface` BPF map 写入 ifindex，内核态可按接口过滤
  *          - 异常检测：维护每流的历史窗口，结合 burstMultiplier / suspiciousThreshold
- *            三个可调参数，识别 burst（突发）、suspicious（可疑）、high_volume（高流量）
+ *            三个可调参数，识别 burst（突发）与 suspicious（可疑/高流量）两类异常
  *            三类异常并计算 severity（严重程度 0~1）
  *
  * @note 关键依赖：
@@ -87,6 +87,10 @@ void NetTrafficAnalyzer::shutdown() {
     if (linkUdp_) {
         bpf_link__destroy(static_cast<bpf_link*>(linkUdp_));
         linkUdp_ = nullptr;
+    }
+    if (linkRetrans_) {
+        bpf_link__destroy(static_cast<bpf_link*>(linkRetrans_));
+        linkRetrans_ = nullptr;
     }
     if (bpfObj_) {
         bpf_object__close(static_cast<bpf_object*>(bpfObj_));
@@ -174,6 +178,10 @@ bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName) {
     // 自动识别 kprobe / fentry / tc 等 attach 类型
     bpf_program* prog_tcp = bpf_object__find_program_by_name(obj, "tcp_transmit_entry");
     bpf_program* prog_udp = bpf_object__find_program_by_name(obj, "udp_send_entry");
+    // 第三个挂点：进程级 TCP 重传计数。process_stats 的 retrans_count 只由
+    // 它累计，缺了它该字段恒为 0 —— 而 ProcessNetProfiler 在本对象加载成功时
+    // 是**共享** map fd（不再自己 attach），所以这里漏挂会让进程重传画像永久为空。
+    bpf_program* prog_retrans = bpf_object__find_program_by_name(obj, "trace_tcp_retransmit");
     if (!prog_tcp || !prog_udp) { bpf_object__close(obj); return false; }
     bpf_link* l1 = bpf_program__attach(prog_tcp);
     long err_tcp = libbpf_get_error(l1);
@@ -189,10 +197,24 @@ bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName) {
         if (!l2) {/* noop */} else { bpf_link__destroy(l2); }
         l2 = nullptr;
     }
+    bpf_link* l3 = nullptr;
+    if (prog_retrans) {
+        l3 = bpf_program__attach(prog_retrans);
+        long err_retrans = libbpf_get_error(l3);
+        if (err_retrans) {
+            LOG_ERROR(LogModule::NETWORK, "attach kprobe/tcp_retransmit_skb failed: err=" << err_retrans << " errno=" << errno);
+            if (!l3) {/* noop */} else { bpf_link__destroy(l3); }
+            l3 = nullptr;
+        }
+    } else {
+        LOG_WARNING(LogModule::NETWORK,
+                    "traffic BPF: program 'trace_tcp_retransmit' not found; process retransmit count will stay 0");
+    }
 
     // 至少一个程序 attach 成功即可认为初始化成功
-    if (!l1 && !l2) { bpf_object__close(obj); return false; }
-    bpfObj_ = obj; linkTcp_ = l1; linkUdp_ = l2; attached_ = true; boundIface_ = ifaceName;
+    if (!l1 && !l2 && !l3) { bpf_object__close(obj); return false; }
+    bpfObj_ = obj; linkTcp_ = l1; linkUdp_ = l2; linkRetrans_ = l3;
+    attached_ = true; boundIface_ = ifaceName;
     return true;
 #endif
 }
@@ -351,7 +373,7 @@ double NetTrafficAnalyzer::calculateSeverity(uint64_t currentBps, uint64_t thres
 /**
  * @brief 执行一次完整的流量异常检测
  *
- * 流程：采样 Top 流 → 更新每流历史窗口 → 依次检测 burst / suspicious / high_volume 三类异常
+ * 流程：采样 Top 流 → 更新每流历史窗口 → 依次检测 burst / suspicious 两类异常
  *
  * @param intervalSec          采样窗口（秒）
  * @param burstThresholdBps    突发流量阈值（bps）
@@ -406,6 +428,11 @@ std::vector<TrafficAnomaly> NetTrafficAnalyzer::detectAnomalies(int intervalSec,
         }
         
         // ---------- 检测可疑流量 ----------
+        // 语义：超过 suspiciousThresholdBps 但**未达突发判定**（burst 分支已单独
+        // 记账）。此前该分支与下面的 high_volume 分支条件完全等价
+        // （isSuspiciousTraffic 只判 currentBps >= suspiciousThresholdBps_，
+        // 忽略 pid），同一条流会被 push 两条不同 anomalyType 的重复记录。
+        // 合并为一条，severity 取两者中较严的 2.0 倍率。
         if (isSuspiciousTraffic(flow.bps, flow.pid)) {
             TrafficAnomaly anomaly;
             anomaly.flowKey = flowKey;
@@ -414,20 +441,8 @@ std::vector<TrafficAnomaly> NetTrafficAnalyzer::detectAnomalies(int intervalSec,
             anomaly.thresholdBps = suspiciousThresholdBps;
             anomaly.severity = calculateSeverity(flow.bps, suspiciousThresholdBps, 2.0);
             anomaly.timestamp = now;
-            anomaly.description = "检测到可疑流量: " + std::to_string(flow.bps / (1024*1024)) + " MB/s, PID: " + std::to_string(flow.pid);
-            anomalies.push_back(anomaly);
-        }
-        
-        // ---------- 检测高流量 ----------
-        if (flow.bps > suspiciousThresholdBps) {
-            TrafficAnomaly anomaly;
-            anomaly.flowKey = flowKey;
-            anomaly.anomalyType = "high_volume";
-            anomaly.currentBps = flow.bps;
-            anomaly.thresholdBps = suspiciousThresholdBps;
-            anomaly.severity = calculateSeverity(flow.bps, suspiciousThresholdBps, 1.5);
-            anomaly.timestamp = now;
-            anomaly.description = "检测到高流量: " + std::to_string(flow.bps / (1024*1024)) + " MB/s";
+            anomaly.description = "检测到可疑/高流量: " + std::to_string(flow.bps / (1024*1024))
+                                + " MB/s, PID: " + std::to_string(flow.pid);
             anomalies.push_back(anomaly);
         }
     }

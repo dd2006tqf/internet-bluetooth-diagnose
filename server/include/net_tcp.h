@@ -2,14 +2,16 @@
  * @file net_tcp.h
  * @brief TCP 丢包率采样与计算工具（单例）
  *
- * 实现 Phase 1 丢包率监控方案：从 /proc/net/snmp 读取全局 TCP 计数，
- * 对两次采样做差分计算丢包率。
+ * 实现方式：通过 netlink SOCK_DIAG（inet_diag）向内核请求 TCP socket
+ * 诊断信息，累加 tcp_info.tcpi_total_retrans 作为分子、接口粒度近似发送
+ * 段数作为分母，对两次采样做差分计算丢包率。
  *
  * Phase 2 替代方案：TcpRetransMonitor（eBPF）提供连接粒度的重传统计，
  * 更精准但需要更高内核版本和权限。本工具作为降级后备。
  *
  * 线程安全：getInstance() 使用 std::once_flag 保证线程安全懒汉初始化。
- *           sample() 内部读取 /proc 文件（原子读），可多线程并发。
+ *           sampleForInterface() 每次调用自建 netlink socket、无共享状态，
+ *           可多线程并发。
  */
 
 #pragma once
@@ -19,11 +21,14 @@
 #include <mutex>
 #include <string>
 
-/// TCP 累计计数快照（对应 /proc/net/snmp Tcp 段）
+/// TCP 累计计数快照（netlink SOCK_DIAG 近似统计）
+///
+/// 说明：这里没有"接收段数"字段。此前存在过 inSegs，但它在
+/// diagDumpFamilyIface 内只被初始化为 0、从未累加（内核 inet_diag_msg
+/// 不提供该维度），且全仓无任何读者，属于恒为 0 的死输出，已删除。
 struct TcpStats {
-    uint64_t inSegs = 0;      ///< Tcp: InSegs（累计接收段数）
-    uint64_t outSegs = 0;     ///< Tcp: OutSegs（累计发送段数）
-    uint64_t retransSegs = 0; ///< Tcp: RetransSegs（累计重传段数）
+    uint64_t outSegs = 0;     ///< 近似发送段数（分母）
+    uint64_t retransSegs = 0; ///< 累计重传段数（分子）
     bool valid = false;       ///< 本次采样是否成功
 };
 
@@ -36,18 +41,23 @@ struct TcpLossResult {
 };
 
 /**
- * @brief TCP 丢包率监控器（Phase 1，/proc/net/snmp 差分方案）
+ * @brief TCP 丢包率监控器（netlink SOCK_DIAG 差分方案，单例）
  *
  * 单例模式，通过 getInstance() 获取。
  * 典型用法：
  * @code
  *   auto mon = TcpLossMonitor::getInstance();
  *   TcpStats prev, curr;
- *   mon->sample(prev);
- *   sleep(2);
- *   mon->sample(curr);
+ *   mon->sampleForInterface("wlan0", prev);
+ *   sleep(10);
+ *   mon->sampleForInterface("wlan0", curr);
  *   auto result = mon->compute(prev, curr);
  * @endcode
+ *
+ * 说明：此前还有一个全局版 sample()（不过滤接口、累加全系统 socket）。
+ * 它无任何调用者——生产路径只用带接口过滤的 sampleForInterface()，
+ * 因为丢包率必须归因到"当前上网网卡"，全系统计数无法回答这个问题。
+ * 该全局接口已删除，避免保留第二个含义不同的采样入口。
  */
 class TcpLossMonitor {
 public:
@@ -55,19 +65,10 @@ public:
     static std::shared_ptr<TcpLossMonitor> getInstance();
 
     /**
-     * @brief 读取全局 TCP 计数（来自 /proc/net/snmp）
-     * @param outStats 输出快照（valid=false 表示采样失败）
-     * @return true 采样成功
-     */
-    bool sample(TcpStats& outStats);
-
-    /**
-     * @brief 针对指定接口名统计（预留扩展，目前与 sample() 行为相同）
+     * @brief 采样指定接口的 TCP 统计（IPv4 + IPv6 两地址族，按 idiag_if 过滤）
      *
-     * 未来可接入 netlink per-interface tcp_info，实现接口粒度统计。
-     *
-     * @param ifaceName 网卡名（预留参数，当前不区分）
-     * @param outStats  输出快照
+     * @param ifaceName 网卡名（如 "eth0"、"wlan0"）
+     * @param outStats  输出快照（valid=false 表示采样失败）
      * @return true 采样成功
      */
     bool sampleForInterface(const std::string& ifaceName, TcpStats& outStats);

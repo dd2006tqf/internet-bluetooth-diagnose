@@ -14,8 +14,9 @@
  * 线程模型：
  *   - 单一 std::thread（通过 ServerContext 生命周期管理）
  *   - 与 RSSI/TCP Loss 等监控线程并行运行，通过 WeakNetMgr 的细粒度更新接口避免锁争用
- *   - 线程安全：调用 WeakNetMgr::updateRttAndStateSafe 与 updateJitterSafe
- *     两个线程安全更新方法；每轮对**所有接口**执行 ping，同时刷新 RTT 与 Jitter。
+ *   - 线程安全：ping 在**锁外**完成，再经 WeakNetMgr::updateRttAndStateForIfaceSafe
+ *     与 updateJitterSafe 两个细粒度更新方法持锁写回；每轮对**所有接口**执行 ping，
+ *     同时刷新 RTT 与 Jitter。
  *
  * 设计说明（合并自原 jitter_monitor）：
  *   原 jitter_monitor 是独立线程，对全部接口再次 ping 以维护滑动窗口；

@@ -83,15 +83,14 @@ std::shared_ptr<TcpLossMonitor> TcpLossMonitor::getInstance() {
  * @param family       AF_INET 或 AF_INET6
  * @param filterIfindex 接口过滤：>0 时只统计 idiag_if 匹配的 socket；-1 时不做过滤
  * @param[out] segsOutApprox 近似发出段数（分母）
- * @param[out] segsInApprox  近似接收段数
  * @param[out] totalRetrans  累计重传段数（分子）
  *
  * @return true  — 至少成功处理了部分消息或内核正常返回 NLMSG_DONE
  *         false — sendmsg/recvmsg 失败或内核返回 NLMSG_ERROR
  */
 static bool diagDumpFamilyIface(int nlSock, int family, int filterIfindex,
-                                uint64_t& segsOutApprox, uint64_t& segsInApprox, uint64_t& totalRetrans) {
-    segsOutApprox = segsInApprox = totalRetrans = 0;
+                                uint64_t& segsOutApprox, uint64_t& totalRetrans) {
+    segsOutApprox = totalRetrans = 0;
 
     // ========== 构造 inet_diag_req_v2 请求 ==========
     struct {
@@ -262,14 +261,13 @@ static bool rtnlGetIfTxPackets(int ifindex, uint64_t& txPackets) {
  *
  * @param iface 接口名（如 "eth0"、"wlan0"）
  * @param[out] segsOutApprox 近似发出段数
- * @param[out] segsInApprox  近似接收段数
  * @param[out] totalRetrans  累计重传段数
  *
  * @return true  — 至少一个地址族成功采样
  *         false — 接口不存在或两个地址族都失败
  */
-static bool diagSampleIfaceAll(const std::string& iface, uint64_t& segsOutApprox, uint64_t& segsInApprox, uint64_t& totalRetrans) {
-    segsOutApprox = segsInApprox = totalRetrans = 0;
+static bool diagSampleIfaceAll(const std::string& iface, uint64_t& segsOutApprox, uint64_t& totalRetrans) {
+    segsOutApprox = totalRetrans = 0;
     int ifidx = ifnameToIndex(iface);
     if (ifidx <= 0) return false;
 
@@ -277,15 +275,14 @@ static bool diagSampleIfaceAll(const std::string& iface, uint64_t& segsOutApprox
     int nl = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_SOCK_DIAG);
     if (nl < 0) return false;
 
-    uint64_t so4 = 0, si4 = 0, r4 = 0, so6 = 0, si6 = 0, r6 = 0;
-    bool ok4 = diagDumpFamilyIface(nl, AF_INET, ifidx, so4, si4, r4);
-    bool ok6 = diagDumpFamilyIface(nl, AF_INET6, ifidx, so6, si6, r6);
+    uint64_t so4 = 0, r4 = 0, so6 = 0, r6 = 0;
+    bool ok4 = diagDumpFamilyIface(nl, AF_INET, ifidx, so4, r4);
+    bool ok6 = diagDumpFamilyIface(nl, AF_INET6, ifidx, so6, r6);
 
     close(nl);
     if (!(ok4 || ok6)) return false;
     // 累加两个地址族的统计
     segsOutApprox = so4 + so6;
-    segsInApprox = si4 + si6;
     totalRetrans = r4 + r6;
     // 若近似分母为0（接口上无活跃 TCP 连接），尝试用该接口 L2 层 tx_packets 作为最小可用分母（会包含非TCP）
     if (segsOutApprox == 0) {
@@ -299,33 +296,10 @@ static bool diagSampleIfaceAll(const std::string& iface, uint64_t& segsOutApprox
 // TcpLossMonitor 单例方法实现
 // ===========================================================================
 
-/**
- * @brief 采样系统全局所有 TCP socket 的重统计
- *
- * 不做接口过滤（filterIfindex=-1），累加全系统所有 AF_INET + AF_INET6 TCP 连接。
- *
- * @param[out] outStats TcpStats 输出结构
- * @return true  — 至少一个地址族成功
- */
-bool TcpLossMonitor::sample(TcpStats& outStats) {
-    LOG_INFO(LogModule::TCP_LOSS, "sample: collecting system-wide TCP stats");
-    // system-wide: 纯 netlink 近似统计
-    int nl = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_SOCK_DIAG);
-    if (nl < 0) {
-        LOG_ERROR_F(LogModule::TCP_LOSS, "sample: socket creation failed: %s", strerror(errno));
-        return false;
-    }
-    uint64_t so4 = 0, si4 = 0, r4 = 0, so6 = 0, si6 = 0, r6 = 0;
-    bool ok4 = diagDumpFamilyIface(nl, AF_INET, -1, so4, si4, r4);
-    bool ok6 = diagDumpFamilyIface(nl, AF_INET6, -1, so6, si6, r6);
-    close(nl);
-    if (!(ok4 || ok6)) return false;
-    outStats.retransSegs = r4 + r6;
-    outStats.outSegs = so4 + so6;  // 近似分母
-    outStats.inSegs = si4 + si6;
-    outStats.valid = true;
-    return true;
-}
+// 说明：此处原有一个全局版 TcpLossMonitor::sample()（filterIfindex=-1，
+// 累加全系统所有 TCP socket）。它无任何调用者——生产路径只用带接口过滤的
+// sampleForInterface()，丢包率必须归因到"当前上网网卡"，全系统计数回答不了
+// 这个问题。已删除，避免保留第二个含义不同的采样入口。
 
 /**
  * @brief 采样指定接口的 TCP 统计
@@ -334,10 +308,9 @@ bool TcpLossMonitor::sample(TcpStats& outStats) {
  * @return true — 采样成功
  */
 bool TcpLossMonitor::sampleForInterface(const std::string& ifaceName, TcpStats& outStats) {
-    uint64_t so = 0, si = 0, r = 0;
-    if (!diagSampleIfaceAll(ifaceName, so, si, r)) return false;
+    uint64_t so = 0, r = 0;
+    if (!diagSampleIfaceAll(ifaceName, so, r)) return false;
     outStats.outSegs = so;
-    outStats.inSegs = si;
     outStats.retransSegs = r;
     outStats.valid = true;
     return true;

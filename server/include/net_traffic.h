@@ -39,7 +39,7 @@ struct FlowRate {
 /// 流量异常检测结果（突发流量 / 高流量 / 可疑流量）
 struct TrafficAnomaly {
     std::string flowKey;        ///< 流唯一标识（src:sport → dst:dport proto）
-    std::string anomalyType;    ///< 异常类型: "burst" / "suspicious" / "high_volume"
+    std::string anomalyType;    ///< 异常类型: "burst" / "suspicious"
     uint64_t currentBps;       ///< 当前速率（字节/秒）
     uint64_t thresholdBps;     ///< 触发阈值
     double severity;            ///< 严重程度 0.0-1.0
@@ -146,6 +146,7 @@ private:
     void* bpfObj_ = nullptr;         ///< bpf_object*（libbpf 不暴露具体类型）
     void* linkTcp_ = nullptr;        ///< TCP hook 的 bpf_link*
     void* linkUdp_ = nullptr;        ///< UDP hook 的 bpf_link*
+    void* linkRetrans_ = nullptr;    ///< TCP 重传 hook 的 bpf_link*（process_stats.retrans_count 的唯一来源）
     int mapCurrFd_ = -1;             ///< 当前流量累计 map fd
     int mapCfgFd_  = -1;             ///< 配置 map fd
     int mapProcessStatsFd_ = -1;     ///< process_stats map fd（供 ProcessNetProfiler 共享）

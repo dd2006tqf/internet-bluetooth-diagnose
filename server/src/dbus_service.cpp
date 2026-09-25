@@ -442,21 +442,20 @@ bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
     // 返回一份"不知道"比返回一份基于无关网卡的结论更诚实。
     if (ctx_ && ctx_->metrics_registry && !active_iface.empty()) {
         using namespace std::chrono_literals;
-        auto reach_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::REACHABILITY_SUCCESS, 120s);
-        auto rtt_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::RTT_MS, 120s);
-        auto jitter_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::JITTER_MS, 120s);
-        auto wifi_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::WIFI_LOSS_RATE, 120s);
-        auto tcp_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::TCP_LOSS_RATE, 120s);
-        auto rssi_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::RSSI_DBM, 120s);
-
-        bool is_wireless = (active_iface.rfind("wl", 0) == 0);
-        auto reach_sle = weaknet::IpReachabilityEvaluator::evaluate(reach_samples);
-        auto resp_sle = weaknet::ResponsivenessEvaluator::evaluate(rtt_samples, jitter_samples);
-        auto rel_sle = weaknet::ReliabilityEvaluator::evaluate(wifi_samples, tcp_samples, is_wireless);
-        auto rf_sle = weaknet::RfHealthEvaluator::evaluate(rssi_samples, is_wireless);
         // W2 单一事实源：HealthCheck **只读权威快照**，绝不重新 evaluate。
         // 此前本方法现场拉 metrics + 调 OverallPolicy，与 quality 线程、
         // history 线程构成三条结论可能不一致的评估路径（既有 bug）。
+        //
+        // 仍需现场取值的只有三个补充字段（见下），因此这里**只**拉
+        // Responsiveness 需要的两个窗口；REACHABILITY/WIFI_LOSS/TCP_LOSS/RSSI
+        // 四个窗口与 IpReachability/Reliability/RfHealth 三个 evaluator 曾在
+        // 此处被完整计算后丢弃（每次 HealthCheck 白烧一轮评估 CPU）。
+        // 若将来要把它们的证据补进 HealthCheck，必须改为在快照里携带，
+        // 而不是重新在这里评估。
+        auto rtt_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::RTT_MS, 120s);
+        auto jitter_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::JITTER_MS, 120s);
+        auto resp_sle = weaknet::ResponsivenessEvaluator::evaluate(rtt_samples, jitter_samples);
+
         auto snap = ctx_->assessment_store.latest();
         if (snap) {
             const uint64_t cur_epoch = ctx_->dns_tracker ? ctx_->dns_tracker->currentBindingEpoch()

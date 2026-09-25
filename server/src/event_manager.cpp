@@ -38,7 +38,7 @@ NetworkEventManager& getEventManager() {
 }
 
 NetworkEventManager::NetworkEventManager()
-    : server_ctx_(nullptr), monitoring_active_(false) {
+    : server_ctx_(nullptr) {
     LOG_INFO(LogModule::EVENT_MGR, "NetworkEventManager initialized");
 }
 
@@ -223,7 +223,6 @@ void NetworkEventManager::emitBluetoothDeviceChanged(const std::string& message,
  */
 void NetworkEventManager::startEventMonitoring(struct ServerContext* ctx) {
     server_ctx_ = ctx;
-    monitoring_active_ = true;
 
     LOG_INFO(LogModule::EVENT_MGR, "event monitoring started");
 
@@ -242,58 +241,35 @@ void NetworkEventManager::startEventMonitoring(struct ServerContext* ctx) {
 }
 
 /**
- * @brief 停止事件监控（仅标记状态，回调仍保留以便再次启动）
- */
-void NetworkEventManager::stopEventMonitoring() {
-    monitoring_active_ = false;
-    LOG_INFO(LogModule::EVENT_MGR, "event monitoring stopped");
-}
-
-/**
  * @brief 内部方法：按事件类型分发回调
  * @param type  事件类型，决定遍历哪个回调 vector
  * @param event 传递给每个回调的事件对象
- * @note  持 cb_mutex_ 期间调用回调；回调内不得再次调用 registerCallback/unregisterCallback，
- *       否则会重入死锁
+ * @note  先在 cb_mutex_ 保护下把该类型的回调**拷贝一份**，释放锁后再逐个调用。
+ *       回调执行期间不持锁，因此回调内可以安全地 registerCallback /
+ *       unregisterCallback，也可以嵌套触发新事件，不会重入死锁。
+ *       （此前实现是持锁遍历调用，与头文件描述相反，回调内再注册即死锁。）
  */
 void NetworkEventManager::invokeCallbacks(EventType type, const NetworkEvent& event) {
-    std::lock_guard<std::mutex> lock(cb_mutex_);
-    switch (type) {
-        case EventType::InterfaceChanged:
-            for (const auto& callback : interface_callbacks_) {
-                callback(event);
-            }
-            break;
-        case EventType::ConnectionModeChanged:
-            for (const auto& callback : connection_mode_callbacks_) {
-                callback(event);
-            }
-            break;
-        case EventType::NetworkQualityChanged:
-            for (const auto& callback : network_quality_callbacks_) {
-                callback(event);
-            }
-            break;
-        case EventType::TcpLossRateChanged:
-            for (const auto& callback : tcp_loss_callbacks_) {
-                callback(event);
-            }
-            break;
-        case EventType::RttChanged:
-            for (const auto& callback : rtt_callbacks_) {
-                callback(event);
-            }
-            break;
-        case EventType::RssiChanged:
-            for (const auto& callback : rssi_callbacks_) {
-                callback(event);
-            }
-            break;
-        case EventType::BluetoothDeviceChanged:
-            for (const auto& callback : bluetooth_callbacks_) {
-                callback(event);
-            }
-            break;
+    std::vector<EventCallback> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(cb_mutex_);
+        const std::vector<EventCallback>* src = nullptr;
+        switch (type) {
+            case EventType::InterfaceChanged:        src = &interface_callbacks_; break;
+            case EventType::ConnectionModeChanged:   src = &connection_mode_callbacks_; break;
+            case EventType::NetworkQualityChanged:   src = &network_quality_callbacks_; break;
+            case EventType::TcpLossRateChanged:      src = &tcp_loss_callbacks_; break;
+            case EventType::RttChanged:              src = &rtt_callbacks_; break;
+            case EventType::RssiChanged:             src = &rssi_callbacks_; break;
+            case EventType::BluetoothDeviceChanged:  src = &bluetooth_callbacks_; break;
+        }
+        if (!src) return;
+        snapshot = *src;
+    }
+
+    // 锁外调用：拷贝保持了注册顺序，且本轮的增删不会影响已开始的这一轮分发。
+    for (const auto& callback : snapshot) {
+        if (callback) callback(event);
     }
 }
 
