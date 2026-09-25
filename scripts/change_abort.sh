@@ -45,9 +45,22 @@ else
   echo "[3/4] selector 无需清理"
 fi
 # 清理 ai_snapshot.json 中的 active_change 和 phase
+#
+# 铁律：active_change 是**必需字段**（schema 允许 null，但字段本身必须存在）。
+# harness_doctor 的 workflow.active.selector 与 harness_active_optional() 都会
+# 校验 `active_change === null || typeof active_change === 'string'`，字段缺失时
+# 判 "active selector is invalid"，随后所有托管包装器
+# （change_new/change_select/snapshot_update/task_verify...）一律失败。
+# 历史教训：这里曾写成 `delete d.active_change`，导致每次 abort 都把快照写坏，
+# 后续靠 3 次手工补回字段（4fc10b9/1a42f94/8e7cde9）。必须显式置 null。
 if [ -f "$SELECTOR_JSON" ]; then
-  node - "$SELECTOR_JSON" <<'NODE' > /dev/null 2>&1 || true
-const fs=require('fs'),f=process.argv[2];let d=JSON.parse(fs.readFileSync(f));if(d.active_change){delete d.active_change;d.phase='idle';d.current_step='change-aborted';d.next_step='Create or select the next change';d.updated_at=new Date().toISOString();fs.writeFileSync(f,JSON.stringify(d,null,2)+'\n')}
+  node - "$SELECTOR_JSON" <<'NODE'
+const fs=require('fs'),f=process.argv[2];const d=JSON.parse(fs.readFileSync(f));
+if(d.schema_version!==2||d.workflow!=='openspec'){console.error('[ERR] unexpected root snapshot schema');process.exit(6)}
+d.active_change=null;d.phase='idle';d.current_step='change-aborted';d.next_step='Create or select the next change';
+d.updated_at=new Date().toISOString().replace('.000Z','Z');
+const t=f+'.abort-'+process.pid,fd=fs.openSync(t,'wx',0o644);
+fs.writeFileSync(fd,JSON.stringify(d,null,2)+'\n');fs.closeSync(fd);fs.renameSync(t,f);
 NODE
 fi
 echo ""

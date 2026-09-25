@@ -103,7 +103,7 @@
       "path": "CLAUDE.md",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:14c93ac4b1a210480afc2d2c5db08018e1df3007e3048fb88c8407d8eeaa91c7"
+      "content_sha256": "sha256:8388b58d7791613d9581aaa154228cb5bfb41d79b0e5779ed562a7d6828e98b4"
     },
     {
       "path": "debt-register.md",
@@ -193,7 +193,7 @@
       "path": "docs/ai/workflow.md",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:ad12cca8415453e8d0c862552c443ca7f5bedd812d8725d0f42520668d8a75c7"
+      "content_sha256": "sha256:a624823ee98b3915a9777435eb348b01582ad49f8042811d43c62773c658bfbf"
     },
     {
       "path": "init.sh",

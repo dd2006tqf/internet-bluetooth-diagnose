@@ -2,9 +2,10 @@
   "schema_version": 2,
   "workflow": "openspec",
   "phase": "idle",
-  "current_step": "change-aborted",
-  "next_step": "Create or select the next change",
-  "updated_at": "2026-09-05T14:17:39.998Z",
+  "current_step": "change-cleared",
+  "next_step": "Select or create a change",
+  "active_change": null,
+  "updated_at": "2026-09-24T14:20:16.428Z",
   "last_archived_change": {
     "change_name": "timestamped-log-file",
     "archived_as": "2026-08-16-timestamped-log-file",

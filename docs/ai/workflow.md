@@ -146,7 +146,7 @@ bash scripts/change_new.sh http-request-latency-monitor --switch
 说明：创建变更目录 `openspec/changes/http-request-latency-monitor/`，包含 `design.md` 和 `harness/` 子目录。`--switch` 表示将其设为当前活动 change。
 
 **Step 2: 编写规划文档**
-- `proposal.md`：说明 Why（为什么需要 HTTP 延迟监控——区分应用慢 vs 网络慢）和 What（新增 eBPF 探针、用户态监控器、Makefile 集成）
+- `proposal.md`：说明 Why（为什么需要 HTTP 延迟监控——区分应用慢 vs 网络慢）和 What（新增 eBPF 探针、用户态监控器、CMake 集成）
 - `design.md`：架构设计（内核态 eBPF 探针流程 → BPF Map → 用户态读取）、变更文件清单、BPF 数据结构设计、HTTP 首部检测策略。**注意**：如果 surface 使用 `--project-command` 记录证据，`evidence_contracts` 的 `argv` 必须写包装器形式 `["scripts/project_command.sh","build-server","--change","http-request-latency-monitor","--json"]`
 - `specs/weaknet-server/spec.md`：定义 ADDED 需求（`HTTP请求延迟监控` 和 `HTTP延迟集成`），每个需求下有一个或多个 Scenario（`eBPF HTTP延迟探针实现`、`用户态监控接口`、`构建更新`）。**注意**：每个 Scenario 名称必须唯一、后续 task Covers 引用的场景名必须与 spec 完全一致（含空格）。
 - `tasks.md`：3 个 task，每个有 Covers 引用 spec 中的 requirement+scenario，Verify 声明为 `build`。task 编号必须唯一。

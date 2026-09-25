@@ -9,7 +9,7 @@
 #
 # 护栏（不可逆的对外操作，必须严格）：
 #   1. 分支白名单：只允许 dev/* feature/* release/*；命中 main/master 直接拒绝。
-#   2. 测试门禁：默认跑 make test-unit，必须 exit 0（--skip-test-gate 可跳过）。
+#   2. 测试门禁：默认跑 ctest --test-dir build-x86/server，必须 exit 0（--skip-test-gate 可跳过）。
 #   3. Evaluator 门禁：若 openspec/changes/<change>/harness/evaluation.json 存在，
 #      必须 verdict==Pass；不存在则需 --allow-no-eval（用于模拟/回溯场景）。
 #   4. 显式文件清单：只 git add 指定文件，绝不用 git add -A；提交前校验暂存区
@@ -90,12 +90,14 @@ fi
 # ---------- 护栏 2：测试门禁 ----------
 if [[ "$SKIP_TEST_GATE" != true ]]; then
     ok "测试门禁：cmake 单元测试"
-    # 优先 cmake，fallback 到 make
-    if [ -d build ] && [ -f build/Makefile ]; then
-        TEST_CMD="cmake --build build -j\$(nproc) && ctest --test-dir build/server -R 'test_net_info|test_quality|test_anomaly|test_audio|test_band|test_serializer|test_event|test_bt_full|test_bt_monitor$|test_iface|test_logger|test_traffic|test_database' --output-on-failure"
-    else
-        TEST_CMD="make -C server test-unit"
+    # 唯一构建系统是 CMake（server/Makefile 已移除）。
+    # 门禁与 .ai-harness/project-profile.json 的 test-all 命令保持一致：
+    # 同一个 ctest 调用，避免"证据命令过了但归档门禁另一套"的分叉。
+    if [ ! -d build-x86 ]; then
+        err "缺少 build-x86/：请先运行 cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF"
+        exit 5
     fi
+    TEST_CMD="ctest --test-dir build-x86/server --output-on-failure"
     if ! eval "$TEST_CMD" > /tmp/auto_push_test.log 2>&1; then
         err "测试门禁失败（exit!=0）。尾部日志："
         tail -20 /tmp/auto_push_test.log >&2

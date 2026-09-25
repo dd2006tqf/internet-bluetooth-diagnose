@@ -151,16 +151,34 @@ run_client_test "history" "history"
 echo ""
 echo "===== Phase 11: 单元测试 ====="
 cd /home/radxa/weaknet/server
-for utest in test/bin/*; do
-    if [ -x "$utest" ]; then
-        echo "  --- 运行 $utest ---"
-        if "./$utest" 2>&1; then
-            ok "单元测试: $(basename $utest)"
+# 板端只部署 ci.sh 选择打包的测试二进制（当前仅 test/bin/test_ebpf）。
+# 39 个 gtest 套件不在板端跑：它们的归属是 x86 本地
+# （ctest --test-dir build-x86/server，同时也是 project-profile 的 test-all 命令）
+# 与 GitHub Actions。
+#
+# 这里必须显式判定 test/bin/ 是否为空：bash 的 glob 在无匹配时会把字面量
+# "test/bin/*" 传给 for，`[ -x ]` 判假后循环体不执行 —— 整段静默变成一个
+# 空操作，而报告里 Phase 11 标题照旧打印，"看起来跑过"。用 nullglob + 计数
+# 把"没得跑"变成显式 SKIP，SKIP 会计入统计并出现在汇总里。
+shopt -s nullglob
+utests=(test/bin/*)
+shopt -u nullglob
+if [ ${#utests[@]} -eq 0 ]; then
+    skip "Phase 11: 板端未部署单元测试二进制（test/bin/ 为空）；gtest 套件在 x86 本地与 CI 运行"
+else
+    for utest in "${utests[@]}"; do
+        if [ -x "$utest" ]; then
+            echo "  --- 运行 $utest ---"
+            if "./$utest" 2>&1; then
+                ok "单元测试: $(basename $utest)"
+            else
+                fail "单元测试: $(basename $utest)"
+            fi
         else
-            fail "单元测试: $(basename $utest)"
+            skip "单元测试（不可执行）: $(basename "$utest")"
         fi
-    fi
-done
+    done
+fi
 cd /home/radxa/weaknet
 
 # ==============================================
