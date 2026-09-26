@@ -1,11 +1,11 @@
 {
   "schema_version": 2,
   "workflow": "openspec",
-  "phase": "idle",
-  "current_step": "change-cleared",
-  "next_step": "Select or create a change",
-  "active_change": null,
-  "updated_at": "2026-09-26T11:00:31.945Z",
+  "phase": "planning",
+  "current_step": "change-created",
+  "next_step": "Write and review planning artifacts",
+  "active_change": "ebpf-map-sizing-core",
+  "updated_at": "2026-09-26T11:38:07.355Z",
   "last_archived_change": {
     "change_name": "timestamped-log-file",
     "archived_as": "2026-08-16-timestamped-log-file",
