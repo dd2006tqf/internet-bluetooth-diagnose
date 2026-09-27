@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "change_name": "ebpf-map-sizing-wiring",
+  "archived_as": "2026-09-27-ebpf-map-sizing-wiring",
+  "archived_at": "2026-09-27T20:36:43.071Z",
+  "profile_sha256": "sha256:802da63a98f95bb03a32ffac6a2bfca90d3dede37342a4284757c17665cbad77",
+  "source_fingerprint": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+  "artifact_fingerprint": "sha256:f28933660bafca77ef3c2addaa6d79d604d7d754720093240242c454902c79eb",
+  "base_specs_fingerprint_before": "sha256:db0118c4071af868bc0f5576160ede008cd3bac7a25fac6d16bfdb354be2ee8d",
+  "archive_output_sha256": "sha256:c40037561e4b844c5602d793ca83444d7d76a3d36876c57ae9944a77f82746bd",
+  "main_specs_validation_sha256": "sha256:9080782490b6f46cdf2afad28302df624bac038c7e2b2ab4d5aa586eca846902",
+  "authority": "retained-receipt-not-active-state"
+}

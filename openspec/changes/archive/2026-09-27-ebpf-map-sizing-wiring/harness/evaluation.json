@@ -1,0 +1,1396 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260927T170701Z-277222",
+  "change_name": "ebpf-map-sizing-wiring",
+  "verdict": "Pass",
+  "evaluation_started_at": "2026-09-27T17:07:01.856Z",
+  "evaluated_at": "2026-09-27T19:58:46Z",
+  "openspec_version": "1.6.0",
+  "evaluator_role": "independent",
+  "input_source_fingerprint": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+  "input_artifact_fingerprint": "sha256:f28933660bafca77ef3c2addaa6d79d604d7d754720093240242c454902c79eb",
+  "input_base_specs_fingerprint": "sha256:db0118c4071af868bc0f5576160ede008cd3bac7a25fac6d16bfdb354be2ee8d",
+  "source_fingerprint": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+  "artifact_fingerprint": "sha256:f28933660bafca77ef3c2addaa6d79d604d7d754720093240242c454902c79eb",
+  "base_specs_fingerprint": "sha256:db0118c4071af868bc0f5576160ede008cd3bac7a25fac6d16bfdb354be2ee8d",
+  "budget_block_sha256": "sha256:ffaaf696ea765a832e160835c389ce4a90feae6681571b13437c067574251a76",
+  "change_footprint_json_sha256": "sha256:57f8a969b824fad6a8f06dbd7e4e8c5201297875a7b7bceace2ef7aa6ee8b1ea",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "2360096f4a0a162a07875d30861aaa6114f3e65c",
+    "head_commit": "2360096f4a0a162a07875d30861aaa6114f3e65c",
+    "source_fingerprint": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+    "artifact_fingerprint": "sha256:f28933660bafca77ef3c2addaa6d79d604d7d754720093240242c454902c79eb",
+    "base_specs_fingerprint": "sha256:db0118c4071af868bc0f5576160ede008cd3bac7a25fac6d16bfdb354be2ee8d",
+    "layers": {
+      "effective": {
+        "paths": [
+          "server/include/bt_audio_analyzer.hpp",
+          "server/include/bt_monitor.hpp",
+          "server/include/net_traffic.h",
+          "server/include/traffic_analyzer.hpp",
+          "server/include/weak_netmgr.hpp",
+          "server/src/bt_audio_analyzer.cpp",
+          "server/src/bt_monitor.cpp",
+          "server/src/process_net_profiler.cpp",
+          "server/src/server.cpp",
+          "server/src/traffic_analyzer.cpp",
+          "server/src/utils/bpf_map_sizing.cpp",
+          "server/src/weak_netmgr.cpp",
+          "server/test/CMakeLists.txt",
+          "server/test/special/test_bt_monitor.cpp",
+          "server/test/test_ebpf.cpp",
+          "server/test/unit/test_traffic_analyzer_gtest.cpp"
+        ],
+        "state_fingerprint": "sha256:4889f7c7f103795059919d152f6fafee6019e8855df6136bc4d580ea9db55254"
+      },
+      "committed": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [
+          "server/include/bt_audio_analyzer.hpp",
+          "server/include/bt_monitor.hpp",
+          "server/include/net_traffic.h",
+          "server/include/traffic_analyzer.hpp",
+          "server/include/weak_netmgr.hpp",
+          "server/src/bt_audio_analyzer.cpp",
+          "server/src/bt_monitor.cpp",
+          "server/src/process_net_profiler.cpp",
+          "server/src/server.cpp",
+          "server/src/traffic_analyzer.cpp",
+          "server/src/utils/bpf_map_sizing.cpp",
+          "server/src/weak_netmgr.cpp",
+          "server/test/CMakeLists.txt",
+          "server/test/special/test_bt_monitor.cpp",
+          "server/test/test_ebpf.cpp",
+          "server/test/unit/test_traffic_analyzer_gtest.cpp"
+        ],
+        "state_fingerprint": "sha256:4889f7c7f103795059919d152f6fafee6019e8855df6136bc4d580ea9db55254"
+      },
+      "untracked": {
+        "paths": [
+          "server/test/unit/test_map_sizing_spec_sync_gtest.cpp"
+        ],
+        "state_fingerprint": "sha256:b2c9848163fa83ab20a2f1f5c1f223fd6d1f060834bcda5b6908d13410188a84"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [
+      "server/include/bt_audio_analyzer.hpp",
+      "server/include/bt_monitor.hpp",
+      "server/include/net_traffic.h",
+      "server/include/traffic_analyzer.hpp",
+      "server/include/weak_netmgr.hpp",
+      "server/src/bt_audio_analyzer.cpp",
+      "server/src/bt_monitor.cpp",
+      "server/src/process_net_profiler.cpp",
+      "server/src/server.cpp",
+      "server/src/traffic_analyzer.cpp",
+      "server/src/utils/bpf_map_sizing.cpp",
+      "server/src/weak_netmgr.cpp",
+      "server/test/CMakeLists.txt",
+      "server/test/special/test_bt_monitor.cpp",
+      "server/test/test_ebpf.cpp",
+      "server/test/unit/test_map_sizing_spec_sync_gtest.cpp",
+      "server/test/unit/test_traffic_analyzer_gtest.cpp"
+    ],
+    "git_state_fingerprint": "sha256:93b68675f7239dc52f03332fa8563a64df9630abdc52fd137e881123ce298b70",
+    "raw_diff_persisted": false
+  },
+  "change_review": {
+    "schema_version": 1,
+    "git_state_fingerprint": "sha256:93b68675f7239dc52f03332fa8563a64df9630abdc52fd137e881123ce298b70",
+    "stages": [
+      {
+        "name": "specification_compliance",
+        "started_at": "2026-09-27T17:07:01.856Z",
+        "completed_at": "2026-09-27T17:16:45Z",
+        "status": "Pass",
+        "requirement_refs": [
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "eBPF Map 容量定标贯通到全部加载路径",
+            "scenarios": [
+              "flow_rate 两张 map 经流量分析通路获得定标"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "eBPF Map 容量定标贯通到全部加载路径",
+            "scenarios": [
+              "共享 map fd 路径记录 resolved 容量"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "eBPF Map 容量定标贯通到全部加载路径",
+            "scenarios": [
+              "蓝牙两张 map 获得定标"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "Map 定标规格表与内核编译期常量一致",
+            "scenarios": [
+              "规格表默认值与 BPF 源码声明逐一相符"
+            ]
+          }
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3",
+          "4"
+        ],
+        "reviewed_paths": [
+          "server/include/bt_audio_analyzer.hpp",
+          "server/include/bt_monitor.hpp",
+          "server/include/net_traffic.h",
+          "server/include/traffic_analyzer.hpp",
+          "server/include/weak_netmgr.hpp",
+          "server/src/bt_audio_analyzer.cpp",
+          "server/src/bt_monitor.cpp",
+          "server/src/process_net_profiler.cpp",
+          "server/src/server.cpp",
+          "server/src/traffic_analyzer.cpp",
+          "server/src/utils/bpf_map_sizing.cpp",
+          "server/src/weak_netmgr.cpp",
+          "server/test/CMakeLists.txt",
+          "server/test/special/test_bt_monitor.cpp",
+          "server/test/test_ebpf.cpp",
+          "server/test/unit/test_map_sizing_spec_sync_gtest.cpp",
+          "server/test/unit/test_traffic_analyzer_gtest.cpp"
+        ],
+        "dimensions": [
+          "requirements",
+          "scenarios",
+          "scope",
+          "contracts",
+          "traceability"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "finding_ids": [],
+        "blocking_untested_ids": [],
+        "not_run_reason": null
+      },
+      {
+        "name": "code_quality",
+        "started_at": "2026-09-27T17:16:45Z",
+        "completed_at": "2026-09-27T17:16:45Z",
+        "status": "Pass",
+        "requirement_refs": [
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "eBPF Map 容量定标贯通到全部加载路径",
+            "scenarios": [
+              "flow_rate 两张 map 经流量分析通路获得定标"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "eBPF Map 容量定标贯通到全部加载路径",
+            "scenarios": [
+              "共享 map fd 路径记录 resolved 容量"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "eBPF Map 容量定标贯通到全部加载路径",
+            "scenarios": [
+              "蓝牙两张 map 获得定标"
+            ]
+          },
+          {
+            "spec_path": "specs/weaknet-server/spec.md",
+            "operation": "ADDED",
+            "requirement": "Map 定标规格表与内核编译期常量一致",
+            "scenarios": [
+              "规格表默认值与 BPF 源码声明逐一相符"
+            ]
+          }
+        ],
+        "task_ids": [
+          "1",
+          "2",
+          "3",
+          "4"
+        ],
+        "reviewed_paths": [
+          "server/include/bt_audio_analyzer.hpp",
+          "server/include/bt_monitor.hpp",
+          "server/include/net_traffic.h",
+          "server/include/traffic_analyzer.hpp",
+          "server/include/weak_netmgr.hpp",
+          "server/src/bt_audio_analyzer.cpp",
+          "server/src/bt_monitor.cpp",
+          "server/src/process_net_profiler.cpp",
+          "server/src/server.cpp",
+          "server/src/traffic_analyzer.cpp",
+          "server/src/utils/bpf_map_sizing.cpp",
+          "server/src/weak_netmgr.cpp",
+          "server/test/CMakeLists.txt",
+          "server/test/special/test_bt_monitor.cpp",
+          "server/test/test_ebpf.cpp",
+          "server/test/unit/test_map_sizing_spec_sync_gtest.cpp",
+          "server/test/unit/test_traffic_analyzer_gtest.cpp"
+        ],
+        "dimensions": [
+          "correctness",
+          "safety",
+          "regression_risk",
+          "reuse",
+          "complexity",
+          "test_quality",
+          "repository_impact"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "finding_ids": [],
+        "blocking_untested_ids": [],
+        "not_run_reason": null
+      }
+    ],
+    "findings": []
+  },
+  "implementation_economy": {
+    "footprint_status": "within_expected",
+    "drift_explanation": null,
+    "classification_assessment": {
+      "result": "Pass",
+      "reason": "分类评估：变更文件属于已批准的分类范围。",
+      "evidence_paths": [
+        "server/include/bt_audio_analyzer.hpp",
+        "server/include/bt_monitor.hpp",
+        "server/include/net_traffic.h",
+        "server/include/traffic_analyzer.hpp",
+        "server/include/weak_netmgr.hpp",
+        "server/src/bt_audio_analyzer.cpp",
+        "server/src/bt_monitor.cpp",
+        "server/src/process_net_profiler.cpp",
+        "server/src/server.cpp",
+        "server/src/traffic_analyzer.cpp",
+        "server/src/utils/bpf_map_sizing.cpp",
+        "server/src/weak_netmgr.cpp",
+        "server/test/CMakeLists.txt",
+        "server/test/special/test_bt_monitor.cpp",
+        "server/test/test_ebpf.cpp",
+        "server/test/unit/test_map_sizing_spec_sync_gtest.cpp",
+        "server/test/unit/test_traffic_analyzer_gtest.cpp"
+      ],
+      "evidence_command_ids": [
+        "eval-cmd-1790528996393-3645405",
+        "eval-cmd-1790529236611-3661885"
+      ]
+    },
+    "repository_impact_assessment": {
+      "result": "Pass",
+      "surfaces": [
+        {
+          "surface": "product_targets",
+          "applicability": "applicable",
+          "result": "Pass",
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [
+            "server/include/bt_audio_analyzer.hpp",
+            "server/include/bt_monitor.hpp",
+            "server/include/net_traffic.h",
+            "server/include/traffic_analyzer.hpp",
+            "server/include/weak_netmgr.hpp",
+            "server/src/bt_audio_analyzer.cpp",
+            "server/src/bt_monitor.cpp",
+            "server/src/process_net_profiler.cpp",
+            "server/src/server.cpp",
+            "server/src/traffic_analyzer.cpp",
+            "server/src/utils/bpf_map_sizing.cpp",
+            "server/src/weak_netmgr.cpp",
+            "server/test/CMakeLists.txt",
+            "server/test/special/test_bt_monitor.cpp",
+            "server/test/test_ebpf.cpp",
+            "server/test/unit/test_map_sizing_spec_sync_gtest.cpp",
+            "server/test/unit/test_traffic_analyzer_gtest.cpp"
+          ],
+          "evidence_command_ids": [
+            "eval-cmd-1790528996393-3645405",
+            "eval-cmd-1790529236611-3661885"
+          ],
+          "not_applicable_reason": null
+        },
+        {
+          "surface": "install",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        },
+        {
+          "surface": "package",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        },
+        {
+          "surface": "ci",
+          "applicability": "not_applicable",
+          "result": null,
+          "reason": "自动填充：表面评估。",
+          "evidence_paths": [],
+          "evidence_command_ids": [],
+          "not_applicable_reason": "本次变更不涉及此表面。"
+        }
+      ]
+    },
+    "reuse_assessments": [
+      {
+        "id": "reuse-map-sizing-plan",
+        "result": "Pass",
+        "reason": "复用既有 MapSizingPlan 类型与 resolveScopePlan/applyMapSizingPlan 两个入口：本变更只新增调用点把计划传到实际加载位置，未重复实现解算或应用逻辑；解算算法本身在上一轮已有 26 项单元测试覆盖",
+        "evidence_paths": [],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ]
+      },
+      {
+        "id": "reuse-find-resolved-max",
+        "result": "Pass",
+        "reason": "复用既有 findResolvedMax 查询函数来记录共享 fd 路径的 resolved 容量，未新增查询 API；该函数已有单元测试覆盖，且其「未命中返回 0（容量未知）」语义被本变更显式补以规格表默认值回退",
+        "evidence_paths": [],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ]
+      },
+      {
+        "id": "reuse-get-map-sizing-specs",
+        "result": "Pass",
+        "reason": "复用既有 getMapSizingSpecs 作为交叉校验测试的遍历入口，使测试覆盖全部真实受管 map，而不是另建一份测试专用规格副本（后者正是本缺陷被掩盖的原因）",
+        "evidence_paths": [],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ]
+      }
+    ],
+    "structural_assessments": [
+      {
+        "allowance_id": null,
+        "candidate_ids": [
+          "candidate-37819f8ea7a1"
+        ],
+        "result": "Pass",
+        "reason": "server/include/weak_netmgr.hpp: 结构候选 public-contract-candidate，自动评估为 Pass",
+        "evidence_paths": [
+          "server/include/weak_netmgr.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405"
+        ]
+      },
+      {
+        "allowance_id": null,
+        "candidate_ids": [
+          "candidate-3ef6e273ad2c"
+        ],
+        "result": "Pass",
+        "reason": "server/include/bt_audio_analyzer.hpp: 结构候选 public-contract-candidate，自动评估为 Pass",
+        "evidence_paths": [
+          "server/include/bt_audio_analyzer.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405"
+        ]
+      },
+      {
+        "allowance_id": null,
+        "candidate_ids": [
+          "candidate-967660f8cfeb"
+        ],
+        "result": "Pass",
+        "reason": "server/include/bt_monitor.hpp: 结构候选 public-contract-candidate，自动评估为 Pass",
+        "evidence_paths": [
+          "server/include/bt_monitor.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405"
+        ]
+      },
+      {
+        "allowance_id": null,
+        "candidate_ids": [
+          "candidate-d3a1e86f48e1"
+        ],
+        "result": "Pass",
+        "reason": "server/include/traffic_analyzer.hpp: 结构候选 public-contract-candidate，自动评估为 Pass",
+        "evidence_paths": [
+          "server/include/traffic_analyzer.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405"
+        ]
+      },
+      {
+        "allowance_id": null,
+        "candidate_ids": [
+          "candidate-e66c7e981474"
+        ],
+        "result": "Pass",
+        "reason": "server/include/net_traffic.h: 结构候选 public-contract-candidate，自动评估为 Pass",
+        "evidence_paths": [
+          "server/include/net_traffic.h"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405"
+        ]
+      }
+    ],
+    "obsolete_item_assessments": [],
+    "exception_assessments": [],
+    "result": "Pass"
+  },
+  "criteria": [
+    {
+      "id": "criterion-001",
+      "description": "验收标准: 变更按要求实现，所有证据命令通过 (2/2)。",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "eBPF Map 容量定标贯通到全部加载路径",
+          "scenarios": [
+            "flow_rate 两张 map 经流量分析通路获得定标"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "eBPF Map 容量定标贯通到全部加载路径",
+          "scenarios": [
+            "共享 map fd 路径记录 resolved 容量"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "eBPF Map 容量定标贯通到全部加载路径",
+          "scenarios": [
+            "蓝牙两张 map 获得定标"
+          ]
+        },
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "Map 定标规格表与内核编译期常量一致",
+          "scenarios": [
+            "规格表默认值与 BPF 源码声明逐一相符"
+          ]
+        }
+      ],
+      "task_ids": [
+        "1",
+        "2",
+        "3",
+        "4"
+      ],
+      "status": "Pass",
+      "evidence_command_ids": [
+        "eval-cmd-1790528996393-3645405",
+        "eval-cmd-1790529236611-3661885"
+      ],
+      "blocking_untested_ids": []
+    }
+  ],
+  "commands": [
+    {
+      "id": "eval-cmd-1790528996393-3645405",
+      "kind": "build",
+      "argv": [
+        "scripts/project_command.sh",
+        "build-server",
+        "--change",
+        "ebpf-map-sizing-wiring",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"build-server\" \"--change\" \"ebpf-map-sizing-wiring\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-09-27T17:09:18.101Z",
+      "finished_at": "2026-09-27T17:09:55.169Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "exit code in [0]",
+      "observed": "exit code 0; output sha256:4a310065dcd8494b1d420530835d2dca42f17be44e6170ec97ffc6abb03a3b29",
+      "result": "Pass",
+      "output_sha256": "sha256:4a310065dcd8494b1d420530835d2dca42f17be44e6170ec97ffc6abb03a3b29",
+      "surface_ids": [
+        "surface-bluetooth-map-sizing",
+        "surface-flow-rate-sizing-wiring",
+        "surface-profiler-shared-capacity"
+      ],
+      "surface_evidence_roles": [
+        {
+          "surface_id": "surface-bluetooth-map-sizing",
+          "role": "current"
+        },
+        {
+          "surface_id": "surface-flow-rate-sizing-wiring",
+          "role": "current"
+        },
+        {
+          "surface_id": "surface-profiler-shared-capacity",
+          "role": "current"
+        }
+      ],
+      "surface_probe_bindings": [
+        {
+          "surface_id": "surface-bluetooth-map-sizing",
+          "role": "current",
+          "probe_id": "probe-bluetooth-sizing-build-current"
+        },
+        {
+          "surface_id": "surface-flow-rate-sizing-wiring",
+          "role": "current",
+          "probe_id": "probe-flow-rate-wiring-build-current"
+        },
+        {
+          "surface_id": "surface-profiler-shared-capacity",
+          "role": "current",
+          "probe_id": "probe-profiler-capacity-build-current"
+        }
+      ]
+    },
+    {
+      "id": "eval-cmd-1790529236611-3661885",
+      "kind": "test",
+      "argv": [
+        "scripts/project_command.sh",
+        "test-all",
+        "--change",
+        "ebpf-map-sizing-wiring",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"test-all\" \"--change\" \"ebpf-map-sizing-wiring\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-09-27T17:13:31.279Z",
+      "finished_at": "2026-09-27T17:13:54.962Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "exit code in [0]",
+      "observed": "exit code 0; output sha256:6de968730bf28bbb3fee499b424a07b4a304e1f82a3beae708e0afbbc1420640",
+      "result": "Pass",
+      "output_sha256": "sha256:6de968730bf28bbb3fee499b424a07b4a304e1f82a3beae708e0afbbc1420640",
+      "surface_ids": [
+        "surface-bluetooth-map-sizing",
+        "surface-flow-rate-sizing-wiring",
+        "surface-map-sizing-spec-consistency",
+        "surface-profiler-shared-capacity"
+      ],
+      "surface_evidence_roles": [
+        {
+          "surface_id": "surface-bluetooth-map-sizing",
+          "role": "current"
+        },
+        {
+          "surface_id": "surface-flow-rate-sizing-wiring",
+          "role": "current"
+        },
+        {
+          "surface_id": "surface-map-sizing-spec-consistency",
+          "role": "current"
+        },
+        {
+          "surface_id": "surface-profiler-shared-capacity",
+          "role": "current"
+        }
+      ],
+      "surface_probe_bindings": [
+        {
+          "surface_id": "surface-bluetooth-map-sizing",
+          "role": "current",
+          "probe_id": "probe-bluetooth-sizing-test-current"
+        },
+        {
+          "surface_id": "surface-flow-rate-sizing-wiring",
+          "role": "current",
+          "probe_id": "probe-flow-rate-wiring-test-current"
+        },
+        {
+          "surface_id": "surface-map-sizing-spec-consistency",
+          "role": "current",
+          "probe_id": "probe-spec-consistency-test-current"
+        },
+        {
+          "surface_id": "surface-profiler-shared-capacity",
+          "role": "current",
+          "probe_id": "probe-profiler-capacity-test-current"
+        }
+      ]
+    }
+  ],
+  "blocking_untested": [],
+  "residual_risks": [],
+  "integration_completeness": {
+    "planning_block_sha256": "sha256:6c399261582636778500f65d91a09503983cc18d6c80509c3f26ddf3c4302622",
+    "report_sha256": "sha256:021a5d712bfaff25cfb40c3864880f8f6f33fbc9df2b206209c902844d64e896",
+    "discovery_identity_sha256": "sha256:f776822063d61cc27f0760393d543708113d5525c4af3677a562db7291ac3474",
+    "inventory_assessment": {
+      "evidence_paths": [
+        "server/include/bt_audio_analyzer.hpp",
+        "server/include/bt_monitor.hpp",
+        "server/include/net_traffic.h",
+        "server/include/traffic_analyzer.hpp",
+        "server/include/weak_netmgr.hpp",
+        "server/src/bt_audio_analyzer.cpp",
+        "server/src/bt_monitor.cpp",
+        "server/src/process_net_profiler.cpp",
+        "server/src/server.cpp",
+        "server/src/traffic_analyzer.cpp",
+        "server/src/utils/bpf_map_sizing.cpp",
+        "server/src/weak_netmgr.cpp"
+      ],
+      "result": "Pass",
+      "reason": "inventory 覆盖全部 12 条已变更生产路径（与 change-footprint.json 的 production.touched_files 一致），经独立 test/build 命令验证通过",
+      "evidence_command_ids": [
+        "eval-cmd-1790528996393-3645405"
+      ]
+    },
+    "candidate_assessments": [
+      {
+        "candidate_id": "candidate-37819f8ea7a1",
+        "source": "structural",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-flow-rate-sizing-wiring"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-flow-rate-sizing-wiring",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-flow-rate-sizing-wiring 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/include/weak_netmgr.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/weak_netmgr.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "candidate-3ef6e273ad2c",
+        "source": "structural",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-bluetooth-map-sizing"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-bluetooth-map-sizing",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/bt_monitor.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-bluetooth-map-sizing 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/include/bt_audio_analyzer.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/bt_audio_analyzer.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "candidate-967660f8cfeb",
+        "source": "structural",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-bluetooth-map-sizing"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-bluetooth-map-sizing",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/bt_monitor.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-bluetooth-map-sizing 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/include/bt_monitor.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/bt_monitor.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "candidate-d3a1e86f48e1",
+        "source": "structural",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-flow-rate-sizing-wiring"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-flow-rate-sizing-wiring",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-flow-rate-sizing-wiring 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/include/traffic_analyzer.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/traffic_analyzer.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "candidate-e66c7e981474",
+        "source": "structural",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-flow-rate-sizing-wiring"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-flow-rate-sizing-wiring",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-flow-rate-sizing-wiring 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/include/net_traffic.h"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/net_traffic.h"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-16fb146dcf49dca2",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-bluetooth-map-sizing"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-bluetooth-map-sizing",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/bt_monitor.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-bluetooth-map-sizing 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/include/bt_audio_analyzer.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/bt_audio_analyzer.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-31faad21f7b0d9cb",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-flow-rate-sizing-wiring"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-flow-rate-sizing-wiring",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-flow-rate-sizing-wiring 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/src/weak_netmgr.cpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/weak_netmgr.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-43f65c008c9c634a",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-flow-rate-sizing-wiring"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-flow-rate-sizing-wiring",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-flow-rate-sizing-wiring 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/src/traffic_analyzer.cpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/traffic_analyzer.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-563ff3923751bc7d",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-profiler-shared-capacity"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-profiler-shared-capacity",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/monitor_ebpf_plugins.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-profiler-shared-capacity 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/src/process_net_profiler.cpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/process_net_profiler.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-5d413acf42ebed9b",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-bluetooth-map-sizing"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-bluetooth-map-sizing",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/bt_monitor.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-bluetooth-map-sizing 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/include/bt_monitor.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/bt_monitor.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-66dcca3458ce08b6",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-flow-rate-sizing-wiring"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-flow-rate-sizing-wiring",
+            "candidate_roles": [
+              "consumer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-flow-rate-sizing-wiring 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/server.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-82fe0f3a53898171",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-bluetooth-map-sizing"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-bluetooth-map-sizing",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/bt_monitor.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-bluetooth-map-sizing 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/src/bt_audio_analyzer.cpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/bt_audio_analyzer.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-88f05377b35bb048",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-flow-rate-sizing-wiring"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-flow-rate-sizing-wiring",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-flow-rate-sizing-wiring 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/include/net_traffic.h"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/net_traffic.h"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-8f11ab58e3ff94b9",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-bluetooth-map-sizing"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-bluetooth-map-sizing",
+            "candidate_roles": [
+              "consumer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/bt_monitor.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-bluetooth-map-sizing 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/bt_monitor.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-a9c27e1fcb1bedd1",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-flow-rate-sizing-wiring"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-flow-rate-sizing-wiring",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-flow-rate-sizing-wiring 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/include/weak_netmgr.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/weak_netmgr.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-b7b7f2cc6b958f7e",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-flow-rate-sizing-wiring"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-flow-rate-sizing-wiring",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/server.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-flow-rate-sizing-wiring 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/include/traffic_analyzer.hpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/include/traffic_analyzer.hpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      },
+      {
+        "candidate_id": "path-candidate-cc5273b2c8cc13fa",
+        "source": "path",
+        "disposition": "mapped",
+        "surface_ids": [
+          "surface-map-sizing-spec-consistency"
+        ],
+        "surface_bindings": [
+          {
+            "surface_id": "surface-map-sizing-spec-consistency",
+            "candidate_roles": [
+              "producer"
+            ],
+            "consumer_kind": "production_caller",
+            "consumer_paths": [
+              "server/src/monitor_ebpf_plugins.cpp"
+            ]
+          }
+        ],
+        "reason": "该候选路径是计划表面 surface-map-sizing-spec-consistency 的 producer/consumer，绑定关系取自冻结的 integration-surface-report.json",
+        "producer_paths": [
+          "server/src/utils/bpf_map_sizing.cpp"
+        ],
+        "implementation_consumer": null,
+        "evidence_paths": [
+          "server/src/utils/bpf_map_sizing.cpp"
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "orphan_ids": []
+      }
+    ],
+    "surface_assessments": [
+      {
+        "surface_id": "surface-bluetooth-map-sizing",
+        "result": "Pass",
+        "reason": "独立命令覆盖了该表面的全部 Verify kind 与证据角色；探针 argv 与计划契约逐字一致，输出标记命中",
+        "consumer_paths": [
+          "server/src/bt_monitor.cpp"
+        ],
+        "old_consumer_paths": [],
+        "replacement_consumer_paths": [],
+        "kind_evidence": [
+          {
+            "kind": "build",
+            "evidence_command_ids": [
+              "eval-cmd-1790528996393-3645405"
+            ]
+          },
+          {
+            "kind": "test",
+            "evidence_command_ids": [
+              "eval-cmd-1790529236611-3661885"
+            ]
+          }
+        ],
+        "role_evidence": [
+          {
+            "role": "current",
+            "evidence_command_ids": [
+              "eval-cmd-1790528996393-3645405",
+              "eval-cmd-1790529236611-3661885"
+            ]
+          }
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "blocking_untested_ids": [],
+        "orphan_ids": []
+      },
+      {
+        "surface_id": "surface-flow-rate-sizing-wiring",
+        "result": "Pass",
+        "reason": "独立命令覆盖了该表面的全部 Verify kind 与证据角色；探针 argv 与计划契约逐字一致，输出标记命中",
+        "consumer_paths": [
+          "server/src/server.cpp"
+        ],
+        "old_consumer_paths": [],
+        "replacement_consumer_paths": [],
+        "kind_evidence": [
+          {
+            "kind": "build",
+            "evidence_command_ids": [
+              "eval-cmd-1790528996393-3645405"
+            ]
+          },
+          {
+            "kind": "test",
+            "evidence_command_ids": [
+              "eval-cmd-1790529236611-3661885"
+            ]
+          }
+        ],
+        "role_evidence": [
+          {
+            "role": "current",
+            "evidence_command_ids": [
+              "eval-cmd-1790528996393-3645405",
+              "eval-cmd-1790529236611-3661885"
+            ]
+          }
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "blocking_untested_ids": [],
+        "orphan_ids": []
+      },
+      {
+        "surface_id": "surface-map-sizing-spec-consistency",
+        "result": "Pass",
+        "reason": "独立命令覆盖了该表面的全部 Verify kind 与证据角色；探针 argv 与计划契约逐字一致，输出标记命中",
+        "consumer_paths": [
+          "server/src/monitor_ebpf_plugins.cpp"
+        ],
+        "old_consumer_paths": [],
+        "replacement_consumer_paths": [],
+        "kind_evidence": [
+          {
+            "kind": "test",
+            "evidence_command_ids": [
+              "eval-cmd-1790529236611-3661885"
+            ]
+          }
+        ],
+        "role_evidence": [
+          {
+            "role": "current",
+            "evidence_command_ids": [
+              "eval-cmd-1790529236611-3661885"
+            ]
+          }
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "blocking_untested_ids": [],
+        "orphan_ids": []
+      },
+      {
+        "surface_id": "surface-profiler-shared-capacity",
+        "result": "Pass",
+        "reason": "独立命令覆盖了该表面的全部 Verify kind 与证据角色；探针 argv 与计划契约逐字一致，输出标记命中",
+        "consumer_paths": [
+          "server/src/monitor_ebpf_plugins.cpp"
+        ],
+        "old_consumer_paths": [],
+        "replacement_consumer_paths": [],
+        "kind_evidence": [
+          {
+            "kind": "build",
+            "evidence_command_ids": [
+              "eval-cmd-1790528996393-3645405"
+            ]
+          },
+          {
+            "kind": "test",
+            "evidence_command_ids": [
+              "eval-cmd-1790529236611-3661885"
+            ]
+          }
+        ],
+        "role_evidence": [
+          {
+            "role": "current",
+            "evidence_command_ids": [
+              "eval-cmd-1790528996393-3645405",
+              "eval-cmd-1790529236611-3661885"
+            ]
+          }
+        ],
+        "evidence_command_ids": [
+          "eval-cmd-1790528996393-3645405",
+          "eval-cmd-1790529236611-3661885"
+        ],
+        "blocking_untested_ids": [],
+        "orphan_ids": []
+      }
+    ],
+    "orphan_surfaces": [],
+    "result": "Pass"
+  }
+}

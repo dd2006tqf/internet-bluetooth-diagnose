@@ -180,6 +180,14 @@ add_executable(test_per_key_counter_tracker_gtest
     unit/test_per_key_counter_tracker_gtest.cpp)
 target_link_libraries(test_per_key_counter_tracker_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+# 交叉校验规格表 default_entries 与 .bpf.c 编译期常量的一致性：
+# 需要读取 server/ 下的 BPF 源码，故显式传入源码目录
+add_executable(test_map_sizing_spec_sync_gtest
+    unit/test_map_sizing_spec_sync_gtest.cpp)
+target_link_libraries(test_map_sizing_spec_sync_gtest PRIVATE ${TEST_COMMON_LIBS})
+target_compile_definitions(test_map_sizing_spec_sync_gtest PRIVATE
+    WEAKNET_SERVER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
+
 # ---- CTest 集成 ----
 # enable_testing() 已在根 CMakeLists.txt 中调用
 foreach(test_target
@@ -223,6 +231,7 @@ foreach(test_target
     test_monitor_registry_gtest
     test_monitor_manager_gtest
     test_bpf_map_sizing_gtest
+    test_map_sizing_spec_sync_gtest
     test_per_key_counter_tracker_gtest)
     add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()

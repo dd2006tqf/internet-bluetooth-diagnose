@@ -1350,7 +1350,17 @@ void start_bt_monitor_thread(ServerContext* ctx, std::thread* worker, BtMonitor*
             // 若挂载失败则自动降级为纯 D-Bus 模式，不影响蓝牙监控基础功能
             // ================================================================
             try {
-                bool ebpfOk = monitor->initPhase2(ctx->cfg.bluetooth.bpf_obj.get().c_str());
+                // 按 bluetooth 配置块解算 a2dp 两张 map 的容量计划；必须在
+                // bpf_object__load 之前传入，否则 active_sessions/bt_traffic
+                // 会保留内核编译期容量，使 bluetooth.map_sizing 三键永不生效
+                bool ebpfOk = monitor->initPhase2(
+                    ctx->cfg.bluetooth.bpf_obj.get().c_str(),
+                    weaknet::resolveScopePlan(
+                        weaknet::MapSizingScope::Bluetooth,
+                        {ctx->cfg.bluetooth.map_sizing.mode.get(),
+                         ctx->cfg.bluetooth.map_sizing.entries.load(),
+                         ctx->cfg.bluetooth.map_sizing.ram_budget_bp.load()},
+                        weaknet::totalPhysicalRamBytes()));
                 if (ebpfOk) {
                     LOG_INFO(LogModule::BLUETOOTH, "BT monitor: Phase 2 eBPF fusion enabled ("
                              << (monitor->isPhase2Available() ? "active" : "fallback") << ")");
@@ -1857,16 +1867,18 @@ void BtMonitor::setDefaultTxPower(int16_t txPower) {
 /**
  * @brief Phase 2 初始化：创建融合评分器 + eBPF 分析器并尝试挂载内核钩子
  * @param bpfObjectPath 编译好的 eBPF 对象文件路径（如 build/a2dp_media.bpf.o）
+ * @param plan          a2dp_media.bpf.o 的 Map 容量定标计划，在 open→load 之间应用
  * @return true eBPF 挂载成功；false 挂载失败（自动降级为纯 D-Bus 模式）
  */
-bool BtMonitor::initPhase2(const std::string& bpfObjectPath) {
+bool BtMonitor::initPhase2(const std::string& bpfObjectPath,
+                           const weaknet::MapSizingPlan& plan) {
     // 创建融合评估器（始终可用，用于纯 D-Bus 降级模式）
     if (!btAudioFusion_) {
         btAudioFusion_ = std::make_unique<BtAudioFusion>();
     }
 
     // 创建 eBPF 分析器并尝试挂载
-    bool ebpfAttached = btAudioAnalyzer_->init(bpfObjectPath);
+    bool ebpfAttached = btAudioAnalyzer_->init(bpfObjectPath, plan);
 
     if (ebpfAttached) {
         LOG_INFO(LogModule::BLUETOOTH, "BtMonitor: Phase 2 eBPF initialized successfully — hook="

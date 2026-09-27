@@ -43,9 +43,11 @@ const std::vector<MapSizeSpec> kTcpRetransSpecs = {
 };
 
 /// flow_rate.bpf.o（current_sec + process_stats）
+/// default_entries 必须逐一等于 flow_rate.bpf.c 中该 map 的编译期 max_entries
+/// （current_sec=65536、process_stats=65536），否则"未配置时与 v1 零变化"不成立。
 const std::vector<MapSizeSpec> kProcessProfilerSpecs = {
     {"current_sec",   13, 24,   8192, 65536, 262144},
-    {"process_stats",  4, 40,   2048,  8192,  32768},
+    {"process_stats",  4, 40,   2048, 65536, 262144},
 };
 
 /// http_latency.bpf.o

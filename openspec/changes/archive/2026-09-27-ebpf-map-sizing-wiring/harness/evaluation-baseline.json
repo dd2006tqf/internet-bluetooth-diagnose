@@ -1,0 +1,109 @@
+{
+  "schema_version": 3,
+  "evaluation_id": "eval-20260927T170701Z-277222",
+  "change_name": "ebpf-map-sizing-wiring",
+  "status": "complete",
+  "started_at": "2026-09-27T17:07:01.856Z",
+  "source_fingerprint": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+  "artifact_fingerprint": "sha256:f28933660bafca77ef3c2addaa6d79d604d7d754720093240242c454902c79eb",
+  "base_specs_fingerprint": "sha256:db0118c4071af868bc0f5576160ede008cd3bac7a25fac6d16bfdb354be2ee8d",
+  "verification_json_sha256": "sha256:b1badd285f486aa0262c0c597b5fb841108061a781d412619353e59def3d9184",
+  "budget_block_sha256": "sha256:ffaaf696ea765a832e160835c389ce4a90feae6681571b13437c067574251a76",
+  "change_footprint_json_sha256": "sha256:57f8a969b824fad6a8f06dbd7e4e8c5201297875a7b7bceace2ef7aa6ee8b1ea",
+  "integration_planning_block_sha256": "sha256:6c399261582636778500f65d91a09503983cc18d6c80509c3f26ddf3c4302622",
+  "integration_surface_report_sha256": "sha256:021a5d712bfaff25cfb40c3864880f8f6f33fbc9df2b206209c902844d64e896",
+  "integration_discovery_identity_sha256": "sha256:f776822063d61cc27f0760393d543708113d5525c4af3677a562db7291ac3474",
+  "review_input": {
+    "schema_version": 1,
+    "implementation_base_commit": "2360096f4a0a162a07875d30861aaa6114f3e65c",
+    "head_commit": "2360096f4a0a162a07875d30861aaa6114f3e65c",
+    "source_fingerprint": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+    "artifact_fingerprint": "sha256:f28933660bafca77ef3c2addaa6d79d604d7d754720093240242c454902c79eb",
+    "base_specs_fingerprint": "sha256:db0118c4071af868bc0f5576160ede008cd3bac7a25fac6d16bfdb354be2ee8d",
+    "layers": {
+      "effective": {
+        "paths": [
+          "server/include/bt_audio_analyzer.hpp",
+          "server/include/bt_monitor.hpp",
+          "server/include/net_traffic.h",
+          "server/include/traffic_analyzer.hpp",
+          "server/include/weak_netmgr.hpp",
+          "server/src/bt_audio_analyzer.cpp",
+          "server/src/bt_monitor.cpp",
+          "server/src/process_net_profiler.cpp",
+          "server/src/server.cpp",
+          "server/src/traffic_analyzer.cpp",
+          "server/src/utils/bpf_map_sizing.cpp",
+          "server/src/weak_netmgr.cpp",
+          "server/test/CMakeLists.txt",
+          "server/test/special/test_bt_monitor.cpp",
+          "server/test/test_ebpf.cpp",
+          "server/test/unit/test_traffic_analyzer_gtest.cpp"
+        ],
+        "state_fingerprint": "sha256:4889f7c7f103795059919d152f6fafee6019e8855df6136bc4d580ea9db55254"
+      },
+      "committed": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "staged": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "unstaged": {
+        "paths": [
+          "server/include/bt_audio_analyzer.hpp",
+          "server/include/bt_monitor.hpp",
+          "server/include/net_traffic.h",
+          "server/include/traffic_analyzer.hpp",
+          "server/include/weak_netmgr.hpp",
+          "server/src/bt_audio_analyzer.cpp",
+          "server/src/bt_monitor.cpp",
+          "server/src/process_net_profiler.cpp",
+          "server/src/server.cpp",
+          "server/src/traffic_analyzer.cpp",
+          "server/src/utils/bpf_map_sizing.cpp",
+          "server/src/weak_netmgr.cpp",
+          "server/test/CMakeLists.txt",
+          "server/test/special/test_bt_monitor.cpp",
+          "server/test/test_ebpf.cpp",
+          "server/test/unit/test_traffic_analyzer_gtest.cpp"
+        ],
+        "state_fingerprint": "sha256:4889f7c7f103795059919d152f6fafee6019e8855df6136bc4d580ea9db55254"
+      },
+      "untracked": {
+        "paths": [
+          "server/test/unit/test_map_sizing_spec_sync_gtest.cpp"
+        ],
+        "state_fingerprint": "sha256:b2c9848163fa83ab20a2f1f5c1f223fd6d1f060834bcda5b6908d13410188a84"
+      },
+      "dirty_gitlinks": {
+        "paths": [],
+        "state_fingerprint": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "review_paths": [
+      "server/include/bt_audio_analyzer.hpp",
+      "server/include/bt_monitor.hpp",
+      "server/include/net_traffic.h",
+      "server/include/traffic_analyzer.hpp",
+      "server/include/weak_netmgr.hpp",
+      "server/src/bt_audio_analyzer.cpp",
+      "server/src/bt_monitor.cpp",
+      "server/src/process_net_profiler.cpp",
+      "server/src/server.cpp",
+      "server/src/traffic_analyzer.cpp",
+      "server/src/utils/bpf_map_sizing.cpp",
+      "server/src/weak_netmgr.cpp",
+      "server/test/CMakeLists.txt",
+      "server/test/special/test_bt_monitor.cpp",
+      "server/test/test_ebpf.cpp",
+      "server/test/unit/test_map_sizing_spec_sync_gtest.cpp",
+      "server/test/unit/test_traffic_analyzer_gtest.cpp"
+    ],
+    "git_state_fingerprint": "sha256:93b68675f7239dc52f03332fa8563a64df9630abdc52fd137e881123ce298b70",
+    "raw_diff_persisted": false
+  },
+  "completed_at": "2026-09-27T20:06:53.771Z",
+  "evaluation_json_sha256": "sha256:0df57c7212b4b1142cfcea5e2d30de6d6cf8c0c544de18f345d37cc50a69d2e2"
+}

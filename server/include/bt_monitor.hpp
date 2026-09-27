@@ -41,6 +41,8 @@
 #include <memory>
 #include <thread>
 
+#include "utils/bpf_map_sizing.hpp"
+
 // 前置声明 libdbus 类型
 struct DBusConnection;
 struct DBusMessage;
@@ -348,10 +350,13 @@ public:
      * 任一挂点成功即标记可用；全部失败则降级为纯 D-Bus 模式。
      *
      * @param bpfObjectPath BPF 目标文件路径，如 "build/a2dp_media.bpf.o"
+     * @param plan          a2dp_media.bpf.o 的 Map 容量定标计划；**必填**，
+     *                      故意不设默认值以免调用点静默漏传
      * @return true 若至少一个挂点成功；false 全部失败（用户空间不崩溃，
      *         后续音频质量自动退化为 Phase 1b 逻辑）
      */
-    bool initPhase2(const std::string& bpfObjectPath);
+    bool initPhase2(const std::string& bpfObjectPath,
+                    const weaknet::MapSizingPlan& plan);
 
     /// 停止 eBPF 融合层（释放内核资源）
     void stopPhase2();

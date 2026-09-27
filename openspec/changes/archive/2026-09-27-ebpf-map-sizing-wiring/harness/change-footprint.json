@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "change_name": "ebpf-map-sizing-wiring",
+  "implementation_base_commit": "2360096f4a0a162a07875d30861aaa6114f3e65c",
+  "source_fingerprint": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+  "budget_block_sha256": "sha256:ffaaf696ea765a832e160835c389ce4a90feae6681571b13437c067574251a76",
+  "status": "within_expected",
+  "production": {
+    "added_lines": 84,
+    "deleted_lines": 17,
+    "net_lines": 67,
+    "touched_files": 12,
+    "new_files": 0
+  },
+  "tests": {
+    "added_lines": 188,
+    "touched_files": 5,
+    "new_files": 1
+  },
+  "project_support": {
+    "added_lines": 0,
+    "touched_files": 0,
+    "new_files": 0,
+    "paths_by_class": {
+      "project_docs": [],
+      "project_tooling": [],
+      "examples": []
+    }
+  },
+  "generated": {
+    "files": 0,
+    "bytes": 0
+  },
+  "vendor": {
+    "changed_paths": []
+  },
+  "binary": {
+    "files": 0,
+    "bytes": 0,
+    "paths": []
+  },
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-37819f8ea7a1",
+      "path": "server/include/weak_netmgr.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts"
+    },
+    {
+      "candidate_id": "candidate-3ef6e273ad2c",
+      "path": "server/include/bt_audio_analyzer.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts"
+    },
+    {
+      "candidate_id": "candidate-967660f8cfeb",
+      "path": "server/include/bt_monitor.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts"
+    },
+    {
+      "candidate_id": "candidate-d3a1e86f48e1",
+      "path": "server/include/traffic_analyzer.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts"
+    },
+    {
+      "candidate_id": "candidate-e66c7e981474",
+      "path": "server/include/net_traffic.h",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts"
+    }
+  ],
+  "unclassified_paths": [],
+  "classification_overlaps": []
+}

@@ -159,7 +159,8 @@ bool testInterfaceInit() {
     std::cout << "     📡 使用网络接口: " << activeIface << std::endl;
     
     // 初始化接口（这会加载 BPF 程序）
-    bool initResult = analyzer->initForInterface(activeIface);
+    // plan 显式传空：本测试验证的是 BPF 加载/挂载本身，不做容量定标
+    bool initResult = analyzer->initForInterface(activeIface, {});
     
     if (initResult) {
         g_stats.addResult(true, "BPF 程序加载成功");

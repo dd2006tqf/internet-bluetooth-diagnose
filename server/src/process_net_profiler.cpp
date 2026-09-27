@@ -115,12 +115,26 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath, const weaknet::MapS
     // TrafficAnalyzer 已加载 flow_rate.bpf.o 并 attach 了所有 kprobe，
     // 再次加载会导致 kprobe attach 失败，process_stats map 永远为空。
     auto analyzer = NetTrafficAnalyzer::getInstance();
-    if (analyzer->initForInterface("") && analyzer->getProcessStatsFd() >= 0) {
+    if (analyzer->initForInterface("", plan) && analyzer->getProcessStatsFd() >= 0) {
         impl_->process_stats_fd = analyzer->getProcessStatsFd();
         impl_->owns_obj = false;
+        // 共享 fd 路径同样要记录 resolved 容量：PerKeyCounterTracker 依赖它做水位判定，
+        // 若保持 0（语义为「容量未知」）会跳过 eviction_limited 判定。
+        // 共享 fd 时 process_stats 由 TrafficAnalyzer 按同一份 plan 加载，
+        // 故此处按计划查表即可；未命中时回退规格表默认值（即未定标时内核实际生效的容量）。
+        impl_->process_stats_max = weaknet::findResolvedMax(plan, "process_stats");
+        if (impl_->process_stats_max == 0) {
+            for (const auto& spec : weaknet::getMapSizingSpecs(weaknet::MapSizingScope::ProcessProfiler)) {
+                if (spec.map_name && std::strcmp(spec.map_name, "process_stats") == 0) {
+                    impl_->process_stats_max = spec.default_entries;
+                    break;
+                }
+            }
+        }
         available_ = true;
         initialized_ = true;
-        LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: using shared process_stats fd from TrafficAnalyzer");
+        LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: using shared process_stats fd from TrafficAnalyzer"
+                                     << " (resolved max_entries=" << impl_->process_stats_max << ")");
         stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached (shared TrafficAnalyzer)");
         stateSupport_.recordProbeAttached();
         stateSupport_.recordProbeAttached();

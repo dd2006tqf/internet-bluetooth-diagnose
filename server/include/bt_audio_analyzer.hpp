@@ -27,6 +27,7 @@
 #include <cstddef>
 #include "ebpf_monitor_interface.hpp"
 #include "ebpf_monitor_metrics.hpp"
+#include "utils/bpf_map_sizing.hpp"
 
 // 前置声明 libbpf 类型
 struct bpf_object;
@@ -81,10 +82,15 @@ public:
      * 任一挂点成功即标记可用；全部失败则标记为 Fallback。
      *
      * @param bpfObjectPath BPF 目标文件路径（如 "build/a2dp_media.bpf.o"）
+     * @param plan          a2dp_media.bpf.o 的 Map 容量定标计划，在
+     *                      bpf_object__open 与 bpf_object__load 之间应用；
+     *                      **必填**——故意不设默认值，使任何遗漏传参的调用点成为
+     *                      编译错误，而不是静默使用未定标的编译期容量
      * @return true  至少一个挂点成功
      * @return false 全部失败（用户空间不崩溃，后续 isAvailable() 返回 false）
      */
-    bool init(const std::string& bpfObjectPath);
+    bool init(const std::string& bpfObjectPath,
+              const weaknet::MapSizingPlan& plan);
 
     /// 停止分析器：卸载 eBPF 程序，关闭 BPF 对象
     void stop();

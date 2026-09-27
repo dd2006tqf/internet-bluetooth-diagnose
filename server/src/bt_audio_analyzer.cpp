@@ -53,7 +53,8 @@ BtAudioAnalyzer::~BtAudioAnalyzer() {
 // 生命周期管理
 // ============================================================================
 
-bool BtAudioAnalyzer::init(const std::string& bpfObjectPath) {
+bool BtAudioAnalyzer::init(const std::string& bpfObjectPath,
+                           const weaknet::MapSizingPlan& plan) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     bpfObjectPath_ = bpfObjectPath;
@@ -70,6 +71,11 @@ bool BtAudioAnalyzer::init(const std::string& bpfObjectPath) {
         stateSupport_.setState(EbpfMonitorState::Error, false, lastError_);
         return false;
     }
+
+    // 1b. 在 open→load 间隙应用容量定标：map 一旦 load 就无法 resize。
+    // 不应用时 active_sessions/bt_traffic 会保留内核编译期容量，
+    // 使 config.yaml 的 bluetooth.map_sizing 三键永不生效。
+    weaknet::applyMapSizingPlan(bpfObj_, plan);
 
     // 2. 加载 BPF 程序到内核（验证字节码，解析 CO-RE 重定位）
     if (bpf_object__load(bpfObj_) != 0) {

@@ -82,11 +82,14 @@ public:
      *
      * 创建 XDP hook 或 tc hook，过滤指定网卡的流量。
      * @param ifaceName  绑定的网卡名（如 "wlan0"）
+     * @param plan       Map 容量定标计划，在 bpf_object__open 与 bpf_object__load
+     *                   之间应用；**必填**——故意不设默认值，使任何遗漏传参的
+     *                   调用点成为编译错误，而不是静默使用未定标的编译期容量
      * @return true  eBPF 成功挂载
      * @return false 加载失败（降级为离线模式）
      */
     bool initForInterface(const std::string& ifaceName,
-                          const weaknet::MapSizingPlan& plan = {});
+                          const weaknet::MapSizingPlan& plan);
 
     /// 获取 process_stats map 的 fd（供 ProcessNetProfiler 共享）
     int getProcessStatsFd() const { return mapProcessStatsFd_; }

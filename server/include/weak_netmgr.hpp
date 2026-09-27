@@ -137,7 +137,9 @@ public:
     // ==================== 流量分析 ====================
 
     /// 启动流量分析器：在指定接口上启动 eBPF flow_rate 采样
-    void startTrafficAnalysis(const std::string& interface, int interval_seconds = 10);
+    /// @param plan flow_rate.bpf.o 的 Map 容量定标计划；**必填**，避免调用点漏传
+    void startTrafficAnalysis(const std::string& interface, int interval_seconds,
+                              const weaknet::MapSizingPlan& plan);
     void stopTrafficAnalysis();
     /// 将 TrafficAnalyzer 最新结果回写到 NetInfo（traffic_total_bps/pps/active_flows）
     bool updateTrafficAnalysis(std::vector<NetInfo>& list);

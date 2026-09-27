@@ -40,8 +40,11 @@ public:
      * @brief 启动流量分析线程
      * @param interface       绑定的网卡名（传递给 NetTrafficAnalyzer::initForInterface）
      * @param interval_seconds 采样间隔（秒），默认 10 秒
+     * @param plan             flow_rate.bpf.o 的 Map 容量定标计划；**必填**，
+     *                         故意不设默认值以免调用点静默漏传（见 initForInterface）
      */
-    void start(const std::string& interface, int interval_seconds = 10);
+    void start(const std::string& interface, int interval_seconds,
+               const weaknet::MapSizingPlan& plan);
     
     /// 停止流量分析线程（join 等待退出）
     void stop();

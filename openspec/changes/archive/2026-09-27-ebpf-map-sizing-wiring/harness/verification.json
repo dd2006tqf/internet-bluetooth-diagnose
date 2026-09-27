@@ -1,0 +1,688 @@
+{
+  "schema_version": 3,
+  "change_name": "ebpf-map-sizing-wiring",
+  "migration": null,
+  "tasks": [
+    {
+      "task_id": "1",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "eBPF Map 容量定标贯通到全部加载路径",
+          "scenarios": [
+            "flow_rate 两张 map 经流量分析通路获得定标"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-flow-rate-sizing-wiring"
+      ],
+      "changed_paths": [
+        "server/include/net_traffic.h",
+        "server/include/traffic_analyzer.hpp",
+        "server/include/weak_netmgr.hpp",
+        "server/src/server.cpp",
+        "server/src/traffic_analyzer.cpp",
+        "server/src/weak_netmgr.cpp",
+        "server/test/test_ebpf.cpp",
+        "server/test/unit/test_traffic_analyzer_gtest.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1790527354990-3524719",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-map-sizing-wiring",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T16:42:06.909Z",
+          "finished_at": "2026-09-27T16:42:31.937Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "source_fingerprint_after": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:e4338527856c096fbee92c026fcdf4524761d89a69476689469ae38a7c41f180",
+          "surface_ids": [
+            "surface-flow-rate-sizing-wiring"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-flow-rate-sizing-wiring",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": [
+            {
+              "surface_id": "surface-flow-rate-sizing-wiring",
+              "role": "current",
+              "probe_id": "probe-flow-rate-wiring-build-current"
+            }
+          ]
+        },
+        {
+          "id": "gen-cmd-1790527423408-3529991",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-map-sizing-wiring",
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T16:43:18.307Z",
+          "finished_at": "2026-09-27T16:43:40.885Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "source_fingerprint_after": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:3acd2337a58fb78b02f0b0fe6ccea27e71d90068f3d7895fba1346017f170653",
+          "surface_ids": [
+            "surface-flow-rate-sizing-wiring"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-flow-rate-sizing-wiring",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": [
+            {
+              "surface_id": "surface-flow-rate-sizing-wiring",
+              "role": "current",
+              "probe_id": "probe-flow-rate-wiring-test-current"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "2",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "eBPF Map 容量定标贯通到全部加载路径",
+          "scenarios": [
+            "共享 map fd 路径记录 resolved 容量"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-profiler-shared-capacity"
+      ],
+      "changed_paths": [
+        "server/src/process_net_profiler.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1790527712657-3550947",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-map-sizing-wiring",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T16:48:08.895Z",
+          "finished_at": "2026-09-27T16:48:30.513Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "source_fingerprint_after": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:1d88abcaa6188da10401a0205a64049311ad320b3b31e9c3d93e2cf134e4ef5c",
+          "surface_ids": [
+            "surface-profiler-shared-capacity"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-profiler-shared-capacity",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": [
+            {
+              "surface_id": "surface-profiler-shared-capacity",
+              "role": "current",
+              "probe_id": "probe-profiler-capacity-build-current"
+            }
+          ]
+        },
+        {
+          "id": "gen-cmd-1790527775554-3555968",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-map-sizing-wiring",
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T16:49:10.112Z",
+          "finished_at": "2026-09-27T16:49:33.064Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "source_fingerprint_after": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:138706e8471e4a6a99259fdcb1b7f650f8f1288d460e71b050bac3e636130ed3",
+          "surface_ids": [
+            "surface-profiler-shared-capacity"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-profiler-shared-capacity",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": [
+            {
+              "surface_id": "surface-profiler-shared-capacity",
+              "role": "current",
+              "probe_id": "probe-profiler-capacity-test-current"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "3",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "eBPF Map 容量定标贯通到全部加载路径",
+          "scenarios": [
+            "蓝牙两张 map 获得定标"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-bluetooth-map-sizing"
+      ],
+      "changed_paths": [
+        "server/include/bt_audio_analyzer.hpp",
+        "server/include/bt_monitor.hpp",
+        "server/src/bt_audio_analyzer.cpp",
+        "server/src/bt_monitor.cpp",
+        "server/test/special/test_bt_monitor.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1790527930762-3568423",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-map-sizing-wiring",
+          "kind": "build",
+          "argv": [
+            "scripts/project_command.sh",
+            "build-server",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T16:51:48.548Z",
+          "finished_at": "2026-09-27T16:52:08.740Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "source_fingerprint_after": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:aaa67e69deef2375202760c6c6c67ce7f507ef947be78b9a9ecf9c54fac5cb98",
+          "surface_ids": [
+            "surface-bluetooth-map-sizing"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-bluetooth-map-sizing",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": [
+            {
+              "surface_id": "surface-bluetooth-map-sizing",
+              "role": "current",
+              "probe_id": "probe-bluetooth-sizing-build-current"
+            }
+          ]
+        },
+        {
+          "id": "gen-cmd-1790527991540-3573240",
+          "phase": "ALTERNATIVE",
+          "cycle_id": null,
+          "exception_id": "exc-map-sizing-wiring",
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T16:52:47.785Z",
+          "finished_at": "2026-09-27T16:53:09.041Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "source_fingerprint_after": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "ALTERNATIVE command Pass",
+          "output_sha256": "sha256:b98157f521388be7f0f2d37262bfe29316ff6c2931a17a10017b7dadcf8fda68",
+          "surface_ids": [
+            "surface-bluetooth-map-sizing"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-bluetooth-map-sizing",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": [
+            {
+              "surface_id": "surface-bluetooth-map-sizing",
+              "role": "current",
+              "probe_id": "probe-bluetooth-sizing-test-current"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "4",
+      "requirement_refs": [
+        {
+          "spec_path": "specs/weaknet-server/spec.md",
+          "operation": "ADDED",
+          "requirement": "Map 定标规格表与内核编译期常量一致",
+          "scenarios": [
+            "规格表默认值与 BPF 源码声明逐一相符"
+          ]
+        }
+      ],
+      "surface_ids": [
+        "surface-map-sizing-spec-consistency"
+      ],
+      "changed_paths": [
+        "server/src/utils/bpf_map_sizing.cpp",
+        "server/test/CMakeLists.txt",
+        "server/test/unit/test_map_sizing_spec_sync_gtest.cpp"
+      ],
+      "footprint_observation": {
+        "status": "within_expected",
+        "drift_reason": null
+      },
+      "commands": [
+        {
+          "id": "gen-cmd-1790526213086-3441329",
+          "phase": "RED",
+          "cycle_id": "spec-sync-red-1",
+          "exception_id": null,
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T16:23:08.147Z",
+          "finished_at": "2026-09-27T16:23:30.023Z",
+          "expected_exit_codes": [
+            1
+          ],
+          "exit_code": 8,
+          "result": "InvalidRed",
+          "source_fingerprint_before": "sha256:e286869144d76d2a4f7df549230ba198e1a8a7cbc46f50cf4dc887ac7f490855",
+          "source_fingerprint_after": "sha256:e286869144d76d2a4f7df549230ba198e1a8a7cbc46f50cf4dc887ac7f490855",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [
+            {
+              "path": "server/test/unit/test_map_sizing_spec_sync_gtest.cpp",
+              "mode": "100644",
+              "sha256": "sha256:619cd2811e66ff9dbd93947c09daffd186b8273bcc4291b4d25c3d393ad209fd"
+            }
+          ],
+          "expected_failure": {
+            "class": "assertion",
+            "reason": "规格表 process_stats 的 default_entries 8192 与 flow_rate.bpf.c 声明的 65536 不一致，交叉校验测试应失败",
+            "output_match_sha256": "sha256:e9059eeab21d36dc66b7a0b4bb36a75166089bc9de9499634112b11398f40044",
+            "matched": true
+          },
+          "observed_summary": "MapSizingSpecSyncTest.DefaultEntriesMatchesBpfSourceConstant FAILED：process_stats 规格表 8192 vs 源码 65536",
+          "output_sha256": "sha256:1f60d0d36218d3fe27523c0bacf43f00a16c21b6afd73e5beba96f735c2d1774",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        },
+        {
+          "id": "gen-cmd-1790526399954-3454563",
+          "phase": "RED",
+          "cycle_id": "spec-sync-red-2",
+          "exception_id": null,
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T16:26:14.866Z",
+          "finished_at": "2026-09-27T16:26:37.123Z",
+          "expected_exit_codes": [
+            8
+          ],
+          "exit_code": 8,
+          "result": "ExpectedFailure",
+          "source_fingerprint_before": "sha256:e286869144d76d2a4f7df549230ba198e1a8a7cbc46f50cf4dc887ac7f490855",
+          "source_fingerprint_after": "sha256:e286869144d76d2a4f7df549230ba198e1a8a7cbc46f50cf4dc887ac7f490855",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [
+            {
+              "path": "server/test/unit/test_map_sizing_spec_sync_gtest.cpp",
+              "mode": "100644",
+              "sha256": "sha256:619cd2811e66ff9dbd93947c09daffd186b8273bcc4291b4d25c3d393ad209fd"
+            }
+          ],
+          "expected_failure": {
+            "class": "assertion",
+            "reason": "规格表 process_stats 的 default_entries 8192 与 flow_rate.bpf.c 声明的 65536 不一致，交叉校验测试应失败",
+            "output_match_sha256": "sha256:e9059eeab21d36dc66b7a0b4bb36a75166089bc9de9499634112b11398f40044",
+            "matched": true
+          },
+          "observed_summary": "MapSizingSpecSyncTest.DefaultEntriesMatchesBpfSourceConstant FAILED：process_stats 规格表 8192 vs 源码 65536",
+          "output_sha256": "sha256:281274ec439bd77a19b285ceab62a7dc9a44f1e46d6e966240a74cc0330b520c",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        },
+        {
+          "id": "gen-cmd-1790526625202-3471159",
+          "phase": "GREEN",
+          "cycle_id": "spec-sync-red-2",
+          "exception_id": null,
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T16:29:58.719Z",
+          "finished_at": "2026-09-27T16:30:22.333Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 8,
+          "result": "Fail",
+          "source_fingerprint_before": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "source_fingerprint_after": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "修正 process_stats 的 default_entries 为 65536 后，交叉校验测试全部通过（42/42）",
+          "output_sha256": "sha256:9ebee819597225412ac7c9a1f8758dae08893a311bb619ffe895d15426f049fe",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        },
+        {
+          "id": "gen-cmd-1790526827377-3485819",
+          "phase": "GREEN",
+          "cycle_id": "spec-sync-red-2",
+          "exception_id": null,
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T16:33:21.833Z",
+          "finished_at": "2026-09-27T16:33:44.153Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "source_fingerprint_after": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "修正 process_stats 的 default_entries 为 65536 并重新编译后，交叉校验测试全部通过（42/42）",
+          "output_sha256": "sha256:bc5c79b20a3fae0f670f984d724048dff5436e1924409469931070846e067b89",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        },
+        {
+          "id": "gen-cmd-1790526988611-3497396",
+          "phase": "REGRESSION",
+          "cycle_id": "spec-sync-red-2",
+          "exception_id": null,
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T16:36:03.527Z",
+          "finished_at": "2026-09-27T16:36:25.918Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "source_fingerprint_after": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "全量 42/42 测试通过，含新增的规格表交叉校验测试；未引入回归",
+          "output_sha256": "sha256:6ee0a30f7f7dab86797ce5235f5e17d02756cd32e980946c478cf6745136d855",
+          "surface_ids": [],
+          "surface_evidence_roles": [],
+          "surface_probe_bindings": []
+        },
+        {
+          "id": "gen-cmd-1790527116574-3507201",
+          "phase": "REGRESSION",
+          "cycle_id": "spec-sync-red-2",
+          "exception_id": null,
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T16:38:11.421Z",
+          "finished_at": "2026-09-27T16:38:34.033Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "source_fingerprint_after": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "全量 42/42 测试通过，含新增的规格表交叉校验测试；未引入回归",
+          "output_sha256": "sha256:ff5c7c09d278b63c024fff709c4ebc8112cdc34079662d06c4aefddb1d6298d6",
+          "surface_ids": [
+            "surface-map-sizing-spec-consistency"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-map-sizing-spec-consistency",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": [
+            {
+              "surface_id": "surface-map-sizing-spec-consistency",
+              "role": "current",
+              "probe_id": "probe-spec-consistency-test-current"
+            }
+          ]
+        },
+        {
+          "id": "gen-cmd-1790538707436-23821",
+          "phase": "REGRESSION",
+          "cycle_id": "spec-sync-red-2",
+          "exception_id": null,
+          "kind": "test",
+          "argv": [
+            "scripts/project_command.sh",
+            "test-all",
+            "--change",
+            "ebpf-map-sizing-wiring",
+            "--json"
+          ],
+          "working_directory": ".",
+          "started_at": "2026-09-27T19:51:18.568Z",
+          "finished_at": "2026-09-27T19:51:45.081Z",
+          "expected_exit_codes": [
+            0
+          ],
+          "exit_code": 0,
+          "result": "Pass",
+          "source_fingerprint_before": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "source_fingerprint_after": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+          "planning_fingerprint_before": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "planning_fingerprint_after": "sha256:93676bb2b7213f5c6015ae7ca219bed8c36d63b24ab4a8a612cec84993e43e7f",
+          "tdd_policy_sha256": "sha256:35605b851736a77d8806b9a1e100b5f46a47d5ec2042268f40eba44f21bdc694",
+          "test_files": [],
+          "expected_failure": null,
+          "observed_summary": "全量 42/42 测试通过，含新增的规格表交叉校验测试；补记测试侧路径后重申未引入回归",
+          "output_sha256": "sha256:3a430aeb3f64a98f67d6f2e05bad543bebc569882a7b4be3010a707ecad71511",
+          "surface_ids": [
+            "surface-map-sizing-spec-consistency"
+          ],
+          "surface_evidence_roles": [
+            {
+              "surface_id": "surface-map-sizing-spec-consistency",
+              "role": "current"
+            }
+          ],
+          "surface_probe_bindings": [
+            {
+              "surface_id": "surface-map-sizing-spec-consistency",
+              "role": "current",
+              "probe_id": "probe-spec-consistency-test-current"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,135 @@
+{
+  "schema_version": 2,
+  "evaluation_id": "eval-20260927T170701Z-277222",
+  "change_name": "ebpf-map-sizing-wiring",
+  "commands": [
+    {
+      "id": "eval-cmd-1790528996393-3645405",
+      "kind": "build",
+      "argv": [
+        "scripts/project_command.sh",
+        "build-server",
+        "--change",
+        "ebpf-map-sizing-wiring",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"build-server\" \"--change\" \"ebpf-map-sizing-wiring\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-09-27T17:09:18.101Z",
+      "finished_at": "2026-09-27T17:09:55.169Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "exit code in [0]",
+      "observed": "exit code 0; output sha256:4a310065dcd8494b1d420530835d2dca42f17be44e6170ec97ffc6abb03a3b29",
+      "result": "Pass",
+      "output_sha256": "sha256:4a310065dcd8494b1d420530835d2dca42f17be44e6170ec97ffc6abb03a3b29",
+      "surface_ids": [
+        "surface-bluetooth-map-sizing",
+        "surface-flow-rate-sizing-wiring",
+        "surface-profiler-shared-capacity"
+      ],
+      "surface_evidence_roles": [
+        {
+          "surface_id": "surface-bluetooth-map-sizing",
+          "role": "current"
+        },
+        {
+          "surface_id": "surface-flow-rate-sizing-wiring",
+          "role": "current"
+        },
+        {
+          "surface_id": "surface-profiler-shared-capacity",
+          "role": "current"
+        }
+      ],
+      "surface_probe_bindings": [
+        {
+          "surface_id": "surface-bluetooth-map-sizing",
+          "role": "current",
+          "probe_id": "probe-bluetooth-sizing-build-current"
+        },
+        {
+          "surface_id": "surface-flow-rate-sizing-wiring",
+          "role": "current",
+          "probe_id": "probe-flow-rate-wiring-build-current"
+        },
+        {
+          "surface_id": "surface-profiler-shared-capacity",
+          "role": "current",
+          "probe_id": "probe-profiler-capacity-build-current"
+        }
+      ]
+    },
+    {
+      "id": "eval-cmd-1790529236611-3661885",
+      "kind": "test",
+      "argv": [
+        "scripts/project_command.sh",
+        "test-all",
+        "--change",
+        "ebpf-map-sizing-wiring",
+        "--json"
+      ],
+      "command": "\"scripts/project_command.sh\" \"test-all\" \"--change\" \"ebpf-map-sizing-wiring\" \"--json\"",
+      "working_directory": ".",
+      "started_at": "2026-09-27T17:13:31.279Z",
+      "finished_at": "2026-09-27T17:13:54.962Z",
+      "expected_exit_codes": [
+        0
+      ],
+      "exit_code": 0,
+      "expected": "exit code in [0]",
+      "observed": "exit code 0; output sha256:6de968730bf28bbb3fee499b424a07b4a304e1f82a3beae708e0afbbc1420640",
+      "result": "Pass",
+      "output_sha256": "sha256:6de968730bf28bbb3fee499b424a07b4a304e1f82a3beae708e0afbbc1420640",
+      "surface_ids": [
+        "surface-bluetooth-map-sizing",
+        "surface-flow-rate-sizing-wiring",
+        "surface-map-sizing-spec-consistency",
+        "surface-profiler-shared-capacity"
+      ],
+      "surface_evidence_roles": [
+        {
+          "surface_id": "surface-bluetooth-map-sizing",
+          "role": "current"
+        },
+        {
+          "surface_id": "surface-flow-rate-sizing-wiring",
+          "role": "current"
+        },
+        {
+          "surface_id": "surface-map-sizing-spec-consistency",
+          "role": "current"
+        },
+        {
+          "surface_id": "surface-profiler-shared-capacity",
+          "role": "current"
+        }
+      ],
+      "surface_probe_bindings": [
+        {
+          "surface_id": "surface-bluetooth-map-sizing",
+          "role": "current",
+          "probe_id": "probe-bluetooth-sizing-test-current"
+        },
+        {
+          "surface_id": "surface-flow-rate-sizing-wiring",
+          "role": "current",
+          "probe_id": "probe-flow-rate-wiring-test-current"
+        },
+        {
+          "surface_id": "surface-map-sizing-spec-consistency",
+          "role": "current",
+          "probe_id": "probe-spec-consistency-test-current"
+        },
+        {
+          "surface_id": "surface-profiler-shared-capacity",
+          "role": "current",
+          "probe_id": "probe-profiler-capacity-test-current"
+        }
+      ]
+    }
+  ]
+}

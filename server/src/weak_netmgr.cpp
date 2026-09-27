@@ -246,11 +246,12 @@ bool WeakNetMgr::updateJitter(std::vector<NetInfo>& list,
 }
 
 // 流量分析相关函数实现
-void WeakNetMgr::startTrafficAnalysis(const std::string& interface, int interval_seconds) {
+void WeakNetMgr::startTrafficAnalysis(const std::string& interface, int interval_seconds,
+                                      const weaknet::MapSizingPlan& plan) {
     if (!traffic_analyzer_) {
         traffic_analyzer_ = std::make_shared<TrafficAnalyzer>();
     }
-    traffic_analyzer_->start(interface, interval_seconds);
+    traffic_analyzer_->start(interface, interval_seconds, plan);
     if (traffic_analyzer_->isDegradedMode()) {
         LOG_WARNING(LogModule::WEAK_MGR, "Traffic analysis started in degraded mode for interface: " << interface);
     }

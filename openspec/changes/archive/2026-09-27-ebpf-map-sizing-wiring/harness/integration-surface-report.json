@@ -1,0 +1,324 @@
+{
+  "schema_version": 1,
+  "change_name": "ebpf-map-sizing-wiring",
+  "implementation_base_commit": "2360096f4a0a162a07875d30861aaa6114f3e65c",
+  "discovery_mode": "reviewed_inventory",
+  "source_fingerprint": "sha256:1af2d85b3bde1a480a2cc32d860a7e6d583a65fbb0646450dac2e717e73db8ed",
+  "planning_block_sha256": "sha256:6c399261582636778500f65d91a09503983cc18d6c80509c3f26ddf3c4302622",
+  "change_footprint_json_sha256": "sha256:57f8a969b824fad6a8f06dbd7e4e8c5201297875a7b7bceace2ef7aa6ee8b1ea",
+  "scope_classifier_identity": {
+    "schema_version": 1,
+    "path": "scripts/change_scope.js",
+    "sha256": "sha256:f7c5dc2d02366cf05b9a01da5c6caad6c47e5e8fdefbcd497bea91d70352755e",
+    "output_sha256": "sha256:6b15f09a199c86065cd0993ad23fa20e850c56af2f56d8b5c0f1cce1e252b22a"
+  },
+  "discovery_adapter_identity": {
+    "id": "reviewed-inventory-v1",
+    "schema_version": 1,
+    "sha256": "sha256:cbcf64a8afbdcafa3221b48b1ea76c7ea5de1a45aba0e78037da0fdb3bec9045"
+  },
+  "compile_commands_sha256": null,
+  "ast_tool_identity": null,
+  "planned_surface_ids": [
+    "surface-bluetooth-map-sizing",
+    "surface-flow-rate-sizing-wiring",
+    "surface-map-sizing-spec-consistency",
+    "surface-profiler-shared-capacity"
+  ],
+  "changed_production_paths": [
+    "server/include/bt_audio_analyzer.hpp",
+    "server/include/bt_monitor.hpp",
+    "server/include/net_traffic.h",
+    "server/include/traffic_analyzer.hpp",
+    "server/include/weak_netmgr.hpp",
+    "server/src/bt_audio_analyzer.cpp",
+    "server/src/bt_monitor.cpp",
+    "server/src/process_net_profiler.cpp",
+    "server/src/server.cpp",
+    "server/src/traffic_analyzer.cpp",
+    "server/src/utils/bpf_map_sizing.cpp",
+    "server/src/weak_netmgr.cpp"
+  ],
+  "path_candidates": [
+    {
+      "candidate_id": "path-candidate-16fb146dcf49dca2",
+      "source": "path",
+      "path": "server/include/bt_audio_analyzer.hpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-31faad21f7b0d9cb",
+      "source": "path",
+      "path": "server/src/weak_netmgr.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-43f65c008c9c634a",
+      "source": "path",
+      "path": "server/src/traffic_analyzer.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-563ff3923751bc7d",
+      "source": "path",
+      "path": "server/src/process_net_profiler.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-5d413acf42ebed9b",
+      "source": "path",
+      "path": "server/include/bt_monitor.hpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-66dcca3458ce08b6",
+      "source": "path",
+      "path": "server/src/server.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-82fe0f3a53898171",
+      "source": "path",
+      "path": "server/src/bt_audio_analyzer.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-88f05377b35bb048",
+      "source": "path",
+      "path": "server/include/net_traffic.h",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-8f11ab58e3ff94b9",
+      "source": "path",
+      "path": "server/src/bt_monitor.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-a9c27e1fcb1bedd1",
+      "source": "path",
+      "path": "server/include/weak_netmgr.hpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-b7b7f2cc6b958f7e",
+      "source": "path",
+      "path": "server/include/traffic_analyzer.hpp",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "path-candidate-cc5273b2c8cc13fa",
+      "source": "path",
+      "path": "server/src/utils/bpf_map_sizing.cpp",
+      "old_path": null,
+      "change_status": "modified"
+    }
+  ],
+  "structural_candidates": [
+    {
+      "candidate_id": "candidate-37819f8ea7a1",
+      "source": "structural",
+      "path": "server/include/weak_netmgr.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "candidate-3ef6e273ad2c",
+      "source": "structural",
+      "path": "server/include/bt_audio_analyzer.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "candidate-967660f8cfeb",
+      "source": "structural",
+      "path": "server/include/bt_monitor.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "candidate-d3a1e86f48e1",
+      "source": "structural",
+      "path": "server/include/traffic_analyzer.hpp",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts",
+      "old_path": null,
+      "change_status": "modified"
+    },
+    {
+      "candidate_id": "candidate-e66c7e981474",
+      "source": "structural",
+      "path": "server/include/net_traffic.h",
+      "kind": "public-contract-candidate",
+      "allowance_kind": "public_contracts",
+      "old_path": null,
+      "change_status": "modified"
+    }
+  ],
+  "ast_candidates": [],
+  "surface_candidate_bindings": [
+    {
+      "surface_id": "surface-bluetooth-map-sizing",
+      "candidate_bindings": [
+        {
+          "candidate_id": "candidate-3ef6e273ad2c",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "candidate-967660f8cfeb",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-16fb146dcf49dca2",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-5d413acf42ebed9b",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-82fe0f3a53898171",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-8f11ab58e3ff94b9",
+          "role": "consumer",
+          "tree_side": "both"
+        }
+      ],
+      "producer_paths": [
+        "server/include/bt_audio_analyzer.hpp",
+        "server/include/bt_monitor.hpp",
+        "server/src/bt_audio_analyzer.cpp"
+      ],
+      "consumer_paths": [
+        "server/src/bt_monitor.cpp"
+      ],
+      "old_consumer_paths": [],
+      "replacement_consumer_paths": []
+    },
+    {
+      "surface_id": "surface-flow-rate-sizing-wiring",
+      "candidate_bindings": [
+        {
+          "candidate_id": "candidate-37819f8ea7a1",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "candidate-d3a1e86f48e1",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "candidate-e66c7e981474",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-31faad21f7b0d9cb",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-43f65c008c9c634a",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-66dcca3458ce08b6",
+          "role": "consumer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-88f05377b35bb048",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-a9c27e1fcb1bedd1",
+          "role": "producer",
+          "tree_side": "both"
+        },
+        {
+          "candidate_id": "path-candidate-b7b7f2cc6b958f7e",
+          "role": "producer",
+          "tree_side": "both"
+        }
+      ],
+      "producer_paths": [
+        "server/include/net_traffic.h",
+        "server/include/traffic_analyzer.hpp",
+        "server/include/weak_netmgr.hpp",
+        "server/src/traffic_analyzer.cpp",
+        "server/src/weak_netmgr.cpp"
+      ],
+      "consumer_paths": [
+        "server/src/server.cpp"
+      ],
+      "old_consumer_paths": [],
+      "replacement_consumer_paths": []
+    },
+    {
+      "surface_id": "surface-map-sizing-spec-consistency",
+      "candidate_bindings": [
+        {
+          "candidate_id": "path-candidate-cc5273b2c8cc13fa",
+          "role": "producer",
+          "tree_side": "both"
+        }
+      ],
+      "producer_paths": [
+        "server/include/utils/bpf_map_sizing.hpp",
+        "server/src/utils/bpf_map_sizing.cpp"
+      ],
+      "consumer_paths": [
+        "server/src/monitor_ebpf_plugins.cpp"
+      ],
+      "old_consumer_paths": [],
+      "replacement_consumer_paths": []
+    },
+    {
+      "surface_id": "surface-profiler-shared-capacity",
+      "candidate_bindings": [
+        {
+          "candidate_id": "path-candidate-563ff3923751bc7d",
+          "role": "producer",
+          "tree_side": "both"
+        }
+      ],
+      "producer_paths": [
+        "server/src/process_net_profiler.cpp"
+      ],
+      "consumer_paths": [
+        "server/src/monitor_ebpf_plugins.cpp"
+      ],
+      "old_consumer_paths": [],
+      "replacement_consumer_paths": []
+    }
+  ],
+  "unmatched_candidates": [],
+  "status": "complete"
+}

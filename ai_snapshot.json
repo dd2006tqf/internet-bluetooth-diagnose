@@ -2,13 +2,13 @@
   "schema_version": 2,
   "workflow": "openspec",
   "phase": "idle",
-  "current_step": "change-aborted",
+  "current_step": "change-archived",
   "next_step": "Create or select the next change",
   "active_change": null,
-  "updated_at": "2026-09-27T08:57:16.041Z",
+  "updated_at": "2026-09-27T20:36:42.423Z",
   "last_archived_change": {
-    "change_name": "timestamped-log-file",
-    "archived_as": "2026-08-16-timestamped-log-file",
-    "archived_at": "2026-08-16T12:59:24.872Z"
+    "change_name": "ebpf-map-sizing-wiring",
+    "archived_as": "2026-09-27-ebpf-map-sizing-wiring",
+    "archived_at": "2026-09-27T20:36:42.423Z"
   }
 }

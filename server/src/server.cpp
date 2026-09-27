@@ -268,7 +268,18 @@ void start_traffic_analysis_thread(ServerContext* ctx, std::thread* worker) {
         }
 
         LOG_INFO(LogModule::WEAK_MGR, "traffic analysis: using interface " << targetIface);
-        ctx->weak_mgr->startTrafficAnalysis(targetIface, ctx->cfg.traffic.interval_ms.load() / 1000);
+        // flow_rate.bpf.o 与 ProcessProfilerPlugin 共享同一份 map，使用 process_profiler
+        // 配置块的定标参数解算容量计划；必须在 bpf_object__load 之前传入，
+        // 否则 current_sec/process_stats 会保留内核编译期容量（真机核验发现的缺陷）
+        ctx->weak_mgr->startTrafficAnalysis(
+            targetIface,
+            ctx->cfg.traffic.interval_ms.load() / 1000,
+            weaknet::resolveScopePlan(
+                weaknet::MapSizingScope::ProcessProfiler,
+                {ctx->cfg.process_profiler.map_sizing.mode.get(),
+                 ctx->cfg.process_profiler.map_sizing.entries.load(),
+                 ctx->cfg.process_profiler.map_sizing.ram_budget_bp.load()},
+                weaknet::totalPhysicalRamBytes()));
 
         int loop_count = 0;
         while ((ctx->running.load() && !ctx->traffic_stop.load())) {

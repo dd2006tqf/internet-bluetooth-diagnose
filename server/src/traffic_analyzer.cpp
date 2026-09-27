@@ -50,8 +50,10 @@ TrafficAnalyzer::~TrafficAnalyzer() {
  *
  * @param interface      网络接口名（如 "wlan0"），空字符串表示自动选择
  * @param interval_seconds 分析周期（秒），默认 10s
+ * @param plan           flow_rate.bpf.o 的 Map 容量定标计划；在 open→load 之间应用
  */
-void TrafficAnalyzer::start(const std::string& interface, int interval_seconds) {
+void TrafficAnalyzer::start(const std::string& interface, int interval_seconds,
+                            const weaknet::MapSizingPlan& plan) {
     if (running_.load()) {
         LOG_INFO(LogModule::WEAK_MGR, "Traffic analyzer already running");
         return;
@@ -72,7 +74,7 @@ void TrafficAnalyzer::start(const std::string& interface, int interval_seconds) 
     
     // 初始化网络接口
     // degraded_mode_: initForInterface 失败时置 true，analyzeLoop 检查此标志跳过 eBPF 调用
-    if (!analyzer_->initForInterface(interface)) {
+    if (!analyzer_->initForInterface(interface, plan)) {
         LOG_ERROR(LogModule::WEAK_MGR, "Failed to initialize traffic analyzer for interface: " << interface);
         LOG_INFO(LogModule::WEAK_MGR, "Traffic analyzer will run in degraded mode (no eBPF monitoring)");
         degraded_mode_.store(true);

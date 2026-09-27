@@ -41,7 +41,7 @@ TEST_F(TrafficAnalyzerTest, DefaultDegradedMode) {
 // Test 2: initForInterface failure should enter degraded mode
 TEST_F(TrafficAnalyzerTest, InitFailureEntersDegradedMode) {
     // Use non-existent interface name to trigger initForInterface failure
-    analyzer_->start("nonexistent_iface_test", 1);
+    analyzer_->start("nonexistent_iface_test", 1, {});
     // degraded_mode_ is set synchronously in start(), no need to wait for thread
     EXPECT_TRUE(analyzer_->isDegradedMode());
 }
@@ -49,18 +49,18 @@ TEST_F(TrafficAnalyzerTest, InitFailureEntersDegradedMode) {
 // Test 3: Start and stop should work without crash
 TEST_F(TrafficAnalyzerTest, StartStop) {
     // This should not crash
-    analyzer_->start("nonexistent_iface_test", 1);
+    analyzer_->start("nonexistent_iface_test", 1, {});
     EXPECT_TRUE(analyzer_->isDegradedMode());
     analyzer_->stop();
 }
 
 // Test 4: Multiple start calls should be handled gracefully
 TEST_F(TrafficAnalyzerTest, MultipleStartCalls) {
-    analyzer_->start("nonexistent_iface_test", 1);
+    analyzer_->start("nonexistent_iface_test", 1, {});
     EXPECT_TRUE(analyzer_->isDegradedMode());
 
     // Second start should be handled gracefully
-    analyzer_->start("nonexistent_iface_test", 1);
+    analyzer_->start("nonexistent_iface_test", 1, {});
     EXPECT_TRUE(analyzer_->isDegradedMode());
 }
 

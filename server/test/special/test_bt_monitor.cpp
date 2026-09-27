@@ -266,7 +266,7 @@ TEST(BtMonitorTest, AudioScoreDelay5000Inactive) {
 TEST(BtMonitorTest, InitPhase2Degraded) {
     BtMonitor monitor;
     // No eBPF environment / nonexistent object file, initPhase2 should return false
-    bool ok = monitor.initPhase2("nonexistent_bpf.o");
+    bool ok = monitor.initPhase2("nonexistent_bpf.o", {});
     EXPECT_FALSE(ok);
     // cleanup should safely clean fusion layer and analyzer
     monitor.cleanup();
@@ -276,8 +276,8 @@ TEST(BtMonitorTest, InitPhase2Degraded) {
 // Test 23: initPhase2 multiple calls are idempotent
 TEST(BtMonitorTest, InitPhase2Idempotent) {
     BtMonitor monitor;
-    bool ok1 = monitor.initPhase2("nonexistent_bpf.o");
-    bool ok2 = monitor.initPhase2("nonexistent_bpf.o");
+    bool ok1 = monitor.initPhase2("nonexistent_bpf.o", {});
+    bool ok2 = monitor.initPhase2("nonexistent_bpf.o", {});
     EXPECT_FALSE(ok1);
     EXPECT_FALSE(ok2);
     monitor.cleanup();
