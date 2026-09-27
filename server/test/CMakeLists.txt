@@ -172,6 +172,14 @@ add_executable(test_diagnosis_engine_gtest
     unit/test_diagnosis_engine_gtest.cpp)
 target_link_libraries(test_diagnosis_engine_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_bpf_map_sizing_gtest
+    unit/test_bpf_map_sizing_gtest.cpp)
+target_link_libraries(test_bpf_map_sizing_gtest PRIVATE ${TEST_COMMON_LIBS})
+
+add_executable(test_per_key_counter_tracker_gtest
+    unit/test_per_key_counter_tracker_gtest.cpp)
+target_link_libraries(test_per_key_counter_tracker_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # ---- CTest 集成 ----
 # enable_testing() 已在根 CMakeLists.txt 中调用
 foreach(test_target
@@ -213,7 +221,9 @@ foreach(test_target
     test_ebpf_monitor_observability_gtest
     test_weaknet_config_gtest
     test_monitor_registry_gtest
-    test_monitor_manager_gtest)
+    test_monitor_manager_gtest
+    test_bpf_map_sizing_gtest
+    test_per_key_counter_tracker_gtest)
     add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()
 

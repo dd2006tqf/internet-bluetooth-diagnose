@@ -150,6 +150,59 @@ bool setBoolField(std::atomic<bool>& target, const std::string& val, std::string
     return true;
 }
 
+/**
+ * @brief 写入 eBPF Map 容量定标三键（7 个 eBPF 监控器共用）
+ *
+ * 键名扁平（map_sizing_mode / map_sizing_entries / map_sizing_ram_budget_bp）：
+ * YAML 解析器只支持两层缩进，嵌套块 map_sizing: 无法表达。
+ *
+ * 这三个键**刻意不进** isTrialableKey 白名单：TRIAL 的语义是"试改，不健康就回滚"，
+ * 但 BPF map 一旦 bpf_object__load 就无法 resize，回滚只能通过 RestartMonitor
+ * 重新 load。若允许 TRIAL，云端会观察到"试改成功"却拿不到新容量，形成成功假象。
+ *
+ * @param field 已经是 map_sizing_* 之一（调用方先行判断）
+ * @return false 时 error 已填充
+ */
+bool setMapSizingField(WeakNetConfig::MapSizingCfg& sizing, const std::string& field,
+                       const std::string& val, const std::string& mon,
+                       std::string* error) {
+    if (field == "map_sizing_mode") {
+        const std::string v = trim(val);
+        if (v != "auto" && v != "fixed") {
+            *error = mon + ".map_sizing_mode: must be auto or fixed";
+            return false;
+        }
+        sizing.mode.set(v);
+        return true;
+    }
+    if (field == "map_sizing_entries") {
+        uint32_t n = 0;
+        if (!parseUint(trim(val), &n) || n < 1 || n > 4194304u) {
+            *error = mon + ".map_sizing_entries: must be 1~4194304";
+            return false;
+        }
+        sizing.entries.store(n);
+        return true;
+    }
+    if (field == "map_sizing_ram_budget_bp") {
+        uint32_t bp = 0;
+        if (!parseUint(trim(val), &bp) || bp < 1 || bp > 10000u) {
+            *error = mon + ".map_sizing_ram_budget_bp: must be 1~10000 (0.01% units, 10000=100%)";
+            return false;
+        }
+        sizing.ram_budget_bp.store(bp);
+        return true;
+    }
+    *error = mon + ": unknown map sizing field '" + field + "'";
+    return false;
+}
+
+/// 判断字段是否为 map_sizing 三键之一
+bool isMapSizingField(const std::string& field) {
+    return field == "map_sizing_mode" || field == "map_sizing_entries" ||
+           field == "map_sizing_ram_budget_bp";
+}
+
 // ---- 监控器字段分发 ----
 
 /**
@@ -198,6 +251,7 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "enabled") return setBoolField(cfg->bluetooth.enabled, val, error);
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->bluetooth.interval_ms, val, error);
         if (field == "bpf_obj") { cfg->bluetooth.bpf_obj.set(trim(val)); return true; }
+        if (isMapSizingField(field)) return setMapSizingField(cfg->bluetooth.map_sizing, field, val, mon, error);
         *error = "bluetooth: unknown field '" + field + "'";
         return false;
     }
@@ -223,6 +277,7 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
             cfg->dns.assessment_profile.set(v);
             return true;
         }
+        if (isMapSizingField(field)) return setMapSizingField(cfg->dns.map_sizing, field, val, mon, error);
         *error = "dns: unknown field '" + field + "'";
         return false;
     }
@@ -266,6 +321,7 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "enabled") return setBoolField(cfg->http_latency.enabled, val, error);
         if (field == "bpf_obj") { cfg->http_latency.bpf_obj.set(trim(val)); return true; }
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->http_latency.interval_ms, val, error);
+        if (isMapSizingField(field)) return setMapSizingField(cfg->http_latency.map_sizing, field, val, mon, error);
         *error = "http_latency: unknown field '" + field + "'";
         return false;
     }
@@ -273,6 +329,7 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "enabled") return setBoolField(cfg->process_profiler.enabled, val, error);
         if (field == "bpf_obj") { cfg->process_profiler.bpf_obj.set(trim(val)); return true; }
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->process_profiler.interval_ms, val, error);
+        if (isMapSizingField(field)) return setMapSizingField(cfg->process_profiler.map_sizing, field, val, mon, error);
         *error = "process_profiler: unknown field '" + field + "'";
         return false;
     }
@@ -280,6 +337,7 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "enabled") return setBoolField(cfg->tcp_retrans.enabled, val, error);
         if (field == "bpf_obj") { cfg->tcp_retrans.bpf_obj.set(trim(val)); return true; }
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->tcp_retrans.interval_ms, val, error);
+        if (isMapSizingField(field)) return setMapSizingField(cfg->tcp_retrans.map_sizing, field, val, mon, error);
         *error = "tcp_retrans: unknown field '" + field + "'";
         return false;
     }
@@ -287,6 +345,7 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "enabled") return setBoolField(cfg->tcp_conn.enabled, val, error);
         if (field == "bpf_obj") { cfg->tcp_conn.bpf_obj.set(trim(val)); return true; }
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->tcp_conn.interval_ms, val, error);
+        if (isMapSizingField(field)) return setMapSizingField(cfg->tcp_conn.map_sizing, field, val, mon, error);
         *error = "tcp_conn: unknown field '" + field + "'";
         return false;
     }
@@ -294,6 +353,7 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "enabled") return setBoolField(cfg->skb_drop.enabled, val, error);
         if (field == "bpf_obj") { cfg->skb_drop.bpf_obj.set(trim(val)); return true; }
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->skb_drop.interval_ms, val, error);
+        if (isMapSizingField(field)) return setMapSizingField(cfg->skb_drop.map_sizing, field, val, mon, error);
         *error = "skb_drop: unknown field '" + field + "'";
         return false;
     }
@@ -567,12 +627,14 @@ static bool applyMonitorParam(WeakNetConfig* cfg, const std::string& key,
     if (mon == "bluetooth") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "bluetooth.enabled: invalid bool"; return false; } cfg->bluetooth.enabled.store(b); return true; }
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 60000)) { if (error) *error = "bluetooth.interval: must be 1000ms~60000ms"; return false; } cfg->bluetooth.interval_ms.store(ms); return true; }
+        if (isMapSizingField(field)) return setMapSizingField(cfg->bluetooth.map_sizing, field, value, "bluetooth", error);
         if (field == "bpf_obj") { cfg->bluetooth.bpf_obj.set(trim(value)); return true; }
     }
     if (mon == "dns") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "dns.enabled: invalid bool"; return false; } cfg->dns.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->dns.bpf_obj.set(trim(value)); return true; }
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "dns.interval: must be 1000ms~600000ms"; return false; } cfg->dns.interval_ms.store(ms); return true; }
+        if (isMapSizingField(field)) return setMapSizingField(cfg->dns.map_sizing, field, value, "dns", error);
         if (field == "capture_pages") { uint32_t pages; if (!parseUint(value, &pages) || !checkRange(pages, 1, 256)) { if (error) *error = "dns.capture_pages: must be 1~256"; return false; } cfg->dns.capture_pages.store(pages); return true; }
         if (field == "assessment_profile") {
             if (value != "NETWORK_ONLY" && value != "INTERNET_ACCESS") { if (error) *error = "dns.assessment_profile: must be NETWORK_ONLY or INTERNET_ACCESS"; return false; }
@@ -605,26 +667,31 @@ static bool applyMonitorParam(WeakNetConfig* cfg, const std::string& key,
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "http_latency.enabled: invalid bool"; return false; } cfg->http_latency.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->http_latency.bpf_obj.set(trim(value)); return true; }
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "http_latency.interval: must be 1000ms~600000ms"; return false; } cfg->http_latency.interval_ms.store(ms); return true; }
+        if (isMapSizingField(field)) return setMapSizingField(cfg->http_latency.map_sizing, field, value, "http_latency", error);
     }
     if (mon == "process_profiler") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "process_profiler.enabled: invalid bool"; return false; } cfg->process_profiler.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->process_profiler.bpf_obj.set(trim(value)); return true; }
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "process_profiler.interval: must be 1000ms~600000ms"; return false; } cfg->process_profiler.interval_ms.store(ms); return true; }
+        if (isMapSizingField(field)) return setMapSizingField(cfg->process_profiler.map_sizing, field, value, "process_profiler", error);
     }
     if (mon == "tcp_retrans") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "tcp_retrans.enabled: invalid bool"; return false; } cfg->tcp_retrans.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->tcp_retrans.bpf_obj.set(trim(value)); return true; }
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "tcp_retrans.interval: must be 1000ms~600000ms"; return false; } cfg->tcp_retrans.interval_ms.store(ms); return true; }
+        if (isMapSizingField(field)) return setMapSizingField(cfg->tcp_retrans.map_sizing, field, value, "tcp_retrans", error);
     }
     if (mon == "tcp_conn") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "tcp_conn.enabled: invalid bool"; return false; } cfg->tcp_conn.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->tcp_conn.bpf_obj.set(trim(value)); return true; }
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "tcp_conn.interval: must be 1000ms~600000ms"; return false; } cfg->tcp_conn.interval_ms.store(ms); return true; }
+        if (isMapSizingField(field)) return setMapSizingField(cfg->tcp_conn.map_sizing, field, value, "tcp_conn", error);
     }
     if (mon == "skb_drop") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "skb_drop.enabled: invalid bool"; return false; } cfg->skb_drop.enabled.store(b); return true; }
         if (field == "bpf_obj") { cfg->skb_drop.bpf_obj.set(trim(value)); return true; }
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "skb_drop.interval: must be 1000ms~600000ms"; return false; } cfg->skb_drop.interval_ms.store(ms); return true; }
+        if (isMapSizingField(field)) return setMapSizingField(cfg->skb_drop.map_sizing, field, value, "skb_drop", error);
     }
     if (mon == "server") {
         if (field == "data_dir") { cfg->data_dir.set(trim(value)); return true; }
@@ -1063,6 +1130,9 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeBool("enabled", cfg.bluetooth.enabled.load());
         writeUint("interval_ms", cfg.bluetooth.interval_ms.load());
         writeString("bpf_obj", cfg.bluetooth.bpf_obj.get());
+        writeString("map_sizing_mode", cfg.bluetooth.map_sizing.mode.get());
+        writeUint("map_sizing_entries", cfg.bluetooth.map_sizing.entries.load());
+        writeUint("map_sizing_ram_budget_bp", cfg.bluetooth.map_sizing.ram_budget_bp.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "dns") {
@@ -1072,6 +1142,9 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeUint("interval_ms", cfg.dns.interval_ms.load());
         writeUint("capture_pages", cfg.dns.capture_pages.load());
         writeString("assessment_profile", cfg.dns.assessment_profile.get());
+        writeString("map_sizing_mode", cfg.dns.map_sizing.mode.get());
+        writeUint("map_sizing_entries", cfg.dns.map_sizing.entries.load());
+        writeUint("map_sizing_ram_budget_bp", cfg.dns.map_sizing.ram_budget_bp.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "active_probe") {
@@ -1124,6 +1197,9 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeBool("enabled", cfg.http_latency.enabled.load());
         writeString("bpf_obj", cfg.http_latency.bpf_obj.get());
         writeUint("interval_ms", cfg.http_latency.interval_ms.load());
+        writeString("map_sizing_mode", cfg.http_latency.map_sizing.mode.get());
+        writeUint("map_sizing_entries", cfg.http_latency.map_sizing.entries.load());
+        writeUint("map_sizing_ram_budget_bp", cfg.http_latency.map_sizing.ram_budget_bp.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "process_profiler") {
@@ -1131,6 +1207,9 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeBool("enabled", cfg.process_profiler.enabled.load());
         writeString("bpf_obj", cfg.process_profiler.bpf_obj.get());
         writeUint("interval_ms", cfg.process_profiler.interval_ms.load());
+        writeString("map_sizing_mode", cfg.process_profiler.map_sizing.mode.get());
+        writeUint("map_sizing_entries", cfg.process_profiler.map_sizing.entries.load());
+        writeUint("map_sizing_ram_budget_bp", cfg.process_profiler.map_sizing.ram_budget_bp.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "tcp_retrans") {
@@ -1138,6 +1217,9 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeBool("enabled", cfg.tcp_retrans.enabled.load());
         writeString("bpf_obj", cfg.tcp_retrans.bpf_obj.get());
         writeUint("interval_ms", cfg.tcp_retrans.interval_ms.load());
+        writeString("map_sizing_mode", cfg.tcp_retrans.map_sizing.mode.get());
+        writeUint("map_sizing_entries", cfg.tcp_retrans.map_sizing.entries.load());
+        writeUint("map_sizing_ram_budget_bp", cfg.tcp_retrans.map_sizing.ram_budget_bp.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "tcp_conn") {
@@ -1145,6 +1227,9 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeBool("enabled", cfg.tcp_conn.enabled.load());
         writeString("bpf_obj", cfg.tcp_conn.bpf_obj.get());
         writeUint("interval_ms", cfg.tcp_conn.interval_ms.load());
+        writeString("map_sizing_mode", cfg.tcp_conn.map_sizing.mode.get());
+        writeUint("map_sizing_entries", cfg.tcp_conn.map_sizing.entries.load());
+        writeUint("map_sizing_ram_budget_bp", cfg.tcp_conn.map_sizing.ram_budget_bp.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "skb_drop") {
@@ -1152,6 +1237,9 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeBool("enabled", cfg.skb_drop.enabled.load());
         writeString("bpf_obj", cfg.skb_drop.bpf_obj.get());
         writeUint("interval_ms", cfg.skb_drop.interval_ms.load());
+        writeString("map_sizing_mode", cfg.skb_drop.map_sizing.mode.get());
+        writeUint("map_sizing_entries", cfg.skb_drop.map_sizing.entries.load());
+        writeUint("map_sizing_ram_budget_bp", cfg.skb_drop.map_sizing.ram_budget_bp.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
 

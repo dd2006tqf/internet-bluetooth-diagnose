@@ -131,6 +131,7 @@ bool TcpConnKey::operator==(const TcpConnKey& other) const {
 struct TcpRetransMonitor::Impl {
     int retrans_events_fd = -1;  ///< retrans_events Map fd（重传事件明细）
     int retrans_stats_fd = -1;   ///< retrans_stats Map fd（重传统计聚合）
+    uint32_t retrans_stats_max = 0;  ///< retrans_stats 的 resolved 容量（0=未知，不计水位）
     struct bpf_object *obj = nullptr;
     struct bpf_link *link_retrans = nullptr;  ///< kprobe/tcp_retransmit_skb BPF link（捕获重传）
     struct bpf_link *link_send = nullptr;     ///< kprobe/tcp_sendmsg BPF link（正常发送，用于累计 total_segs）
@@ -154,7 +155,7 @@ TcpRetransMonitor::~TcpRetransMonitor() {
  * @return true  初始化成功（至少一个 kprobe 挂载成功）
  *         false 初始化失败
  */
-bool TcpRetransMonitor::init(const std::string& bpfObjPath) {
+bool TcpRetransMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizingPlan& plan) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
     LOG_INFO(LogModule::TCP_LOSS, "TcpRetransMonitor: BPF not available (no libbpf)");
@@ -177,6 +178,10 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath) {
     }
 
     // 加载 BPF 程序到内核
+    // 在 open→load 间隙应用容量定标：map 一旦 load 就无法 resize。
+    weaknet::applyMapSizingPlan(obj, plan);
+    impl_->retrans_stats_max = weaknet::findResolvedMax(plan, "retrans_stats");
+
     if (bpf_object__load(obj) != 0) {
         LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: failed to load BPF object");
         bpf_object__close(obj);
@@ -306,6 +311,8 @@ std::map<TcpConnKey, TcpRetransStats> TcpRetransMonitor::getStats() {
     }
 
     auto started = std::chrono::steady_clock::now();
+    // 逐 key 差分快照：key 为连接四元组，累计值取 total_segs（单调不减，除非被驱逐重建）
+    std::vector<std::pair<std::string, uint64_t>> key_snapshot;
     // 遍历 retrans_stats Map（Hash 类型，逐 key 遍历）
     tcp_conn_key cur_key = {}, next_key = {};
     while (bpf_map_get_next_key(impl_->retrans_stats_fd, &cur_key, &next_key) == 0) {
@@ -314,8 +321,18 @@ std::map<TcpConnKey, TcpRetransStats> TcpRetransMonitor::getStats() {
             TcpConnKey key{next_key.saddr, next_key.daddr, next_key.sport, next_key.dport};
             TcpRetransStats val{stats.total_retrans, stats.total_segs, stats.last_state};
             result[key] = val;
+            // 用四元组原文构造稳定 key（不依赖格式化，避免展示层变更影响差分）
+            key_snapshot.emplace_back(
+                std::string(reinterpret_cast<const char*>(&next_key), sizeof(next_key)),
+                static_cast<uint64_t>(stats.total_segs));
         }
         cur_key = next_key;
+    }
+    // 更新驱逐可见性差分的基线快照
+    {
+        weaknet::PerKeyStats ks = key_tracker_.update(key_snapshot, impl_->retrans_stats_max);
+        std::lock_guard<std::mutex> lock(key_stats_mutex_);
+        key_stats_ = ks;
     }
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - started).count();

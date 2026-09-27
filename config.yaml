@@ -1,6 +1,12 @@
 # /etc/weaknet/config.yaml
 # WeakNet 运行时配置（所有键均有内置默认值，缺省即可运行）
 # 支持注释、两层缩进、时长后缀（ms/s/m），例如 "10s" "500ms" "2m"
+#
+# eBPF Map 容量定标（扁平三键，需 RestartMonitor 生效）：
+#   map_sizing_mode:          auto | fixed（缺省 auto）
+#   map_sizing_entries:       fixed 模式的目标条数
+#   map_sizing_ram_budget_bp: auto 模式预算，物理内存的万分之几（50 = 0.5%）
+# 缺省（auto 且 RAM 不可用）时逐一回落各 map 的 v1 编译期常量，行为零变化。
 
 server:
   data_dir: /home/radxa/weaknet/data    # 空则回落 WEAKNET_DATA_DIR / 默认路径
@@ -34,11 +40,15 @@ monitors:
     enabled: true
     interval_ms: 3000
     bpf_obj: build/a2dp_media.bpf.o
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
 
   dns:
     enabled: true
     bpf_obj: build/dns_monitor.bpf.o
     interval_ms: 10000
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
 
   wifi_loss:
     enabled: true
@@ -48,26 +58,36 @@ monitors:
   http_latency:
     enabled: true
     bpf_obj: build/http_latency.bpf.o
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
     interval_ms: 10000
 
   process_profiler:
     enabled: true
     bpf_obj: build/flow_rate.bpf.o
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
     interval_ms: 15000
 
   tcp_retrans:
     enabled: true
     bpf_obj: build/tcp_retransmit.bpf.o
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
     interval_ms: 10000
 
   tcp_conn:
     enabled: true
     bpf_obj: build/tcp_conn_stats.bpf.o
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
     interval_ms: 10000
 
   skb_drop:
     enabled: true
     bpf_obj: build/skb_drop.bpf.o
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
     interval_ms: 5000
 
   active_probe:

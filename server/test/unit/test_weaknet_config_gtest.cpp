@@ -624,3 +624,91 @@ TEST(AssessmentProfileConfigTest, InvalidProfileIsRejectedAndLeavesValueUnchange
     EXPECT_FALSE(setMonitorParam(&cfg, "dns.assessment_profile", "BOGUS_PROFILE", &err));
     EXPECT_EQ(cfg.dns.assessment_profile.get(), "NETWORK_ONLY");
 }
+
+// ============================================================================
+// eBPF Map 容量定标配置（map_sizing_*）
+//
+// 三个键以扁平形式暴露（YAML 解析器只支持两层缩进，不能写成 map_sizing 嵌套块）：
+//   <mon>.map_sizing_mode         auto | fixed
+//   <mon>.map_sizing_entries      正整数（fixed 生效）
+//   <mon>.map_sizing_ram_budget_bp 1~10000 万分比（auto 生效）
+//
+// 语义约束：这些键必须能 restart 生效，但不得进 TRIAL 白名单——
+// map 一旦 load 就无法 resize，运行中"试改"会给出成功假象。
+// ============================================================================
+TEST(MapSizingConfigTest, DefaultsAreAutoWithV1CompatibleValues) {
+    WeakNetConfig cfg;
+    EXPECT_EQ(cfg.tcp_retrans.map_sizing.mode.get(), "auto");
+    EXPECT_EQ(cfg.tcp_retrans.map_sizing.ram_budget_bp.load(), 50u);
+    // 7 个 eBPF 监控器块都必须携带该配置（缺一个就没有对应的定标入口）
+    EXPECT_EQ(cfg.dns.map_sizing.mode.get(), "auto");
+    EXPECT_EQ(cfg.bluetooth.map_sizing.mode.get(), "auto");
+    EXPECT_EQ(cfg.http_latency.map_sizing.mode.get(), "auto");
+    EXPECT_EQ(cfg.process_profiler.map_sizing.mode.get(), "auto");
+    EXPECT_EQ(cfg.tcp_conn.map_sizing.mode.get(), "auto");
+    EXPECT_EQ(cfg.skb_drop.map_sizing.mode.get(), "auto");
+}
+
+TEST(MapSizingConfigTest, YamlParsesFlatMapSizingKeys) {
+    WeakNetConfig cfg;
+    bool ok = parse(
+        "monitors:\n"
+        "  tcp_retrans:\n"
+        "    enabled: true\n"
+        "    map_sizing_mode: fixed\n"
+        "    map_sizing_entries: 4096\n"
+        "    map_sizing_ram_budget_bp: 100\n",
+        &cfg);
+    ASSERT_TRUE(ok);
+    EXPECT_EQ(cfg.tcp_retrans.map_sizing.mode.get(), "fixed");
+    EXPECT_EQ(cfg.tcp_retrans.map_sizing.entries.load(), 4096u);
+    EXPECT_EQ(cfg.tcp_retrans.map_sizing.ram_budget_bp.load(), 100u);
+}
+
+TEST(MapSizingConfigTest, SetMonitorParamAcceptsAllThreeKeys) {
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(setMonitorParam(&cfg, "tcp_retrans.map_sizing_mode", "fixed", &err)) << err;
+    EXPECT_EQ(cfg.tcp_retrans.map_sizing.mode.get(), "fixed");
+    ASSERT_TRUE(setMonitorParam(&cfg, "tcp_retrans.map_sizing_entries", "8192", &err)) << err;
+    EXPECT_EQ(cfg.tcp_retrans.map_sizing.entries.load(), 8192u);
+    ASSERT_TRUE(setMonitorParam(&cfg, "tcp_retrans.map_sizing_ram_budget_bp", "200", &err)) << err;
+    EXPECT_EQ(cfg.tcp_retrans.map_sizing.ram_budget_bp.load(), 200u);
+}
+
+TEST(MapSizingConfigTest, InvalidModeIsRejectedAndValueUnchanged) {
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(setMonitorParam(&cfg, "dns.map_sizing_mode", "fixed", &err)) << err;
+    EXPECT_FALSE(setMonitorParam(&cfg, "dns.map_sizing_mode", "bogus", &err));
+    EXPECT_EQ(cfg.dns.map_sizing.mode.get(), "fixed");  // 旧值保留
+}
+
+TEST(MapSizingConfigTest, ZeroOrBadNumbersAreRejected) {
+    WeakNetConfig cfg;
+    std::string err;
+    EXPECT_FALSE(setMonitorParam(&cfg, "dns.map_sizing_entries", "0", &err));
+    EXPECT_FALSE(setMonitorParam(&cfg, "dns.map_sizing_entries", "abc", &err));
+    EXPECT_FALSE(setMonitorParam(&cfg, "dns.map_sizing_ram_budget_bp", "0", &err));
+    EXPECT_FALSE(setMonitorParam(&cfg, "dns.map_sizing_ram_budget_bp", "20000", &err));  // >10000
+}
+
+TEST(MapSizingConfigTest, KeysAreNotTrialableBecauseTheyNeedRestart) {
+    // map 已 load 后无法 resize，TRIAL 会给出"试改成功"的假象后无法回滚生效
+    EXPECT_FALSE(isTrialableKey("tcp_retrans.map_sizing_mode"));
+    EXPECT_FALSE(isTrialableKey("tcp_retrans.map_sizing_entries"));
+    EXPECT_FALSE(isTrialableKey("tcp_retrans.map_sizing_ram_budget_bp"));
+    EXPECT_FALSE(isTrialableKey("dns.map_sizing_entries"));
+}
+
+TEST(MapSizingConfigTest, SerializeMonitorJsonEmitsFlatKeys) {
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(setMonitorParam(&cfg, "skb_drop.map_sizing_mode", "fixed", &err));
+    ASSERT_TRUE(setMonitorParam(&cfg, "skb_drop.map_sizing_entries", "512", &err));
+    std::string json = serializeMonitorJson(cfg, "skb_drop", &err);
+    ASSERT_TRUE(err.empty()) << err;
+    EXPECT_NE(json.find("\"map_sizing_mode\":\"fixed\""), std::string::npos) << json;
+    EXPECT_NE(json.find("\"map_sizing_entries\":512"), std::string::npos) << json;
+    EXPECT_NE(json.find("\"map_sizing_ram_budget_bp\""), std::string::npos) << json;
+}

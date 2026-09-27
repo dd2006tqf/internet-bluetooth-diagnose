@@ -15,6 +15,7 @@
 #include <memory>
 #include "ebpf_monitor_interface.hpp"
 #include "ebpf_monitor_metrics.hpp"
+#include "utils/bpf_map_sizing.hpp"
 
 namespace weaknet_dbus {
 
@@ -48,7 +49,8 @@ public:
      * @param bpfObjPath BPF 目标文件路径（通常为 build/skb_drop.bpf.o）
      * @return true 成功挂载；false 降级或加载失败
      */
-    bool init(const std::string& bpfObjPath = "build/skb_drop.bpf.o");
+    bool init(const std::string& bpfObjPath = "build/skb_drop.bpf.o",
+              const weaknet::MapSizingPlan& plan = {});
 
     /**
      * @brief 停止监控并释放 BPF 探针资源

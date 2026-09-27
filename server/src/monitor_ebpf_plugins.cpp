@@ -24,6 +24,7 @@
 #include "tcp_conn_monitor.hpp"
 #include "skb_drop_monitor.hpp"
 #include "tcp_connect_monitor.hpp"
+#include "utils/bpf_map_sizing.hpp"
 
 namespace weaknet_dbus {
 
@@ -44,7 +45,10 @@ public:
             return true;
         }
         monitor_ = std::make_unique<DnsMonitor>();
-        if (!monitor_->init(ctx->cfg.dns.bpf_obj.get().c_str(), ctx->cfg.dns.capture_pages.load())) {
+        if (!monitor_->init(ctx->cfg.dns.bpf_obj.get().c_str(), ctx->cfg.dns.capture_pages.load(),
+                             weaknet::resolveScopePlan(weaknet::MapSizingScope::Dns,
+                                 {ctx->cfg.dns.map_sizing.mode.get(), ctx->cfg.dns.map_sizing.entries.load(),
+                                  ctx->cfg.dns.map_sizing.ram_budget_bp.load()}, weaknet::totalPhysicalRamBytes()))) {
             monitor_.reset();
             return false;
         }
@@ -114,7 +118,10 @@ public:
             return true;
         }
         monitor_ = std::make_unique<HttpLatencyMonitor>();
-        if (!monitor_->init(ctx->cfg.http_latency.bpf_obj.get().c_str())) {
+        if (!monitor_->init(ctx->cfg.http_latency.bpf_obj.get().c_str(),
+                              weaknet::resolveScopePlan(weaknet::MapSizingScope::HttpLatency,
+                                 {ctx->cfg.http_latency.map_sizing.mode.get(), ctx->cfg.http_latency.map_sizing.entries.load(),
+                                  ctx->cfg.http_latency.map_sizing.ram_budget_bp.load()}, weaknet::totalPhysicalRamBytes()))) {
             monitor_.reset();
             return false;
         }
@@ -150,7 +157,10 @@ public:
             return true;
         }
         monitor_ = std::make_unique<ProcessNetProfiler>();
-        if (!monitor_->init(ctx->cfg.process_profiler.bpf_obj.get().c_str())) {
+        if (!monitor_->init(ctx->cfg.process_profiler.bpf_obj.get().c_str(),
+                              weaknet::resolveScopePlan(weaknet::MapSizingScope::ProcessProfiler,
+                                 {ctx->cfg.process_profiler.map_sizing.mode.get(), ctx->cfg.process_profiler.map_sizing.entries.load(),
+                                  ctx->cfg.process_profiler.map_sizing.ram_budget_bp.load()}, weaknet::totalPhysicalRamBytes()))) {
             monitor_.reset();
             return false;
         }
@@ -185,7 +195,10 @@ public:
             return true;
         }
         monitor_ = std::make_unique<TcpRetransMonitor>();
-        if (!monitor_->init(ctx->cfg.tcp_retrans.bpf_obj.get().c_str())) {
+        if (!monitor_->init(ctx->cfg.tcp_retrans.bpf_obj.get().c_str(),
+                              weaknet::resolveScopePlan(weaknet::MapSizingScope::TcpRetrans,
+                                 {ctx->cfg.tcp_retrans.map_sizing.mode.get(), ctx->cfg.tcp_retrans.map_sizing.entries.load(),
+                                  ctx->cfg.tcp_retrans.map_sizing.ram_budget_bp.load()}, weaknet::totalPhysicalRamBytes()))) {
             monitor_.reset();
             return false;
         }
@@ -220,7 +233,10 @@ public:
             return true;
         }
         monitor_ = std::make_unique<TcpConnMonitor>();
-        if (!monitor_->init(ctx->cfg.tcp_conn.bpf_obj.get().c_str())) {
+        if (!monitor_->init(ctx->cfg.tcp_conn.bpf_obj.get().c_str(),
+                              weaknet::resolveScopePlan(weaknet::MapSizingScope::TcpConn,
+                                 {ctx->cfg.tcp_conn.map_sizing.mode.get(), ctx->cfg.tcp_conn.map_sizing.entries.load(),
+                                  ctx->cfg.tcp_conn.map_sizing.ram_budget_bp.load()}, weaknet::totalPhysicalRamBytes()))) {
             monitor_.reset();
             return false;
         }
@@ -262,7 +278,10 @@ public:
         if (ctx) {
             path = ctx->cfg.skb_drop.bpf_obj.get();
         }
-        if (!monitor_->init(path)) {
+        if (!monitor_->init(path,
+                              weaknet::resolveScopePlan(weaknet::MapSizingScope::SkbDrop,
+                                 {ctx->cfg.skb_drop.map_sizing.mode.get(), ctx->cfg.skb_drop.map_sizing.entries.load(),
+                                  ctx->cfg.skb_drop.map_sizing.ram_budget_bp.load()}, weaknet::totalPhysicalRamBytes()))) {
             LOG_WARNING(LogModule::NETWORK, "SkbDropPlugin: failed to load BPF object from " << path);
             return false;
         }

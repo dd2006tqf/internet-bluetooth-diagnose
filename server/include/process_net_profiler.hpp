@@ -18,8 +18,11 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
 #include "ebpf_monitor_interface.hpp"
 #include "ebpf_monitor_metrics.hpp"
+#include "utils/per_key_counter_tracker.hpp"
+#include "utils/bpf_map_sizing.hpp"
 
 namespace weaknet_dbus {
 
@@ -43,7 +46,7 @@ public:
     ProcessNetProfiler();
     ~ProcessNetProfiler();
 
-    bool init(const std::string& bpfObjPath);
+    bool init(const std::string& bpfObjPath, const weaknet::MapSizingPlan& plan = {});
     void stop();
 
     bool isInitialized() const { return initialized_; }
@@ -78,6 +81,16 @@ public:
      */
     bool getProcess(uint32_t pid, ProcessNetInfo* out);
 
+    /**
+     * @brief 最近一轮 map 扫描的逐 key 差分（驱逐可见性）
+     *
+     * 仅作观测标注，**不参与任何 SLE 判定**。线程安全。
+     */
+    weaknet::PerKeyStats keyStatsSnapshot() const {
+        std::lock_guard<std::mutex> lock(key_stats_mutex_);
+        return key_stats_;
+    }
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -85,6 +98,10 @@ private:
     bool initialized_ = false;
     bool available_ = false;
     EbpfMonitorStateSupport stateSupport_{"ProcessNetProfiler"};
+
+    mutable std::mutex key_stats_mutex_;
+    weaknet::PerKeyStats key_stats_{};              ///< 最近一轮差分快照（受 key_stats_mutex_ 保护）
+    weaknet::PerKeyCounterTracker key_tracker_;     ///< 仅在扫描线程内访问
 };
 
 }  // namespace weaknet_dbus

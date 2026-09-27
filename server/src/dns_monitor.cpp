@@ -96,6 +96,18 @@ struct dns_stats_record {
     __u64 max_latency_ns;    // 历史最大解析延迟（纳秒）
 };
 
+/**
+ * @brief 自流量端点键（与 BPF 端 dns_self_endpoints Map 的 key 一致）
+ *
+ * 用于排除主动探测自身流量：egress 侧记录 (local_ip, local_port)，
+ * ingress 侧按同一键静默拦截。LRU 256，soak 实测会饱和。
+ */
+struct dns_self_endpoint {
+    __u32 local_ip;     // IPv4 地址（网络序）
+    __u16 local_port;   // UDP 端口（主机序）
+    __u16 pad;          // 对齐填充
+} __attribute__((packed));
+
 struct dns_event {
     __u8 direction;
     __u8 rcode;
@@ -199,6 +211,8 @@ struct DnsDrainStats {
 struct DnsMonitor::Impl {
     int dns_queries_fd = -1;       ///< dns_queries Map fd（查询记录）
     int dns_stats_fd = -1;         ///< dns_stats Map fd（聚合统计）
+    int self_endpoints_fd = -1;    ///< dns_self_endpoints Map fd（自流量端点，LRU 256）
+    uint32_t self_endpoints_max = 0;  ///< 其 resolved 容量（0=未知，不计水位）
     struct bpf_object *obj = nullptr;  ///< BPF 对象实例
     struct bpf_link *link_send = nullptr;  ///< kprobe/udp_sendmsg 的 BPF link
     struct bpf_link *link_recv = nullptr;  ///< kprobe/udp_recvmsg 的 BPF link
@@ -303,7 +317,8 @@ DnsMonitor::~DnsMonitor() {
  * @return true  初始化成功，探针已挂载
  *         false 初始化失败（libbpf 不可用、文件不存在、attach 失败等）
  */
-bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages) {
+bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
+                 const weaknet::MapSizingPlan& plan) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
     LOG_INFO(LogModule::NETWORK, "DnsMonitor: BPF not available (no libbpf)");
@@ -323,6 +338,12 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages) {
         stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
         return false;
     }
+
+    // 在 open→load 间隙应用容量定标：map 一旦 load 就无法 resize。
+
+    weaknet::applyMapSizingPlan(obj, plan);
+    impl_->self_endpoints_max = weaknet::findResolvedMax(plan, "dns_self_endpoints");
+
 
     if (bpf_object__load(obj) != 0) {
         LOG_ERROR(LogModule::NETWORK, "DnsMonitor: failed to load BPF object");
@@ -353,6 +374,8 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages) {
         return false;
     }
 
+    // 自流量端点表：可选（用于驱逐可见性观测），缺失不影响监控器可用性
+    impl_->self_endpoints_fd = bpf_object__find_map_fd_by_name(obj, "dns_self_endpoints");
     impl_->dns_capture_fd = bpf_object__find_map_fd_by_name(obj, "dns_capture_counters");
 
     // 写入自身 PID，供 BPF 侧排除"服务端自己产生的"DNS 流量。
@@ -545,6 +568,26 @@ DnsAggStats DnsMonitor::getStats() {
         stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed));
     } else {
         stateSupport_.recordReadFailure("dns_stats map lookup failed");
+    }
+
+    // 驱逐可见性：扫描自流量端点表（LRU 256，soak 实测会饱和到 255/256）。
+    // 该 map 的值是过期时间戳（单调不减），用作 per-key 指纹而非累计计数器；
+    // 因此 reset 仅在过期时间倒退时触发（不应发生，出现即为异常）。
+    if (impl_->self_endpoints_fd >= 0) {
+        std::vector<std::pair<std::string, uint64_t>> key_snapshot;
+        dns_self_endpoint cur_key = {}, next_key = {};
+        while (bpf_map_get_next_key(impl_->self_endpoints_fd, &cur_key, &next_key) == 0) {
+            __u64 expires_at = 0;
+            if (bpf_map_lookup_elem(impl_->self_endpoints_fd, &next_key, &expires_at) == 0) {
+                key_snapshot.emplace_back(
+                    std::string(reinterpret_cast<const char*>(&next_key), sizeof(next_key)),
+                    static_cast<uint64_t>(expires_at));
+            }
+            cur_key = next_key;
+        }
+        weaknet::PerKeyStats ks = key_tracker_.update(key_snapshot, impl_->self_endpoints_max);
+        std::lock_guard<std::mutex> lock(key_stats_mutex_);
+        key_stats_ = ks;
     }
 #endif
     return result;

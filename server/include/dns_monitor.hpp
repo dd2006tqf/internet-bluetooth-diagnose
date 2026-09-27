@@ -17,9 +17,12 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <mutex>
 #include "ebpf_monitor_interface.hpp"
 #include "ebpf_monitor_metrics.hpp"
 #include "assurance/dns_transaction_tracker.hpp"
+#include "utils/per_key_counter_tracker.hpp"
+#include "utils/bpf_map_sizing.hpp"
 
 namespace weaknet_dbus {
 
@@ -70,7 +73,8 @@ public:
      * @param capture_pages perf ring buffer 页数（每 CPU），决定突发流量的缓冲深度
      * @return true 加载成功；false 加载失败（降级为离线模式）
      */
-    bool init(const std::string& bpfObjPath, uint32_t capture_pages = 64);
+    bool init(const std::string& bpfObjPath, uint32_t capture_pages = 64,
+              const weaknet::MapSizingPlan& plan = {});
 
     /// 停止并清理（卸载 eBPF 程序，关闭 BPF 对象）
     void stop();
@@ -113,12 +117,26 @@ public:
 
 public:
     struct Impl;
+    /**
+     * @brief 最近一轮 map 扫描的逐 key 差分（驱逐可见性）
+     *
+     * 仅作观测标注，**不参与任何 SLE 判定**。线程安全。
+     */
+    weaknet::PerKeyStats keyStatsSnapshot() const {
+        std::lock_guard<std::mutex> lock(key_stats_mutex_);
+        return key_stats_;
+    }
+
 private:
     std::unique_ptr<Impl> impl_;
 
     bool initialized_ = false;
     bool available_ = false;
     EbpfMonitorStateSupport stateSupport_{"DnsMonitor"};
+
+    mutable std::mutex key_stats_mutex_;
+    weaknet::PerKeyStats key_stats_{};              ///< 最近一轮差分快照（受 key_stats_mutex_ 保护）
+    weaknet::PerKeyCounterTracker key_tracker_;     ///< 仅在扫描线程内访问
 };
 
 }  // namespace weaknet_dbus

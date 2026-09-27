@@ -83,7 +83,7 @@ SkbDropMonitor::~SkbDropMonitor() {
     stop();
 }
 
-bool SkbDropMonitor::init(const std::string& bpfObjPath) {
+bool SkbDropMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizingPlan& plan) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->bpfPath = bpfObjPath;
     impl_->state = EbpfMonitorState::Initializing;
@@ -95,6 +95,11 @@ bool SkbDropMonitor::init(const std::string& bpfObjPath) {
         impl_->state = EbpfMonitorState::Fallback;
         return false;
     }
+
+    // 在 open→load 间隙应用容量定标：map 一旦 load 就无法 resize。
+
+    weaknet::applyMapSizingPlan(impl_->obj, plan);
+
 
     if (bpf_object__load(impl_->obj) != 0) {
         LOG_WARNING(LogModule::NETWORK, "SkbDropMonitor: failed to load BPF object");

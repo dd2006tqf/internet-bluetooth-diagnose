@@ -71,6 +71,7 @@ struct process_net_stats {
  */
 struct ProcessNetProfiler::Impl {
     int process_stats_fd = -1;         ///< process_stats Map fd
+    uint32_t process_stats_max = 0;  ///< process_stats 的 resolved 容量（0=未知）
     struct bpf_object *obj = nullptr;  ///< BPF 对象实例（独立加载时持有）
     struct bpf_link *link_retrans = nullptr;  ///< kprobe/tcp_retransmit_skb BPF link
     struct bpf_link *link_xmit = nullptr;     ///< kprobe/ip_queue_xmit BPF link
@@ -101,7 +102,7 @@ ProcessNetProfiler::~ProcessNetProfiler() {
  * @return true  初始化成功
  *         false 初始化失败（libbpf 不可用、共享 fd 不可用、独立加载失败）
  */
-bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
+bool ProcessNetProfiler::init(const std::string& bpfObjPath, const weaknet::MapSizingPlan& plan) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
     LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: BPF not available (no libbpf)");
@@ -139,6 +140,12 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath) {
         stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
         return false;
     }
+
+    // 在 open→load 间隙应用容量定标：map 一旦 load 就无法 resize。
+
+    weaknet::applyMapSizingPlan(obj, plan);
+    impl_->process_stats_max = weaknet::findResolvedMax(plan, "process_stats");
+
 
     if (bpf_object__load(obj) != 0) {
         LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: failed to load BPF object");
@@ -244,6 +251,10 @@ std::vector<ProcessNetInfo> ProcessNetProfiler::getProcesses() {
     }
 
     auto started = std::chrono::steady_clock::now();
+    // 逐 key 差分快照：key 为 PID，累计值取 tx_bytes（单调不减，除非被驱逐重建）。
+    // 注意 key 必须来自 map 本身（next_key），不能用过滤后的结果——comm 为空的
+    // 内核线程同样占用 map 条目，若排除在外会被误判为"消失"。
+    std::vector<std::pair<std::string, uint64_t>> key_snapshot;
     __u32 cur_key = 0, next_key = 0;
     while (bpf_map_get_next_key(impl_->process_stats_fd, &cur_key, &next_key) == 0) {
         process_net_stats stats = {};
@@ -255,8 +266,17 @@ std::vector<ProcessNetInfo> ProcessNetProfiler::getProcesses() {
             info.txPackets = stats.tx_packets;
             info.retransCount = stats.retrans_count;
             if (!info.comm.empty()) result.push_back(info);  // 过滤匿名内核线程
+            key_snapshot.emplace_back(
+                std::string(reinterpret_cast<const char*>(&next_key), sizeof(next_key)),
+                static_cast<uint64_t>(stats.tx_bytes));
         }
         cur_key = next_key;
+    }
+    // 更新驱逐可见性差分的基线快照
+    {
+        weaknet::PerKeyStats ks = key_tracker_.update(key_snapshot, impl_->process_stats_max);
+        std::lock_guard<std::mutex> lock(key_stats_mutex_);
+        key_stats_ = ks;
     }
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - started).count();

@@ -23,6 +23,7 @@
 #include <chrono>
 #include <deque>
 #include <map>
+#include "utils/bpf_map_sizing.hpp"
 
 /// 单条流的速率快照（从内核态 map 读取后差分计算）
 struct FlowRate {
@@ -84,7 +85,8 @@ public:
      * @return true  eBPF 成功挂载
      * @return false 加载失败（降级为离线模式）
      */
-    bool initForInterface(const std::string& ifaceName);
+    bool initForInterface(const std::string& ifaceName,
+                          const weaknet::MapSizingPlan& plan = {});
 
     /// 获取 process_stats map 的 fd（供 ProcessNetProfiler 共享）
     int getProcessStatsFd() const { return mapProcessStatsFd_; }

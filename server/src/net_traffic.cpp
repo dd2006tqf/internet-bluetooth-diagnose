@@ -134,7 +134,8 @@ static std::string ip_str(uint32_t ip) {
  * @return true  - BPF 对象加载成功且至少一个程序 attach 成功
  *         false - libbpf 不可用、文件缺失、加载失败、attach 全部失败
  */
-bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName) {
+bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName,
+                                          const weaknet::MapSizingPlan& plan) {
 #if !HAVE_LIBBPF
     (void)ifaceName;
     return false;
@@ -150,6 +151,9 @@ bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName) {
     // ========== 1. 打开并加载 BPF 对象 ==========
     bpf_object* obj = bpf_object__open(bpfObjPath_.c_str());
     if (!obj) return false;
+    // 在 open→load 间隙应用容量定标：map 一旦 load 就无法 resize。
+    weaknet::applyMapSizingPlan(obj, plan);
+
     if (bpf_object__load(obj)) { bpf_object__close(obj); return false; }
 
     // ========== 2. 查找 BPF map fd ==========

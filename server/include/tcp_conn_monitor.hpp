@@ -23,6 +23,7 @@
 #include <memory>
 #include "ebpf_monitor_interface.hpp"
 #include "ebpf_monitor_metrics.hpp"
+#include "utils/bpf_map_sizing.hpp"
 
 namespace weaknet_dbus {
 
@@ -76,7 +77,7 @@ public:
      * @param bpfObjPath BPF 对象文件路径（通常为 "build/tcp_conn_stats.bpf.o"）
      * @return true 加载成功；false 加载失败（状态置 Error/Fallback）
      */
-    bool init(const std::string& bpfObjPath);
+    bool init(const std::string& bpfObjPath, const weaknet::MapSizingPlan& plan = {});
 
     /// 停止并清理（卸载 eBPF 程序，关闭 BPF 对象）
     void stop();

@@ -117,7 +117,7 @@ TcpConnMonitor::~TcpConnMonitor() { stop(); }
  * @return true  初始化成功（两个探针均挂载）
  *         false 初始化失败
  */
-bool TcpConnMonitor::init(const std::string& bpfObjPath) {
+bool TcpConnMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizingPlan& plan) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
     LOG_INFO(LogModule::TCP_LOSS, "TcpConnMonitor: BPF not available (no libbpf)");
@@ -137,6 +137,11 @@ bool TcpConnMonitor::init(const std::string& bpfObjPath) {
         stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
         return false;
     }
+
+    // 在 open→load 间隙应用容量定标：map 一旦 load 就无法 resize。
+
+    weaknet::applyMapSizingPlan(obj, plan);
+
 
     if (bpf_object__load(obj) != 0) {
         LOG_ERROR(LogModule::TCP_LOSS, "TcpConnMonitor: failed to load BPF object");

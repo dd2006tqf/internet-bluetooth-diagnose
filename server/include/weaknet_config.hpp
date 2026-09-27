@@ -51,6 +51,18 @@ private:
 
 /// 运行时配置根结构。默认值 = 现有代码的硬编码（行为零变化基线）。
 struct WeakNetConfig {
+    /**
+     * @brief eBPF Map 容量定标配置（config.yaml 扁平键 map_sizing_*）
+     *
+     * 三个键必须平铺而非嵌套：YAML 解析器只支持两层缩进。
+     * 变更需 RestartMonitor 生效（不进 TRIAL 白名单，因为 map 已加载后无法 resize）。
+     */
+    struct MapSizingCfg {
+        ConfigString mode{"auto"};                  ///< auto | fixed
+        std::atomic<uint32_t> entries{0};           ///< fixed 生效；auto 下不参与计算
+        std::atomic<uint32_t> ram_budget_bp{50};    ///< auto：物理内存的万分之几（50 = 0.5%）
+    };
+
     // ---------- 服务端 ----------
     ConfigString data_dir{""};        ///< 空 → 走 WEAKNET_DATA_DIR / 内置默认
     ConfigString log_level{"info"};
@@ -104,6 +116,7 @@ struct WeakNetConfig {
         std::atomic<bool> enabled{true};
         std::atomic<uint32_t> interval_ms{3000};
         ConfigString bpf_obj{"build/a2dp_media.bpf.o"};   ///< Phase2 eBPF 融合层对象
+        MapSizingCfg map_sizing;                          ///< a2dp LRU map 定标
     } bluetooth;
 
     // ---------- eBPF 监控线程 ----------
@@ -113,6 +126,7 @@ struct WeakNetConfig {
         std::atomic<uint32_t> interval_ms{10000};
         std::atomic<uint32_t> capture_pages{64};             ///< perf ring buffer 页数（每 CPU）
         ConfigString assessment_profile{"INTERNET_ACCESS"};  ///< IR-3: NETWORK_ONLY | INTERNET_ACCESS
+        MapSizingCfg map_sizing;                             ///< fd_resolvers/pending_recv/self_endpoints
     } dns;
 
     struct {
@@ -125,30 +139,35 @@ struct WeakNetConfig {
         std::atomic<bool> enabled{true};
         ConfigString bpf_obj{"build/http_latency.bpf.o"};
         std::atomic<uint32_t> interval_ms{10000};
+        MapSizingCfg map_sizing;   ///< http_txn_stats/recvmsg_ctx_map
     } http_latency;
 
     struct {
         std::atomic<bool> enabled{true};
         ConfigString bpf_obj{"build/flow_rate.bpf.o"};
         std::atomic<uint32_t> interval_ms{15000};
+        MapSizingCfg map_sizing;   ///< current_sec/process_stats（flow_rate 双加载统一归此块）
     } process_profiler;
 
     struct {
         std::atomic<bool> enabled{true};
         ConfigString bpf_obj{"build/tcp_retransmit.bpf.o"};
         std::atomic<uint32_t> interval_ms{15000};   ///< 原始循环 i<150 × 100ms = 15s
+        MapSizingCfg map_sizing;                    ///< retrans_stats/retrans_events
     } tcp_retrans;
 
     struct {
         std::atomic<bool> enabled{true};
         ConfigString bpf_obj{"build/tcp_conn_stats.bpf.o"};
         std::atomic<uint32_t> interval_ms{15000};   ///< 原始循环 i<150 × 100ms = 15s
+        MapSizingCfg map_sizing;                    ///< conn_start/conn_ports
     } tcp_conn;
 
     struct {
         std::atomic<bool> enabled{true};
         ConfigString bpf_obj{"build/skb_drop.bpf.o"};
         std::atomic<uint32_t> interval_ms{10000};
+        MapSizingCfg map_sizing;   ///< drop_stats_map
     } skb_drop;
 
     struct {

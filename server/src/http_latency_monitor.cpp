@@ -118,7 +118,7 @@ HttpLatencyMonitor::~HttpLatencyMonitor() {
  * @return true  初始化成功
  *         false 初始化失败（libbpf 不可用、文件不存在、所有探针 attach 失败等）
  */
-bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
+bool HttpLatencyMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizingPlan& plan) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
     LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: BPF not available (no libbpf)");
@@ -138,6 +138,11 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath) {
         stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
         return false;
     }
+
+    // 在 open→load 间隙应用容量定标：map 一旦 load 就无法 resize。
+
+    weaknet::applyMapSizingPlan(obj, plan);
+
 
     if (bpf_object__load(obj) != 0) {
         LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: failed to load BPF object");
@@ -307,10 +312,16 @@ std::vector<HttpTxnInfo> HttpLatencyMonitor::getRecentTxns(size_t limit) {
     auto started = std::chrono::steady_clock::now();
     static constexpr int MAX_ITER = 32;  // 最多遍历 32 个条目，防止阻塞
     int count = 0;
+    // 逐 key 差分快照：key 为连接，累计值取 recv_ns（同连接上的新事务会推进）
+    std::vector<std::pair<std::string, uint64_t>> key_snapshot;
     tcp_conn_key cur_key = {}, next_key = {};
     while (count < MAX_ITER && bpf_map_get_next_key(impl_->http_txn_stats_fd, &cur_key, &next_key) == 0) {
         http_txn_record record = {};
         if (bpf_map_lookup_elem(impl_->http_txn_stats_fd, &next_key, &record) == 0) {
+            // 快照取全部可见条目（含未完成事务），与下方只取已完成事务的过滤无关
+            key_snapshot.emplace_back(
+                std::string(reinterpret_cast<const char*>(&next_key), sizeof(next_key)),
+                static_cast<uint64_t>(record.recv_ns));
             // 只取已完成的事务（有响应：recv_ns > 0 且 send_ns > 0）
             if (record.recv_ns > 0 && record.send_ns > 0) {
                 HttpTxnInfo info;
@@ -339,6 +350,14 @@ std::vector<HttpTxnInfo> HttpLatencyMonitor::getRecentTxns(size_t limit) {
         }
         cur_key = next_key;
         count++;
+    }
+    // 更新驱逐可见性差分基线。
+    // 注意：本扫描受 MAX_ITER 上限约束（见上），非全表遍历，故容量按"未知"处理
+    // （max_entries=0），只报告可见条目的增删与回退，不声称水位。
+    {
+        weaknet::PerKeyStats ks = key_tracker_.update(key_snapshot, 0);
+        std::lock_guard<std::mutex> lock(key_stats_mutex_);
+        key_stats_ = ks;
     }
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - started).count();
