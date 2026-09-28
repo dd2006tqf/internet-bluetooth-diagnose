@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <vector>
 #include <map>
@@ -66,8 +67,8 @@ public:
     bool init(const std::string& bpfObjPath, const weaknet::MapSizingPlan& plan = {});
     void stop();
 
-    bool isInitialized() const { return initialized_; }
-    bool isAvailable() const override { return available_; }
+    bool isInitialized() const { return initialized_.load(); }
+    bool isAvailable() const override { return available_.load(); }
 
     const char* monitorName() const override { return "HttpLatencyMonitor"; }
     EbpfMonitorState commonState() const override { return stateSupport_.state(); }
@@ -104,13 +105,13 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 
-    bool initialized_ = false;
-    bool available_ = false;
+    std::atomic<bool> initialized_{false};
+    std::atomic<bool> available_{false};
     EbpfMonitorStateSupport stateSupport_{"HttpLatencyMonitor"};
 
     mutable std::mutex key_stats_mutex_;
     weaknet::PerKeyStats key_stats_{};              ///< 最近一轮差分快照（受 key_stats_mutex_ 保护）
-    weaknet::PerKeyCounterTracker key_tracker_;     ///< 仅在扫描线程内访问
+    weaknet::PerKeyCounterTracker key_tracker_;     ///< 非线程安全；访问须持 key_stats_mutex_
 };
 
 }  // namespace weaknet_dbus

@@ -559,13 +559,18 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
                                  !action.nonce.empty();
 
         // 应答丢失→遥测重发→云端重放 pending_actions 是常态路径。
-        // 已执行过的 action_id 直接回执上次结果，绝不重执行（重执行会重置
+        // 已执行过的 action_id 回执**首次的真实结果**，绝不重执行（重执行会重置
         // TRIAL deadline、把看门狗无限续期，并泛洪 action-results）。
+        // 注意：不能固定回 APPLIED——首次被拒的动作若谎报成功，云端会把
+        // 未生效的配置记成已应用。
         auto it = executed_action_ids_.find(action.action_id);
         if (it != executed_action_ids_.end()) {
+            const bool first_ok = it->second;
             LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
-                     "云端动作已执行过，直接回执不重放: " << action.action_id);
-            queueActionResult(action.action_id, /*applied=*/true, "applied_duplicate",
+                     "云端动作已执行过，直接回执不重放: " << action.action_id
+                     << " (first=" << (first_ok ? "APPLIED" : "REJECTED") << ")");
+            queueActionResult(action.action_id, first_ok ? "APPLIED" : "REJECTED",
+                              first_ok ? "applied_duplicate" : "rejected_duplicate",
                               action.claim_token, action.generation);
             continue;
         }
@@ -616,7 +621,9 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
             if (config_txn_ && action.generation > 0) {
                 config_txn_->markGenerationApplied(action.generation);
             }
-            executed_action_ids_.insert(action.action_id);
+            // 去重表只记录成功应用的 action：被拒动作允许重试，
+            // 重放时重新走完整执行路径（会再次被拒并回执 REJECTED）。
+            executed_action_ids_.emplace(action.action_id, true);
             LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
                      "已应用服务端下发的配置: " << action.key << "=" << action.value
                      << " (action=" << action.action_id
@@ -642,18 +649,19 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
 
         // 无论应用成功与否都必须回执：服务端靠它把 action 推进到
         // APPLIED/REJECTED，缺了回执这条 action 会停在 DELIVERED 永远不完结。
-        queueActionResult(action.action_id, ok, ok ? "applied" : error,
+        queueActionResult(action.action_id, ok ? "APPLIED" : "REJECTED",
+                          ok ? "applied" : error,
                           action.claim_token, action.generation);
     }
 }
 
-void EdgeTelemetryExporter::queueActionResult(const std::string& action_id, bool applied,
+void EdgeTelemetryExporter::queueActionResult(const std::string& action_id, const char* status,
                                                const std::string& detail,
                                                const std::string& claim_token,
                                                uint64_t generation) {
     EdgeActionResultRecord rec;
     rec.action_id = action_id;
-    rec.status = applied ? "APPLIED" : "REJECTED";
+    rec.status = status;
     rec.detail = detail;
 
     const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -739,12 +747,18 @@ bool EdgeTelemetryExporter::evaluateTrialDeadline(const AssessmentSnapshot* late
 }
 
 void EdgeTelemetryExporter::emitRollbackReceipt(const std::string& reason) {
-    // ROLLBACK 回执：sentinel action_id 表示"看门狗触发"，与具体云端 action 解耦。
-    // generation 取 last_applied + 1，与服务端 claim 的 generation 对齐。
-    const std::string sentinel = "watchdog-" + std::to_string(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
-    queueActionResult(sentinel, false, reason, "", config_txn_ ? config_txn_->lastAppliedGeneration() : 0);
+    // ROLLBACK 回执：优先绑定触发本 trial 的云端 action_id，
+    // 使服务端把该动作记为终态 ROLLBACK；拿不到（异常路径）时退回
+    // sentinel 形式——sentinel 不在 network_pending_actions 中，服务端会
+    // 丢弃，但本地日志仍保留回滚事实。
+    const auto trial = config_txn_ ? config_txn_->trial() : weaknet_dbus::TrialWindow{};
+    const std::string& action_id = !trial.pending_action_id.empty()
+        ? trial.pending_action_id
+        : ("watchdog-" + std::to_string(
+              std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::system_clock::now().time_since_epoch()).count()));
+    queueActionResult(action_id, "ROLLBACK", reason, "",
+                      config_txn_ ? config_txn_->lastAppliedGeneration() : 0);
 }
 
 std::string EdgeTelemetryExporter::actionResultsUrl() const {
@@ -864,10 +878,10 @@ void EdgeTelemetryExporter::run() {
             std::lock_guard<std::mutex> slock(stats_mutex_);
             stats_.send_failures++;
             for (auto it = records.rbegin(); it != records.rend(); ++it) {
-                if (buffer_.size() >= EDGE_TELEMETRY_BUFFER_CAPACITY) {
-                    buffer_.pop_back();
+                while (buffer_.size() >= EDGE_TELEMETRY_BUFFER_CAPACITY) {
+                    // 与 enqueue() 同一淘汰策略：覆盖最旧记录，优先保住新数据。
+                    buffer_.pop_front();
                     stats_.dropped_oldest++;
-                    break;
                 }
                 buffer_.push_front(std::move(*it));
             }

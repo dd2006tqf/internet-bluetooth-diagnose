@@ -118,10 +118,11 @@ uint64_t NetworkEpochStore::open() {
 
     if (!writeState(next)) {
         persisted_ = false;
-        // 写盘失败 ⇒ 本次用掉的代次无法被记住，下次重启就不会推进。
-        // 此时返回低位代次有实质风险（epoch=1 必然已用过），故升到恢复位；
+        // 写盘失败 ⇒ 本次用掉的代次无法被记住，下次重启就会重算出同一个值，
+        // 两个 run 共用 (device, epoch, seq) 键空间，云端幂等去重会静默丢弃遥测。
+        // 因此无论初值是 1 还是历史值 +1，都升到恢复位跳出冲突域；
         // 但仍继续上报——停止上报的代价比一次代次跳变大得多。
-        if (next <= 1) {
+        if (next < kRecoveryEpoch) {
             next = kRecoveryEpoch;
         }
         LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,

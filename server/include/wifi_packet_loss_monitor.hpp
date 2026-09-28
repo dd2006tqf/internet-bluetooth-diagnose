@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <map>
 #include <memory>
@@ -58,8 +59,8 @@ public:
     bool init(const std::string& bpfObjPath);
     void stop();
 
-    bool isInitialized() const { return initialized_; }
-    bool isAvailable() const override { return available_; }
+    bool isInitialized() const { return initialized_.load(); }
+    bool isAvailable() const override { return available_.load(); }
 
     const char* monitorName() const override { return "WifiPacketLossMonitor"; }
     EbpfMonitorState commonState() const override { return stateSupport_.state(); }
@@ -102,8 +103,8 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 
-    bool initialized_ = false;
-    bool available_ = false;
+    std::atomic<bool> initialized_{false};
+    std::atomic<bool> available_{false};
     EbpfMonitorStateSupport stateSupport_{"WifiPacketLossMonitor"};
 };
 

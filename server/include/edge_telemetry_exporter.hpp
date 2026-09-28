@@ -48,6 +48,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -215,8 +216,9 @@ private:
     bool transmit(const std::vector<EdgeTelemetryRecord>& records, std::string* error);
 
     /// 序列化并签名一条动作结果，暂存到待回传队列。
+    /// status 为服务端契约终态："APPLIED" | "REJECTED" | "ROLLBACK"。
     /// claim_token/generation 是 v2 契约字段，v1 设备可填空。
-    void queueActionResult(const std::string& action_id, bool applied,
+    void queueActionResult(const std::string& action_id, const char* status,
                            const std::string& detail,
                            const std::string& claim_token = "",
                            uint64_t generation = 0);
@@ -253,10 +255,12 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
 
-    /// 已执行过的云端 action_id 集合（去重，防应答丢失后的重放重执行）。
+    /// 已执行过的云端 action_id → 首次执行结果（成功/失败）。
+    /// 去重表存结果而不仅是存在性：首次被拒的动作在回执丢失后被云端重放时，
+    /// 必须回执真实结果而不是谎报 APPLIED。
     /// 进程内即可：重启后服务端会把 action 重新标记为 DELIVERED 并等待回执，
     /// 此时重建执行是正确行为。
-    std::unordered_set<std::string> executed_action_ids_;
+    std::unordered_map<std::string, bool> executed_action_ids_;
 
     mutable std::mutex stats_mutex_;
     EdgeExporterStats stats_;

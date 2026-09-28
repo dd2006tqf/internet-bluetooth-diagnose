@@ -11,6 +11,7 @@
  */
 
 #include "utils/bpf_map_sizing.hpp"
+#include "logger.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -178,12 +179,21 @@ MapSizingPlan resolveScopePlan(MapSizingScope scope, const MapSizingConfig& cfg,
 bool applyMapSizingPlan(bpf_object* obj, const std::vector<ResolvedMapSize>& plan) {
 #if WEAKNET_HAVE_LIBBPF
     if (!obj) return false;
+    bool all_ok = true;
     for (const auto& item : plan) {
         struct bpf_map* map = bpf_object__find_map_by_name(obj, item.map_name);
         if (!map) continue;  // 该对象不含此 map：跳过而非报错
-        bpf_map__set_max_entries(map, item.max_entries);
+        // set_max_entries 失败（如 map 已 load、值越界）时内核保留编译期容量；
+        // 若静默吞掉，调用方会按计划值做水位判定而前提不成立。
+        if (bpf_map__set_max_entries(map, item.max_entries) != 0) {
+            LOG_WARNING(weaknet_dbus::LogModule::NETWORK,
+                        "applyMapSizingPlan: set_max_entries failed for map "
+                            << item.map_name << " (target=" << item.max_entries
+                            << ")，内核将保留编译期容量");
+            all_ok = false;
+        }
     }
-    return true;
+    return all_ok;
 #else
     (void)obj;
     (void)plan;

@@ -137,7 +137,7 @@ private:
 
     mutable std::mutex key_stats_mutex_;
     weaknet::PerKeyStats key_stats_{};              ///< 最近一轮差分快照（受 key_stats_mutex_ 保护）
-    weaknet::PerKeyCounterTracker key_tracker_;     ///< 仅在扫描线程内访问
+    weaknet::PerKeyCounterTracker key_tracker_;     ///< 非线程安全；访问须持 key_stats_mutex_
 };
 
 }  // namespace weaknet_dbus

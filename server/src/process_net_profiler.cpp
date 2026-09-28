@@ -306,11 +306,13 @@ std::vector<ProcessNetInfo> ProcessNetProfiler::getProcesses() {
         }
         cur_key = next_key;
     }
-    // 更新驱逐可见性差分的基线快照
+    // 更新驱逐可见性差分的基线快照。
+    // key_tracker_ 非线程安全：getProcesses() 会被 profiler worker 与
+    // D-Bus 分发线程（handleGetProcessProfiling）并发调用，
+    // update() 必须在 key_stats_mutex_ 临界区内执行。
     {
-        weaknet::PerKeyStats ks = key_tracker_.update(key_snapshot, impl_->process_stats_max);
         std::lock_guard<std::mutex> lock(key_stats_mutex_);
-        key_stats_ = ks;
+        key_stats_ = key_tracker_.update(key_snapshot, impl_->process_stats_max);
     }
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - started).count();

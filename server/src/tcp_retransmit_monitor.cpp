@@ -328,11 +328,12 @@ std::map<TcpConnKey, TcpRetransStats> TcpRetransMonitor::getStats() {
         }
         cur_key = next_key;
     }
-    // 更新驱逐可见性差分的基线快照
+    // 更新驱逐可见性差分的基线快照。
+    // key_tracker_ 非线程安全：虽当前仅 worker 线程调用，仍统一在
+    // key_stats_mutex_ 临界区内 update()，与其它三个监控器保持同一约定。
     {
-        weaknet::PerKeyStats ks = key_tracker_.update(key_snapshot, impl_->retrans_stats_max);
         std::lock_guard<std::mutex> lock(key_stats_mutex_);
-        key_stats_ = ks;
+        key_stats_ = key_tracker_.update(key_snapshot, impl_->retrans_stats_max);
     }
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - started).count();

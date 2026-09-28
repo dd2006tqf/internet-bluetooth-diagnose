@@ -585,9 +585,11 @@ DnsAggStats DnsMonitor::getStats() {
             }
             cur_key = next_key;
         }
-        weaknet::PerKeyStats ks = key_tracker_.update(key_snapshot, impl_->self_endpoints_max);
+        // key_tracker_ 非线程安全（unordered_map/set），getStats() 会被
+        // D-Bus 分发线程（handleGetDnsStats）与 worker 线程并发调用，
+        // 故 update() 必须在 key_stats_mutex_ 临界区内执行。
         std::lock_guard<std::mutex> lock(key_stats_mutex_);
-        key_stats_ = ks;
+        key_stats_ = key_tracker_.update(key_snapshot, impl_->self_endpoints_max);
     }
 #endif
     return result;

@@ -75,8 +75,8 @@ public:
               uint32_t capture_pages = 32);
     void stop();
 
-    bool isInitialized() const { return initialized_; }
-    bool isAvailable() const override { return available_; }
+    bool isInitialized() const { return initialized_.load(); }
+    bool isAvailable() const override { return available_.load(); }
 
     // ---- IEbpfMonitor ----
     const char* monitorName() const override { return "TcpConnectMonitor"; }
@@ -109,8 +109,8 @@ public:
 private:
     std::unique_ptr<Impl> impl_;
 
-    bool initialized_ = false;
-    bool available_ = false;
+    std::atomic<bool> initialized_{false};
+    std::atomic<bool> available_{false};
     EbpfMonitorStateSupport stateSupport_{"TcpConnectMonitor"};
 };
 

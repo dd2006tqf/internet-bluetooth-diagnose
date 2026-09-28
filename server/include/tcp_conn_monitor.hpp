@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <vector>
 #include <memory>
@@ -83,10 +84,10 @@ public:
     void stop();
 
     /// 是否已初始化（init 被调用过，无论成功与否）
-    bool isInitialized() const { return initialized_; }
+    bool isInitialized() const { return initialized_.load(); }
 
     /// eBPF 是否可用（挂载成功）
-    bool isAvailable() const override { return available_; }
+    bool isAvailable() const override { return available_.load(); }
 
     // ---- IEbpfMonitor 实现 ----
     const char* monitorName() const override { return "TcpConnMonitor"; }
@@ -102,8 +103,8 @@ private:
     struct Impl;                    ///< Pimpl：隐藏 libbpf 实现细节
     std::unique_ptr<Impl> impl_;
 
-    bool initialized_ = false;
-    bool available_ = false;
+    std::atomic<bool> initialized_{false};
+    std::atomic<bool> available_{false};
     EbpfMonitorStateSupport stateSupport_{"TcpConnMonitor"};
 };
 

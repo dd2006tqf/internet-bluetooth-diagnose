@@ -354,10 +354,11 @@ std::vector<HttpTxnInfo> HttpLatencyMonitor::getRecentTxns(size_t limit) {
     // 更新驱逐可见性差分基线。
     // 注意：本扫描受 MAX_ITER 上限约束（见上），非全表遍历，故容量按"未知"处理
     // （max_entries=0），只报告可见条目的增删与回退，不声称水位。
+    // key_tracker_ 非线程安全：getRecentTxns() 会被 quality 线程、HTTP worker
+    // 与 D-Bus 分发线程并发调用，update() 必须在 key_stats_mutex_ 临界区内执行。
     {
-        weaknet::PerKeyStats ks = key_tracker_.update(key_snapshot, 0);
         std::lock_guard<std::mutex> lock(key_stats_mutex_);
-        key_stats_ = ks;
+        key_stats_ = key_tracker_.update(key_snapshot, 0);
     }
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - started).count();
