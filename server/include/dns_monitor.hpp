@@ -18,6 +18,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <atomic>
 #include "ebpf_monitor_interface.hpp"
 #include "ebpf_monitor_metrics.hpp"
 #include "assurance/dns_transaction_tracker.hpp"
@@ -80,10 +81,10 @@ public:
     void stop();
 
     /// 是否已初始化（init 被调用过，无论成功与否）
-    bool isInitialized() const { return initialized_; }
+    bool isInitialized() const { return initialized_.load(); }
 
     /// eBPF 是否可用（挂载成功）
-    bool isAvailable() const override { return available_; }
+    bool isAvailable() const override { return available_.load(); }
 
     // ---- IEbpfMonitor 实现 ----
     const char* monitorName() const override { return "DnsMonitor"; }
@@ -130,8 +131,8 @@ public:
 private:
     std::unique_ptr<Impl> impl_;
 
-    bool initialized_ = false;
-    bool available_ = false;
+    std::atomic<bool> initialized_{false};
+    std::atomic<bool> available_{false};
     EbpfMonitorStateSupport stateSupport_{"DnsMonitor"};
 
     mutable std::mutex key_stats_mutex_;
