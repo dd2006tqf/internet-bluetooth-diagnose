@@ -33,14 +33,31 @@ namespace weaknet_dbus {
  *
  * 每个值对应一种 D-Bus 信号名（见 common.hpp 的 kSignalXxx 常量），
  * 同时作为内部回调路由的键。
+ *
+ * @warning 孵化中的类型（当前无生产发射方）
+ *   `TcpLossRateChanged` / `RttChanged` / `RssiChanged` 目前**没有任何
+ *   生产代码调用对应的 emitXxxChanged()**：rtt/rssi/tcp_loss 三个监控线程
+ *   统一走 `ctx->service->emitChanged()` 通用信号。它们也**没有专属 D-Bus
+ *   信号名**，getSignalName() 对这三个值回退到通用 `Changed`。
+ *
+ *   保留理由是 `docs/项目评估.md` 记录的"eBPF 监控器信号出口不完整"改进项：
+ *   未来若为各监控器引入细粒度信号，应从这里扩展。
+ *
+ *   退出条件（二者之一）：
+ *   1) 真正接入细粒度信号——为三个类型补上独立 kSignal* 常量、
+ *      getSignalName() 分支，并在对应监控线程内调用 emitXxxChanged()，
+ *      同步补客户端订阅表；或
+ *   2) 放弃该方向——删除三个枚举值、三组回调向量、
+ *      registerCallback/unregisterCallback/invokeCallbacks 的对应分支与
+ *      三个 emit 便捷方法。
  */
 enum class EventType {
     InterfaceChanged,         ///< 网卡添加/删除
     ConnectionModeChanged,   ///< 上网网卡切换
     NetworkQualityChanged,    ///< 综合网络质量等级变化
-    TcpLossRateChanged,      ///< TCP 丢包率变化
-    RttChanged,              ///< RTT 延迟变化
-    RssiChanged,             ///< Wi-Fi RSSI 变化
+    TcpLossRateChanged,      ///< TCP 丢包率变化（孵化中：无生产发射方，见上）
+    RttChanged,              ///< RTT 延迟变化（孵化中：无生产发射方，见上）
+    RssiChanged,             ///< Wi-Fi RSSI 变化（孵化中：无生产发射方，见上）
     BluetoothDeviceChanged   ///< 蓝牙设备状态变化
 };
 
@@ -126,6 +143,7 @@ public:
     void emitInterfaceChanged(const std::string& message, const std::string& source = "");
     void emitConnectionModeChanged(const std::string& message, const std::string& source = "");
     void emitNetworkQualityChanged(const std::string& message, const std::string& details = "", const std::string& source = "");
+    /// 孵化中的细粒度事件发射器：当前无生产调用方，详见 EventType 的 @warning。
     void emitTcpLossRateChanged(const std::string& message, const std::string& source = "");
     void emitRttChanged(const std::string& message, const std::string& source = "");
     void emitRssiChanged(const std::string& message, const std::string& source = "");
