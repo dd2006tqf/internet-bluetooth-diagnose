@@ -335,4 +335,61 @@ TEST(EdgeTelemetrySnapshotOwnership, InjectedSnapshotOutlivesCallerReference) {
         << "exporter 未与调用方共同持有快照：latest_snapshot_ 会变悬垂";
 }
 
+// ============================================================================
+// 回归：pending_actions 重放去重与代次推进 (C-1 / I-1)
+// ============================================================================
+
+TEST(EdgeTelemetryPendingActions, ReplayedActionIsNotReExecuted) {
+    const std::string response_body =
+        "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
+        "\"action_id\":\"nact-replay-test-1\","
+        "\"key\":\"rtt.interval_ms\","
+        "\"value\":\"3000\","
+        "\"generation\":7,"
+        "\"nonce\":\"nonce-1\","
+        "\"claim_token\":\"tok-1\""
+        "}]}";
+
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+
+    // 第一次应用：进入 TRIAL，gen 推进
+    exporter.applyPendingActions(response_body);
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 3000u);
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::TRIAL);
+    EXPECT_EQ(txn->lastAppliedGeneration(), 7u);
+    EXPECT_EQ(exporter.stats().actions_applied, 1u);
+
+    // 模拟服务端响应丢失触发的重放：同一份 payload 再次被解析
+    exporter.applyPendingActions(response_body);
+
+    // 验证：actions_applied 没有二次递增，cfg 维持原样
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 3000u);
+    EXPECT_EQ(exporter.stats().actions_applied, 1u);
+}
+
+TEST(EdgeTelemetryPendingActions, MissingGenerationFailsClosed) {
+    const std::string response_no_gen =
+        "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
+        "\"action_id\":\"nact-no-gen\","
+        "\"key\":\"rtt.interval_ms\","
+        "\"value\":\"3000\","
+        "\"claim_token\":\"tok-v2-present\""
+        "}]}";
+
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+
+    // 缺失 generation：必须 fail-closed 拒绝
+    exporter.applyPendingActions(response_no_gen);
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 10000u);
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::STABLE);
+    EXPECT_EQ(exporter.stats().actions_rejected, 1u);
+}
+
+
 }  // namespace
