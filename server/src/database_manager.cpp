@@ -394,24 +394,6 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
     return true;
 }
 
-bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& info, double score) {
-    return insertSnapshot(iface, info, score, nullptr);
-}
-
-bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& info, double score, const char* score_model) {
-    NetworkQualityResult overall;
-    overall.score = score;
-    overall.level = NetworkQualityLevel::UNKNOWN;
-    overall.levelName = "UNKNOWN";
-    bool ok = insertSnapshot(iface, info, overall,
-                           info.generation(), info.lastUpdatedMs(),
-                           info.rttSampleTsMs(), info.rssiSampleTsMs(),
-                           info.jitterSampleTsMs(), info.tcpLossSampleTsMs(),
-                           info.trafficSampleTsMs());
-    (void)score_model; // score_model 由主 insert 路径统一写入 'assurance_v2'（HR-9）
-    return ok;
-}
-
 std::string DatabaseManager::queryHistory(const std::string& interface,
                                            const std::string& start,
                                            const std::string& end,

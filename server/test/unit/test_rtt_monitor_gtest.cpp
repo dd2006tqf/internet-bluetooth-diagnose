@@ -91,14 +91,3 @@ TEST_F(RttUpdateTest, RttProperties) {
     // hasRtt checks if rtt is not the default value (-1)
     EXPECT_TRUE(info.hasRtt());
 }
-
-// Test 10: NetInfo hasEnoughMetricsForAssessment
-TEST_F(RttUpdateTest, HasEnoughMetrics) {
-    NetInfo info("wlan0");
-    EXPECT_FALSE(info.hasEnoughMetricsForAssessment());
-
-    info.setRttMs(45);
-    info.setTcpLossRate(0.0);
-    info.setRssiDbm(-65);
-    EXPECT_TRUE(info.hasEnoughMetricsForAssessment());
-}

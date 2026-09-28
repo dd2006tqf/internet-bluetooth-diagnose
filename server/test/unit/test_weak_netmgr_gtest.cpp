@@ -108,19 +108,7 @@ TEST(NetInfoTest, HasMetrics) {
     EXPECT_TRUE(info.hasJitter());
 }
 
-// Test 6: hasEnoughMetricsForAssessment
-TEST(NetInfoTest, HasEnoughMetricsForAssessment) {
-    NetInfo info("wlan0");
-    EXPECT_FALSE(info.hasEnoughMetricsForAssessment());
-
-    info.setRttMs(45);
-    EXPECT_FALSE(info.hasEnoughMetricsForAssessment());
-
-    info.setTcpLossRate(0.0);
-    EXPECT_TRUE(info.hasEnoughMetricsForAssessment());
-}
-
-// Test 7: isValid
+// Test 6: isValid
 TEST(NetInfoTest, IsValid) {
     NetInfo info("wlan0");
     EXPECT_TRUE(info.isValid());
@@ -130,25 +118,7 @@ TEST(NetInfoTest, IsValid) {
     EXPECT_FALSE(empty.isValid());
 }
 
-// Test 8: equals and sameKey
-TEST(NetInfoTest, EqualsAndSameKey) {
-    NetInfo a("wlan0");
-    a.setDefaultRoute(true);
-    a.setState(NetState::Up);
-
-    NetInfo b("wlan0");
-    b.setDefaultRoute(true);
-    b.setState(NetState::Up);
-
-    EXPECT_TRUE(a.sameKey(b));
-    EXPECT_TRUE(a.equals(b));
-
-    b.setRttMs(45);
-    EXPECT_TRUE(a.sameKey(b));
-    EXPECT_FALSE(a.equals(b));
-}
-
-// Test 9: 蓝牙相关字段
+// Test 8: 蓝牙相关字段
 TEST(NetInfoTest, BluetoothFields) {
     NetInfo info("wlan0");
 

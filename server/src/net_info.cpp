@@ -1,6 +1,6 @@
 /**
  * @file net_info.cpp
- * @brief NetInfo 数据类的验证、JSON/二进制序列化与反序列化实现
+ * @brief NetInfo 数据类的验证与 JSON 序列化/反序列化实现
  *
  * @details 本文件实现 NetInfo（描述单个网络接口健康状况的核心数据类）的以下能力：
  *
@@ -15,18 +15,11 @@
  *             使用自定义轻量 JSON 解析器（不依赖第三方库如 nlohmann/json），
  *             支持转义序列、未知字段忽略（向前兼容）、失败不变性（临时对象模式）。
  *
- *          3. **二进制序列化/反序列化**（toBinary / fromBinary）：
- *             自定义紧凑二进制格式：32 位小端序头 + POD 字段字节拼接 + 字符串
- *             length-prefixed 编码。格式版本号在缓冲区头部，便于未来格式演进。
- *             双精度浮点字段（tcp_loss_rate_、jitter_ms_、band_conflict_confidence_）
- *             以 IEEE-754 原样存储避免精度丢失。
- *
  * @note 本文件不依赖系统调用或 netlink/ioctl/wpa_supplicant，
  *       纯数据层实现，与网络采集层解耦。
  */
 
 #include "net_info.hpp"
-#include "serializer.hpp"
 #include "logger.hpp"
 #include "utils/json_escape.hpp"
 
@@ -44,54 +37,6 @@
 namespace weaknet_dbus {
 
 namespace {
-
-/**
- * @brief 二进制序列化格式版本号
- *
- * 写入缓冲区头部，fromBinary 读取时校验版本，不匹配则拒绝解析，
- * 从而实现格式向后兼容。首次发布版本为 1。
- */
-constexpr int32_t kBinaryFormatVersion = 1;
-
-/**
- * @brief 将任意 POD 类型按字节追加到缓冲区
- *
- * 使用 reinterpret_cast 将 POD 对象地址转为 uint8_t*，直接拷贝 sizeof(T) 字节。
- * 通过 static_assert 确保模板参数 T 是 trivially_copyable 的，避免 memcpy 风险。
- *
- * @tparam T POD 类型（trivially copyable）
- * @param value 要序列化的值
- * @param out  [out] 目标字节缓冲区
- */
-template <typename T>
-void appendBytes(const T& value, std::vector<uint8_t>& out) {
-    static_assert(std::is_trivially_copyable<T>::value, "T must be trivially copyable");
-    const uint8_t* p = reinterpret_cast<const uint8_t*>(&value);
-    out.insert(out.end(), p, p + sizeof(T));
-}
-
-/**
- * @brief 从指定 offset 处读取一个 POD 类型
- *
- * 从 buffer 的 offset 位置开始 memcpy sizeof(T) 字节到 out，
- * 成功后推进 offset。边界越界（offset + sizeof(T) > buffer.size()）返回 false。
- *
- * @tparam T POD 类型（trivially copyable）
- * @param buffer 字节缓冲区
- * @param offset [in,out] 当前读取位置，成功后自动推进
- * @param out    [out] 反序列化输出值
- *
- * @return true  - 读取成功
- *         false - 缓冲区越界
- */
-template <typename T>
-bool readBytes(const std::vector<uint8_t>& buffer, size_t& offset, T& out) {
-    static_assert(std::is_trivially_copyable<T>::value, "T must be trivially copyable");
-    if (offset + sizeof(T) > buffer.size()) return false;
-    std::memcpy(&out, buffer.data() + offset, sizeof(T));
-    offset += sizeof(T);
-    return true;
-}
 
 // ---------------------------------------------------------------------------
 // 轻量 JSON 工具函数（纯字符串操作，无需外部依赖）
@@ -307,38 +252,6 @@ bool NetInfo::isValid() const {
     return true;
 }
 
-/**
- * @brief 判断两个 NetInfo 是否有实质差异（用于决定是否需要对外推送更新）
- *
- * 先通过 sameKey 判断是否属于同一接口对象（ifname_ 相同），
- * 再通过 equals 比较关键字段（ifname/is_default/type/rtt/state），
- * 最后逐一比较动态采集指标（RSSI、丢包率、流量、抖动、蓝牙、频段冲突等）。
- *
- * @param other 另一个 NetInfo 对象
- *
- * @return true  - 有变化，需要通知下游
- */
-bool NetInfo::needsUpdate(const NetInfo& other) const {
-    // 接口名不同则不属于同一对象，无需比较
-    if (!sameKey(other)) return true;
-
-    // equals 已覆盖 ifname/is_default/type/rtt/state 五个关键字段
-    if (!equals(other)) return true;
-
-    // 进一步比较动态采集指标
-    return rssi_dbm_ != other.rssi_dbm_
-        || tcp_loss_rate_ != other.tcp_loss_rate_
-        || traffic_total_bps_ != other.traffic_total_bps_
-        || traffic_total_pps_ != other.traffic_total_pps_
-        || traffic_active_flows_ != other.traffic_active_flows_
-        || jitter_ms_ != other.jitter_ms_
-        || quality_ != other.quality_
-        || bt_distance_ != other.bt_distance_
-        || bt_audio_quality_ != other.bt_audio_quality_
-        || band_conflict_ != other.band_conflict_
-        || band_conflict_confidence_ != other.band_conflict_confidence_;
-}
-
 // ===========================================================================
 // JSON 序列化/反序列化
 // ===========================================================================
@@ -505,165 +418,6 @@ bool NetInfo::fromJson(const std::string& json) {
         // 未知字段：忽略，保证向前兼容
     }
     return false;  // 未遇到闭合的 '}'
-}
-
-// ===========================================================================
-// 二进制序列化/反序列化
-// ===========================================================================
-
-/**
- * @brief 将 NetInfo 序列化为自定义二进制格式
- *
- * 格式（按顺序）：
- * 1. int32 版本号（kBinaryFormatVersion）
- * 2. serializeString(ifname_)
- * 3. int32 is_default (0/1)
- * 4. int32 type_（NetType 枚举转 int）
- * 5. int32 state_（NetState 枚举转 int）
- * 6. int32 using_now_ (0/1)
- * 7. int32 quality_（LinkQuality 枚举转 int）
- * 8. int32 rtt_ms_
- * 9. int32 prev_rtt_ms_
- * 10. int32 rssi_dbm_
- * 11. double tcp_loss_rate_（IEEE-754 原样存储）
- * 12. double jitter_ms_
- * 13. serializeString(tcp_loss_level_)
- * 14. serializeString(jitter_level_)
- * 15. uint64 traffic_total_bps_
- * 16. uint64 traffic_total_pps_
- * 17. uint32 traffic_active_flows_
- * 18. double bt_distance_
- * 19. serializeString(bt_audio_quality_)
- * 20. int32 band_conflict_ (0/1)
- * 21. double band_conflict_confidence_
- *
- * @return 包含完整二进制数据的 vector<uint8_t>
- *
- * @note 序列化顺序与 fromBinary 的反序列化顺序严格一致；
- *       serializeString 由 serializer.hpp 提供（length-prefixed 编码）。
- */
-std::vector<uint8_t> NetInfo::toBinary() const {
-    std::vector<uint8_t> buf;
-    // 版本号头，便于后续格式演进时做兼容判断
-    serializeInt32(kBinaryFormatVersion, buf);
-    serializeString(ifname_, buf);
-    serializeInt32(is_default_ ? 1 : 0, buf);
-    serializeInt32(static_cast<int32_t>(type_), buf);
-    serializeInt32(static_cast<int32_t>(state_), buf);
-    serializeInt32(using_now_ ? 1 : 0, buf);
-    serializeInt32(static_cast<int32_t>(quality_), buf);
-    serializeInt32(rtt_ms_, buf);
-    serializeInt32(prev_rtt_ms_, buf);
-    serializeInt32(rssi_dbm_, buf);
-    // tcp_loss_rate 与 jitter_ms 以 IEEE-754 双精度存储，避免精度丢失
-    appendBytes(tcp_loss_rate_, buf);
-    appendBytes(jitter_ms_, buf);
-    serializeString(tcp_loss_level_, buf);
-    serializeString(jitter_level_, buf);
-    // 流量统计
-    appendBytes(traffic_total_bps_, buf);
-    appendBytes(traffic_total_pps_, buf);
-    appendBytes(traffic_active_flows_, buf);
-    // 蓝牙相关扩展字段
-    appendBytes(bt_distance_, buf);
-    serializeString(bt_audio_quality_, buf);
-    serializeInt32(band_conflict_ ? 1 : 0, buf);
-    appendBytes(band_conflict_confidence_, buf);
-    appendBytes(rtt_sample_ts_ms_, buf);
-    appendBytes(rssi_sample_ts_ms_, buf);
-    appendBytes(jitter_sample_ts_ms_, buf);
-    appendBytes(tcp_loss_sample_ts_ms_, buf);
-    appendBytes(traffic_sample_ts_ms_, buf);
-    return buf;
-}
-
-/**
- * @brief 从二进制缓冲区反序列化 NetInfo
- *
- * 工作流程：
- * 1. 读取并校验版本号，不匹配立即返回 false
- * 2. 按 toBinary 完全一致的顺序逐个读取字段
- * 3. 每步读取失败（缓冲区越界 / 枚举值越界）立即返回 false
- * 4. 全程写入临时对象 tmp，最后 *this = std::move(tmp) 提交
- *
- * @param buffer 二进制数据缓冲区（通常由 toBinary 生成）
- *
- * @return true  - 完整解析成功并提交到 this
- *         false - 缓冲区为空、版本不匹配、或任意字段解析失败
- */
-bool NetInfo::fromBinary(const std::vector<uint8_t>& buffer) {
-    if (buffer.empty()) {
-        LOG_ERROR(LogModule::WEAK_MGR, "fromBinary: empty buffer");
-        return false;
-    }
-
-    NetInfo tmp;
-    size_t offset = 0;
-
-    // 版本号校验
-    int32_t version = 0;
-    if (!deserializeInt32(buffer, offset, version)) return false;
-    if (version != kBinaryFormatVersion) return false;
-
-    // 顺序与 toBinary 严格一致
-    if (!deserializeString(buffer, offset, tmp.ifname_)) return false;
-
-    int32_t is_default = 0;
-    if (!deserializeInt32(buffer, offset, is_default)) return false;
-    tmp.is_default_ = (is_default != 0);
-
-    int32_t type_val = 0;
-    if (!deserializeInt32(buffer, offset, type_val)) return false;
-    if (type_val < 0 || type_val > static_cast<int32_t>(NetType::Cellular)) return false;
-    tmp.type_ = static_cast<NetType>(type_val);
-
-    int32_t state_val = 0;
-    if (!deserializeInt32(buffer, offset, state_val)) return false;
-    if (state_val < 0 || state_val > static_cast<int32_t>(NetState::Up)) return false;
-    tmp.state_ = static_cast<NetState>(state_val);
-
-    int32_t using_now = 0;
-    if (!deserializeInt32(buffer, offset, using_now)) return false;
-    tmp.using_now_ = (using_now != 0);
-
-    int32_t quality_val = 0;
-    if (!deserializeInt32(buffer, offset, quality_val)) return false;
-    if (quality_val < 0 || quality_val > static_cast<int32_t>(LinkQuality::Bad)) return false;
-    tmp.quality_ = static_cast<LinkQuality>(quality_val);
-
-    if (!deserializeInt32(buffer, offset, tmp.rtt_ms_)) return false;
-    if (!deserializeInt32(buffer, offset, tmp.prev_rtt_ms_)) return false;
-    if (!deserializeInt32(buffer, offset, tmp.rssi_dbm_)) return false;
-
-    // 双精度浮点字段
-    if (!readBytes(buffer, offset, tmp.tcp_loss_rate_)) return false;
-    if (!readBytes(buffer, offset, tmp.jitter_ms_)) return false;
-
-    if (!deserializeString(buffer, offset, tmp.tcp_loss_level_)) return false;
-    if (!deserializeString(buffer, offset, tmp.jitter_level_)) return false;
-
-    // 流量统计
-    if (!readBytes(buffer, offset, tmp.traffic_total_bps_)) return false;
-    if (!readBytes(buffer, offset, tmp.traffic_total_pps_)) return false;
-    if (!readBytes(buffer, offset, tmp.traffic_active_flows_)) return false;
-
-    // 蓝牙相关扩展字段
-    if (!readBytes(buffer, offset, tmp.bt_distance_)) return false;
-    if (!deserializeString(buffer, offset, tmp.bt_audio_quality_)) return false;
-    int32_t band_conflict_val = 0;
-    if (!deserializeInt32(buffer, offset, band_conflict_val)) return false;
-    tmp.band_conflict_ = (band_conflict_val != 0);
-    if (!readBytes(buffer, offset, tmp.band_conflict_confidence_)) return false;
-    if (offset < buffer.size()) {
-        if (!readBytes(buffer, offset, tmp.rtt_sample_ts_ms_)) return false;
-        if (!readBytes(buffer, offset, tmp.rssi_sample_ts_ms_)) return false;
-        if (!readBytes(buffer, offset, tmp.jitter_sample_ts_ms_)) return false;
-        if (!readBytes(buffer, offset, tmp.tcp_loss_sample_ts_ms_)) return false;
-        if (!readBytes(buffer, offset, tmp.traffic_sample_ts_ms_)) return false;
-    }
-
-    *this = std::move(tmp);
-    return true;
 }
 
 }  // namespace weaknet_dbus

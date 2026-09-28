@@ -74,8 +74,6 @@ public:
                         int64_t tcp_loss_sample_ts = 0,
                         int64_t traffic_sample_ts = 0,
                         const char* assessment_profile = "UNSPECIFIED");
-    bool insertSnapshot(const std::string& iface, const NetInfo& info, double score = 0.0);
-    bool insertSnapshot(const std::string& iface, const NetInfo& info, double score, const char* score_model);
 
     /**
      * @brief 查询历史快照，返回 JSON 数组字符串

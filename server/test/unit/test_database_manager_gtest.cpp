@@ -45,6 +45,19 @@ protected:
         return info;
     }
 
+    // 辅助函数：通过全参数版本插入快照（模拟唯一生产调用路径）
+    static bool insertSimple(DatabaseManager& db, const std::string& iface, const NetInfo& info, double score = 0.0) {
+        NetworkQualityResult overall;
+        overall.score = score;
+        overall.level = NetworkQualityLevel::UNKNOWN;
+        overall.levelName = "UNKNOWN";
+        return db.insertSnapshot(iface, info, overall,
+                                 info.generation(), info.lastUpdatedMs(),
+                                 info.rttSampleTsMs(), info.rssiSampleTsMs(),
+                                 info.jitterSampleTsMs(), info.tcpLossSampleTsMs(),
+                                 info.trafficSampleTsMs());
+    }
+
     std::string dbPath_;
 };
 
@@ -73,7 +86,7 @@ TEST_F(DatabaseManagerTest, InsertAndQuery) {
     ASSERT_TRUE(db.isOpen());
 
     auto info = makeTestIface("wlan0", 50, 10.5, -55);
-    EXPECT_TRUE(db.insertSnapshot("wlan0", info));
+    EXPECT_TRUE(insertSimple(db, "wlan0", info));
     EXPECT_EQ(db.getRecordCount(), 1);
 
     std::string result = db.queryHistory("wlan0", "", "", 10);
@@ -87,7 +100,7 @@ TEST_F(DatabaseManagerTest, InsertMultipleRecords) {
 
     for (int i = 0; i < 5; ++i) {
         auto info = makeTestIface("wlan0", 40 + i, 10.0 + i, -50 - i);
-        EXPECT_TRUE(db.insertSnapshot("wlan0", info));
+        EXPECT_TRUE(insertSimple(db, "wlan0", info));
     }
     EXPECT_EQ(db.getRecordCount(), 5);
 
@@ -103,8 +116,8 @@ TEST_F(DatabaseManagerTest, QueryFilterByInterface) {
 
     auto wlan = makeTestIface("wlan0", 50, 10.0, -55);
     auto eth = makeTestIface("eth0", 10, 1.0, -1000);
-    db.insertSnapshot("wlan0", wlan);
-    db.insertSnapshot("eth0", eth);
+    insertSimple(db, "wlan0", wlan);
+    insertSimple(db, "eth0", eth);
 
     std::string result = db.queryHistory("wlan0", "", "", 10);
     EXPECT_NE(result.find("wlan0"), std::string::npos);
@@ -117,8 +130,8 @@ TEST_F(DatabaseManagerTest, QueryAllInterfaces) {
 
     auto wlan = makeTestIface("wlan0", 50, 10.0, -55);
     auto eth = makeTestIface("eth0", 10, 1.0, -1000);
-    db.insertSnapshot("wlan0", wlan);
-    db.insertSnapshot("eth0", eth);
+    insertSimple(db, "wlan0", wlan);
+    insertSimple(db, "eth0", eth);
 
     std::string result = db.queryHistory("", "", "", 10);
     EXPECT_NE(result.find("wlan0"), std::string::npos);
@@ -131,7 +144,7 @@ TEST_F(DatabaseManagerTest, QueryLimit) {
 
     for (int i = 0; i < 10; ++i) {
         auto info = makeTestIface("wlan0", 50, 10.0, -55);
-        db.insertSnapshot("wlan0", info);
+        insertSimple(db, "wlan0", info);
     }
 
     std::string result = db.queryHistory("wlan0", "", "", 3);
@@ -153,7 +166,7 @@ TEST_F(DatabaseManagerTest, Cleanup) {
 
     // 插入一条记录
     auto info = makeTestIface("wlan0", 50, 10.0, -55);
-    db.insertSnapshot("wlan0", info);
+    insertSimple(db, "wlan0", info);
     EXPECT_EQ(db.getRecordCount(), 1);
 
     // 清理 365 天前的数据 → 刚插入的记录不应被删除
@@ -171,7 +184,7 @@ TEST_F(DatabaseManagerTest, InsertWithScore) {
     ASSERT_TRUE(db.isOpen());
 
     auto info = makeTestIface("wlan0", 50, 10.5, -55);
-    EXPECT_TRUE(db.insertSnapshot("wlan0", info, 72.5));
+    EXPECT_TRUE(insertSimple(db, "wlan0", info, 72.5));
     EXPECT_EQ(db.getRecordCount(), 1);
 
     std::string result = db.queryHistory("wlan0", "", "", 10);
@@ -204,8 +217,8 @@ TEST_F(DatabaseManagerTest, QualityReportGroupsInterfaces) {
     ASSERT_TRUE(db.isOpen());
     auto wlan = makeTestIface("wlan0", 20, 1.0, -50);
     auto eth = makeTestIface("eth0", 30, 2.0, -1000);
-    ASSERT_TRUE(db.insertSnapshot("wlan0", wlan));
-    ASSERT_TRUE(db.insertSnapshot("eth0", eth));
+    ASSERT_TRUE(insertSimple(db, "wlan0", wlan));
+    ASSERT_TRUE(insertSimple(db, "eth0", eth));
     const std::string report = db.getQualityReport();
     EXPECT_NE(report.find("\"interfaces\""), std::string::npos);
     EXPECT_NE(report.find("\"wlan0\""), std::string::npos);
@@ -218,7 +231,7 @@ TEST_F(DatabaseManagerTest, GetDbInfo) {
     ASSERT_TRUE(db.isOpen());
 
     auto info = makeTestIface("wlan0", 50, 10.0, -55);
-    db.insertSnapshot("wlan0", info);
+    insertSimple(db, "wlan0", info);
 
     std::string dbInfo = db.getDbInfo();
     EXPECT_NE(dbInfo.find("\"records\""), std::string::npos);

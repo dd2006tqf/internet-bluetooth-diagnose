@@ -21,7 +21,6 @@
 
 #include <cstdint>
 #include <string>
-#include <vector>
 
 namespace weaknet_dbus {
 
@@ -177,31 +176,6 @@ public:
 
     // ---------- 比较工具 ----------
 
-    /**
-     * @brief 键比较：两个 NetInfo 是否代表同一物理接口（以 ifname 为唯一键）
-     *
-     * 用于 WeakNetMgr 在接口列表中查找/替换指定接口的条目。
-     * 注意：即使字段值不同，sameKey 仍返回 true。
-     */
-    bool sameKey(const NetInfo& other) const { return ifname_ == other.ifname_; }
-
-    /**
-     * @brief 值比较：所有关键字段是否完全一致
-     *
-     * 用于 WeakNetMgr 判断接口列表是否需要发射 Changed 信号。
-     * 注意：equals 未包含蓝牙扩展字段（bt_distance_/band_conflict_ 等），
-     * 因为蓝牙数据是独立监测的，与接口本身的网络状态不是同一层级。
-     */
-    bool equals(const NetInfo& other) const {
-        return ifname_ == other.ifname_ && is_default_ == other.is_default_ && type_ == other.type_
-            && rtt_ms_ == other.rtt_ms_ && state_ == other.state_
-            && rssi_dbm_ == other.rssi_dbm_ && rssi_estimated_ == other.rssi_estimated_
-            && rssi_source_ == other.rssi_source_ && tcp_loss_rate_ == other.tcp_loss_rate_
-            && traffic_total_bps_ == other.traffic_total_bps_ && traffic_total_pps_ == other.traffic_total_pps_
-            && traffic_active_flows_ == other.traffic_active_flows_
-            && jitter_ms_ == other.jitter_ms_ && using_now_ == other.using_now_;
-    }
-
     /// 是否具备蓝牙距离数据（bt_distance_ >= 0.0 表示已测量）
     bool hasBtDistance() const { return bt_distance_ >= 0.0; }
 
@@ -227,17 +201,6 @@ public:
     bool hasTraffic() const { return traffic_total_bps_ > 0 || traffic_total_pps_ > 0 || traffic_active_flows_ > 0; }
     bool hasJitter() const { return jitter_ms_ >= 0.0; }
 
-    /// 是否具备质量评估所需的最低指标集合（RTT + 丢包率，二者由不同监控器独立采集）
-    bool hasEnoughMetricsForAssessment() const { return hasRtt() && hasTcpLoss(); }
-
-    /**
-     * @brief 与另一 NetInfo 相比，是否存在需要重新评估/上报的变化
-     *
-     * 内部调用 equals() 的反逻辑，但可能增加对蓝牙扩展字段的额外检查。
-     * @param other 上一次快照
-     */
-    bool needsUpdate(const NetInfo& other) const;
-
     // ---------- 序列化接口 ----------
 
     /// 序列化为 JSON 字符串（格式与 NetworkQualityAssessor 输出兼容，可直接发给客户端）
@@ -249,12 +212,6 @@ public:
      * @return true 成功，false 解析失败且不修改当前对象（原子性保证）
      */
     bool fromJson(const std::string& json);
-
-    /// 序列化为二进制缓冲区（复用 serializer 工具函数，含版本号头）
-    std::vector<uint8_t> toBinary() const;
-
-    /// 从二进制缓冲区反序列化（同 fromJson 的原子性保证）
-    bool fromBinary(const std::vector<uint8_t>& buffer);
 
 private:
     std::string ifname_;           ///< 接口名（唯一标识，如 "wlan0", "eth0"）
