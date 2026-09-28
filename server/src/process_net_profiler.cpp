@@ -120,9 +120,21 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath, const weaknet::MapS
         impl_->owns_obj = false;
         // 共享 fd 路径同样要记录 resolved 容量：PerKeyCounterTracker 依赖它做水位判定，
         // 若保持 0（语义为「容量未知」）会跳过 eviction_limited 判定。
-        // 共享 fd 时 process_stats 由 TrafficAnalyzer 按同一份 plan 加载，
-        // 故此处按计划查表即可；未命中时回退规格表默认值（即未定标时内核实际生效的容量）。
-        impl_->process_stats_max = weaknet::findResolvedMax(plan, "process_stats");
+        //
+        // 权威来源是**内核实际生效的容量**，不是本进程的 plan 推算值：
+        // initForInterface 在 attached_ 已置位时会在 applyMapSizingPlan 之前提前返回，
+        // 因此当 TrafficPlugin 先于本插件启动时，真正决定容量的可能是它的 plan。
+        // 直接向内核查询该 map 的 max_entries，可避免"计划值 ≠ 实际值"时的静默不一致。
+        impl_->process_stats_max = 0;
+        struct bpf_map_info info = {};
+        __u32 info_len = sizeof(info);
+        if (bpf_obj_get_info_by_fd(impl_->process_stats_fd, &info, &info_len) == 0) {
+            impl_->process_stats_max = info.max_entries;
+        }
+        if (impl_->process_stats_max == 0) {
+            // 查询失败时按计划查表，仍未命中则回落规格表默认值
+            impl_->process_stats_max = weaknet::findResolvedMax(plan, "process_stats");
+        }
         if (impl_->process_stats_max == 0) {
             for (const auto& spec : weaknet::getMapSizingSpecs(weaknet::MapSizingScope::ProcessProfiler)) {
                 if (spec.map_name && std::strcmp(spec.map_name, "process_stats") == 0) {
@@ -130,6 +142,14 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath, const weaknet::MapS
                     break;
                 }
             }
+        }
+        // 计划值与内核实际值不一致时显式告警，避免容量水位判定建立在错误前提上
+        const uint64_t planned = weaknet::findResolvedMax(plan, "process_stats");
+        if (planned != 0 && impl_->process_stats_max != planned) {
+            LOG_WARNING(LogModule::NETWORK,
+                        "ProcessNetProfiler: process_stats 实际容量与本地计划不一致"
+                        " (kernel=" << impl_->process_stats_max << " plan=" << planned
+                        << ")，以内核实际值为准");
         }
         available_ = true;
         initialized_ = true;
