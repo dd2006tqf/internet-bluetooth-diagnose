@@ -90,6 +90,12 @@ monitors:
     map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
     interval_ms: 5000
 
+  tcp_connect:
+    enabled: true
+    bpf_obj: build/tcp_connect.bpf.o
+    interval_ms: 10000
+    capture_pages: 64
+
   active_probe:
     enabled: true
     interval_ms: 30000

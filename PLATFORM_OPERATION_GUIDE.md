@@ -64,7 +64,14 @@ New-NetFirewallRule -DisplayName "WeakNet-Edge-API-8000" -Direction Inbound -Loc
 
 ### 1. 启动中心云平台（宿主机）
 
-进入 `Large-Model-Application` 目录使用内置维护脚本：
+方式一：在项目根目录运行一键拉起脚本（推荐）：
+
+```bash
+./start_platform.sh               # 仅拉起并检查中心云全套服务
+./start_platform.sh --deploy-edge # 拉起中心云 + 增量编译部署开发板
+```
+
+方式二：进入 `Large-Model-Application` 目录手动分步启动：
 
 ```bash
 cd Large-Model-Application

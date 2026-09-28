@@ -177,6 +177,11 @@ sudo /home/radxa/weaknet/server/bin/history_query_tool --iface wlan0 --last 1h
 ```bash
 cd Large-Model-Application
 
+# 方式一：使用根目录一键启动脚本（推荐）
+./start_platform.sh               # 仅拉起并检查中心云全套服务
+./start_platform.sh --deploy-edge # 拉起中心云 + 编译部署开发板
+
+# 方式二：手动分步启动
 # 1. 启动微服务底座（PostgreSQL / Redis / MinIO / Keycloak / OPA / FastAPI）
 ./scripts/dev_lite.sh init
 ./scripts/dev_lite.sh up -d
