@@ -601,12 +601,13 @@ public:
         DBusMessage* msg = dbus_connection_pop_message(conn_);
         if (!msg) return false;
 
-        // 检查是否为五类事件信号中的任何一个
+        // 检查是否为六类事件信号中的任何一个（含 eBPF 监控器聚合指标推送）
         if (dbus_message_is_signal(msg, kInterface, kSignalInterfaceChanged) ||
             dbus_message_is_signal(msg, kInterface, kSignalConnectionModeChanged) ||
             dbus_message_is_signal(msg, kInterface, kSignalNetworkQualityChanged) ||
             dbus_message_is_signal(msg, kInterface, kSignalBluetoothDeviceChanged) ||
-            dbus_message_is_signal(msg, kInterface, kSignalMonitorStateChanged)) {
+            dbus_message_is_signal(msg, kInterface, kSignalMonitorStateChanged) ||
+            dbus_message_is_signal(msg, kInterface, kSignalEbpfMonitorStats)) {
             
             const char* signal_name = dbus_message_get_member(msg);  // 获取信号名
             const char* text = nullptr;
@@ -1360,12 +1361,13 @@ extern "C" bool weaknet_unsubscribe_event(const char* event_type) {
 /** @brief C 接口：获取支持的事件类型列表（本地拼接，不发起 D-Bus 调用） */
 extern "C" bool weaknet_get_event_types(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
     std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-    snprintf(buffer, buffer_size, "%s,%s,%s,%s,%s",
+    snprintf(buffer, buffer_size, "%s,%s,%s,%s,%s,%s",
              weaknet_dbus::kSignalInterfaceChanged,
              weaknet_dbus::kSignalConnectionModeChanged,
              weaknet_dbus::kSignalNetworkQualityChanged,
              weaknet_dbus::kSignalBluetoothDeviceChanged,
-             weaknet_dbus::kSignalMonitorStateChanged);
+             weaknet_dbus::kSignalMonitorStateChanged,
+             weaknet_dbus::kSignalEbpfMonitorStats);
     return true;
 }
 

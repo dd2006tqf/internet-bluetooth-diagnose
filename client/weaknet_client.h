@@ -238,6 +238,7 @@ typedef bool (*weaknet_network_quality_callback_t)(const char* quality, const ch
  *   - "NetworkQualityChanged" 网络质量变化
  *   - "BluetoothDeviceChanged" 蓝牙设备变化
  *   - "MonitorStateChanged"   监控器启停状态变化
+ *   - "EbpfMonitorStats"      eBPF 监控器聚合指标（JSON：monitor + 统计 + 驱逐差分）
  *
  * @param event_type 要订阅的事件类型字符串
  * @param callback   事件回调函数（可为 NULL，仅添加 D-Bus 订阅不触发用户回调）
@@ -260,9 +261,8 @@ bool weaknet_unsubscribe_event(const char* event_type);
 /**
  * @brief 获取支持的事件类型列表
  *
- * 本函数不发起 D-Bus 调用，直接在本地拼接
- * "InterfaceChanged,ConnectionModeChanged,NetworkQualityChanged,BluetoothDeviceChanged"
- * 写入结果缓冲区。
+ * 本函数不发起 D-Bus 调用，直接在本地拼接逗号分隔的事件类型列表
+ * （含 "EbpfMonitorStats"）写入结果缓冲区。
  *
  * @param buffer       结果缓冲区，存储逗号分隔的事件类型列表
  * @param buffer_size  缓冲区大小

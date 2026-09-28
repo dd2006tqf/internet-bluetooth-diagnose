@@ -65,6 +65,8 @@ static constexpr const char kSignalConnectionModeChanged[]  = "ConnectionModeCha
 static constexpr const char kSignalNetworkQualityChanged[]  = "NetworkQualityChanged";  ///< 综合网络质量（Excellent/Good/Fair/Poor）变化
 static constexpr const char kSignalBluetoothDeviceChanged[] = "BluetoothDeviceChanged"; ///< 蓝牙设备出现/消失/状态变化
 static constexpr const char kSignalMonitorStateChanged[]    = "MonitorStateChanged";
+///< eBPF 监控器聚合指标推送（JSON：monitor + 该监控器的关键统计 + 驱逐差分）
+static constexpr const char kSignalEbpfMonitorStats[]       = "EbpfMonitorStats";
 
 // ==================== 运行时路径常量 ====================
 

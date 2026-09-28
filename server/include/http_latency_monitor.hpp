@@ -93,7 +93,7 @@ public:
      *
      * 仅作观测标注，**不参与任何 SLE 判定**。线程安全。
      */
-    weaknet::PerKeyStats keyStatsSnapshot() const {
+    weaknet::PerKeyStats keyStatsSnapshot() const override {
         std::lock_guard<std::mutex> lock(key_stats_mutex_);
         return key_stats_;
     }

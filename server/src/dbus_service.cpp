@@ -1326,6 +1326,7 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
         }
         const auto health = monitors[i].second->health();
         const auto metrics = monitors[i].second->metrics();
+        const auto key_stats = monitors[i].second->keyStatsSnapshot();
         json << "{\"name\":\"" << weaknet_utils::escapeJsonString(health.name)
              << "\",\"state\":\"" << ebpfMonitorStateName(health.state)
              << "\",\"available\":" << (health.available ? "true" : "false")
@@ -1341,7 +1342,20 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
              << ",\"average_read_time_us\":" << metrics.averageReadTimeUs
              << ",\"last_error\":\"" << weaknet_utils::escapeJsonString(metrics.lastError)
              << "\",\"status\":\"" << weaknet_utils::escapeJsonString(health.status)
-             << "\"}";
+             << "\"";
+        // 驱逐可见性：只有启用了 PerKeyCounterTracker 的监控器会产出非零数据。
+        // 字段存在与否比 always-zero 更能区分"未启用"与"本轮无变化"。
+        if (key_stats.max_entries > 0 || key_stats.entries > 0) {
+            json << ",\"eviction\":{\"new_keys\":" << key_stats.new_keys
+                 << ",\"disappeared_keys\":" << key_stats.disappeared_keys
+                 << ",\"reset_keys\":" << key_stats.reset_keys
+                 << ",\"entries\":" << key_stats.entries
+                 << ",\"max_entries\":" << key_stats.max_entries
+                 << ",\"watermark_pct\":" << key_stats.watermark_pct
+                 << ",\"eviction_limited\":" << (key_stats.eviction_limited ? "true" : "false")
+                 << "}";
+        }
+        json << "}";
     }
     json << "]}";
 

@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "utils/per_key_counter_tracker.hpp"
+
 namespace weaknet_dbus {
 
 /// eBPF 监控器生命周期状态机
@@ -84,6 +86,17 @@ public:
 
     /// 重置所有统计指标（用于测试或周期性归零）
     virtual void resetMetrics() = 0;
+
+    /**
+     * @brief 最近一轮 map 扫描的逐 key 差分（驱逐可见性）
+     *
+     * 仅作观测标注，不参与任何 SLE 判定。
+     * 未启用差分追踪的监控器返回默认 PerKeyStats（全零），调用方以
+     * `max_entries == 0 && entries == 0` 区分"未启用"与"本轮无键"。
+     */
+    virtual weaknet::PerKeyStats keyStatsSnapshot() const {
+        return weaknet::PerKeyStats{};
+    }
 };
 
 }  // namespace weaknet_dbus

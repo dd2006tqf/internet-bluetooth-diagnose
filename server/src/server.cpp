@@ -35,6 +35,7 @@
 #include "common.hpp"
 #include "network_epoch_store.hpp"
 #include "serializer.hpp"
+#include "utils/json_escape.hpp"
 #include "weaknet_config.hpp"
 #include "monitor_registry.hpp"
 #include "net_iface.h"
@@ -761,6 +762,31 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
 // 将此前孤立的 BPF 监控器纳入 ServerContext 统一生命周期
 // ====================================================================
 
+// 把 PerKeyStats 差分结果以 JSON 字段形式拼进 ostr；仅当监控器启用了
+// 驱逐可见性（max_entries 或 entries 非零）才输出，区分"未启用"与"本轮无变化"。
+static void appendEvictionJson(std::ostringstream& os, const weaknet::PerKeyStats& ks) {
+    if (ks.max_entries == 0 && ks.entries == 0) return;
+    os << ",\"eviction\":{\"new_keys\":" << ks.new_keys
+       << ",\"disappeared_keys\":" << ks.disappeared_keys
+       << ",\"reset_keys\":" << ks.reset_keys
+       << ",\"entries\":" << ks.entries
+       << ",\"max_entries\":" << ks.max_entries
+       << ",\"watermark_pct\":" << ks.watermark_pct
+       << ",\"eviction_limited\":" << (ks.eviction_limited ? "true" : "false")
+       << "}";
+}
+
+// 向 D-Bus 发射一条 eBPF 监控器聚合指标信号。
+// payload 是 JSON 文本（EbpfMonitorStats 信号的契约载体），counter 走全局事件计数器。
+static void emitEbpfStats(ServerContext* ctx, const char* monitor_name,
+                          const std::string& stats_json, int32_t counter) {
+    if (!ctx->service) return;
+    std::ostringstream os;
+    os << "{\"monitor\":\"" << weaknet_utils::escapeJsonString(monitor_name)
+       << "\"," << stats_json << "}";
+    ctx->service->emitSpecificSignal(kSignalEbpfMonitorStats, os.str(), counter);
+}
+
 void start_dns_monitor_thread(ServerContext* ctx, std::thread* worker, DnsMonitor* monitor) {
     // 监控器由 ServerContext 持有 ownership（unique_ptr），线程仅通过 .get() 使用。
     // 这消除了旧方案中「线程销毁 unique_ptr 后、store(nullptr) 前」的悬垂指针窗口。
@@ -807,6 +833,18 @@ void start_dns_monitor_thread(ServerContext* ctx, std::thread* worker, DnsMonito
                     LOG_INFO(LogModule::NETWORK, "DNS tick: queries=" << stats.totalQueries
                         << " avgLatency=" << stats.avgLatencyMs << "ms"
                         << " timeoutRate=" << stats.timeoutRate() << "%");
+
+                    // 细粒度信号：订阅方可以拿到聚合指标 + 驱逐差分，替代轮询 GetDnsStats。
+                    std::ostringstream os;
+                    os << "\"total_queries\":" << stats.totalQueries
+                       << ",\"total_responses\":" << stats.totalResponses
+                       << ",\"total_timeouts\":" << stats.totalTimeouts
+                       << ",\"total_errors\":" << stats.totalErrors
+                       << ",\"avg_latency_ms\":" << stats.avgLatencyMs
+                       << ",\"max_latency_ms\":" << stats.maxLatencyMs
+                       << ",\"timeout_rate_pct\":" << stats.timeoutRate();
+                    appendEvictionJson(os, monitor->keyStatsSnapshot());
+                    emitEbpfStats(ctx, "dns", os.str(), 0);
                 }
             }
 
@@ -871,6 +909,17 @@ void start_http_latency_monitor_thread(ServerContext* ctx, std::thread* worker, 
                     << " p50=" << (globalStats.p50Ns / 1000000) << "ms"
                     << " p99=" << (globalStats.p99Ns / 1000000) << "ms"
                     << " analysis=" << globalStats.analysis);
+
+                // 细粒度信号：TTFB 分位数 + 驱逐差分，替代轮询 GetHttpLatencyStats。
+                std::ostringstream os;
+                os << "\"total_txns\":" << globalStats.totalTxns
+                   << ",\"p50_ms\":" << (globalStats.p50Ns / 1000000)
+                   << ",\"p95_ms\":" << (globalStats.p95Ns / 1000000)
+                   << ",\"p99_ms\":" << (globalStats.p99Ns / 1000000)
+                   << ",\"max_ms\":" << (globalStats.maxNs / 1000000)
+                   << ",\"analysis\":\"" << weaknet_utils::escapeJsonString(globalStats.analysis) << "\"";
+                appendEvictionJson(os, monitor->keyStatsSnapshot());
+                emitEbpfStats(ctx, "http_latency", os.str(), 0);
             }
             for (int i = 0; i < static_cast<int>(ctx->cfg.http_latency.interval_ms.load() / 100) && (ctx->running.load() && !ctx->http_latency_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
@@ -904,6 +953,37 @@ void start_process_net_profiler_thread(ServerContext* ctx, std::thread* worker, 
                         << " txBytes=" << p.txBytes);
                 }
             }
+
+            // 细粒度信号：Top N 进程带宽/重传 + 驱逐差分。
+            if (!topBw.empty() || !topRetrans.empty()) {
+                std::ostringstream os;
+                os << "\"top_bandwidth\":[";
+                bool first = true;
+                for (const auto& p : topBw) {
+                    if (p.txBytes == 0) continue;
+                    if (!first) os << ",";
+                    first = false;
+                    os << "{\"pid\":" << p.pid
+                       << ",\"comm\":\"" << weaknet_utils::escapeJsonString(p.comm)
+                       << "\",\"tx_bytes\":" << p.txBytes
+                       << ",\"tx_packets\":" << p.txPackets
+                       << ",\"retrans_count\":" << p.retransCount << "}";
+                }
+                os << "],\"top_retrans\":[";
+                first = true;
+                for (const auto& p : topRetrans) {
+                    if (p.retransCount == 0) continue;
+                    if (!first) os << ",";
+                    first = false;
+                    os << "{\"pid\":" << p.pid
+                       << ",\"comm\":\"" << weaknet_utils::escapeJsonString(p.comm)
+                       << "\",\"retrans_count\":" << p.retransCount
+                       << ",\"tx_bytes\":" << p.txBytes << "}";
+                }
+                os << "]";
+                appendEvictionJson(os, profiler->keyStatsSnapshot());
+                emitEbpfStats(ctx, "process_profiler", os.str(), 0);
+            }
             for (int i = 0; i < static_cast<int>(ctx->cfg.process_profiler.interval_ms.load() / 100) && (ctx->running.load() && !ctx->process_profiler_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
@@ -922,6 +1002,13 @@ void start_tcp_retrans_monitor_thread(ServerContext* ctx, std::thread* worker, T
             if (!stats.empty()) {
                 LOG_INFO(LogModule::NETWORK, "TCP retransmit tick: connections=" << stats.size()
                     << " lossRate=" << monitor->computeLossRate() << "%");
+
+                // 细粒度信号：连接级重传统计 + 驱逐差分，替代轮询。
+                std::ostringstream os;
+                os << "\"connections\":" << stats.size()
+                   << ",\"loss_rate_pct\":" << monitor->computeLossRate();
+                appendEvictionJson(os, monitor->keyStatsSnapshot());
+                emitEbpfStats(ctx, "tcp_retrans", os.str(), 0);
             }
             for (int i = 0; i < static_cast<int>(ctx->cfg.tcp_retrans.interval_ms.load() / 100) && (ctx->running.load() && !ctx->tcp_retrans_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
