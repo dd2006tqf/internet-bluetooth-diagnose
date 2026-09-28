@@ -48,6 +48,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "assessment_snapshot.hpp"
@@ -251,6 +252,11 @@ private:
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
+
+    /// 已执行过的云端 action_id 集合（去重，防应答丢失后的重放重执行）。
+    /// 进程内即可：重启后服务端会把 action 重新标记为 DELIVERED 并等待回执，
+    /// 此时重建执行是正确行为。
+    std::unordered_set<std::string> executed_action_ids_;
 
     mutable std::mutex stats_mutex_;
     EdgeExporterStats stats_;

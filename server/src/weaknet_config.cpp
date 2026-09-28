@@ -412,12 +412,6 @@ struct Section {
 
 }  // namespace
 
-bool isEnabledKey(const std::string& key) {
-    const std::string suffix = ".enabled";
-    if (key.size() <= suffix.size()) return false;
-    return key.compare(key.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
 bool splitMonitorKey(const std::string& dotted, std::string* monitor, std::string* field) {
     size_t dot = dotted.find('.');
     if (dot == std::string::npos || dot == 0 || dot == dotted.size() - 1) return false;

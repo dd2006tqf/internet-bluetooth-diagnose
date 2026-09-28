@@ -62,15 +62,6 @@ public:
     std::vector<NetInfo> collectCurrentInterfaces();
 
     /**
-     * @brief 在给定列表中按接口名查找条目
-     * @param list    待搜索的接口列表
-     * @param ifname  目标接口名
-     * @param out     输出找到的 NetInfo（仅当返回 true 时有效）
-     * @return true 找到；false 未找到
-     */
-    bool findByName(const std::vector<NetInfo>& list, const std::string& ifname, NetInfo* out) const;
-
-    /**
      * @brief 静态工具：将 NetInfo 列表转为接口名数组
      * @param list 接口列表
      * @return 接口名字符串数组（用于 D-Bus ListInterfaces 返回值）
@@ -149,7 +140,6 @@ public:
 
     std::vector<NetInfo> getCurrentInterfaces() const;              ///< 读取最新快照（拷贝返回）
     void updateInterfaces(const std::vector<NetInfo>& new_interfaces); ///< 替换整个列表
-    uint64_t snapshotGeneration() const { return snapshot_generation_; }
 
     /**
      * @brief 用**已测得**的 RTT 值更新指定接口（不发 ping，纯数据写回）

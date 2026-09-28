@@ -81,34 +81,7 @@ static std::string qualityToString(LinkQuality q) {
     }
 }
 
-// ---- SQLite 回调 ----
-
-struct QueryContext {
-    std::string result;
-    bool first = true;
-};
-
-static int queryCallback(void* data, int argc, char** argv, char** /*colNames*/) {
-    auto* ctx = static_cast<QueryContext*>(data);
-    if (ctx->first) {
-        ctx->result = "[";
-        ctx->first = false;
-    } else {
-        ctx->result += ",";
-    }
-
-    ctx->result += "{";
-    for (int i = 0; i < argc; ++i) {
-        if (i > 0) ctx->result += ",";
-        ctx->result += "\"";
-        ctx->result += weaknet_utils::escapeJsonString(argv[i] ? argv[i] : "null");
-    }
-    ctx->result += "}";
-
-    return 0;
-}
-
-// 使用预定义列名的回调
+// 使用预定义列名的结构
 struct HistoryRow {
     std::string ts, iface, quality, link_quality, overall_quality, rssi_source;
     std::string rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status;
@@ -116,7 +89,8 @@ struct HistoryRow {
     int64_t generation = 0, data_version = 1;
     int64_t rtt_sample_ts = 0, rssi_sample_ts = 0, jitter_sample_ts = 0;
     int64_t tcp_loss_sample_ts = 0, traffic_sample_ts = 0;
-    int rtt_ms = -1, rssi_dbm = -1000, traffic_pps = 0, flows = 0;
+    int rtt_ms = -1, rssi_dbm = -1000;
+    int64_t traffic_pps = 0, flows = 0;
     bool rtt_null = false, jitter_null = false, rssi_null = false, tcp_loss_null = false;
     bool traffic_null = false;
     bool rssi_estimated = false;
@@ -127,41 +101,6 @@ struct HistoryRow {
 struct HistoryCallbackCtx {
     std::vector<HistoryRow> rows;
 };
-
-static int historyQueryCallback(void* data, int argc, char** argv, char** /*colNames*/) {
-    auto* ctx = static_cast<HistoryCallbackCtx*>(data);
-    HistoryRow row;
-    if (argv[0]) row.ts = argv[0];
-    if (argv[1]) row.iface = argv[1];
-    if (argv[2]) row.rtt_ms = atoi(argv[2]);
-    if (argv[3]) row.jitter_ms = atof(argv[3]);
-    if (argv[4]) row.rssi_dbm = atoi(argv[4]);
-    if (argv[5]) row.rssi_source = argv[5];
-    if (argv[6]) row.rssi_estimated = atoi(argv[6]) != 0;
-    if (argv[7]) row.rssi_status = argv[7];
-    if (argv[8]) row.rtt_status = argv[8];
-    if (argv[9]) row.jitter_status = argv[9];
-    if (argv[10]) row.tcp_loss_status = argv[10];
-    if (argv[11]) row.traffic_status = argv[11];
-    if (argv[12]) row.tcp_loss = atof(argv[12]);
-    if (argv[13]) row.quality = argv[13];
-    if (argv[14]) row.link_quality = argv[14];
-    if (argv[15]) row.overall_quality = argv[15];
-    if (argv[16]) row.score = atof(argv[16]);
-    if (argv[18]) row.traffic_bps = atoll(argv[18]);
-    if (argv[19]) row.traffic_pps = atoi(argv[19]);
-    if (argv[20]) row.flows = atoi(argv[20]);
-    if (argv[21]) row.snapshot_ts = argv[21];
-    if (argv[22]) row.generation = atoll(argv[22]);
-    if (argv[23]) row.data_version = atoll(argv[23]);
-    if (argv[24]) row.rtt_sample_ts = atoll(argv[24]);
-    if (argv[25]) row.rssi_sample_ts = atoll(argv[25]);
-    if (argv[26]) row.jitter_sample_ts = atoll(argv[26]);
-    if (argv[27]) row.tcp_loss_sample_ts = atoll(argv[27]);
-    if (argv[28]) row.traffic_sample_ts = atoll(argv[28]);
-    ctx->rows.push_back(std::move(row));
-    return 0;
-}
 
 static int countCallback(void* data, int /*argc*/, char** argv, char** /*colNames*/) {
     auto* count = static_cast<int64_t*>(data);
@@ -552,8 +491,8 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
         if (overall_quality) row.overall_quality = overall_quality;
         row.traffic_null = sqlite3_column_type(stmt, 18) == SQLITE_NULL;
         row.traffic_bps = row.traffic_null ? 0 : sqlite3_column_int64(stmt, 18);
-        row.traffic_pps = sqlite3_column_int(stmt, 19);
-        row.flows = sqlite3_column_int(stmt, 20);
+        row.traffic_pps = sqlite3_column_int64(stmt, 19);
+        row.flows = sqlite3_column_int64(stmt, 20);
         const char* snapshot_ts = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 21));
         if (snapshot_ts) row.snapshot_ts = snapshot_ts;
         row.generation = sqlite3_column_int64(stmt, 22);
@@ -581,12 +520,14 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
         if (i > 0) json << ",";
         std::string rssiAge = "null";
         try {
-            const int64_t snapshotMs = std::stoll(row.snapshot_ts);
-            if (snapshotMs >= row.rssi_sample_ts && row.rssi_sample_ts > 0) {
-                rssiAge = std::to_string(snapshotMs - row.rssi_sample_ts);
+            if (!row.snapshot_ts.empty()) {
+                const int64_t snapshotMs = std::stoll(row.snapshot_ts);
+                if (snapshotMs >= row.rssi_sample_ts && row.rssi_sample_ts > 0) {
+                    rssiAge = std::to_string(snapshotMs - row.rssi_sample_ts);
+                }
             }
-        } catch (const std::exception&) {
-            // Legacy rows use a formatted timestamp and have no reliable age.
+        } catch (const std::exception& ex) {
+            LOG_DEBUG(LogModule::SYSTEM, "row.snapshot_ts parse failed (" << row.snapshot_ts << "): " << ex.what());
         }
         json << "{"
              << "\"ts\":\"" << weaknet_utils::escapeJsonString(row.ts) << "\","

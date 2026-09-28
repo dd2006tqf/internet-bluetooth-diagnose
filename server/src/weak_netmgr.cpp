@@ -177,13 +177,6 @@ bool WeakNetMgr::updateCurrentUsing(std::vector<NetInfo>& list, bool printLog, s
     return changed;
 }
 
-bool WeakNetMgr::findByName(const std::vector<NetInfo>& list, const std::string& ifname, NetInfo* out) const {
-    for (const auto& x : list) {
-        if (x.ifName() == ifname) { if (out) *out = x; return true; }
-    }
-    return false;
-}
-
 std::vector<std::string> WeakNetMgr::namesOf(const std::vector<NetInfo>& list) {
     std::vector<std::string> names;
     names.reserve(list.size());

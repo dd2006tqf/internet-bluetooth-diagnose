@@ -214,11 +214,6 @@ TEST(WeakNetConfigTest, HelperFunctions) {
     EXPECT_FALSE(splitMonitorKey("no-dot", &mon, &field));
     EXPECT_FALSE(splitMonitorKey(".leading", &mon, &field));
     EXPECT_FALSE(splitMonitorKey("trailing.", &mon, &field));
-
-    EXPECT_TRUE(isEnabledKey("rtt.enabled"));
-    EXPECT_TRUE(isEnabledKey("dns.enabled"));
-    EXPECT_FALSE(isEnabledKey("rtt.interval"));
-    EXPECT_FALSE(isEnabledKey("enabled"));
 }
 
 // 空文件 → 全默认

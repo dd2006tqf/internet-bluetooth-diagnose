@@ -13,7 +13,10 @@
 #include <iomanip>
 #include <sstream>
 #include <utility>
+#include <unistd.h>
+#include <fcntl.h>
 
+#include "logger.hpp"
 #include "serializer.hpp"
 #include "server.hpp"
 
@@ -97,11 +100,19 @@ bool MonitorManager::saveOverrides(std::string* error) const {
         return false;
     }
     out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    out.flush();
+    // 强制刷盘，确保断电不会留下空文件或半写入
     out.close();
     if (!out) {
         if (error) *error = "cannot write override file: " + tmp_path;
         std::remove(tmp_path.c_str());
         return false;
+    }
+    // 同步到磁盘硬件
+    int fd = open(tmp_path.c_str(), O_RDONLY);
+    if (fd >= 0) {
+        fsync(fd);
+        close(fd);
     }
     if (std::rename(tmp_path.c_str(), override_path_.c_str()) != 0) {
         if (error) *error = "cannot commit override file: " + override_path_;
@@ -138,6 +149,7 @@ bool MonitorManager::loadOverrides(std::string* error) {
             return false;
         }
         if (!setMonitorEnabled(ctx_ ? &ctx_->cfg : nullptr, name, enabled != 0)) {
+            LOG_WARNING(LogModule::SYSTEM, "loadOverrides: 无法将持久化 override 应用到配置: " << name << "=" << enabled);
             desired_overrides_[name] = enabled != 0;
         } else {
             desired_overrides_[name] = enabled != 0;

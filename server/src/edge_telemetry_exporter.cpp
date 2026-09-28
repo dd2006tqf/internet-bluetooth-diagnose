@@ -163,6 +163,7 @@ struct PendingAction {
     std::string key;
     std::string value;
     uint64_t generation{0};
+    bool generation_present{false};  ///< generation 字段是否在报文中真实出现且解析成功
     std::string nonce;
     std::string claim_token;
 };
@@ -207,8 +208,15 @@ std::vector<PendingAction> parsePendingActions(const std::string& body) {
         const std::string segment = body.substr(cursor, segment_end - cursor);
         if (!extractStringField(segment, "key", 0, &action.key, nullptr)) { pos = segment_end; continue; }
         if (!extractStringField(segment, "value", 0, &action.value, nullptr)) { pos = segment_end; continue; }
-        // v2 元数据可选：缺失视为 0/""（与 v1 兼容）
-        extractUint64Field(segment, "generation", &action.generation);
+        // v2 元数据可选：缺失视为 0/""（与 v1 兼容）。
+        // generation 必须**确实存在于本动作段**且解析成功才算携带了防重放元数据；
+        // 解析失败时保留 0 并靠 generation_present_ 区分"未提供"与"提供了 0"，
+        // 供 applyPendingActions 的 fail-closed 门禁使用。
+        if (extractUint64Field(segment, "generation", &action.generation)) {
+            action.generation_present = true;
+        } else {
+            action.generation = 0;
+        }
         extractStringField(segment, "nonce", 0, &action.nonce, nullptr);
         extractStringField(segment, "claim_token", 0, &action.claim_token, nullptr);
         actions.push_back(std::move(action));
@@ -511,12 +519,19 @@ bool EdgeTelemetryExporter::transmit(const std::vector<EdgeTelemetryRecord>& rec
     // 每条记录单独发送，而不是拼成一个巨大请求——拼接会破坏
     // "签名覆盖发送字节"这一不变式。
     for (const auto& record : records) {
+        if (stop_requested_.load()) {
+            if (error) *error = "stop_requested";
+            return false;
+        }
         std::string response;
         if (!postSigned(config_.edge.url.get(), record.body, record.signature,
                         &response, error)) {
             return false;
         }
 
+        if (stop_requested_.load()) {
+            return false;
+        }
         applyPendingActions(response);
 
         {
@@ -540,9 +555,29 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
         bool ok = false;
 
         const bool trialable = weaknet_dbus::isTrialableKey(action.key);
-        const bool stale = action.generation > 0 &&
-                           config_txn_ &&
-                           action.generation <= config_txn_->lastAppliedGeneration();
+        const bool v2_metadata = action.generation_present || !action.claim_token.empty() ||
+                                 !action.nonce.empty();
+
+        // 应答丢失→遥测重发→云端重放 pending_actions 是常态路径。
+        // 已执行过的 action_id 直接回执上次结果，绝不重执行（重执行会重置
+        // TRIAL deadline、把看门狗无限续期，并泛洪 action-results）。
+        auto it = executed_action_ids_.find(action.action_id);
+        if (it != executed_action_ids_.end()) {
+            LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                     "云端动作已执行过，直接回执不重放: " << action.action_id);
+            queueActionResult(action.action_id, /*applied=*/true, "applied_duplicate",
+                              action.claim_token, action.generation);
+            continue;
+        }
+
+        // fail-closed：trialable key 或携带 v2 元数据的动作必须带有效 generation，
+        // 否则 generation=0 会绕过 stale 判定、且永远推进不了 last_applied。
+        if ((trialable || v2_metadata) && (!action.generation_present || action.generation == 0)) {
+            error = "missing_or_invalid_generation";
+        } else {
+            const bool stale = action.generation > 0 &&
+                               config_txn_ &&
+                               action.generation <= config_txn_->lastAppliedGeneration();
 
         if (stale) {
             error = "stale_generation";
@@ -572,6 +607,29 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
                 const_cast<weaknet_dbus::WeakNetConfig*>(&config_),
                 action.key, action.value, &error);
         }
+        }
+
+        if (ok) {
+            // 两条应用路径（TRIAL 记账 / 直通道）都必须推进防重放高水位；
+            // 否则 last_applied 永远停在 confirmStable/forceRollback 之前，
+            // 云端因应答丢失重放同一代次时会被重新执行。
+            if (config_txn_ && action.generation > 0) {
+                config_txn_->markGenerationApplied(action.generation);
+            }
+            executed_action_ids_.insert(action.action_id);
+            LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                     "已应用服务端下发的配置: " << action.key << "=" << action.value
+                     << " (action=" << action.action_id
+                     << " gen=" << action.generation
+                     << (trialable && config_txn_ ? " [TRIAL]" : " [DIRECT]") << ")");
+        } else {
+            if (!error.empty() && error != "stale_generation" &&
+                error != "missing_or_invalid_generation") {
+                LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                          "服务端下发配置被拒绝: " << action.key << "=" << action.value
+                          << " (action=" << action.action_id << ", " << error << ")");
+            }
+        }
 
         {
             std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -580,18 +638,6 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
             } else {
                 stats_.actions_rejected++;
             }
-        }
-
-        if (ok) {
-            LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
-                     "已应用服务端下发的配置: " << action.key << "=" << action.value
-                     << " (action=" << action.action_id
-                     << " gen=" << action.generation
-                     << (trialable && config_txn_ ? " [TRIAL]" : " [DIRECT]") << ")");
-        } else {
-            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
-                      "服务端下发配置被拒绝: " << action.key << "=" << action.value
-                      << " (action=" << action.action_id << ", " << error << ")");
         }
 
         // 无论应用成功与否都必须回执：服务端靠它把 action 推进到
@@ -811,15 +857,15 @@ void EdgeTelemetryExporter::run() {
         std::string error;
         const bool telemetry_ok = records.empty() || transmit(records, &error);
         if (!telemetry_ok) {
+            // 失败：把未送达的记录放回缓冲前面，保持时序。
+            // 遵循头文件声明的锁序约定：必须先获取 mutex_，再获取 stats_mutex_，
+            // 严禁在此出现 stats_mutex_ -> mutex_ 的反向加锁，杜绝与 enqueue/stats 的死锁面。
+            std::lock_guard<std::mutex> block(mutex_);
             std::lock_guard<std::mutex> slock(stats_mutex_);
             stats_.send_failures++;
-            // 失败：把未送达的记录放回缓冲**前面**，保持时序。
-            // 服务端幂等，因此重发已到达但响应丢失的项也是安全的。
-            std::lock_guard<std::mutex> block(mutex_);
             for (auto it = records.rbegin(); it != records.rend(); ++it) {
                 if (buffer_.size() >= EDGE_TELEMETRY_BUFFER_CAPACITY) {
                     buffer_.pop_back();
-                    std::lock_guard<std::mutex> slock2(stats_mutex_);
                     stats_.dropped_oldest++;
                     break;
                 }

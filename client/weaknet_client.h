@@ -237,6 +237,7 @@ typedef bool (*weaknet_network_quality_callback_t)(const char* quality, const ch
  *   - "ConnectionModeChanged" 上网网卡切换
  *   - "NetworkQualityChanged" 网络质量变化
  *   - "BluetoothDeviceChanged" 蓝牙设备变化
+ *   - "MonitorStateChanged"   监控器启停状态变化
  *
  * @param event_type 要订阅的事件类型字符串
  * @param callback   事件回调函数（可为 NULL，仅添加 D-Bus 订阅不触发用户回调）

@@ -445,17 +445,8 @@ bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
         // W2 单一事实源：HealthCheck **只读权威快照**，绝不重新 evaluate。
         // 此前本方法现场拉 metrics + 调 OverallPolicy，与 quality 线程、
         // history 线程构成三条结论可能不一致的评估路径（既有 bug）。
-        //
-        // 仍需现场取值的只有三个补充字段（见下），因此这里**只**拉
-        // Responsiveness 需要的两个窗口；REACHABILITY/WIFI_LOSS/TCP_LOSS/RSSI
-        // 四个窗口与 IpReachability/Reliability/RfHealth 三个 evaluator 曾在
-        // 此处被完整计算后丢弃（每次 HealthCheck 白烧一轮评估 CPU）。
-        // 若将来要把它们的证据补进 HealthCheck，必须改为在快照里携带，
-        // 而不是重新在这里评估。
-        auto rtt_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::RTT_MS, 120s);
-        auto jitter_samples = ctx_->metrics_registry->window(active_iface, weaknet::MetricId::JITTER_MS, 120s);
-        auto resp_sle = weaknet::ResponsivenessEvaluator::evaluate(rtt_samples, jitter_samples);
-
+        // 现已彻底收敛至仅读取 AssessmentSnapshotStore 权威快照中的 experience：
+        // overall、responsiveness SLE 结论与中位数证据均来自于同一份不可变快照。
         auto snap = ctx_->assessment_store.latest();
         if (snap) {
             const uint64_t cur_epoch = ctx_->dns_tracker ? ctx_->dns_tracker->currentBindingEpoch()
@@ -476,8 +467,10 @@ bool DbusService::handleHealthCheck(DBusConnection* conn, DBusMessage* msg) {
             exp.display_score = 50;
             exp.primary_issue = "no_assessment_yet";
         }
-        resp_reason = resp_sle.reason;
-        for (const auto& ev : resp_sle.evidence) {
+
+        // 从快照的 responsiveness SLE 证据中提取 median_rtt_ms 与 reason
+        resp_reason = exp.responsiveness.reason;
+        for (const auto& ev : exp.responsiveness.evidence) {
             if (ev.metric == "median_rtt_ms") {
                 median_rtt_val = ev.value;
             }
@@ -722,6 +715,11 @@ bool DbusService::emitNetworkQualitySignal(const std::string& message, const std
  */
 bool DbusService::handlePing(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handlePing called");
+
+    // Ping 方法能够强制主机在生产接口向任意地址发射网络探测报文，
+    // 且同步等待超时（最多 3 秒），会阻塞单一的 D-Bus 分发线程。
+    // 为防任意本地用户利用其饿死系统或发起未授权的主动探测，统一收紧至 root 权限。
+    if (!requireRootCaller(conn, msg, "Ping")) return false;
 
     // 解析参数：目标主机名
     DBusError err;
