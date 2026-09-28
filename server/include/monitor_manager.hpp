@@ -74,11 +74,9 @@ public:
 
     /// 返回全部插件的稳定状态快照。
     std::vector<MonitorStatus> list() const;
-    std::vector<std::string> dependencies(const std::string& name) const;
 
     /// 设置运行时 override 文件路径；空路径表示不持久化。
     void setOverridePath(std::string path);
-    void setDesiredOverride(const std::string& name, bool enabled);
     /// 保存当前 desired_enabled；仅由显式配置持久化入口调用。
     bool saveOverrides(std::string* error) const;
     bool loadOverrides(std::string* error);

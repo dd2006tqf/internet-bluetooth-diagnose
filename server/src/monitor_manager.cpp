@@ -73,11 +73,6 @@ void MonitorManager::setOverridePath(std::string path) {
     override_path_ = std::move(path);
 }
 
-void MonitorManager::setDesiredOverride(const std::string& name, bool enabled) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    desired_overrides_[name] = enabled;
-}
-
 bool MonitorManager::saveOverrides(std::string* error) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (override_path_.empty()) {
@@ -149,11 +144,12 @@ bool MonitorManager::loadOverrides(std::string* error) {
             return false;
         }
         if (!setMonitorEnabled(ctx_ ? &ctx_->cfg : nullptr, name, enabled != 0)) {
-            LOG_WARNING(LogModule::SYSTEM, "loadOverrides: 无法将持久化 override 应用到配置: " << name << "=" << enabled);
-            desired_overrides_[name] = enabled != 0;
-        } else {
-            desired_overrides_[name] = enabled != 0;
+            // 记录失败原因后仍然保留 override 意图：下次启动会再次尝试应用，
+            // 而不是把「读到的持久化意图」当作不存在而静默丢弃。
+            LOG_WARNING(LogModule::SYSTEM,
+                        "loadOverrides: 无法将持久化 override 应用到配置: " << name << "=" << enabled);
         }
+        desired_overrides_[name] = enabled != 0;
     }
     return true;
 }
@@ -277,12 +273,6 @@ std::vector<MonitorStatus> MonitorManager::list() const {
     result.reserve(entries_.size());
     for (const auto& entry : entries_) result.push_back(entry.status);
     return result;
-}
-
-std::vector<std::string> MonitorManager::dependencies(const std::string& name) const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const auto* entry = findLocked(name);
-    return entry ? entry->plugin->dependencies() : std::vector<std::string>{};
 }
 
 void MonitorManager::setStateChangeCallback(
