@@ -127,7 +127,10 @@ fi
 cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug ${CCACHE_OPTS} 2>&1
 
 echo "--- 编译服务端 + eBPF + 客户端 ---"
-cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet test_client_bin test_ebpf ebpf -j1 2>&1
+# 注意：weaknet_cli 是独立目标（weaknet 只是动态库），此前不在清单里，
+# 导致 CLI 源码改动后 CI 仍打包部署陈旧的 weaknet-cli（实测：events 命令
+# 上板后报"未知命令"，板端二进制停在上一次手动全量构建的版本）。
+cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf ebpf -j1 2>&1
 
 echo "--- 打包 dist-arm64 ---"
 rm -rf dist-arm64
