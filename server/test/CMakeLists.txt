@@ -83,6 +83,10 @@ add_executable(test_database_manager_gtest
     unit/test_database_manager_gtest.cpp)
 target_link_libraries(test_database_manager_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_wireless_event_gtest
+    unit/test_wireless_event_gtest.cpp)
+target_link_libraries(test_wireless_event_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 add_executable(test_network_epoch_store_gtest
     unit/test_network_epoch_store_gtest.cpp)
 target_link_libraries(test_network_epoch_store_gtest PRIVATE ${TEST_COMMON_LIBS})
@@ -224,6 +228,7 @@ foreach(test_target
     test_jitter_monitor_gtest
     test_dns_monitor_gtest
     test_database_manager_gtest
+    test_wireless_event_gtest
     test_network_epoch_store_gtest
     test_net_wifiriss_gtest
     test_ebpf_monitor_observability_gtest
