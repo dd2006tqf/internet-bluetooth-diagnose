@@ -16,6 +16,8 @@
 #include "bt_event_normalizer.hpp"
 
 #include <algorithm>
+#include <iomanip>
+#include <random>
 #include <sstream>
 #include <tuple>
 
@@ -37,7 +39,17 @@ bool BtEventNormalizer::MergeKey::operator<(const MergeKey& other) const {
 // 构造 / 诊断
 // ============================================================================
 
-BtEventNormalizer::BtEventNormalizer(BtNormalizerConfig cfg) : cfg_(std::move(cfg)) {}
+BtEventNormalizer::BtEventNormalizer(BtNormalizerConfig cfg) : cfg_(std::move(cfg)) {
+    // 每实例一个随机短码（8 个 hex 字符）。不同进程/不同重启之间碰撞概率
+    // 极低，配合 seq 即可保证 event_id 跨重启唯一（见头文件成员注释）。
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+    std::uniform_int_distribution<uint64_t> dis;
+    std::ostringstream nonce;
+    nonce << std::hex << std::setfill('0') << std::setw(8)
+          << (dis(gen) & 0xFFFFFFFFULL);
+    instance_nonce_ = nonce.str();
+}
 
 size_t BtEventNormalizer::pendingCount() const {
     std::lock_guard<std::mutex> lock(mu_);
@@ -194,10 +206,11 @@ void BtEventNormalizer::applyObservation(PendingEvent& pending, const RawBtObser
 WirelessDeviceEvent BtEventNormalizer::finalize(PendingEvent& pending, uint64_t seq) {
     WirelessDeviceEvent ev = pending.event;
 
-    // event_id：本模块内唯一且可读。真实全局唯一性由 Store 层（含 device_id/epoch）
-    // 负责，这里不重复承担该职责。
+    // event_id = <prefix>_<实例随机码>_<seq>：进程内单调、跨进程（服务重启）不碰撞。
+    // device_events.event_id 是 UNIQUE 且 INSERT OR IGNORE——跨重启重复即静默丢事件，
+    // 所以唯一性必须在生成方保证（早期版本只有 prefix+seq，重启后必撞，已修）。
     std::ostringstream id;
-    id << cfg_.event_id_prefix << "_" << seq;
+    id << cfg_.event_id_prefix << "_" << instance_nonce_ << "_" << seq;
     ev.event_id = id.str();
 
     // 拼接 raw_evidence 数组

@@ -16,6 +16,7 @@
 
 #include <cstring>
 #include <memory>
+#include <set>
 
 #include "bt_event_normalizer.hpp"
 #include "database_manager.hpp"
@@ -367,6 +368,31 @@ TEST(BtEventNormalizerTest, EventIdsAreUniqueWithinNormalizer) {
     const auto events = normalizer.flushExpired(5000);
     ASSERT_EQ(events.size(), 2u);
     EXPECT_NE(events[0].event_id, events[1].event_id);
+}
+
+TEST(BtEventNormalizerTest, EventIdsDifferAcrossInstances) {
+    // 回归护栏：event_id 带实例随机码。
+    // 早期版本是 btev_<seq>（seq 每次进程启动从 0 重来），而 device_events.event_id
+    // 是 UNIQUE + INSERT OR IGNORE —— 服务重启后第一批事件会被静默丢弃
+    // （每次部署都重启服务，必然踩中）。两个"模拟重启"的实例必须产出不相交的 ID 集。
+    auto makeIds = [] {
+        BtEventNormalizer n;
+        n.submit(makeMgmtObservation(1000, "AA:00:00:00:00:11", 0x03));
+        n.submit(makeMgmtObservation(1000, "AA:00:00:00:00:12", 0x03));
+        auto evs = n.flushExpired(5000);
+        std::set<std::string> ids;
+        for (const auto& e : evs) ids.insert(e.event_id);
+        return ids;
+    };
+
+    const auto first = makeIds();
+    const auto second = makeIds();
+    ASSERT_EQ(first.size(), 2u);
+    ASSERT_EQ(second.size(), 2u);
+    for (const auto& id : first) {
+        EXPECT_EQ(second.count(id), 0u)
+            << "跨实例(=跨服务重启) event_id 碰撞会被 DB UNIQUE+OR IGNORE 静默吞掉: " << id;
+    }
 }
 
 TEST(BtEventNormalizerTest, FlushAllEmptiesPendingState) {

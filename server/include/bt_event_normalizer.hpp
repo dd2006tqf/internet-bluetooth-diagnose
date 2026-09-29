@@ -174,6 +174,13 @@ private:
     static int reasonRank(const RawBtObservation& obs);
 
     BtNormalizerConfig cfg_;
+    /// 实例随机短码（构造时生成）。event_id = <prefix>_<nonce>_<seq>，
+    /// **必须带 nonce**：seq 每次进程启动都从 0 开始，而 device_events.event_id
+    /// 有 UNIQUE 约束且落库用 INSERT OR IGNORE —— 服务重启后第一批事件的
+    /// btev_0 会与历史行冲突并被**静默丢弃**（每次部署都会重启服务，必然踩中）。
+    /// 注释里曾写"全局唯一性由 Store 层负责"，但 Store 并未做这件事——
+    /// 唯一性必须由生成方自己保证。
+    std::string instance_nonce_;
     std::map<MergeKey, PendingEvent> pending_;
     /// 已定案但尚未被 flushExpired/flushAll 取走的事件
     std::vector<WirelessDeviceEvent> completed_;
