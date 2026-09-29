@@ -244,6 +244,19 @@ add_custom_command(
     COMMENT "Compiling eBPF: a2dp_media.bpf.c"
 )
 
+# bt_events：蓝牙设备事件采集（Phase 1），用 ringbuf 上报原始观测
+add_custom_command(
+    OUTPUT ${BPF_BUILD_DIR}/bt_events.bpf.o
+    COMMAND ${CLANG} -g -O2 -target bpf
+        -I${BPF_BUILD_DIR}
+        -c ${CMAKE_CURRENT_SOURCE_DIR}/src/bpf/bt_events.bpf.c
+        -o ${BPF_BUILD_DIR}/bt_events.bpf.o
+    DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/bpf/bt_events.bpf.c
+        ${VMLINUX_H}
+    COMMENT "Compiling eBPF: bt_events.bpf.c"
+)
+
 # 汇总 eBPF 目标（默认构建，但不阻塞服务端二进制）
 add_custom_target(ebpf
     DEPENDS
@@ -255,6 +268,7 @@ add_custom_target(ebpf
         ${BPF_BUILD_DIR}/tcp_conn_stats.bpf.o
         ${BPF_BUILD_DIR}/skb_drop.bpf.o
         ${BPF_BUILD_DIR}/a2dp_media.bpf.o
+        ${BPF_BUILD_DIR}/bt_events.bpf.o
         ${BPF_BUILD_DIR}/tcp_connect.bpf.o
 )
 # eBPF 依赖：在 ARM64 容器内编译时链接，x86 开发机可跳过

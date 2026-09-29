@@ -117,6 +117,11 @@ struct WeakNetConfig {
         std::atomic<uint32_t> interval_ms{3000};
         ConfigString bpf_obj{"build/a2dp_media.bpf.o"};   ///< Phase2 eBPF 融合层对象
         MapSizingCfg map_sizing;                          ///< a2dp LRU map 定标
+        /// Phase 1 设备事件采集器对象（bt_events.bpf.o）。
+        /// 与 a2dp_media 是**两条独立的数据路径**：a2dp 走 map 累计音频流量，
+        /// bt_events 走 ringbuf 上报断连事件。前者是 legacy 音频能力，
+        /// 后者是工业无线诊断的主线。
+        ConfigString events_bpf_obj{"build/bt_events.bpf.o"};
     } bluetooth;
 
     // ---------- eBPF 监控线程 ----------

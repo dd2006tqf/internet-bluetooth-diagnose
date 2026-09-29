@@ -50,6 +50,7 @@ class TcpConnectMonitor;    // 前置声明：TCP 建连可观测性（eBPF）
 class ActiveConnectivityMonitor; // 前置声明：受控主动连通性探测
 class SkbDropMonitor;       // 前置声明：Socket 丢包归因监控（eBPF）
 class DatabaseManager;      // 前置声明：SQLite 历史数据持久化
+class WirelessEventStore;   // 前置声明：规范化无线设备事件存储（Phase 1）
 class ConfigTransaction;    // 前置声明：配置事务状态机（weaknet_config.hpp 中定义）
 
 /**
@@ -119,6 +120,12 @@ struct ServerContext {
     // ---------- 历史数据持久化 ----------
     std::unique_ptr<DatabaseManager> db_mgr;   ///< SQLite 管理器，持有数据库连接
 
+    // ---------- 无线设备事件（Phase 1: Canonical Device Event）----------
+    // 事件由 bt_events 插件的 eBPF ringbuf 采集，经 BtEventNormalizer 归一化后
+    // 写入 WirelessEventStore。store 依赖 db_mgr，因此**必须在 db_mgr 之后构造**。
+    // 裸指针供查询/其它消费者使用；store 由 key_bt_events 插件拥有。
+    WirelessEventStore* wireless_event_store = nullptr;
+
     // ---------- 边缘遥测上报 ----------
     std::unique_ptr<weaknet::EdgeTelemetryExporter> edge_exporter;
 
@@ -146,6 +153,7 @@ struct ServerContext {
     std::atomic<bool> tcp_retrans_stop{false};
     std::atomic<bool> tcp_conn_stop{false};
     std::atomic<bool> tcp_connect_stop{false};
+    std::atomic<bool> bt_events_stop{false};
     std::atomic<bool> active_probe_stop{false};
 
     // ---------- 频段冲突检测快照 ----------

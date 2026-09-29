@@ -230,6 +230,44 @@ bool DatabaseManager::ensureSchema() {
         );
         CREATE INDEX IF NOT EXISTS idx_bt_history_ts ON bt_history(ts);
         CREATE INDEX IF NOT EXISTS idx_bt_history_dev ON bt_history(device_mac);
+
+        -- device_events: 规范化无线设备事件（Phase 1: Bluetooth Device Event）
+        --
+        -- 与 bt_history 的语义区别：bt_history 是"周期采样快照"（每 N 秒一行，
+        -- 描述设备当时的状态），本表是"事件"（只在发生断连/发现/劣化时写一行）。
+        -- 两者并存，互不替代。
+        --
+        -- 列设计要点：
+        --   site_id / gateway_id  事件来源身份（"这个事件是哪台探针看到的"），
+        --                         Phase 1 为常量，但必须现在就进 schema——
+        --                         否则多网关出现后无法回答历史事件归属。
+        --   rssi_at_event_dbm     NULL 表示未采集，**不是 0**。0 会污染后续 RSSI 统计。
+        --   raw_reason_code       内核原始 HCI reason，无损保存
+        --   reason                归一化解释；与 raw_reason_code 同时保存，
+        --                         前者不因后者而丢弃（Other 不能成为信息黑洞）
+        --   suspected_cause       推断原因。Phase 1 恒为 NULL——采集层不做诊断。
+        --   details_json          仅存审计性证据（raw_evidence 数组）
+        CREATE TABLE IF NOT EXISTS device_events (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id           TEXT    UNIQUE,
+            ts                 INTEGER NOT NULL,
+            site_id            TEXT    DEFAULT '',
+            gateway_id         TEXT    DEFAULT '',
+            protocol           TEXT    DEFAULT 'BLUETOOTH',
+            device_address     TEXT    NOT NULL,
+            address_type       TEXT    DEFAULT 'UNKNOWN',
+            hci_index          INTEGER DEFAULT 0,
+            event_type         TEXT    NOT NULL,
+            rssi_at_event_dbm  INTEGER DEFAULT NULL,
+            raw_reason_code    INTEGER DEFAULT 0,
+            reason             TEXT    DEFAULT 'UNKNOWN',
+            source             TEXT    DEFAULT 'UNKNOWN',
+            source_detail      TEXT    DEFAULT '',
+            suspected_cause    TEXT    DEFAULT NULL,
+            details_json       TEXT    DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_events_ts ON device_events(ts);
+        CREATE INDEX IF NOT EXISTS idx_device_events_dev ON device_events(device_address);
     )";
     if (!exec(schema)) return false;
 
@@ -641,6 +679,19 @@ int DatabaseManager::cleanup(int retention_days) {
         sqlite3_free(bt_err);
     }
 
+    // 同时清理过期的无线设备事件。
+    // 注意：device_events.ts 是 Unix 毫秒整数，与上面两张表的 ISO 文本不同，
+    // 因此不能用 datetime('now', ...) 直接比较，改用 strftime('%s') 转秒再乘 1000。
+    std::ostringstream ev_sql;
+    ev_sql << "DELETE FROM device_events WHERE ts < "
+           << "(CAST(strftime('%s','now') AS INTEGER) - "
+           << retention_days << " * 86400) * 1000";
+    char* ev_err = nullptr;
+    sqlite3_exec(db_, ev_sql.str().c_str(), nullptr, nullptr, &ev_err);
+    if (ev_err) {
+        sqlite3_free(ev_err);
+    }
+
     return deleted;
 }
 
@@ -779,6 +830,181 @@ std::string DatabaseManager::queryBtHistory(const std::string& device_mac,
              << "\"suspected_stall\":" << (suspectedStall ? "true" : "false") << ","
              << "\"bytes_per_sec\":" << bytesPerSec << ","
              << "\"max_gap_ms\":" << maxGapMs
+             << "}";
+    }
+
+    sqlite3_finalize(stmt);
+    json << "]";
+    return json.str();
+}
+
+bool DatabaseManager::insertDeviceEvent(const std::string& event_id,
+                                        int64_t ts_ms,
+                                        const std::string& site_id,
+                                        const std::string& gateway_id,
+                                        const std::string& protocol,
+                                        const std::string& device_address,
+                                        const std::string& address_type,
+                                        uint32_t hci_index,
+                                        const std::string& event_type,
+                                        const std::optional<int>& rssi_dbm,
+                                        uint8_t raw_reason_code,
+                                        const std::string& reason,
+                                        const std::string& source,
+                                        const std::string& source_detail,
+                                        const std::optional<std::string>& suspected_cause,
+                                        const std::string& details_json) {
+    if (!db_) return false;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    const char* sql = R"(
+        INSERT OR IGNORE INTO device_events (
+            event_id, ts, site_id, gateway_id, protocol,
+            device_address, address_type, hci_index, event_type,
+            rssi_at_event_dbm, raw_reason_code, reason,
+            source, source_detail, suspected_cause, details_json
+        ) VALUES (
+            ?, ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?,
+            ?, ?, ?, ?
+        );
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::insertDeviceEvent prepare failed: " << sqlite3_errmsg(db_));
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, event_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, ts_ms);
+    sqlite3_bind_text(stmt, 3, site_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, gateway_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, protocol.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, device_address.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, address_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 8, static_cast<int>(hci_index));
+    sqlite3_bind_text(stmt, 9, event_type.c_str(), -1, SQLITE_TRANSIENT);
+
+    // NULL 语义：未采集的 RSSI 写 NULL，不写 0 —— 0 会被后续统计当成真实读数
+    if (rssi_dbm.has_value()) {
+        sqlite3_bind_int(stmt, 10, *rssi_dbm);
+    } else {
+        sqlite3_bind_null(stmt, 10);
+    }
+
+    sqlite3_bind_int(stmt, 11, static_cast<int>(raw_reason_code));
+    sqlite3_bind_text(stmt, 12, reason.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 13, source.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 14, source_detail.c_str(), -1, SQLITE_TRANSIENT);
+
+    // suspected_cause 同为 NULL 语义（Phase 1 恒为空）
+    if (suspected_cause.has_value()) {
+        sqlite3_bind_text(stmt, 15, suspected_cause->c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 15);
+    }
+
+    sqlite3_bind_text(stmt, 16, details_json.c_str(), -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::insertDeviceEvent step failed: " << sqlite3_errmsg(db_));
+        return false;
+    }
+    return true;
+}
+
+std::string DatabaseManager::queryDeviceEvents(const std::string& device_address,
+                                               int64_t start_ms,
+                                               int64_t end_ms,
+                                               int limit) {
+    if (!db_) return "[]";
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    std::ostringstream sql;
+    sql << "SELECT event_id, ts, site_id, gateway_id, protocol, device_address, "
+        << "address_type, hci_index, event_type, rssi_at_event_dbm, raw_reason_code, "
+        << "reason, source, source_detail, suspected_cause, details_json "
+        << "FROM device_events WHERE 1=1";
+
+    if (!device_address.empty()) {
+        sql << " AND device_address = ?";
+    }
+    if (start_ms > 0) {
+        sql << " AND ts >= ?";
+    }
+    if (end_ms > 0) {
+        sql << " AND ts <= ?";
+    }
+    sql << " ORDER BY ts DESC LIMIT ?";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql.str().c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::queryDeviceEvents prepare failed: " << sqlite3_errmsg(db_));
+        return "[]";
+    }
+
+    int bindIdx = 1;
+    if (!device_address.empty()) {
+        sqlite3_bind_text(stmt, bindIdx++, device_address.c_str(), -1, SQLITE_STATIC);
+    }
+    if (start_ms > 0) {
+        sqlite3_bind_int64(stmt, bindIdx++, start_ms);
+    }
+    if (end_ms > 0) {
+        sqlite3_bind_int64(stmt, bindIdx++, end_ms);
+    }
+    sqlite3_bind_int(stmt, bindIdx++, limit > 0 ? limit : 100);
+
+    std::ostringstream json;
+    json << "[";
+    bool first = true;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (!first) json << ",";
+        first = false;
+
+        auto textOrEmpty = [&](int col) -> std::string {
+            const char* v = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
+            return v ? v : "";
+        };
+
+        json << "{"
+             << "\"event_id\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(0)) << "\","
+             << "\"ts\":" << sqlite3_column_int64(stmt, 1) << ","
+             << "\"site_id\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(2)) << "\","
+             << "\"gateway_id\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(3)) << "\","
+             << "\"protocol\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(4)) << "\","
+             << "\"device_address\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(5)) << "\","
+             << "\"address_type\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(6)) << "\","
+             << "\"hci_index\":" << sqlite3_column_int(stmt, 7) << ","
+             << "\"event_type\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(8)) << "\","
+             << "\"rssi_at_event_dbm\":";
+        // 回读时同样保持 NULL 语义：未采集输出 null 而不是 0
+        if (sqlite3_column_type(stmt, 9) == SQLITE_NULL) {
+            json << "null";
+        } else {
+            json << sqlite3_column_int(stmt, 9);
+        }
+        json << ",\"raw_reason_code\":" << sqlite3_column_int(stmt, 10) << ","
+             << "\"reason\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(11)) << "\","
+             << "\"source\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(12)) << "\","
+             << "\"source_detail\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(13)) << "\","
+             << "\"suspected_cause\":";
+        if (sqlite3_column_type(stmt, 14) == SQLITE_NULL) {
+            json << "null";
+        } else {
+            json << "\"" << weaknet_utils::escapeJsonString(textOrEmpty(14)) << "\"";
+        }
+        json << ",\"details\":" << (textOrEmpty(15).empty() ? "{}" : textOrEmpty(15))
              << "}";
     }
 

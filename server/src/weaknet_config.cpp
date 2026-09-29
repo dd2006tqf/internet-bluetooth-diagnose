@@ -251,6 +251,7 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "enabled") return setBoolField(cfg->bluetooth.enabled, val, error);
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->bluetooth.interval_ms, val, error);
         if (field == "bpf_obj") { cfg->bluetooth.bpf_obj.set(trim(val)); return true; }
+        if (field == "events_bpf_obj") { cfg->bluetooth.events_bpf_obj.set(trim(val)); return true; }
         if (isMapSizingField(field)) return setMapSizingField(cfg->bluetooth.map_sizing, field, val, mon, error);
         *error = "bluetooth: unknown field '" + field + "'";
         return false;
@@ -545,6 +546,11 @@ bool getMonitorEnabled(const WeakNetConfig& cfg, const std::string& monitor, boo
     else if (monitor == "traffic") *enabled = cfg.traffic.enabled.load();
     else if (monitor == "quality") *enabled = cfg.quality.enabled.load();
     else if (monitor == "bluetooth") *enabled = cfg.bluetooth.enabled.load();
+    // bt_events 与 bluetooth 同属蓝牙数据域、共用一个 enabled 开关，
+    // 但它们是两个独立插件：bluetooth 走 BlueZ D-Bus 采集状态，
+    // bt_events 走内核 eBPF 采集断连事件。MonitorManager::startConfigured()
+    // 对本表查不到的名字会直接判 Failed，因此这里必须登记。
+    else if (monitor == "bt_events") *enabled = cfg.bluetooth.enabled.load();
     else if (monitor == "dns") *enabled = cfg.dns.enabled.load();
     else if (monitor == "tcp_connect") *enabled = cfg.tcp_connect.enabled.load();
     else if (monitor == "active_probe") *enabled = cfg.active_probe.enabled.load();
@@ -567,6 +573,7 @@ bool setMonitorEnabled(WeakNetConfig* cfg, const std::string& monitor, bool enab
     else if (monitor == "traffic") cfg->traffic.enabled.store(enabled);
     else if (monitor == "quality") cfg->quality.enabled.store(enabled);
     else if (monitor == "bluetooth") cfg->bluetooth.enabled.store(enabled);
+    else if (monitor == "bt_events") cfg->bluetooth.enabled.store(enabled);
     else if (monitor == "dns") cfg->dns.enabled.store(enabled);
     else if (monitor == "tcp_connect") cfg->tcp_connect.enabled.store(enabled);
     else if (monitor == "active_probe") cfg->active_probe.enabled.store(enabled);
@@ -623,6 +630,7 @@ static bool applyMonitorParam(WeakNetConfig* cfg, const std::string& key,
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 60000)) { if (error) *error = "bluetooth.interval: must be 1000ms~60000ms"; return false; } cfg->bluetooth.interval_ms.store(ms); return true; }
         if (isMapSizingField(field)) return setMapSizingField(cfg->bluetooth.map_sizing, field, value, "bluetooth", error);
         if (field == "bpf_obj") { cfg->bluetooth.bpf_obj.set(trim(value)); return true; }
+        if (field == "events_bpf_obj") { cfg->bluetooth.events_bpf_obj.set(trim(value)); return true; }
     }
     if (mon == "dns") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "dns.enabled: invalid bool"; return false; } cfg->dns.enabled.store(b); return true; }
@@ -1124,6 +1132,7 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeBool("enabled", cfg.bluetooth.enabled.load());
         writeUint("interval_ms", cfg.bluetooth.interval_ms.load());
         writeString("bpf_obj", cfg.bluetooth.bpf_obj.get());
+        writeString("events_bpf_obj", cfg.bluetooth.events_bpf_obj.get());
         writeString("map_sizing_mode", cfg.bluetooth.map_sizing.mode.get());
         writeUint("map_sizing_entries", cfg.bluetooth.map_sizing.entries.load());
         writeUint("map_sizing_ram_budget_bp", cfg.bluetooth.map_sizing.ram_budget_bp.load());

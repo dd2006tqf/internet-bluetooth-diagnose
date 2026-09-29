@@ -20,6 +20,7 @@
 #include <string>
 #include <mutex>
 #include <cstdint>
+#include <optional>
 
 struct sqlite3;  ///< 前置声明 SQLite 句柄类型
 
@@ -116,6 +117,64 @@ public:
                                const std::string& start,
                                const std::string& end,
                                int limit = 100);
+
+    /**
+     * @brief 写入一条规范化无线设备事件
+     *
+     * 由 WirelessEventStore 调用。与 insertBtSnapshot 的语义区别：
+     * 后者写的是"周期采样快照"，本方法写的是"事件"（只在断连/发现/劣化时发生）。
+     *
+     * 关于 NULL 语义：rssi_dbm 用 optional 表达"未采集"，写库为 SQL NULL；
+     * 用 0 冒充未采集会污染后续 RSSI 统计。suspected_cause 同理（Phase 1 恒为空）。
+     *
+     * @param event_id       全局唯一事件 ID
+     * @param ts_ms          事件时刻（Unix 毫秒）
+     * @param site_id        现场身份（事件来源）
+     * @param gateway_id     网关身份（事件来源）
+     * @param protocol       协议族字符串（如 "BLUETOOTH"）
+     * @param device_address 设备地址
+     * @param address_type   地址类型字符串（如 "LE_PUBLIC"）
+     * @param hci_index      HCI 适配器序号
+     * @param event_type     事件类型字符串（如 "LINK_DISCONNECTED"）
+     * @param rssi_dbm       事件时刻 RSSI；nullopt 表示未采集（写 NULL）
+     * @param raw_reason_code 内核原始 HCI reason（无损保存）
+     * @param reason         归一化原因字符串
+     * @param source         证据来源字符串
+     * @param source_detail  精确 hook 名
+     * @param suspected_cause 推断原因；nullopt 写 NULL
+     * @param details_json   审计性证据（raw_evidence 数组）
+     * @return true 写入成功
+     */
+    bool insertDeviceEvent(const std::string& event_id,
+                           int64_t ts_ms,
+                           const std::string& site_id,
+                           const std::string& gateway_id,
+                           const std::string& protocol,
+                           const std::string& device_address,
+                           const std::string& address_type,
+                           uint32_t hci_index,
+                           const std::string& event_type,
+                           const std::optional<int>& rssi_dbm,
+                           uint8_t raw_reason_code,
+                           const std::string& reason,
+                           const std::string& source,
+                           const std::string& source_detail,
+                           const std::optional<std::string>& suspected_cause,
+                           const std::string& details_json);
+
+    /**
+     * @brief 查询规范化无线设备事件，返回 JSON 数组字符串
+     *
+     * @param device_address 设备地址过滤，"" 表示所有设备
+     * @param start_ms       起始时间（Unix 毫秒），0 表示不限
+     * @param end_ms         结束时间（Unix 毫秒），0 表示不限
+     * @param limit          最大行数
+     * @return JSON 数组字符串（失败时返回 "[]"）
+     */
+    std::string queryDeviceEvents(const std::string& device_address,
+                                  int64_t start_ms,
+                                  int64_t end_ms,
+                                  int limit = 100);
 
     /**
      * @brief 清理过期快照

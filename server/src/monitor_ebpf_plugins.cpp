@@ -13,6 +13,7 @@
 
 #include "monitor_registry.hpp"
 #include <thread>
+#include <unistd.h>   // gethostname（bt_events 插件的 gateway_id 兜底）
 #include "logger.hpp"
 
 #include "server.hpp"
@@ -24,6 +25,8 @@
 #include "tcp_conn_monitor.hpp"
 #include "skb_drop_monitor.hpp"
 #include "tcp_connect_monitor.hpp"
+#include "bt_event_monitor.hpp"
+#include "wireless_event_store.hpp"
 #include "utils/bpf_map_sizing.hpp"
 
 namespace weaknet_dbus {
@@ -346,6 +349,90 @@ public:
     }
 };
 
+// ---------------------------------------------------------------------------
+// 蓝牙设备事件采集（order 10，依赖 bluetooth 插件先启动以拿到 adapter 上下文，
+// 但本身不直接依赖它——eBPF 挂内核符号，与 BlueZ D-Bus 状态互相独立）
+//
+// 所有权：本插件同时拥有 WirelessEventStore 与 BtEventMonitor。
+// ServerContext 只保留 store 的裸指针供查询；stop() 时一并清理。
+//
+// 与 BluetoothPlugin（monitor_plugins.cpp）的职责切分：
+//   BluetoothPlugin  = BlueZ D-Bus 状态采集（设备列表/RSSI/连接态）
+//   BtEventsPlugin   = 内核 eBPF 事件采集（断连原因 + 归一化事件）
+// 两条链路共享 BT 数据域但互不调用，避免一边故障拖垮另一边。
+// ---------------------------------------------------------------------------
+class BtEventsPlugin : public IMonitorPlugin {
+    ServerContext* ctx_ = nullptr;
+    std::unique_ptr<WirelessEventStore> store_;
+    std::unique_ptr<BtEventMonitor> monitor_;
+public:
+    const char* name() const override { return "bt_events"; }
+    int order() const override { return 10; }
+    bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
+    bool start(ServerContext* ctx) override {
+        if (!ctx->cfg.bluetooth.enabled.load()) {
+            LOG_INFO(LogModule::BLUETOOTH, "bt_events plugin disabled by config (bluetooth.enabled=false)");
+            return true;
+        }
+        if (!ctx->db_mgr) {
+            LOG_WARNING(LogModule::BLUETOOTH,
+                        "BtEventsPlugin: db_mgr not ready — event store unavailable");
+            return true;
+        }
+
+        // 事件来源身份：gateway_id 对齐 edge.device_id（云端资产主键），
+        // 为空时回落到 hostname，保证每条事件都能回答"是哪台探针看到的"。
+        // Phase 1 运行模型是 1 Gateway = 1 Site，因此 site 直接取 gateway。
+        WirelessEventStoreConfig store_cfg;
+        store_cfg.gateway_id = ctx->cfg.edge.device_id.get();
+        if (store_cfg.gateway_id.empty()) {
+            char hostname[256] = {0};
+            if (gethostname(hostname, sizeof(hostname) - 1) == 0) {
+                store_cfg.gateway_id = hostname;
+            }
+        }
+        store_cfg.site_id = store_cfg.gateway_id;
+
+        store_ = std::make_unique<WirelessEventStore>(ctx->db_mgr.get(), std::move(store_cfg));
+        ctx->wireless_event_store = store_.get();
+
+        monitor_ = std::make_unique<BtEventMonitor>(store_.get());
+        if (!monitor_->init(ctx->cfg.bluetooth.events_bpf_obj.get(),
+                            store_->config().gateway_id)) {
+            LOG_WARNING(LogModule::BLUETOOTH, "BtEventsPlugin: init failed for "
+                        << ctx->cfg.bluetooth.events_bpf_obj.get()
+                        << " — bluetooth disconnect reason capture disabled ("
+                        << monitor_->lastError() << ")");
+            // 不是致命错误：事件采集失败不影响其它监控器，
+            // 但 store 仍然有效（后续 Phase 2/3 的事件可从 D-Bus 路径进入）
+            monitor_.reset();
+            return true;
+        }
+        if (!monitor_->start()) {
+            LOG_WARNING(LogModule::BLUETOOTH, "BtEventsPlugin: start failed: "
+                        << monitor_->lastError());
+            monitor_.reset();
+            return true;
+        }
+
+        LOG_INFO(LogModule::BLUETOOTH, "BtEventMonitor running, attached hooks: "
+                 << monitor_->attachedHooksSummary());
+        return true;
+    }
+    void stop() override {
+        if (monitor_) {
+            monitor_->stop();
+            monitor_.reset();
+        }
+        if (ctx_) {
+            if (ctx_->wireless_event_store == store_.get()) {
+                ctx_->wireless_event_store = nullptr;
+            }
+        }
+        store_.reset();
+    }
+};
+
 void registerEbpfPlugins() {
     registerPlugin("dns",             [] { return std::make_unique<DnsPlugin>(); });
     registerPlugin("wifi_loss",       [] { return std::make_unique<WifiLossPlugin>(); });
@@ -355,6 +442,7 @@ void registerEbpfPlugins() {
     registerPlugin("tcp_conn",        [] { return std::make_unique<TcpConnPlugin>(); });
     registerPlugin("skb_drop",        [] { return std::make_unique<SkbDropPlugin>(); });
     registerPlugin("tcp_connect",     [] { return std::make_unique<TcpConnectPlugin>(); });
+    registerPlugin("bt_events",       [] { return std::make_unique<BtEventsPlugin>(); });
 }
 
 }  // namespace weaknet_dbus

@@ -40,6 +40,7 @@ monitors:
     enabled: true
     interval_ms: 3000
     bpf_obj: build/a2dp_media.bpf.o
+    events_bpf_obj: build/bt_events.bpf.o   # Phase 1 设备事件采集（ringbuf，断连原因）
     map_sizing_mode: auto          # auto | fixed
     map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
 
