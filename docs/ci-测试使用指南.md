@@ -39,7 +39,7 @@
 只在本地容器内编译并打包 `dist-arm64/`，不部署到开发板。
 
 > 注意：`ci.sh` **不在本地跑单元测试**。本地跑单测请直接用
-> `ctest --test-dir build-x86/server`（x86，39 个套件）或容器内
+> `ctest --test-dir build-x86/server`（x86，43 个套件）或容器内
 > `ctest --test-dir build-arm64/server`。
 
 ### 完整参数列表
@@ -91,7 +91,7 @@ ci-reports/
 
 ## 测试覆盖
 
-### 单元测试（39 个套件，约 386 个用例）
+### 单元测试（43 个套件，约 447 个用例）
 
 跑法：`ctest --test-dir build-x86/server --output-on-failure`
 
