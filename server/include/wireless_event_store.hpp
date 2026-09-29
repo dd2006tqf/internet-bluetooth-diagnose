@@ -91,13 +91,18 @@ public:
     /**
      * @brief 从持久化层查询事件（走 DatabaseManager，返回 JSON 数组）
      *
+     * 事件查询的系统出口：D-Bus QueryDeviceEvents 与 history_query_tool
+     * --events 都经由此处，调用方不应绕过它直接拼 SQL。
+     *
      * @param device_address 设备地址过滤，"" 表示所有设备
+     * @param event_type     事件类型过滤（如 "LINK_DISCONNECTED"），"" 表示所有类型
      * @param start_ms       起始时间（Unix 毫秒），0 表示不限
      * @param end_ms         结束时间（Unix 毫秒），0 表示不限
      * @param limit          最大条数
      * @return JSON 数组字符串；db 为空时返回 "[]"
      */
     std::string queryPersisted(const std::string& device_address,
+                               const std::string& event_type,
                                int64_t start_ms,
                                int64_t end_ms,
                                int limit = 100) const;

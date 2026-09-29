@@ -486,7 +486,7 @@ TEST(WirelessEventStoreTest, StoreBackfillsIdentityWhenEventOmitsIt) {
 
 TEST(WirelessEventStoreTest, QueryPersistedReturnsEmptyArrayWithoutDatabase) {
     WirelessEventStore store(nullptr);
-    EXPECT_EQ(store.queryPersisted("", 0, 0, 10), "[]");
+    EXPECT_EQ(store.queryPersisted("", "", 0, 0, 10), "[]");
 }
 
 // ============================================================================
@@ -618,7 +618,7 @@ TEST_F(WirelessEventStoreDbTest, NullRssiAndSuspectedCausePersistAsNull) {
     ASSERT_TRUE(store.recordEvent(ev));
     EXPECT_EQ(store.persistFailures(), 0u);
 
-    const std::string json = store.queryPersisted("AA:BB:CC:DD:EE:FF", 0, 0, 10);
+    const std::string json = store.queryPersisted("AA:BB:CC:DD:EE:FF", "", 0, 0, 10);
     EXPECT_NE(json.find("\"event_id\":\"ev-null-test\""), std::string::npos) << json;
     EXPECT_NE(json.find("\"rssi_at_event_dbm\":null"), std::string::npos)
         << "未采集的 RSSI 落库再读回仍是 null；输出: " << json;
@@ -643,7 +643,7 @@ TEST_F(WirelessEventStoreDbTest, DuplicateEventIdIsIgnoredNotDuplicated) {
     store.recordEvent(ev);
     store.recordEvent(ev);  // 同 event_id 重复写入
 
-    const std::string json = store.queryPersisted("AA:BB:CC:DD:EE:01", 0, 0, 10);
+    const std::string json = store.queryPersisted("AA:BB:CC:DD:EE:01", "", 0, 0, 10);
     // event_id 唯一约束保证不会出现两行
     size_t occurrences = 0;
     size_t pos = 0;
@@ -652,6 +652,43 @@ TEST_F(WirelessEventStoreDbTest, DuplicateEventIdIsIgnoredNotDuplicated) {
         pos += 8;
     }
     EXPECT_EQ(occurrences, 1u) << "同一 event_id 只能落一行；输出: " << json;
+}
+
+TEST_F(WirelessEventStoreDbTest, EventTypeFilterWorks) {
+    // 事件类型过滤是 QueryDeviceEvents / history_query_tool --events 的核心过滤条件：
+    // 运维要能只看 LINK_DISCONNECTED，不被 DEVICE_APPEARED 等稀释
+    WirelessEventStore store(db_.get());
+
+    auto makeEvent = [&](const std::string& id, const std::string& type) {
+        WirelessDeviceEvent ev;
+        ev.event_id = id;
+        ev.timestamp_ms = 1759142400000ULL;
+        ev.gateway_id = "gw-1";
+        ev.device_address = "AA:BB:CC:DD:EE:03";
+        ev.event_type = deviceEventTypeFromString(type, DeviceEventType::DeviceLost);
+        return ev;
+    };
+
+    store.recordEvent(makeEvent("ev-disc", "LINK_DISCONNECTED"));
+    store.recordEvent(makeEvent("ev-appr", "DEVICE_APPEARED"));
+
+    const std::string all = store.queryPersisted("AA:BB:CC:DD:EE:03", "", 0, 0, 10);
+    EXPECT_NE(all.find("ev-disc"), std::string::npos);
+    EXPECT_NE(all.find("ev-appr"), std::string::npos);
+
+    const std::string disc = store.queryPersisted("AA:BB:CC:DD:EE:03",
+                                                  "LINK_DISCONNECTED", 0, 0, 10);
+    EXPECT_NE(disc.find("ev-disc"), std::string::npos) << disc;
+    EXPECT_EQ(disc.find("ev-appr"), std::string::npos)
+        << "类型过滤必须排除非匹配事件；输出: " << disc;
+
+    // 组合过滤：类型 + 时间窗都生效
+    // 组合过滤：类型 + 时间窗都生效（窗口必须覆盖事件时间戳，否则两个条件
+    // 里有一个不匹配时会把"过滤生效"与"窗口拦住"混淆，测不出独立语义）
+    const std::string combo = store.queryPersisted(
+        "AA:BB:CC:DD:EE:03", "DEVICE_APPEARED",
+        1759142399999LL, 1759142400001LL, 10);
+    EXPECT_NE(combo.find("ev-appr"), std::string::npos);
 }
 
 TEST_F(WirelessEventStoreDbTest, TimeRangeFilterWorks) {
@@ -671,7 +708,7 @@ TEST_F(WirelessEventStoreDbTest, TimeRangeFilterWorks) {
     store.recordEvent(makeEvent("ev-t2", 2000000));
     store.recordEvent(makeEvent("ev-t3", 3000000));
 
-    const std::string json = store.queryPersisted("", 1500000, 2500000, 10);
+    const std::string json = store.queryPersisted("", "", 1500000, 2500000, 10);
     EXPECT_NE(json.find("ev-t2"), std::string::npos) << json;
     EXPECT_EQ(json.find("ev-t1"), std::string::npos) << "早于起始时间的事件不应返回";
     EXPECT_EQ(json.find("ev-t3"), std::string::npos) << "晚于结束时间的事件不应返回";

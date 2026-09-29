@@ -47,6 +47,7 @@ static constexpr const char kMethodGetProcessProfiling[]    = "GetProcessProfili
 static constexpr const char kMethodGetSkbDropStats[]        = "GetSkbDropStats";    ///< 查询 Socket/skb 丢包原因精确归因统计（JSON）
 static constexpr const char kMethodGetEbpfMonitorHealth[]   = "GetEbpfMonitorHealth";///< 查询所有 eBPF 监控器健康状态（是否成功加载）
 static constexpr const char kMethodGetHistory[]              = "GetHistory";         ///< 查询 SQLite 历史快照（支持时间范围和网卡过滤）
+static constexpr const char kMethodQueryDeviceEvents[]      = "QueryDeviceEvents";  ///< 查询规范化无线设备事件（时间范围/设备/类型过滤）
 static constexpr const char kMethodSetMonitorParam[]         = "SetMonitorParam";   ///< 运行时设置监控器参数（白名单校验+原子提交）
 static constexpr const char kMethodGetMonitorParam[]         = "GetMonitorParam";   ///< 查询监控器当前参数（JSON 格式）
 static constexpr const char kMethodListMonitors[]             = "ListMonitors";

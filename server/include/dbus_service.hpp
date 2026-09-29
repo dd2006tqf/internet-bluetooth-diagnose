@@ -119,6 +119,7 @@ public:
     bool handleGetBluetoothDevices(DBusConnection* conn, DBusMessage* msg);   ///< GetBluetoothDevices: 返回设备列表
     bool handleGetBluetoothAdapter(DBusConnection* conn, DBusMessage* msg);   ///< GetBluetoothAdapter: 返回适配器状态
     bool handleGetBluetoothAudioQuality(DBusConnection* conn, DBusMessage* msg); ///< GetBluetoothAudioQuality: 返回指定设备音频质量与 eBPF 融合诊断 JSON
+    bool handleQueryDeviceEvents(DBusConnection* conn, DBusMessage* msg);     ///< QueryDeviceEvents: 查询规范化无线设备事件（只读）
     bool handleGetCoexistenceConflict(DBusConnection* conn, DBusMessage* msg);
     bool handleGetNetworkExperience(DBusConnection* conn, DBusMessage* msg);          ///< GetNetworkExperience: 返回 schema v2 权威评估快照（只读，不重新 evaluate）   ///< GetCoexistenceConflict: 返回 Wi-Fi 与蓝牙 2.4GHz 冲突诊断 JSON
 

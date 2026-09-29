@@ -93,13 +93,14 @@ uint64_t WirelessEventStore::persistFailures() const {
 }
 
 std::string WirelessEventStore::queryPersisted(const std::string& device_address,
+                                               const std::string& event_type,
                                                int64_t start_ms,
                                                int64_t end_ms,
                                                int limit) const {
     if (!db_) return "[]";
     // 刻意不持有本类 mutex_：DB 查询走 DatabaseManager 自己的锁，
     // 避免"store 锁 -> db 锁"的嵌套顺序造成潜在死锁。
-    return db_->queryDeviceEvents(device_address, start_ms, end_ms, limit);
+    return db_->queryDeviceEvents(device_address, event_type, start_ms, end_ms, limit);
 }
 
 void WirelessEventStore::clearMemory() {

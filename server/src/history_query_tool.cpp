@@ -5,6 +5,7 @@
  * 模块职责：
  *   - 独立可执行程序（与服务端分开编译），连接 DatabaseManager 指向的同一个数据库文件
  *   - 支持按接口名、相对时间（--last 1h/30m/7d）或绝对时间范围（--start/--end）查询
+ *   - --events：查询规范化无线设备事件（device_events 表，Unix 毫秒时间轴）
  *   - 输出模式：默认表格视图（人类可读）或 --json 原始 JSON（供脚本消费）
  *   - 内置 --info 显示数据库元信息，--cleanup N 天直接触发过期清理
  *
@@ -65,12 +66,31 @@ static std::string parseLastTime(const std::string& last) {
     return oss.str();
 }
 
+/// ISO8601（本地时间，与 parseLastTime 输出格式一致）→ Unix 毫秒
+/// 仅用于 --events 模式：device_events.ts 存毫秒整数，
+/// 而其余历史表存 ISO 文本，两条链路的时间格式不同
+static int64_t isoToEpochMs(const std::string& iso) {
+    if (iso.empty()) return 0;
+    std::tm tm_val{};
+    std::istringstream ss(iso);
+    ss >> std::get_time(&tm_val, "%Y-%m-%dT%H:%M:%S");
+    if (ss.fail()) {
+        std::cerr << "警告: 无法解析时间 '" << iso << "'（需 ISO8601，如 2026-09-30T10:00:00）\n";
+        return 0;
+    }
+    const time_t t = mktime(&tm_val);   // parseLastTime 用 localtime_r 生成，这里用 mktime 还原
+    return t > 0 ? static_cast<int64_t>(t) * 1000 : 0;
+}
+
 static void printUsage() {
     std::cout << "WeakNet 历史监控数据查询工具\n"
               << "\n"
               << "用法:\n"
               << "  --iface <name>       指定网卡 (默认: wlan0)\n"
               << "  --bt [MAC]           查询蓝牙历史时序 (可指定设备 MAC 地址)\n"
+              << "  --events             查询规范化无线设备事件 (Canonical Device Event)\n"
+              << "  --device <addr>      --events: 设备地址过滤 (XX:XX:XX:XX:XX:XX)\n"
+              << "  --type <EVENT_TYPE>  --events: 事件类型过滤 (如 LINK_DISCONNECTED)\n"
               << "  --last <duration>    查询最近时间 (1h/30m/7d)\n"
               << "  --start <timestamp>  起始时间 (ISO 8601)\n"
               << "  --end <timestamp>    结束时间 (ISO 8601)\n"
@@ -85,6 +105,8 @@ static void printUsage() {
               << "  ./history_query_tool --iface wlan0 --last 1h\n"
               << "  ./history_query_tool --bt --last 1h\n"
               << "  ./history_query_tool --bt AA:BB:CC:DD:EE:FF\n"
+              << "  ./history_query_tool --events --last 24h\n"
+              << "  ./history_query_tool --events --type LINK_DISCONNECTED --limit 20 --json\n"
               << "  ./history_query_tool --all --last 30m\n"
               << "  ./history_query_tool --info\n"
               << "  ./history_query_tool --cleanup 7\n";
@@ -94,6 +116,8 @@ int main(int argc, char* argv[]) {
     std::string iface = "wlan0";
     std::string bt_mac;
     bool query_bt = false;
+    bool query_events = false;
+    std::string event_device, event_type;
     std::string start_time, end_time, last;
     int limit = 100;
     bool show_info = false;
@@ -104,6 +128,12 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--iface") == 0 && i + 1 < argc) {
             iface = argv[++i];
+        } else if (strcmp(argv[i], "--events") == 0) {
+            query_events = true;
+        } else if (strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
+            event_device = argv[++i];
+        } else if (strcmp(argv[i], "--type") == 0 && i + 1 < argc) {
+            event_type = argv[++i];
         } else if (strcmp(argv[i], "--bt") == 0) {
             query_bt = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') {
@@ -165,6 +195,23 @@ int main(int argc, char* argv[]) {
     // 解析 --last 参数
     if (!last.empty() && start_time.empty()) {
         start_time = parseLastTime(last);
+    }
+
+    if (query_events) {
+        const int64_t start_ms = isoToEpochMs(start_time);
+        const int64_t end_ms = isoToEpochMs(end_time);
+        std::string result = db.queryDeviceEvents(event_device, event_type,
+                                                  start_ms, end_ms, limit);
+        if (json_output) {
+            std::cout << result << "\n";
+            return 0;
+        }
+        if (result == "[]" || result.empty()) {
+            std::cout << "没有查询到设备事件\n";
+            return 0;
+        }
+        std::cout << "设备事件 (JSON):\n" << result << "\n";
+        return 0;
     }
 
     if (query_bt) {

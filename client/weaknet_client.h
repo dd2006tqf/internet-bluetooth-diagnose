@@ -688,6 +688,38 @@ bool weaknet_save_monitor_overrides(char* buffer, size_t buffer_size,
 /* ============================== 历史数据 API ============================== */
 
 /**
+ * @brief 查询规范化无线设备事件（Canonical Device Event，只读）
+ *
+ * 通过 D-Bus 调用 QueryDeviceEvents 方法，从事件存储查询断连等
+ * 无线设备事件。事件字段含 event_id / site_id / gateway_id / 设备与
+ * 地址类型 / event_type / reason 与 raw_reason / source 与证据 / rssi（可为 null）。
+ *
+ * D-Bus 调用：
+ *   - Method: QueryDeviceEvents
+ *   - Args: STRING device_address, STRING event_type,
+ *           INT64 start_ms, INT64 end_ms, INT32 limit
+ *   - Returns: STRING（JSON 数组）
+ *
+ * 全部过滤参数可传空/0 表示不限制；limit<=0 时服务端钳制为 1，
+ * 上限 10000（与 GetHistory 同一防护策略）。
+ *
+ * @param device_address 设备地址过滤（"" 表示所有设备）
+ * @param event_type     事件类型过滤（如 "LINK_DISCONNECTED"；"" 表示不限）
+ * @param start_ms       起始时间 Unix 毫秒（0 表示不限）
+ * @param end_ms         结束时间 Unix 毫秒（0 表示不限）
+ * @param limit          最大返回条数
+ * @param buffer         结果缓冲区（JSON 数组）
+ * @param buffer_size    缓冲区大小
+ * @param error_buffer   错误信息缓冲区
+ * @param error_size     错误缓冲区大小
+ * @return true 成功；false 调用失败（error_buffer 含原因）
+ */
+bool weaknet_query_device_events(const char* device_address, const char* event_type,
+                                 int64_t start_ms, int64_t end_ms, int32_t limit,
+                                 char* buffer, size_t buffer_size,
+                                 char* error_buffer, size_t error_size);
+
+/**
  * @brief 查询历史监控数据
  *
  * 通过 D-Bus 调用 GetHistory 方法，服务端从 SQLite 数据库中

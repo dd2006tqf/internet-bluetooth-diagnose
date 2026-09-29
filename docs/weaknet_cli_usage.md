@@ -14,6 +14,7 @@
 - 🔍 **查询**：实时获取任意监控器的完整参数（JSON 格式）
 - ⚙️ **设置**：实时修改监控器参数（白名单校验、区间校验、原子提交）
 - 📋 **列举**：列出所有可配置的监控器名称
+- 📡 **事件查询**：查询已持久化的无线设备事件（断连等，只读）
 
 > **关键特性**：运行时修改**仅影响内存态**，重启服务后自动回落到 `/etc/weaknet/config.yaml` 的启动配置。这是设计使然——配置文件是“启动快照”，CLI 是“运行时覆盖”。
 
@@ -66,7 +67,17 @@ weaknet-cli <command> [arguments...]
   monitor disable <name> 停止监控器
   monitor restart <name> 重启监控器
   monitor save           保存运行时启停状态到 override 文件
+  events [过滤条件]       查询无线设备事件（Canonical Device Event，JSON）
 ```
+
+`events` 的过滤条件全部可选，省略即不限制：
+
+```
+  --device <addr>       设备地址过滤（XX:XX:XX:XX:XX:XX）
+  --type <EVENT_TYPE>   事件类型过滤（如 LINK_DISCONNECTED）
+  --start <ms>          起始时间（Unix 毫秒，0 表示不限）
+  --end <ms>            结束时间（Unix 毫秒，0 表示不限）
+  --limit <N>           最大条数（默认 100，服务端上限 10000）
 
 ### 3.2 `weaknet-cli monitor <command>`
 
@@ -126,7 +137,38 @@ all
 
 ---
 
-### 3.4 `weaknet-cli get <monitor>`
+### 3.4 `weaknet-cli events`
+
+查询规范化无线设备事件（Canonical Device Event），只读。这是一次真实断连
+在"设备事件 → 持久化"之后的**系统查询出口**——在此之前只能直连 SQLite。
+
+```bash
+# 最近 20 条断连事件
+$ weaknet-cli events --type LINK_DISCONNECTED --limit 20
+
+# 指定设备的全部事件
+$ weaknet-cli events --device AA:BB:CC:DD:EE:FF
+
+# 时间窗（Unix 毫秒）
+$ weaknet-cli events --start 1790700000000 --end 1790703600000
+```
+
+返回 JSON 数组，每条事件含：
+
+| 字段 | 说明 |
+| ---- | ---- |
+| `event_id` | 全局唯一事件 ID（`btev_<实例码>_<序号>`，跨服务重启不碰撞） |
+| `ts` | 事件时刻（Unix 毫秒） |
+| `site_id` / `gateway_id` | 事件来源身份（哪台探针看到的） |
+| `device_address` / `address_type` | 设备地址与地址类型（`BREDR`/`LE_PUBLIC`/`LE_RANDOM`） |
+| `event_type` | `LINK_DISCONNECTED` / `LINK_DEGRADED` / `DEVICE_APPEARED` … |
+| `reason` / `raw_reason_code` | 归一化原因 与 内核原始码（后者无损保留） |
+| `source` / `source_detail` | 证据来源类别与精确 hook 名 |
+| `suspected_cause` | **恒为 null**（采集层不做诊断，留给后续阶段） |
+| `rssi_at_event_dbm` | 可为 `null`（未采集；**不是 0**） |
+| `details.raw_evidence` | 支撑该事件的全部原始观测（可追溯性） |
+
+### 3.5 `weaknet-cli get <monitor>`
 
 查询指定监控器的完整当前参数（JSON 格式）。
 
@@ -159,7 +201,7 @@ $ weaknet-cli get all
 
 ---
 
-### 3.5 `weaknet-cli set <key> <value>`
+### 3.6 `weaknet-cli set <key> <value>`
 
 实时修改监控器参数。**立即生效**，无需重启服务。
 

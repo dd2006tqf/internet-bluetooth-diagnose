@@ -921,6 +921,7 @@ bool DatabaseManager::insertDeviceEvent(const std::string& event_id,
 }
 
 std::string DatabaseManager::queryDeviceEvents(const std::string& device_address,
+                                               const std::string& event_type,
                                                int64_t start_ms,
                                                int64_t end_ms,
                                                int limit) {
@@ -936,6 +937,9 @@ std::string DatabaseManager::queryDeviceEvents(const std::string& device_address
 
     if (!device_address.empty()) {
         sql << " AND device_address = ?";
+    }
+    if (!event_type.empty()) {
+        sql << " AND event_type = ?";
     }
     if (start_ms > 0) {
         sql << " AND ts >= ?";
@@ -955,6 +959,9 @@ std::string DatabaseManager::queryDeviceEvents(const std::string& device_address
     int bindIdx = 1;
     if (!device_address.empty()) {
         sqlite3_bind_text(stmt, bindIdx++, device_address.c_str(), -1, SQLITE_STATIC);
+    }
+    if (!event_type.empty()) {
+        sqlite3_bind_text(stmt, bindIdx++, event_type.c_str(), -1, SQLITE_STATIC);
     }
     if (start_ms > 0) {
         sqlite3_bind_int64(stmt, bindIdx++, start_ms);

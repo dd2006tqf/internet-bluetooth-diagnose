@@ -166,12 +166,14 @@ public:
      * @brief 查询规范化无线设备事件，返回 JSON 数组字符串
      *
      * @param device_address 设备地址过滤，"" 表示所有设备
+     * @param event_type     事件类型过滤（如 "LINK_DISCONNECTED"），"" 表示所有类型
      * @param start_ms       起始时间（Unix 毫秒），0 表示不限
      * @param end_ms         结束时间（Unix 毫秒），0 表示不限
      * @param limit          最大行数
      * @return JSON 数组字符串（失败时返回 "[]"）
      */
     std::string queryDeviceEvents(const std::string& device_address,
+                                  const std::string& event_type,
                                   int64_t start_ms,
                                   int64_t end_ms,
                                   int limit = 100);

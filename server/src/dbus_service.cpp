@@ -27,6 +27,9 @@
 #include <dbus/dbus.h>
 #include <cstdio>
 #include <cstring>
+#include <utility>
+
+#include "wireless_event_store.hpp"
 #include "logger.hpp"
 
 #include "common.hpp"
@@ -123,6 +126,10 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetBluetoothAudioQuality)) {
         self->handleGetBluetoothAudioQuality(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodQueryDeviceEvents)) {
+        self->handleQueryDeviceEvents(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetCoexistenceConflict)) {
@@ -1444,6 +1451,87 @@ bool DbusService::handleGetHistory(DBusConnection* conn, DBusMessage* msg) {
         result = ctx_->db_mgr->queryHistory(iface_filter, start_time, end_time, limit);
     } else {
         result = "{\"error\":\"database not available\"}";
+    }
+
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    DBusMessageIter reply_args;
+    dbus_message_iter_init_append(reply, &reply_args);
+    const char* s = result.c_str();
+    dbus_message_iter_append_basic(&reply_args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+// ============================================================================
+// 无线设备事件查询（Phase 1b，只读）
+//
+// 返回 Canonical Device Event 的 JSON 数组。语义与 GetHistory 一致：
+// 全部参数可选、按位置解析、缺省即不限制。事件是诊断数据的系统出口——
+// 此前只能直连 SQLite，任何组件/运维都绕不开数据库文件。
+// ============================================================================
+
+bool DbusService::handleQueryDeviceEvents(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleQueryDeviceEvents called");
+
+    // 可选参数：STRING device_address, STRING event_type,
+    //          INT64 start_ms, INT64 end_ms, INT32 limit
+    std::string device_address, event_type;
+    int64_t start_ms = 0, end_ms = 0;
+    int32_t limit = 100;
+
+    DBusMessageIter args;
+    if (dbus_message_iter_init(msg, &args) == TRUE) {
+        if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING) {
+            const char* val = nullptr;
+            dbus_message_iter_get_basic(&args, &val);
+            if (val) device_address = val;
+        }
+        if (dbus_message_iter_next(&args) &&
+            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING) {
+            const char* val = nullptr;
+            dbus_message_iter_get_basic(&args, &val);
+            if (val) event_type = val;
+        }
+        if (dbus_message_iter_next(&args) &&
+            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT64) {
+            dbus_message_iter_get_basic(&args, &start_ms);
+        }
+        if (dbus_message_iter_next(&args) &&
+            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT64) {
+            dbus_message_iter_get_basic(&args, &end_ms);
+        }
+        if (dbus_message_iter_next(&args) &&
+            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT32) {
+            dbus_message_iter_get_basic(&args, &limit);
+        }
+    }
+
+    // 与 GetHistory 同因的 limit 钳制：负数=无上限 / 0=空集，均归一处理
+    constexpr int32_t kMaxEventLimit = 10000;
+    if (limit <= 0) {
+        LOG_WARNING(LogModule::DBUS, "QueryDeviceEvents limit=" << limit
+                    << " is non-positive; clamped to 1");
+        limit = 1;
+    } else if (limit > kMaxEventLimit) {
+        LOG_WARNING(LogModule::DBUS, "QueryDeviceEvents limit=" << limit
+                    << " exceeds cap; clamped to " << kMaxEventLimit);
+        limit = kMaxEventLimit;
+    }
+    if (start_ms > 0 && end_ms > 0 && end_ms < start_ms) {
+        LOG_WARNING(LogModule::DBUS, "QueryDeviceEvents end_ms < start_ms; swapping");
+        std::swap(start_ms, end_ms);
+    }
+
+    std::string result = "[]";
+    if (ctx_ && ctx_->wireless_event_store) {
+        result = ctx_->wireless_event_store->queryPersisted(
+            device_address, event_type, start_ms, end_ms, limit);
+    } else {
+        result = "{\"error\":\"event store not available\"}";
     }
 
     DBusMessage* reply = dbus_message_new_method_return(msg);
