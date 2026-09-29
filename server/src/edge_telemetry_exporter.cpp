@@ -183,7 +183,11 @@ bool extractUint64Field(const std::string& json, const std::string& key,
     }
     uint64_t value = 0;
     while (pos < json.size() && std::isdigit(static_cast<unsigned char>(json[pos]))) {
-        value = value * 10 + static_cast<uint64_t>(json[pos] - '0');
+        const uint64_t digit = static_cast<uint64_t>(json[pos] - '0');
+        if (value > (UINT64_MAX - digit) / 10) {
+            return false; // 溢出防御：数字超出 uint64 范围直接拒绝，绝不猜测
+        }
+        value = value * 10 + digit;
         ++pos;
     }
     *out = value;
@@ -196,15 +200,26 @@ std::vector<PendingAction> parsePendingActions(const std::string& body) {
     size_t pos = body.find(array_key);
     if (pos == std::string::npos) return actions;
 
-    while (true) {
+    // 寻找 pending_actions 数组的开括号 '[' 与闭括号 ']'，限制解析范围在数组内，
+    // 避免误把响应体其它顶层对象或嵌套字段里的 action_id 误认为下行动作。
+    const size_t array_start = body.find('[', pos + array_key.size());
+    if (array_start == std::string::npos) return actions;
+    const size_t array_end = body.find(']', array_start);
+    if (array_end == std::string::npos) return actions;
+
+    pos = array_start + 1;
+    while (pos < array_end) {
         PendingAction action;
         size_t cursor = pos;
         // 每个动作对象内同时含 action_id / key / value / generation /
         // nonce / claim_token；用 action_id 作为分段锚点，避免跨对象误取。
         if (!extractStringField(body, "action_id", cursor, &action.action_id, &cursor)) break;
-        // 该动作对象在本段内查找其它字段；边界取下一个 action_id 之前。
+        if (cursor >= array_end) break;
+        // 该动作对象在本段内查找其它字段；边界取下一个 action_id 或数组闭括号之前。
         const size_t next_action = body.find("\"action_id\"", cursor);
-        const size_t segment_end = (next_action == std::string::npos) ? body.size() : next_action;
+        const size_t segment_end = (next_action == std::string::npos || next_action > array_end)
+                                       ? array_end
+                                       : next_action;
         const std::string segment = body.substr(cursor, segment_end - cursor);
         if (!extractStringField(segment, "key", 0, &action.key, nullptr)) { pos = segment_end; continue; }
         if (!extractStringField(segment, "value", 0, &action.value, nullptr)) { pos = segment_end; continue; }
@@ -221,7 +236,7 @@ std::vector<PendingAction> parsePendingActions(const std::string& body) {
         extractStringField(segment, "claim_token", 0, &action.claim_token, nullptr);
         actions.push_back(std::move(action));
         pos = segment_end;
-        if (next_action == std::string::npos) break;
+        if (next_action == std::string::npos || next_action >= array_end) break;
     }
     return actions;
 }
@@ -623,6 +638,11 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
             }
             // 去重表只记录成功应用的 action：被拒动作允许重试，
             // 重放时重新走完整执行路径（会再次被拒并回执 REJECTED）。
+            // 容量上限防无界增长：超过 1024 条时清空最旧的一批（直接 clear，
+            // 重启都会清空，云端已终态的历史动作即便偶发漏判重做也受 generation 门禁守卫）。
+            if (executed_action_ids_.size() >= 1024) {
+                executed_action_ids_.clear();
+            }
             executed_action_ids_.emplace(action.action_id, true);
             LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
                      "已应用服务端下发的配置: " << action.key << "=" << action.value
@@ -874,18 +894,27 @@ void EdgeTelemetryExporter::run() {
             // 失败：把未送达的记录放回缓冲前面，保持时序。
             // 遵循头文件声明的锁序约定：必须先获取 mutex_，再获取 stats_mutex_，
             // 严禁在此出现 stats_mutex_ -> mutex_ 的反向加锁，杜绝与 enqueue/stats 的死锁面。
-            std::lock_guard<std::mutex> block(mutex_);
-            std::lock_guard<std::mutex> slock(stats_mutex_);
-            stats_.send_failures++;
-            for (auto it = records.rbegin(); it != records.rend(); ++it) {
-                while (buffer_.size() >= EDGE_TELEMETRY_BUFFER_CAPACITY) {
-                    // 与 enqueue() 同一淘汰策略：覆盖最旧记录，优先保住新数据。
-                    buffer_.pop_front();
-                    stats_.dropped_oldest++;
+            {
+                std::lock_guard<std::mutex> block(mutex_);
+                std::lock_guard<std::mutex> slock(stats_mutex_);
+                stats_.send_failures++;
+                for (auto it = records.rbegin(); it != records.rend(); ++it) {
+                    while (buffer_.size() >= EDGE_TELEMETRY_BUFFER_CAPACITY) {
+                        // 与 enqueue() 同一淘汰策略：覆盖最旧记录，优先保住新数据。
+                        buffer_.pop_front();
+                        stats_.dropped_oldest++;
+                    }
+                    buffer_.push_front(std::move(*it));
                 }
-                buffer_.push_front(std::move(*it));
             }
             LOG_ERROR(weaknet_dbus::LogModule::SYSTEM, "边缘遥测上报失败（保留待补发）: " << error);
+
+            // 失败退避：避免网络不通或服务端离线时紧循环重试并打爆日志与 CPU。
+            // 休眠期间若收到 stop 请求则立即打断。
+            const uint32_t backoff_ms = std::min(std::max(config_.edge.interval_ms.load(), 1000u), 10000u);
+            std::unique_lock<std::mutex> wlock(mutex_);
+            cv_.wait_for(wlock, std::chrono::milliseconds(backoff_ms),
+                         [this]() { return stop_requested_.load(); });
         }
 
         // 动作结果与遥测共用同一轮唤醒：只要任一通道有积压就尝试回传，

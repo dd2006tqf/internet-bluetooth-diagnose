@@ -749,7 +749,23 @@ void DnsMonitor::feedTransportDelta(weaknet::DnsTransactionTracker* tracker) {
     }
 
     const auto& prev = impl_->last_counters;
-    const uint64_t attempts_delta = sum_entries(counters) - sum_entries(prev);
+    const uint64_t curr_sum = sum_entries(counters);
+    const uint64_t prev_sum = sum_entries(prev);
+
+    // 下溢防御：lookup 失败返回全零、或者内核驱动计数器清零时，
+    // 差分会产生接近 UINT64_MAX 的巨值污染 Evidence Quality。
+    if (curr_sum < prev_sum ||
+        counters.values[DNS_STAT_EMIT_FAIL] < prev.values[DNS_STAT_EMIT_FAIL] ||
+        counters.values[DNS_STAT_EMITTED] < prev.values[DNS_STAT_EMITTED] ||
+        impl_->drain_stats.lost_events < impl_->last_lost_events) {
+        LOG_WARNING(LogModule::NETWORK,
+                    "DNS capture counters counter-reset or lookup failure detected, skipping delta update");
+        impl_->last_counters = counters;
+        impl_->last_lost_events = impl_->drain_stats.lost_events;
+        return;
+    }
+
+    const uint64_t attempts_delta = curr_sum - prev_sum;
     const uint64_t emit_fail_delta = counters.values[DNS_STAT_EMIT_FAIL] - prev.values[DNS_STAT_EMIT_FAIL];
     const uint64_t emitted_delta = counters.values[DNS_STAT_EMITTED] - prev.values[DNS_STAT_EMITTED];
     const uint64_t lost_delta = impl_->drain_stats.lost_events - impl_->last_lost_events;

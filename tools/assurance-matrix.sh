@@ -10,11 +10,11 @@
 #   - 单一层故障时，Primary 精确指向该层
 #   - 观测器故障时结论为 UNKNOWN，不得判业务 BAD
 #
-# 用法：BOARD=radxa@192.168.137.210 ./tools/assurance-matrix.sh
+# 用法：BOARD=radxa@board ./tools/assurance-matrix.sh
 
 set -uo pipefail
 
-BOARD="${BOARD:-radxa@192.168.137.210}"
+BOARD="${BOARD:-radxa@board}"
 SSH="ssh -o ConnectTimeout=10 -o BatchMode=yes ${BOARD}"
 RESOLVER="${RESOLVER:-192.168.137.1}"
 WEAKNET_DIR="${WEAKNET_DIR:-/home/radxa/weaknet}"

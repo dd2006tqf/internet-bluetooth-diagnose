@@ -1,7 +1,7 @@
 # weaknet-server Specification
 
 ## Purpose
-TBD - created by archiving change fix-ping-error-logging. Update Purpose after archive.
+WeakNet 嵌入式边缘服务端规范，覆盖基于 eBPF 的网络观测矩阵、D-Bus IPC 控制面、端侧网络体验保障（Network Assurance）引擎以及与云端运维智能体对齐的安全遥测上报与配置事务看门狗机制。
 ## Requirements
 ### Requirement: ping 错误日志
 

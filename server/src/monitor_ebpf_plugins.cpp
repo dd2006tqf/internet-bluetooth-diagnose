@@ -275,13 +275,16 @@ public:
             return true;
         }
         std::string path = "build/skb_drop.bpf.o";
+        weaknet::MapSizingConfig sizing_cfg{"auto", 0, 50};
         if (ctx) {
             path = ctx->cfg.skb_drop.bpf_obj.get();
+            sizing_cfg = {ctx->cfg.skb_drop.map_sizing.mode.get(),
+                          ctx->cfg.skb_drop.map_sizing.entries.load(),
+                          ctx->cfg.skb_drop.map_sizing.ram_budget_bp.load()};
         }
         if (!monitor_->init(path,
-                              weaknet::resolveScopePlan(weaknet::MapSizingScope::SkbDrop,
-                                 {ctx->cfg.skb_drop.map_sizing.mode.get(), ctx->cfg.skb_drop.map_sizing.entries.load(),
-                                  ctx->cfg.skb_drop.map_sizing.ram_budget_bp.load()}, weaknet::totalPhysicalRamBytes()))) {
+                            weaknet::resolveScopePlan(weaknet::MapSizingScope::SkbDrop,
+                                                      sizing_cfg, weaknet::totalPhysicalRamBytes()))) {
             LOG_WARNING(LogModule::NETWORK, "SkbDropPlugin: failed to load BPF object from " << path);
             return false;
         }

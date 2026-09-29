@@ -168,3 +168,77 @@ TEST(MapSizingSpecSyncTest, SpecBoundsAreMonotonic) {
         }
     }
 }
+
+/**
+ * 守卫：每张受管 map 的 key_size_bytes 与 value_size_bytes 必须与内核/BPF
+ * 数据结构的实际内存尺寸完全一致。
+ *
+ * 任何结构体变更（新增字段、类型修改、对齐漂移）若未同步规格表，
+ * 会导致 auto 模式的加权内存预算模型（RAM budget allocation）产生偏差。
+ */
+TEST(MapSizingSpecSyncTest, KeyAndValueSizesMatchStructSizes) {
+    // 1. TcpRetrans
+    struct tcp_conn_key { uint32_t saddr, daddr; uint16_t sport, dport; };
+    struct tcp_retrans_stats { uint64_t total_retrans, total_segs; uint32_t last_state; };
+    struct tcp_retrans_event { uint64_t timestamp_ns; uint32_t pid, saddr, daddr; uint16_t sport, dport; uint32_t state; };
+
+    // 2. ProcessProfiler
+    struct conn_key { uint32_t saddr, daddr; uint16_t sport, dport; uint8_t proto; } __attribute__((packed));
+    struct flow_data { uint64_t bytes, packets, last_seen_ns; };
+    struct process_net_stats { uint64_t tx_bytes, rx_bytes, tx_packets, rx_packets, retrans_count; };
+
+    // 3. HttpLatency
+    struct http_txn_key { uint32_t saddr, daddr; uint16_t sport, dport; uint8_t method[8], path[16]; };
+    struct http_txn_record { uint64_t send_ns, recv_ns; uint32_t req_bytes, resp_bytes; uint16_t status_code; uint8_t direction, flags; };
+    struct recvmsg_ctx { void* msghdr_ptr; void* iov_ptr; };
+
+    // 4. Dns
+    struct fd_resolver_key { uint64_t pid_tgid; int32_t fd; uint32_t resolver_ip; };
+    struct fd_resolver_value { uint32_t client_ip; uint16_t client_port, resolver_port; };
+    struct recv_pending { uint64_t timestamp_ns; uint32_t resolver_ip; uint16_t resolver_port, qid; uint8_t qname[32]; };
+    struct dns_self_endpoint { uint32_t ip; uint16_t port, pad; };
+
+    // 5. TcpConn
+    struct tcp_conn_port_value { uint64_t active_conns, total_conns; };
+
+    // 6. SkbDrop
+    struct drop_key { uint32_t reason, protocol; };
+    struct drop_stat { uint64_t count, last_drop_ns; };
+
+    // 7. Bluetooth
+    struct device_key { uint8_t mac[6]; uint16_t pad; };
+    struct session_control { uint64_t start_time, last_active; uint32_t state, reserved; uint64_t flags; };
+    struct traffic_stats { uint64_t tx_bytes, rx_bytes, tx_packets, rx_packets; };
+
+    const std::map<std::string, std::pair<uint32_t, uint32_t>> expected = {
+        {"retrans_stats",      {sizeof(tcp_conn_key),       sizeof(tcp_retrans_stats)}},
+        {"retrans_events",     {sizeof(tcp_conn_key),       sizeof(tcp_retrans_event)}},
+        {"current_sec",        {sizeof(conn_key),           sizeof(flow_data)}},
+        {"process_stats",      {sizeof(uint32_t),           sizeof(process_net_stats)}},
+        {"http_txn_stats",     {sizeof(http_txn_key),       sizeof(http_txn_record)}},
+        {"recvmsg_ctx_map",    {sizeof(uint32_t),           sizeof(recvmsg_ctx)}},
+        {"fd_resolvers",       {sizeof(fd_resolver_key),    sizeof(fd_resolver_value)}},
+        {"pending_recv",       {sizeof(uint64_t),           sizeof(recv_pending)}},
+        {"dns_self_endpoints", {sizeof(dns_self_endpoint),  sizeof(uint64_t)}},
+        {"conn_start",         {sizeof(void*),              sizeof(uint64_t)}},
+        {"conn_ports",         {sizeof(uint16_t),           sizeof(tcp_conn_port_value)}},
+        {"drop_stats_map",     {sizeof(drop_key),           sizeof(drop_stat)}},
+        {"active_sessions",    {sizeof(device_key),         sizeof(session_control)}},
+        {"bt_traffic",         {sizeof(device_key),         sizeof(traffic_stats)}},
+    };
+
+    size_t verified = 0;
+    for (const auto& [scope, relative] : kScopeSourceFiles) {
+        (void)relative;
+        for (const auto& spec : getMapSizingSpecs(scope)) {
+            auto it = expected.find(spec.map_name);
+            ASSERT_NE(it, expected.end()) << "未定义 map 尺寸期望值: " << spec.map_name;
+            EXPECT_EQ(spec.key_size_bytes, it->second.first)
+                << "key_size_bytes 不匹配: map=" << spec.map_name;
+            EXPECT_EQ(spec.value_size_bytes, it->second.second)
+                << "value_size_bytes 不匹配: map=" << spec.map_name;
+            ++verified;
+        }
+    }
+    EXPECT_EQ(verified, expected.size());
+}
