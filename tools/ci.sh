@@ -107,6 +107,12 @@ fi
 log ""
 log "===== Step 2: ARM64 编译 + 打包 ====="
 
+# 构建/打包任一步失败都必须让整个步骤失败：
+#  - 容器内 set -euo pipefail 保证 build 失败时不执行打包（旧 dist 不被清掉）
+#  - 外层用 PIPESTATUS 捕获真实退出码（tee 会把退出码洗成 0，且不能依赖
+#    管道语义的暗约定），失败立即 fail——绝不打印"编译 + 打包完成"、
+#    绝不进入部署步，避免把上一次的旧产物当成新版本发出去
+BUILD_STATUS=0
 docker exec "${CONTAINER}" bash -c '
 set -euo pipefail
 cd /src
@@ -146,8 +152,11 @@ if command -v ccache >/dev/null 2>&1; then
     ccache -s 2>/dev/null | grep -E "cache hit|cache miss|hit rate|files in cache|cache size" || true
 else
     echo "ccache 未安装，跳过统计"
-fi' 2>&1 | tee -a "$REPORT"
+fi' 2>&1 | tee -a "$REPORT" || BUILD_STATUS=${PIPESTATUS[0]}
 
+if [ "$BUILD_STATUS" -ne 0 ]; then
+    fail "ARM64 编译/打包失败（容器退出码 ${BUILD_STATUS}）——中止：不打印成功、不进入部署，板端保持旧版本"
+fi
 pass "编译 + 打包完成"
 
 if [ "$LOCAL_ONLY" = true ]; then
@@ -171,7 +180,8 @@ if [ "$SKIP_DEPLOY" = false ]; then
     ssh "${BOARD}" "sudo systemctl stop weaknet-server 2>/dev/null || true; sudo killall weaknet-dbus-server 2>/dev/null || true; sudo rm -rf /home/radxa/weaknet/server/src /home/radxa/weaknet/server/include /home/radxa/weaknet/build /home/radxa/weaknet/server/build /home/radxa/weaknet/client/src /home/radxa/weaknet/CMakeFiles /home/radxa/weaknet/logs /home/radxa/weaknet/server/server 2>/dev/null || true"
 
     # 只同步 dist-arm64 编译产物，不同步源码和构建目录（保留持久化 data/、config/ 密钥及日志）
-    rsync -az --delete --exclude "data/" --exclude "config/" --exclude "server/logs/" -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" 2>/dev/null
+    rsync -az --delete --exclude "data/" --exclude "config/" --exclude "server/logs/" -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" \
+        || fail "rsync 部署失败——板端可能仍是旧产物"
 
     # 旧 web-dashboard 已废弃删除：前端统一由 Large-Model-Application（Next.js）承载，
     # 开发板只保留 eBPF + C++ 底座。此处顺带停用并清理板上遗留的 weaknet-web 服务，
@@ -215,12 +225,21 @@ if [ "$SKIP_TEST" = false ]; then
     scp "${ROOT}/tools/weaknet-test-full.sh" "${BOARD}:/home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null
     ssh "${BOARD}" "chmod +x /home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null
 
-    # 运行测试
-    FUNC_RESULT=$(ssh -t "${BOARD}" "sudo /home/radxa/weaknet/weaknet-test-full.sh" 2>&1 | head -80) || true
-    echo "$FUNC_RESULT" | tee -a "$REPORT"
+    # 运行测试（weaknet-test-full.sh 以 FAIL 条数作为退出码）
+    #  - 完整输出存报告，控制台只显示前 80 行（截断只是显示，不再是取证上限）
+    #  - 退出码必须捕获：旧写法 `|| true` 会吞掉失败，然后无条件打印
+    #    "测试完成"，冒烟挂了 CI 也报成功——与构建失败同级的发布可信度缺陷
+    FUNC_RESULT=""
+    TEST_EXIT=0
+    FUNC_RESULT=$(ssh -t "${BOARD}" "sudo /home/radxa/weaknet/weaknet-test-full.sh" 2>&1) || TEST_EXIT=$?
+    printf '%s\n' "$FUNC_RESULT" >> "$REPORT"
+    # head 提前退出会让 printf 吃 SIGPIPE(141)；pipefail + set -e 会因此误报失败，
+    # 所以显示用的管道必须放行（报告里已有完整输出，截断只是显示）
+    printf '%s\n' "$FUNC_RESULT" | head -80 || true
 
     # 解析结果
-    HEALTH_JSON=$(echo "$FUNC_RESULT" | grep "健康检查结果" | head -1 | sed 's/.*: //')
+    # 显示用解析：grep 无匹配时不能让 set -e 把已通过的测试判成失败
+    HEALTH_JSON=$(echo "$FUNC_RESULT" | grep "健康检查结果" | head -1 | sed 's/.*: //' || true)
     if [ -n "$HEALTH_JSON" ]; then
         log ""
         log "功能测试结果:"
@@ -230,6 +249,11 @@ if [ "$SKIP_TEST" = false ]; then
         log "  RSSI: $(echo "$HEALTH_JSON" | grep -o '"rssi_dbm":[0-9-]*' | cut -d: -f2) dBm"
     fi
 
+    # 双保险：退出码 + 输出里的 FAIL 计数
+    FAIL_COUNT=$(printf '%s' "$FUNC_RESULT" | grep -oE 'FAIL: [0-9]+' | grep -oE '[0-9]+' | tail -1 || true)
+    if [ "${TEST_EXIT}" -ne 0 ] || [ "${FAIL_COUNT:-0}" -gt 0 ]; then
+        fail "开发板测试失败（退出码 ${TEST_EXIT}，FAIL=${FAIL_COUNT:-未知}）"
+    fi
     pass "测试完成"
 else
     info "跳过测试"
