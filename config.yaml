@@ -43,6 +43,15 @@ monitors:
     events_bpf_obj: build/bt_events.bpf.o   # Phase 1 设备事件采集（ringbuf，断连原因）
     map_sizing_mode: auto          # auto | fixed
     map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
+    # ---- Phase 3a 区域关联阈值（SiteIncident）----
+    # 双门槛：受影响设备数 ≥ min_devices **且** 受影响比例 ≥ min_ratio_bp。
+    # 改动后需 `weaknet-cli monitor restart bt_events` 生效（关联器构造期读入；
+    # 重启回放会恢复既有事故，不丢状态）。
+    incident_min_devices: 2        # 绝对门槛（≥2：单台设备坏了不是区域事故）
+    incident_min_ratio_bp: 3000    # 比例门槛，万分比（3000 = 30%，分母=窗口内活跃设备）
+    incident_window: 60s           # 关联窗口：窗口内累计合格异常判同一事故
+    incident_quiet_window: 60s     # 静默窗口：安静这么久 → RESOLVED
+    incident_active_window: 60s    # 活跃设备记忆：动态分母只统计这段时间内被观测到的设备
 
   dns:
     enabled: true

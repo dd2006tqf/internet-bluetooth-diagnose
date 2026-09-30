@@ -707,3 +707,113 @@ TEST(MapSizingConfigTest, SerializeMonitorJsonEmitsFlatKeys) {
     EXPECT_NE(json.find("\"map_sizing_entries\":512"), std::string::npos) << json;
     EXPECT_NE(json.find("\"map_sizing_ram_budget_bp\""), std::string::npos) << json;
 }
+
+// ============================================================================
+// SiteIncident 区域关联阈值配置（Phase 3a）
+//
+// 关联器的五个现场参数经由 monitors.bluetooth 配置块传入（唯一事件生产者
+// 当前是蓝牙链路，且 bt_events 与 bluetooth 共用 enabled 开关）。
+// 全部走字符串接口断言：配置键的可发现性本身就是被测行为。
+//
+// 生效语义：这些键决定关联器的**构造期**配置，运行时 set 后需
+// `weaknet-cli monitor restart bt_events` 重建关联器才生效（重启回放会恢复
+// 既有事故，不丢状态）。因此刻意不进 TRIAL 白名单——与 map_sizing 同理：
+// 试改成功但无法回滚生效，会给出假象。
+// ============================================================================
+
+namespace {
+
+/// 单字段读取（配置键是否存在就是被测行为，读不到即失败）
+std::string readKey(const WeakNetConfig& cfg, const std::string& key) {
+    std::string v;
+    if (!snapshotMonitorParam(cfg, key, &v)) return "<missing>";
+    return v;
+}
+
+}  // namespace
+
+TEST(SiteIncidentConfigTest, YamlParsesIncidentKeys) {
+    WeakNetConfig cfg;
+    bool ok = parse(
+        "monitors:\n"
+        "  bluetooth:\n"
+        "    enabled: true\n"
+        "    incident_min_devices: 5\n"
+        "    incident_min_ratio_bp: 4500\n"
+        "    incident_window: 90s\n"
+        "    incident_quiet_window: 2m\n"
+        "    incident_active_window: 30s\n",
+        &cfg);
+    ASSERT_TRUE(ok);
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_min_devices"), "5");
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_min_ratio_bp"), "4500");
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_window_ms"), "90000");
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_quiet_window_ms"), "120000");
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_active_window_ms"), "30000");
+}
+
+TEST(SiteIncidentConfigTest, DefaultsMatchCorrelatorThresholds) {
+    // 默认值必须与 SiteIncidentConfig 的默认值一致（2 台 ∧ 30% ∧ 60s/60s/60s）：
+    // 配置层与算法层两处默认漂移会让"改一行 config 才发现行为不对"
+    WeakNetConfig cfg;
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_min_devices"), "2");
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_min_ratio_bp"), "3000");
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_window_ms"), "60000");
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_quiet_window_ms"), "60000");
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_active_window_ms"), "60000");
+}
+
+TEST(SiteIncidentConfigTest, SetMonitorParamAcceptsIncidentKeys) {
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(setMonitorParam(&cfg, "bluetooth.incident_min_devices", "4", &err)) << err;
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_min_devices"), "4");
+
+    // duration 别名（与 interval 同策略：接受 "90s" 也接受裸毫秒）
+    ASSERT_TRUE(setMonitorParam(&cfg, "bluetooth.incident_window", "150s", &err)) << err;
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_window_ms"), "150000");
+    ASSERT_TRUE(setMonitorParam(&cfg, "bluetooth.incident_quiet_window_ms", "45000", &err)) << err;
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_quiet_window_ms"), "45000");
+}
+
+TEST(SiteIncidentConfigTest, InvalidIncidentValuesAreRejectedAndValueUnchanged) {
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(setMonitorParam(&cfg, "bluetooth.incident_min_devices", "5", &err)) << err;
+
+    // min_devices < 2 会把"单设备抖动"升级成区域事故——语义上就不该允许
+    EXPECT_FALSE(setMonitorParam(&cfg, "bluetooth.incident_min_devices", "1", &err)) << err;
+    // ratio_bp 超出 0..10000（万分比）与 0 均拒绝
+    EXPECT_FALSE(setMonitorParam(&cfg, "bluetooth.incident_min_ratio_bp", "10001", &err));
+    EXPECT_FALSE(setMonitorParam(&cfg, "bluetooth.incident_min_ratio_bp", "0", &err));
+    // 非法 duration 拒绝
+    EXPECT_FALSE(setMonitorParam(&cfg, "bluetooth.incident_window", "bogus", &err));
+    EXPECT_FALSE(setMonitorParam(&cfg, "bluetooth.incident_window", "0s", &err));
+    // 越界（窗口 < 1s 会把关联变成逐事件判，> 10min 会把不相干的事件卷进来）
+    EXPECT_FALSE(setMonitorParam(&cfg, "bluetooth.incident_window", "500ms", &err));
+    EXPECT_FALSE(setMonitorParam(&cfg, "bluetooth.incident_window", "20m", &err));
+    // 被拒绝后旧值不变
+    EXPECT_EQ(readKey(cfg, "bluetooth.incident_min_devices"), "5");
+}
+
+TEST(SiteIncidentConfigTest, KeysAreNotTrialableBecauseThresholdsNeedRestart) {
+    // 关联器配置在构造期冻结，TRIAL 的"试改→健康回滚"语义不适用
+    EXPECT_FALSE(isTrialableKey("bluetooth.incident_min_devices"));
+    EXPECT_FALSE(isTrialableKey("bluetooth.incident_min_ratio_bp"));
+    EXPECT_FALSE(isTrialableKey("bluetooth.incident_window"));
+    EXPECT_FALSE(isTrialableKey("bluetooth.incident_quiet_window"));
+    EXPECT_FALSE(isTrialableKey("bluetooth.incident_active_window"));
+}
+
+TEST(SiteIncidentConfigTest, SerializeMonitorJsonEmitsIncidentKeys) {
+    WeakNetConfig cfg;
+    std::string err;
+    ASSERT_TRUE(setMonitorParam(&cfg, "bluetooth.incident_min_devices", "6", &err));
+    std::string json = serializeMonitorJson(cfg, "bluetooth", &err);
+    ASSERT_TRUE(err.empty()) << err;
+    EXPECT_NE(json.find("\"incident_min_devices\":6"), std::string::npos) << json;
+    EXPECT_NE(json.find("\"incident_min_ratio_bp\""), std::string::npos) << json;
+    EXPECT_NE(json.find("\"incident_window_ms\""), std::string::npos) << json;
+    EXPECT_NE(json.find("\"incident_quiet_window_ms\""), std::string::npos) << json;
+    EXPECT_NE(json.find("\"incident_active_window_ms\""), std::string::npos) << json;
+}

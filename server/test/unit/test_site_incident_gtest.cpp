@@ -16,9 +16,11 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdio>
 #include <string>
 #include <unistd.h>
+#include <sqlite3.h>
 
 #include "database_manager.hpp"
 #include "site_incident.hpp"
@@ -443,4 +445,137 @@ TEST_F(SiteIncidentPersistenceTest, StoreForwardsEventsToCorrelator) {
     // 查询出口经 store 代理到关联器
     const std::string json = store.querySiteIncidents("RESOLVED", 0, 0, 100);
     EXPECT_NE(json.find("\"state\":\"RESOLVED\""), std::string::npos);
+}
+
+// ============================================================================
+// 乱序 / 迟到事件的时间语义（started_at_ms 取最早、last_event_ms 不回退）
+//
+// 事件流不是严格有序的：normalizer 的合并窗口、ringbuf 消费批次都会让
+// 早时间戳的事件晚到。这两条断言钉死的正是"迟到不改变事故的持续右沿，
+// 但要能把它纳入的最早异常补记进左沿"。
+// ============================================================================
+
+TEST(SiteIncidentCorrelatorTest, LateEventMovesStartEarlierButNeverRewindsLastEvent) {
+    SiteIncidentCorrelator correlator(nullptr);
+
+    // 事故在 t=20s 由两台设备触发
+    correlator.observe(disconnectEvent("AA:BB:CC:DD:EE:01", 20 * kSecond, "e20"));
+    auto opened = correlator.observe(disconnectEvent("AA:BB:CC:DD:EE:02", 21 * kSecond, "e21"));
+    ASSERT_TRUE(opened.has_value());
+    EXPECT_EQ(opened->started_at_ms, 20 * kSecond);
+    EXPECT_EQ(opened->last_event_ms, 21 * kSecond);
+
+    // 迟到一条 t=15s 的证据（同设备），晚于事故开启才被收到
+    auto late = correlator.observe(disconnectEvent("AA:BB:CC:DD:EE:01", 15 * kSecond, "e15"));
+    ASSERT_TRUE(late.has_value());
+    // started_at_ms 补记为更早的异常时刻：现实事故从最早那条异常就开始
+    EXPECT_EQ(late->started_at_ms, 15 * kSecond);
+    // last_event_ms 只右移：迟到事件绝不让静默期的起算点回退
+    EXPECT_EQ(late->last_event_ms, 21 * kSecond);
+    EXPECT_EQ(late->affected_devices, 2u);
+
+    // 静默期以最后一条**不早于**这次的证据起算（21s），与迟到事件无关。
+    // 默认 quiet_window = 60s（与 SiteIncidentConfig::quiet_window_ms 一致，
+    // 由 test_weaknet_config_gtest 的 DefaultsMatchCorrelatorThresholds 钉住
+    // 两处默认不漂移）
+    constexpr uint64_t kQuietWindowMs = 60000;
+    auto resolved = correlator.tick(21 * kSecond + kQuietWindowMs + 1);
+    ASSERT_EQ(resolved.size(), 1u);
+    EXPECT_EQ(*resolved[0].resolved_at_ms, 21 * kSecond + kQuietWindowMs);
+}
+
+TEST(SiteIncidentCorrelatorTest, OutOfOrderThresholdEvalUsesEarliestQualifyingEvidence) {
+    SiteIncidentCorrelator correlator(nullptr);
+
+    // 乱序到达：先来 20s 的设备 B，后到 10s 的设备 A。
+    // 达阈时刻（第二条到达时）应把 started_at_ms 定在最早的 10s，
+    // 而不是"达标那一瞬间"或"最后一条证据"。
+    auto first = correlator.observe(disconnectEvent("AA:BB:CC:DD:EE:02", 20 * kSecond, "ob20"));
+    EXPECT_FALSE(first.has_value());  // 单台还不够
+
+    auto second = correlator.observe(disconnectEvent("AA:BB:CC:DD:EE:01", 10 * kSecond, "ob10"));
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(second->started_at_ms, 10 * kSecond);
+    EXPECT_EQ(second->last_event_ms, 20 * kSecond);
+}
+
+// ============================================================================
+// cleanup：incident 与回链表的删除顺序（无悬垂回链）
+//
+// 两张表刻意没有 FOREIGN KEY（device_events 有保留期清理，强制外键会让
+// 清理失败或级联删除事故证据），因此"先删回链、再删 incident"必须由
+// 代码与测试共同守住——顺序反了会留下指向已消失 incident 的回链行，
+// 让追溯查询返回空壳。
+// ============================================================================
+
+namespace {
+
+/// 直接查回链表行数（测试专用；生产查询不经过这里）
+size_t countIncidentLinks(const std::string& db_path) {
+    sqlite3* raw = nullptr;
+    if (sqlite3_open_v2(db_path.c_str(), &raw, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        if (raw) sqlite3_close(raw);
+        return static_cast<size_t>(-1);
+    }
+    size_t rows = static_cast<size_t>(-1);
+    const char* sql = "SELECT COUNT(*) FROM site_incident_events";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(raw, sql, -1, &stmt, nullptr) == SQLITE_OK &&
+        sqlite3_step(stmt) == SQLITE_ROW) {
+        rows = static_cast<size_t>(sqlite3_column_int64(stmt, 0));
+    }
+    if (stmt) sqlite3_finalize(stmt);
+    sqlite3_close(raw);
+    return rows;
+}
+
+}  // namespace
+
+TEST_F(SiteIncidentPersistenceTest, CleanupRemovesBacklinksBeforeIncidentRows) {
+    // 全部造在 30 天前（retention=7 天时全部过期）
+    const int64_t old_ms = 1000 * kSecond;
+    const auto ev1 = disconnectEvent("AA:BB:CC:DD:EE:01", old_ms, "old_e1");
+    const auto ev2 = disconnectEvent("AA:BB:CC:DD:EE:02", old_ms + kSecond, "old_e2");
+    persistEvent(ev1);
+    persistEvent(ev2);
+
+    ASSERT_TRUE(db_->upsertSiteIncident("sitinc_old", "site-test", "gw-test",
+                                        old_ms, old_ms + kSecond,
+                                        static_cast<int64_t>(old_ms + 60 * kSecond),
+                                        2, "RESOLVED", std::nullopt));
+    ASSERT_TRUE(db_->insertSiteIncidentEvent("sitinc_old", "old_e1"));
+    ASSERT_TRUE(db_->insertSiteIncidentEvent("sitinc_old", "old_e2"));
+    ASSERT_EQ(countIncidentLinks(dbPath_), 2u);
+
+    ASSERT_GE(db_->cleanup(7), 0);
+
+    // incident 行已删除
+    EXPECT_EQ(countOccurrences(db_->querySiteIncidents("", 0, 0, 100, false),
+                               "sitinc_old"), 0u);
+    // 回链行同步删除——不许留下指向已消失 incident 的悬垂行
+    EXPECT_EQ(countIncidentLinks(dbPath_), 0u);
+}
+
+TEST_F(SiteIncidentPersistenceTest, CleanupKeepsRecentIncidentsAndTheirBacklinks) {
+    const int64_t now_ms = static_cast<int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+
+    // 今天发生的事故必须完整保留（事故的可追溯性是产品支柱，不是日志）
+    const auto ev1 = disconnectEvent("AA:BB:CC:DD:EE:01", now_ms, "recent_e1");
+    const auto ev2 = disconnectEvent("AA:BB:CC:DD:EE:02", now_ms, "recent_e2");
+    persistEvent(ev1);
+    persistEvent(ev2);
+    ASSERT_TRUE(db_->upsertSiteIncident("sitinc_new", "site-test", "gw-test",
+                                        now_ms, now_ms, std::nullopt, 2, "OPEN", std::nullopt));
+    ASSERT_TRUE(db_->insertSiteIncidentEvent("sitinc_new", "recent_e1"));
+    ASSERT_TRUE(db_->insertSiteIncidentEvent("sitinc_new", "recent_e2"));
+
+    ASSERT_GE(db_->cleanup(7), 0);
+
+    const std::string json = db_->querySiteIncidents("", 0, 0, 100, true);
+    EXPECT_EQ(countOccurrences(json, "sitinc_new"), 1u);
+    EXPECT_EQ(countIncidentLinks(dbPath_), 2u);
+    // 设备清单仍能回链出来
+    EXPECT_NE(json.find("AA:BB:CC:DD:EE:01"), std::string::npos);
 }

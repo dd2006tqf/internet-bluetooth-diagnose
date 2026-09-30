@@ -49,7 +49,27 @@ SiteIncident（区域层解释，OPEN → ONGOING → RESOLVED）
 site_incidents 表  +  site_incident_events 回链（1:N）
 ```
 
-### 2. 合格异常判定（`QualifyingAnomalyPolicy`）
+### 2. 合格异常判定（`QualifyingAnomalyPolicy`）与阈值可配
+
+五个现场阈值经由 `monitors.bluetooth` 配置块传入（唯一事件生产者当前是蓝牙
+链路，且 `bt_events` 与 `bluetooth` 共用 `enabled` 开关）：
+
+| 配置键 | 默认值 | 范围 | 关联器字段 |
+| ------ | ------ | ---- | ---------- |
+| `incident_min_devices` | 2 | 2 ~ 1000 | `min_affected_devices` |
+| `incident_min_ratio_bp` | 3000（30%） | 1 ~ 10000（万分比） | `min_affected_ratio` |
+| `incident_window` | 60s | 1s ~ 10m | `correlation_window_ms` |
+| `incident_quiet_window` | 60s | 1s ~ 24h | `quiet_window_ms` |
+| `incident_active_window` | 60s | 1s ~ 10m | `active_device_memory_ms` |
+
+- **生效语义**：关联器**构造期**读入。运行时 `weaknet-cli set` 后需
+  `monitor restart bt_events` 重建才生效；重启回放会恢复既有事故，不丢状态。
+  因此这些键刻意不进 TRIAL 白名单（与 `map_sizing` 同理：试改成功但无法
+  回滚生效会给出假象）。
+- **格式**：比例用万分比（bp）而不是浮点——与 `map_sizing_ram_budget_bp`
+  同一惯例，避免 D-Bus argv / CLI 传浮点的 locale 歧义。
+
+阈值之外，"哪些事件算合格异常"是独立的判定语义：
 
 | 事件 | 是否合格 | 依据 |
 | ---- | -------- | ---- |
@@ -170,12 +190,14 @@ CREATE TABLE IF NOT EXISTS site_incident_events (
 | 修改 | `client/weaknet_cli.cpp` | `weaknet-cli incidents` |
 | 修改 | `server/src/history_query_tool.cpp` | `--incidents` / `--state` |
 | 修改 | `server/test/CMakeLists.txt` | 注册 `test_site_incident_gtest` |
+| 修改 | `server/include/weaknet_config.hpp` / `src/weaknet_config.cpp` | 五个 `incident_*` 配置键（yaml / set / get / serialize 四路径 + 范围校验） |
+| 修改 | `config.yaml` | `monitors.bluetooth` 下的 incident 默认值与说明注释 |
 
 ---
 
 ## 四、验证设计
 
-1. **单元测试（x86，16 项，全绿）**：
+1. **单元测试（x86，20 项，全绿）**：
    - `SingleDeviceAnomalyDoesNotOpenIncident` —— 单设备异常不触发
    - `MultipleDevicesOpenIncidentAndProgressLifecycle` —— 开事故 + OPEN→ONGOING→RESOLVED
    - `PlannedDisconnectDoesNotContributeEvidenceButCountsAsActive` —— 正常断开不计入
@@ -183,18 +205,28 @@ CREATE TABLE IF NOT EXISTS site_incident_events (
    - `DuplicateEventIdIsIdempotent` —— 幂等去重
    - `DenominatorIsActiveDevicesNotKnownDevices` —— 动态分母
    - `RatioGateBlocksWideButSparseFailures` —— 比例门槛
+   - `LateEventMovesStartEarlierButNeverRewindsLastEvent` —— 迟到事件：`started_at_ms`
+     补记更早、`last_event_ms` 绝不回退
+   - `OutOfOrderThresholdEvalUsesEarliestQualifyingEvidence` —— 乱序达阈：
+     `started_at_ms`/`last_event_ms` 取窗口极值而不是"本条事件"时刻
    - `UpsertIsIdempotentOnIncidentId` / `ActiveIncidentSerializesResolvedAtAsNull` /
      `StateFilterAndLatestResolvedFloor` / `EvidenceBacklinkIsQueryableAndIdempotent` ——
      持久化与 NULL 语义
    - `ReplayRestoresActiveIncidentWithoutDuplicating` / `ReplayDoesNotResurrectResolvedIncident` ——
      重启连续性
+   - `CleanupRemovesBacklinksBeforeIncidentRows` / `CleanupKeepsRecentIncidentsAndTheirBacklinks` ——
+     cleanup 先删回链再删本体（无悬垂）且不误删近期事故
    - `StoreForwardsEventsToCorrelator` —— 接线（store → correlator 单一生产消费者）
-2. **回归**：`ctest --test-dir build-x86/server` 45/45 全绿（原 44 + 新增 1）。
-3. **ARM64**：容器内 `cmake --build build-arm64 -j1` 全量通过。
-4. **真机**：`BOARD=board ./tools/ci.sh` 部署 + 板端冒烟全绿；
+2. **配置测试（`SiteIncidentConfigTest`，6 项，全绿）**：yaml 加载、默认值与
+   关联器默认一致、set/get 回读、越界拒绝且旧值不变、不进 TRIAL 白名单、
+   serialize 输出。
+3. **回归**：`ctest --test-dir build-x86/server` 45/45 全绿（两个受影响套件
+   20 + 55 用例）。
+4. **ARM64**：容器内 `cmake --build build-arm64 -j1` 全量通过。
+5. **真机**：`BOARD=board ./tools/ci.sh` 部署 + 板端冒烟全绿；
    在既有旧库上完成 schema 迁移（两张新表已建），
    三条查询出口（D-Bus / CLI / 离线工具）返回正确 JSON，含 `resolved_at_ms` 的
-   NULL 语义与设备清单回链。
+   NULL 语义与设备清单回链；`weaknet-cli get bluetooth` 输出五个 `incident_*` 键。
 
 ---
 

@@ -122,6 +122,26 @@ struct WeakNetConfig {
         /// bt_events 走 ringbuf 上报断连事件。前者是 legacy 音频能力，
         /// 后者是工业无线诊断的主线。
         ConfigString events_bpf_obj{"build/bt_events.bpf.o"};
+
+        // ---------- Phase 3a: 区域关联阈值（SiteIncident）----------
+        //
+        // 这五个值决定 SiteIncidentCorrelator 的**构造期**配置：插件 start 时
+        // 读入一次，运行时 set 后需 `weaknet-cli monitor restart bt_events`
+        // 重建关联器才生效（重启回放会恢复既有事故，不丢状态）。
+        // 因此它们刻意**不进** isTrialableKey 白名单——与 map_sizing 同理：
+        // TRIAL 的"试改成功但无法回滚生效"会给出假象。
+        //
+        // 受影响设备**最少台数**（双门槛之绝对数；语义下限 2：单台设备坏了
+        // 不是区域事故，产品分界线就在这里）
+        std::atomic<uint32_t> incident_min_devices{2};
+        // 受影响比例门槛（万分比 bp，3000 = 30.00%；双门槛之比例）
+        std::atomic<uint32_t> incident_min_ratio_bp{3000};
+        // 关联窗口（毫秒）：窗口内累计的合格异常参与同一 incident 判定
+        std::atomic<uint32_t> incident_window_ms{60000};
+        // 静默窗口（毫秒）：窗口内无新合格异常 → RESOLVED
+        std::atomic<uint32_t> incident_quiet_window_ms{60000};
+        // 活跃设备记忆（毫秒）：动态分母只统计这段时间内被观测到的设备
+        std::atomic<uint32_t> incident_active_window_ms{60000};
     } bluetooth;
 
     // ---------- eBPF 监控线程 ----------

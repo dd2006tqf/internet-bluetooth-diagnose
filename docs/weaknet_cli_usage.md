@@ -209,6 +209,12 @@ $ weaknet-cli incidents --state OPEN
 | `affected_device_ids` | 受影响设备地址清单（由证据回链派生） |
 | `suspected_cause` | **恒为 null**——关联层只做时空聚合，不做根因推断 |
 
+**阈值可调**（见 §4 `set` 章节）：`bluetooth.incident_min_devices` /
+`incident_min_ratio_bp` / `incident_window` / `incident_quiet_window` /
+`incident_active_window`。这些键决定关联器的构造期配置，改完需
+`weaknet-cli monitor restart bt_events` 生效——重启回放会恢复既有事故，
+不丢状态。
+
 **不会成为事故证据的事件**：用户主动断开 / 对端设备断开（计划内行为，
 `REMOTE_USER_TERMINATED` / `LOCAL_HOST_TERMINATED`）。若计入，
 每天下班集体关机都会误报一起"区域无线故障"。
@@ -282,6 +288,11 @@ ok
 | `rssi`/`tcp_loss`/... | `interval_ms` | duration | `1000ms` ~ `600000ms` | 采样周期 |
 | `bluetooth` | `interval_ms` | duration | `1000ms` ~ `60000ms` | 采样周期 |
 | `bluetooth` | `bpf_obj` | string | 路径 | Phase2 eBPF 对象路径 |
+| `bluetooth` | `incident_min_devices` | uint | `2` ~ `1000` | 区域事故绝对门槛（受影响设备最少台数） |
+| `bluetooth` | `incident_min_ratio_bp` | uint | `1` ~ `10000` | 区域事故比例门槛，万分比（`3000` = 30%） |
+| `bluetooth` | `incident_window` | duration | `1s` ~ `10m` | 关联窗口（读回键为 `incident_window_ms`） |
+| `bluetooth` | `incident_quiet_window` | duration | `1s` ~ `24h` | 静默窗口：安静这么久 → `RESOLVED` |
+| `bluetooth` | `incident_active_window` | duration | `1s` ~ `10m` | 活跃设备记忆（动态分母的记忆时长） |
 | `dns`/`wifi_loss`/... | `bpf_obj` | string | 路径 | eBPF 对象路径 |
 | `server` | `data_dir` | string | 路径 | 数据目录 |
 | `server` | `log_level` | string | `info`/`warning`/`error`/`fatal` | 日志级别 |

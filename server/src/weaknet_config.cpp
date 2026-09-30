@@ -252,6 +252,53 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->bluetooth.interval_ms, val, error);
         if (field == "bpf_obj") { cfg->bluetooth.bpf_obj.set(trim(val)); return true; }
         if (field == "events_bpf_obj") { cfg->bluetooth.events_bpf_obj.set(trim(val)); return true; }
+        // Phase 3a 区域关联阈值（范围校验与运行时 set 路径保持一致，
+        // 避免"yaml 能写、weaknet-cli set 拒收"的双标准）
+        if (field == "incident_min_devices") {
+            uint32_t v = 0;
+            if (!parseUint(val, &v) || v < 2 || v > 1000) {
+                *error = "bluetooth.incident_min_devices: must be 2~1000";
+                return false;
+            }
+            cfg->bluetooth.incident_min_devices.store(v);
+            return true;
+        }
+        if (field == "incident_min_ratio_bp") {
+            uint32_t v = 0;
+            if (!parseUint(val, &v) || v < 1 || v > 10000) {
+                *error = "bluetooth.incident_min_ratio_bp: must be 1~10000 (basis points)";
+                return false;
+            }
+            cfg->bluetooth.incident_min_ratio_bp.store(v);
+            return true;
+        }
+        if (field == "incident_window" || field == "incident_window_ms") {
+            uint32_t ms = 0;
+            if (!parseDurationMs(val, &ms) || ms < 1000 || ms > 600000) {
+                *error = "bluetooth.incident_window: must be 1s~10m";
+                return false;
+            }
+            cfg->bluetooth.incident_window_ms.store(ms);
+            return true;
+        }
+        if (field == "incident_quiet_window" || field == "incident_quiet_window_ms") {
+            uint32_t ms = 0;
+            if (!parseDurationMs(val, &ms) || ms < 1000 || ms > 86400000) {
+                *error = "bluetooth.incident_quiet_window: must be 1s~24h";
+                return false;
+            }
+            cfg->bluetooth.incident_quiet_window_ms.store(ms);
+            return true;
+        }
+        if (field == "incident_active_window" || field == "incident_active_window_ms") {
+            uint32_t ms = 0;
+            if (!parseDurationMs(val, &ms) || ms < 1000 || ms > 600000) {
+                *error = "bluetooth.incident_active_window: must be 1s~10m";
+                return false;
+            }
+            cfg->bluetooth.incident_active_window_ms.store(ms);
+            return true;
+        }
         if (isMapSizingField(field)) return setMapSizingField(cfg->bluetooth.map_sizing, field, val, mon, error);
         *error = "bluetooth: unknown field '" + field + "'";
         return false;
@@ -631,6 +678,13 @@ static bool applyMonitorParam(WeakNetConfig* cfg, const std::string& key,
         if (isMapSizingField(field)) return setMapSizingField(cfg->bluetooth.map_sizing, field, value, "bluetooth", error);
         if (field == "bpf_obj") { cfg->bluetooth.bpf_obj.set(trim(value)); return true; }
         if (field == "events_bpf_obj") { cfg->bluetooth.events_bpf_obj.set(trim(value)); return true; }
+        // Phase 3a 区域关联阈值。范围校验与 yaml 加载路径一致；这些键改完需
+        // `monitor restart bt_events` 生效（关联器配置构造期冻结）。
+        if (field == "incident_min_devices") { uint32_t v; if (!parseUint(value, &v) || !checkRange(v, 2, 1000)) { if (error) *error = "bluetooth.incident_min_devices: must be 2~1000"; return false; } cfg->bluetooth.incident_min_devices.store(v); return true; }
+        if (field == "incident_min_ratio_bp") { uint32_t v; if (!parseUint(value, &v) || !checkRange(v, 1, 10000)) { if (error) *error = "bluetooth.incident_min_ratio_bp: must be 1~10000 (basis points)"; return false; } cfg->bluetooth.incident_min_ratio_bp.store(v); return true; }
+        if (field == "incident_window" || field == "incident_window_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "bluetooth.incident_window: must be 1s~10m"; return false; } cfg->bluetooth.incident_window_ms.store(ms); return true; }
+        if (field == "incident_quiet_window" || field == "incident_quiet_window_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 86400000)) { if (error) *error = "bluetooth.incident_quiet_window: must be 1s~24h"; return false; } cfg->bluetooth.incident_quiet_window_ms.store(ms); return true; }
+        if (field == "incident_active_window" || field == "incident_active_window_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "bluetooth.incident_active_window: must be 1s~10m"; return false; } cfg->bluetooth.incident_active_window_ms.store(ms); return true; }
     }
     if (mon == "dns") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "dns.enabled: invalid bool"; return false; } cfg->dns.enabled.store(b); return true; }
@@ -825,6 +879,11 @@ bool snapshotMonitorParamImpl(const WeakNetConfig& cfg, const std::string& key,
     }
     if (mon == "bluetooth") {
         if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.bluetooth.interval_ms.load()); return true; }
+        if (field == "incident_min_devices") { *value_out = to_str_u32(cfg.bluetooth.incident_min_devices.load()); return true; }
+        if (field == "incident_min_ratio_bp") { *value_out = to_str_u32(cfg.bluetooth.incident_min_ratio_bp.load()); return true; }
+        if (field == "incident_window" || field == "incident_window_ms") { *value_out = to_str_u32(cfg.bluetooth.incident_window_ms.load()); return true; }
+        if (field == "incident_quiet_window" || field == "incident_quiet_window_ms") { *value_out = to_str_u32(cfg.bluetooth.incident_quiet_window_ms.load()); return true; }
+        if (field == "incident_active_window" || field == "incident_active_window_ms") { *value_out = to_str_u32(cfg.bluetooth.incident_active_window_ms.load()); return true; }
     }
     if (mon == "dns") {
         if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.dns.interval_ms.load()); return true; }
@@ -1136,6 +1195,11 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeString("map_sizing_mode", cfg.bluetooth.map_sizing.mode.get());
         writeUint("map_sizing_entries", cfg.bluetooth.map_sizing.entries.load());
         writeUint("map_sizing_ram_budget_bp", cfg.bluetooth.map_sizing.ram_budget_bp.load());
+        writeUint("incident_min_devices", cfg.bluetooth.incident_min_devices.load());
+        writeUint("incident_min_ratio_bp", cfg.bluetooth.incident_min_ratio_bp.load());
+        writeUint("incident_window_ms", cfg.bluetooth.incident_window_ms.load());
+        writeUint("incident_quiet_window_ms", cfg.bluetooth.incident_quiet_window_ms.load());
+        writeUint("incident_active_window_ms", cfg.bluetooth.incident_active_window_ms.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "dns") {

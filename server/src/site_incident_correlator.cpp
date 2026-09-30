@@ -242,9 +242,11 @@ bool SiteIncidentCorrelator::tryOpenLocked(const WirelessDeviceEvent& event,
 
     std::map<std::string, std::string> event_device;  // event_id -> device_key
     uint64_t earliest_ms = now_ms;
+    uint64_t latest_ms = now_ms;
     for (const auto& sample : recent_qualifying_) {
         event_device.emplace(sample.event_id, sample.device_key);
         earliest_ms = std::min(earliest_ms, sample.ts_ms);
+        latest_ms = std::max(latest_ms, sample.ts_ms);
     }
 
     const size_t denominator = activeDeviceCount(now_ms);
@@ -271,8 +273,12 @@ bool SiteIncidentCorrelator::tryOpenLocked(const WirelessDeviceEvent& event,
     inc.incident_id = makeIncidentId(site_id, earliest_ms);
     inc.site_id = site_id;
     inc.gateway_id = event.gateway_id;
-    inc.started_at_ms = earliest_ms;   // 现实事故从最早那条异常就开始
-    inc.last_event_ms = now_ms;
+    // started_at_ms 取窗口内最早（现实事故从最早那条异常就开始），
+    // last_event_ms 取窗口内最新——事件流是乱序的（normalizer 合并窗口、
+    // ringbuf 消费批次都会让早时间戳晚到），两条都必须按窗口极值算，
+    // 不能用"本条事件"的时刻：否则乱序达阈时静默期起算点会提前。
+    inc.started_at_ms = earliest_ms;
+    inc.last_event_ms = latest_ms;
     inc.resolved_at_ms = std::nullopt;
     inc.affected_devices = keys.size();
     inc.state = IncidentState::Open;

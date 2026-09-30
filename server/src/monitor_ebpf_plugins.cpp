@@ -414,9 +414,21 @@ public:
         //      都会触发一次关联，造成重复计数与无谓的 DB 写）。
         //   2. 再绑定。此后运行期事件才自动进入关联。
         //
-        // 关联器的 site_id 与 store 一致（Phase 3a 运行模型 1 Gateway = 1 Site）。
+        // 关联器的 site_id 与 store 一致（Phase 3a 运行模型 1 Gateway = 1 Site），
+        // 五个阈值从配置读入——这些键是关联器的**构造期**配置，运行时改完需
+        // `weaknet-cli monitor restart bt_events` 重建本插件才生效。
         SiteIncidentConfig incident_cfg;
         incident_cfg.site_id = store_->config().site_id;
+        incident_cfg.min_affected_devices =
+            ctx->cfg.bluetooth.incident_min_devices.load();
+        incident_cfg.min_affected_ratio =
+            ctx->cfg.bluetooth.incident_min_ratio_bp.load() / 10000.0;  // bp → 比例
+        incident_cfg.correlation_window_ms =
+            ctx->cfg.bluetooth.incident_window_ms.load();
+        incident_cfg.quiet_window_ms =
+            ctx->cfg.bluetooth.incident_quiet_window_ms.load();
+        incident_cfg.active_device_memory_ms =
+            ctx->cfg.bluetooth.incident_active_window_ms.load();
         correlator_ = std::make_unique<SiteIncidentCorrelator>(ctx->db_mgr.get(), incident_cfg);
         ctx->site_incident_correlator = correlator_.get();
 
