@@ -85,6 +85,15 @@ const char* toString(EvidenceSource v) {
     return "UNKNOWN";
 }
 
+const char* toString(LinkQualityState v) {
+    switch (v) {
+        case LinkQualityState::Learning: return "LEARNING";
+        case LinkQualityState::Stable:   return "STABLE";
+        case LinkQualityState::Degraded: return "DEGRADED";
+    }
+    return "UNKNOWN";
+}
+
 // ============================================================================
 // 字符串 -> 枚举
 //
@@ -119,6 +128,13 @@ DisconnectReason disconnectReasonFromString(const std::string& s, DisconnectReas
     if (s == "AUTHENTICATION_FAILURE") return DisconnectReason::AuthenticationFailure;
     if (s == "LOCAL_HOST_TERMINATED")  return DisconnectReason::LocalHostTerminated;
     if (s == "OTHER")                  return DisconnectReason::Other;
+    return fallback;
+}
+
+LinkQualityState linkQualityStateFromString(const std::string& s, LinkQualityState fallback) {
+    if (s == "LEARNING") return LinkQualityState::Learning;
+    if (s == "STABLE")   return LinkQualityState::Stable;
+    if (s == "DEGRADED") return LinkQualityState::Degraded;
     return fallback;
 }
 
@@ -242,6 +258,65 @@ bool parseBdaddr(const std::string& mac, uint8_t out[6]) {
         out[5 - i] = static_cast<uint8_t>(b[i]);
     }
     return true;
+}
+
+// ============================================================================
+// WirelessDeviceKey
+// ============================================================================
+
+bool WirelessDeviceKey::operator<(const WirelessDeviceKey& o) const {
+    if (site_id != o.site_id) return site_id < o.site_id;
+    if (gateway_id != o.gateway_id) return gateway_id < o.gateway_id;
+    if (hci_index != o.hci_index) return hci_index < o.hci_index;
+    if (protocol != o.protocol) return protocol < o.protocol;
+    if (address_type != o.address_type) return address_type < o.address_type;
+    return device_address < o.device_address;
+}
+
+bool WirelessDeviceKey::operator==(const WirelessDeviceKey& o) const {
+    return site_id == o.site_id &&
+           gateway_id == o.gateway_id &&
+           hci_index == o.hci_index &&
+           protocol == o.protocol &&
+           address_type == o.address_type &&
+           device_address == o.device_address;
+}
+
+std::string WirelessDeviceKey::toString() const {
+    std::ostringstream oss;
+    oss << site_id << "/" << gateway_id << "/hci" << hci_index << "/"
+        << weaknet_dbus::toString(protocol) << "/"
+        << weaknet_dbus::toString(address_type) << "/"
+        << device_address;
+    return oss.str();
+}
+
+// ============================================================================
+// DeviceLinkProfile::toJson
+// ============================================================================
+
+std::string DeviceLinkProfile::toJson() const {
+    std::ostringstream oss;
+    oss << "{";
+    oss << "\"site_id\":\"" << weaknet_utils::escapeJsonString(key.site_id) << "\",";
+    oss << "\"gateway_id\":\"" << weaknet_utils::escapeJsonString(key.gateway_id) << "\",";
+    oss << "\"hci_index\":" << key.hci_index << ",";
+    oss << "\"protocol\":\"" << weaknet_dbus::toString(key.protocol) << "\",";
+    oss << "\"address_type\":\"" << weaknet_dbus::toString(key.address_type) << "\",";
+    oss << "\"device_address\":\"" << weaknet_utils::escapeJsonString(key.device_address) << "\",";
+    oss << "\"baseline_rssi_dbm\":";
+    if (baseline_rssi_dbm.has_value()) oss << *baseline_rssi_dbm; else oss << "null";
+    oss << ",\"min_seen_rssi_dbm\":";
+    if (min_seen_rssi_dbm.has_value()) oss << *min_seen_rssi_dbm; else oss << "null";
+    oss << ",\"max_seen_rssi_dbm\":";
+    if (max_seen_rssi_dbm.has_value()) oss << *max_seen_rssi_dbm; else oss << "null";
+    oss << ",\"baseline_sample_count\":" << baseline_sample_count << ",";
+    oss << "\"first_seen_ms\":" << first_seen_ms << ",";
+    oss << "\"last_seen_ms\":" << last_seen_ms << ",";
+    oss << "\"state\":\"" << weaknet_dbus::toString(state) << "\",";
+    oss << "\"updated_at_ms\":" << updated_at_ms;
+    oss << "}";
+    return oss.str();
 }
 
 // ============================================================================

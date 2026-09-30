@@ -155,6 +155,7 @@ struct RawBtObservation {
     DisconnectReason reason_hint = DisconnectReason::Unknown;
 
     std::optional<int> rssi_dbm;                            ///< 采集时刻的 RSSI（未采集则 nullopt）
+    uint64_t monotonic_ns = 0;                              ///< 单调时钟时间戳（CLOCK_MONOTONIC / bpf_ktime_get_ns）
 };
 
 // ============================================================================
@@ -177,7 +178,8 @@ struct WirelessDeviceEvent {
     BtAddressType address_type = BtAddressType::Unknown;
 
     DeviceEventType event_type = DeviceEventType::LinkDisconnected;
-    uint64_t timestamp_ms = 0;              ///< 事件时间（合并窗口中最早一条观测的时刻）
+    uint64_t timestamp_ms = 0;              ///< 事件时间（合并窗口中最早一条观测的时刻，墙钟）
+    uint64_t monotonic_ns = 0;              ///< 事件时间（最早观测的 CLOCK_MONOTONIC，用于因果回填与排序）
 
     std::optional<int> rssi_at_event_dbm;   ///< nullopt = 未采集；不是 0
 
@@ -207,6 +209,85 @@ std::string appendRawEvidence(const std::string& details_json,
                               const RawBtObservation& obs);
 
 // ============================================================================
+// Phase 2 链路层领域模型扩展：复合主键、算法配置、三态状态机、设备画像
+// ============================================================================
+
+/**
+ * @brief 复合无线设备键（统一身份）
+ *
+ * 杜绝以裸 MAC 为主键导致的跨网关、跨控制器或跨地址类型污染。
+ * 主键区分 address_type，当前"设备"语义为观测身份。
+ */
+struct WirelessDeviceKey {
+    std::string site_id;
+    std::string gateway_id;
+    uint32_t hci_index = 0;
+    WirelessProtocol protocol = WirelessProtocol::Bluetooth;
+    BtAddressType address_type = BtAddressType::Unknown;
+    std::string device_address;  // 规范大写格式化 MAC
+
+    bool operator<(const WirelessDeviceKey& o) const;
+    bool operator==(const WirelessDeviceKey& o) const;
+    bool operator!=(const WirelessDeviceKey& o) const { return !(*this == o); }
+
+    std::string toString() const;
+};
+
+/**
+ * @brief 射频采样观测
+ */
+struct RssiSample {
+    int16_t rssi_dbm = -1000;
+    uint64_t observed_at_ms = 0;   ///< 墙钟毫秒（展示/持久化）
+    uint64_t monotonic_ns = 0;     ///< CLOCK_MONOTONIC 纳秒（因果判定/TTL）
+    bool from_signal = true;       ///< true=PropertiesChanged 推送; false=轮询快照
+};
+
+/**
+ * @brief 链路质量三态状态机
+ */
+enum class LinkQualityState : uint8_t {
+    Learning = 0,   ///< 学习收敛期（样本不足 min_baseline_samples）
+    Stable   = 1,   ///< 基线稳定，正常监控
+    Degraded = 2    ///< 发生持续显著劣化（基线冻结，不更新）
+};
+
+/**
+ * @brief 链路质量算法配置
+ */
+struct BtLinkQualityConfig {
+    size_t min_baseline_samples = 10;          ///< 最小基线样本数
+    size_t degrade_streak = 3;                 ///< 恶化判定所需连续坏样本数
+    size_t recover_streak = 3;                 ///< 恢复判定所需连续好样本数
+    int degrade_delta_db = 15;                 ///< 恶化门限（低于基线此值）
+    int recover_delta_db = 8;                  ///< 恢复门限（回升到基线此值以内，保留 7dB 滞回区）
+    uint64_t max_fresh_gap_ms = 15000;         ///< 相邻 fresh 样本允许的最大时间间隔（防稀疏触发）
+    uint64_t rssi_event_ttl_ms = 10000;        ///< 断连前回填有效 RSSI 的最大 TTL（10s）
+    uint64_t baseline_stale_after_ms = 86400000; ///< 长期离线重学周期（24h，可配置）
+    uint32_t algorithm_version = 1;            ///< 算法版本
+};
+
+/**
+ * @brief 设备链路基线画像（轻量版）
+ *
+ * 持久化到 device_baselines 表。去除派生统计（degraded_count 等按事件表聚合），
+ * 杜绝双重事实来源导致的数据不一致。
+ */
+struct DeviceLinkProfile {
+    WirelessDeviceKey key;
+    std::optional<int16_t> baseline_rssi_dbm;  ///< 当前参考基线（中位数）
+    std::optional<int16_t> min_seen_rssi_dbm;  ///< 观测到的最低 RSSI
+    std::optional<int16_t> max_seen_rssi_dbm;  ///< 观测到的最高 RSSI
+    size_t baseline_sample_count = 0;          ///< 当前基线实际使用的可信样本数
+    uint64_t first_seen_ms = 0;                ///< 首次发现时间（墙钟）
+    uint64_t last_seen_ms = 0;                 ///< 最近活跃时间（墙钟）
+    LinkQualityState state = LinkQualityState::Learning;
+    uint64_t updated_at_ms = 0;
+
+    std::string toJson() const;
+};
+
+// ============================================================================
 // 枚举 <-> 字符串 / 数值转换
 // ============================================================================
 
@@ -215,11 +296,13 @@ const char* toString(BtAddressType v);
 const char* toString(DeviceEventType v);
 const char* toString(DisconnectReason v);
 const char* toString(EvidenceSource v);
+const char* toString(LinkQualityState v);
 
 /// 解析字符串；无法识别时返回 fallback
 WirelessProtocol wirelessProtocolFromString(const std::string& s, WirelessProtocol fallback);
 DeviceEventType deviceEventTypeFromString(const std::string& s, DeviceEventType fallback);
 DisconnectReason disconnectReasonFromString(const std::string& s, DisconnectReason fallback);
+LinkQualityState linkQualityStateFromString(const std::string& s, LinkQualityState fallback);
 
 /**
  * @brief 把内核 HCI error code 映射为归一化断连原因
