@@ -53,14 +53,6 @@ uint64_t SiteIncidentCorrelator::totalIncidents() const {
     return total_incidents_;
 }
 
-void SiteIncidentCorrelator::reset() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    active_.clear();
-    recent_qualifying_.clear();
-    device_memory_.clear();
-    total_incidents_ = 0;
-}
-
 std::vector<SiteIncident> SiteIncidentCorrelator::activeIncidents() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<SiteIncident> out;

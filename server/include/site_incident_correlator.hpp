@@ -123,8 +123,17 @@ public:
      */
     std::optional<SiteIncident> observe(const WirelessDeviceEvent& event);
 
+    /// 当前活跃（OPEN/ONGOING）incident 快照（含受影响设备清单）
+    std::vector<SiteIncident> activeIncidents() const;
+
+    /// 自进程启动以来产出的 incident 总数（诊断用）
+    uint64_t totalIncidents() const;
+
     /**
      * @brief 推进静默期：把 last_event_ms + quiet_window_ms 已过的活跃 incident 结案
+     *
+     * 关联器是事件驱动的，但"没有新异常"本身也是一种状态变化——静默期内不会
+     * 有人调用 observe()，因此需要消费线程每轮主动推进一次。
      *
      * @return 本次被结案的 incident 列表（每条都已落库）
      */
@@ -143,12 +152,6 @@ public:
      */
     size_t recoverFromStore(uint64_t now_ms);
 
-    /// 当前活跃（OPEN/ONGOING）incident 快照（含受影响设备清单）
-    std::vector<SiteIncident> activeIncidents() const;
-
-    /// 自进程启动以来产出的 incident 总数（诊断用）
-    uint64_t totalIncidents() const;
-
     /**
      * @brief 查询持久化的 incident 列表（DB 为空时返回 "[]"）
      *
@@ -163,11 +166,6 @@ public:
                                int64_t end_ms,
                                int limit = 100,
                                bool include_devices = true) const;
-
-    const SiteIncidentConfig& config() const { return cfg_; }
-
-    /// 重置全部内存态（测试用）
-    void reset();
 
 private:
     /// 窗口内的一条合格异常样本（门槛判定的输入）
