@@ -36,8 +36,12 @@ static void printUsage(const char* prog) {
         "  %s events [--device <addr>] [--type <TYPE>]\n"
         "         [--start <ms>] [--end <ms>] [--limit <N>]\n"
         "                                 # 查询无线设备事件（JSON，只读）\n"
+        "  %s incidents [--state <STATE>]\n"
+        "         [--start <ms>] [--end <ms>] [--limit <N>]\n"
+        "                                 # 查询区域级异常事件 SiteIncident（JSON，只读）\n"
         "\n"
         "事件类型（--type）：LINK_DISCONNECTED, LINK_DEGRADED, DEVICE_APPEARED, ...\n"
+        "区域事件状态（--state）：OPEN, ONGOING, RESOLVED\n"
         "时间均为 Unix 毫秒，0 或省略表示不限；limit 默认 100，上限 10000\n"
         "\n"
         "监控器名：rtt, rssi, tcp_loss, traffic, quality,\n"
@@ -48,7 +52,7 @@ static void printUsage(const char* prog) {
         "示例：\n"
         "  %s set rtt.interval 5s\n"
         "  %s get rtt\n"
-        "  %s list\n", prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+        "  %s list\n", prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static bool callSet(const char* key, const char* value) {
@@ -107,6 +111,52 @@ static bool callEvents(int argc, char** argv) {
                                      buf.data(), buf.size(),
                                      err, sizeof(err))) {
         fprintf(stderr, "事件查询失败: %s\n", err);
+        return false;
+    }
+    printf("%s\n", buf.data());
+    return true;
+}
+
+/// weaknet-cli incidents：查询区域级异常事件（只读，Phase 3a）
+/// 过滤参数全部可选；默认 limit=100（服务端上限 10000）
+static bool callIncidents(int argc, char** argv) {
+    std::string state;
+    int64_t start_ms = 0, end_ms = 0;
+    int32_t limit = 100;
+
+    for (int i = 2; i < argc; ++i) {
+        auto need = [&](const char* opt) -> const char* {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "缺少 %s 的值\n", opt);
+                return nullptr;
+            }
+            return argv[++i];
+        };
+        if (strcmp(argv[i], "--state") == 0) {
+            const char* v = need("--state"); if (!v) return false;
+            state = v;
+        } else if (strcmp(argv[i], "--start") == 0) {
+            const char* v = need("--start"); if (!v) return false;
+            start_ms = strtoll(v, nullptr, 10);
+        } else if (strcmp(argv[i], "--end") == 0) {
+            const char* v = need("--end"); if (!v) return false;
+            end_ms = strtoll(v, nullptr, 10);
+        } else if (strcmp(argv[i], "--limit") == 0) {
+            const char* v = need("--limit"); if (!v) return false;
+            limit = static_cast<int32_t>(strtol(v, nullptr, 10));
+        } else {
+            fprintf(stderr, "未知参数: %s\n", argv[i]);
+            return false;
+        }
+    }
+
+    // 与 callEvents 同一理由的 1MB 缓冲：区域事件单条含受影响设备清单，
+    // 比设备事件更大；超出部分由服务端 limit 钳制约束。
+    std::vector<char> buf(1 << 20);
+    char err[256];
+    if (!weaknet_query_site_incidents(state.c_str(), start_ms, end_ms, limit,
+                                      buf.data(), buf.size(), err, sizeof(err))) {
+        fprintf(stderr, "区域事件查询失败: %s\n", err);
         return false;
     }
     printf("%s\n", buf.data());
@@ -205,6 +255,8 @@ int main(int argc, char** argv) {
         }
     } else if (strcmp(cmd, "events") == 0) {
         ok = callEvents(argc, argv);
+    } else if (strcmp(cmd, "incidents") == 0) {
+        ok = callIncidents(argc, argv);
     } else if (strcmp(cmd, "list") == 0) {
         // 必须与 serializers 端的有效名集合保持一致（weaknet_config.cpp 的
         // serializeMonitorJson）。此前这里漏了 skb_drop / tcp_connect /

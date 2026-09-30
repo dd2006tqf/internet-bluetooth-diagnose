@@ -176,6 +176,9 @@ private:
     /// 把归一化器刷出的事件写入 store
     void flushToStore(uint64_t now_ms);
 
+    /// 推进区域异常关联器的静默期（Phase 3a：让"没有新异常"也能推动 incident 结案）
+    void advanceIncidents(uint64_t now_ms);
+
     WirelessEventStore* store_ = nullptr;              ///< 不拥有所有权
     BtLinkQualityTracker* tracker_ = nullptr;          ///< 不拥有所有权（因果 RSSI 回填源）
     BtEventNormalizer normalizer_;

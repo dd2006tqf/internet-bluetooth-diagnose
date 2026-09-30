@@ -305,10 +305,14 @@ void BtEventMonitor::consumeLoop() {
                                             std::string(strerror(errno)));
             continue;
         }
-        flushToStore(softwareTimestampMs());
+        const uint64_t now_ms = softwareTimestampMs();
+        flushToStore(now_ms);
+        advanceIncidents(now_ms);
     }
     // 退出前把窗口内剩余事件定案，避免丢最后一批
-    flushToStore(softwareTimestampMs());
+    const uint64_t now_ms = softwareTimestampMs();
+    flushToStore(now_ms);
+    advanceIncidents(now_ms);
 }
 
 void BtEventMonitor::flushToStore(uint64_t now_ms) {
@@ -340,6 +344,16 @@ void BtEventMonitor::flushToStore(uint64_t now_ms) {
         events_emitted_.fetch_add(1);
     }
     stateSupport_.recordReadSuccess(0);
+}
+
+void BtEventMonitor::advanceIncidents(uint64_t now_ms) {
+    // Phase 3a：关联器是事件驱动的——静默期内没有新事件，也就没人调用它的 tick()。
+    // 由消费线程每轮推进一次，保证"这片区域已经不再出现异常"同样能推动
+    // 事故从 OPEN/ONGOING 走向 RESOLVED（否则结案只能等下一个事件到来，
+    // 而那个事件可能属于另一起事故）。
+    if (store_) {
+        store_->tickIncidents(now_ms);
+    }
 }
 
 // ============================================================================

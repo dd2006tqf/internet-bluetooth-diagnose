@@ -47,6 +47,7 @@
 #include "logger.hpp"
 #include "network_quality_result.hpp"
 #include "utils/json_escape.hpp"
+#include "wireless_event.hpp"
 #include <sqlite3.h>
 #include <sstream>
 #include <iomanip>
@@ -295,6 +296,55 @@ bool DatabaseManager::ensureSchema() {
             PRIMARY KEY (site_id, gateway_id, hci_index, protocol, address_type, device_address)
         );
         CREATE INDEX IF NOT EXISTS idx_device_baselines_updated ON device_baselines(updated_at);
+
+        -- site_incidents: 区域级异常事件（Phase 3a: SiteIncident）
+        --
+        -- Event 是不可变事实，Incident 是持续解释，两者生命周期不同，必须分开建模。
+        -- 一行 = "该现场在这一时段内有多台设备同时出现合格异常"这一解释，
+        -- 而不是某一条事件的副本。
+        --
+        -- 列设计要点：
+        --   incident_id       确定性 ID = <prefix>_<site>_<started_at_ms>。
+        --                     刻意不带进程实例随机码——服务重启后的回放会重新推导出
+        --                     同一个 incident_id，必须写回同一行（UPSERT）。
+        --                     对比 device_events.event_id 走的是相反策略（那里必须带
+        --                     实例随机码，否则跨重启撞 UNIQUE 被 INSERT OR IGNORE 静默吞掉）。
+        --   started_at_ms     覆盖的最早合格异常时刻（不是"发现时刻"）
+        --   last_event_ms     最近吸收的合格异常时刻；时间过滤以此列为准
+        --   resolved_at_ms    NULL 表示仍在活跃，**不是 0**（0 会造出"1970 年结案"）
+        --   affected_devices  受影响设备**数量**（事实）。清单由回链表派生，
+        --                     不在此重复存储，避免同一事实有两个来源。
+        --   suspected_cause   推断原因。Phase 3a 恒为 NULL——关联层只做时空聚合。
+        CREATE TABLE IF NOT EXISTS site_incidents (
+            incident_id        TEXT    PRIMARY KEY,
+            site_id            TEXT    DEFAULT '',
+            gateway_id         TEXT    DEFAULT '',
+            started_at_ms      INTEGER NOT NULL,
+            last_event_ms      INTEGER NOT NULL,
+            resolved_at_ms     INTEGER DEFAULT NULL,
+            affected_devices   INTEGER DEFAULT 0,
+            state              TEXT    DEFAULT 'OPEN',
+            suspected_cause    TEXT    DEFAULT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_site_incidents_last_event ON site_incidents(last_event_ms);
+        CREATE INDEX IF NOT EXISTS idx_site_incidents_state ON site_incidents(state);
+
+        -- site_incident_events: incident 与其证据事件的回链（1:N）
+        --
+        -- 存在的根本原因：**可追溯性**。用户问"凌晨 3 点影响了哪些设备"时，
+        -- 答案必须是"这几条具体事件"，每条都能追到 device_events.event_id。
+        -- 把一批 event_id 拼成文本塞进 incident 行做不到按 ID 精确回溯，
+        -- 也无法在回放/重试时保证不重复计数。
+        --
+        -- 复合主键上的 INSERT OR IGNORE 使回放与重试天然幂等。
+        -- 不建 FOREIGN KEY：device_events 有保留期清理（cleanup），
+        -- 强制外键会让清理失败或级联删除事故证据；调用方通过 event_id 关联查询。
+        CREATE TABLE IF NOT EXISTS site_incident_events (
+            incident_id        TEXT    NOT NULL,
+            event_id           TEXT    NOT NULL,
+            PRIMARY KEY (incident_id, event_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_site_incident_events_event ON site_incident_events(event_id);
     )";
     if (!exec(schema)) return false;
 
@@ -717,6 +767,34 @@ int DatabaseManager::cleanup(int retention_days) {
     sqlite3_exec(db_, ev_sql.str().c_str(), nullptr, nullptr, &ev_err);
     if (ev_err) {
         sqlite3_free(ev_err);
+    }
+
+    // 同时清理过期的区域级异常事件。与 device_events 同一毫秒时间轴，
+    // 因此复用同一条换算表达式（strftime('%s') 转秒再乘 1000）。
+    //
+    // 先删回链表再删 incident 本体：反向顺序会留下指向已消失 incident 的回链行，
+    // 让"某事件曾属于哪起事故"的追溯查询返回空壳。清理本身是有意为之的
+    // 数据老化，但不该制造悬垂关系（这两张表刻意没有 FOREIGN KEY，
+    // 见 ensureSchema 的说明，所以顺序必须由代码保证）。
+    std::ostringstream incident_link_sql;
+    incident_link_sql
+        << "DELETE FROM site_incident_events WHERE incident_id IN ("
+        << "SELECT incident_id FROM site_incidents WHERE last_event_ms < "
+        << "(CAST(strftime('%s','now') AS INTEGER) - " << retention_days << " * 86400) * 1000)";
+    char* link_err = nullptr;
+    sqlite3_exec(db_, incident_link_sql.str().c_str(), nullptr, nullptr, &link_err);
+    if (link_err) {
+        sqlite3_free(link_err);
+    }
+
+    std::ostringstream incident_sql;
+    incident_sql << "DELETE FROM site_incidents WHERE last_event_ms < "
+                 << "(CAST(strftime('%s','now') AS INTEGER) - "
+                 << retention_days << " * 86400) * 1000";
+    char* incident_err = nullptr;
+    sqlite3_exec(db_, incident_sql.str().c_str(), nullptr, nullptr, &incident_err);
+    if (incident_err) {
+        sqlite3_free(incident_err);
     }
 
     return deleted;
@@ -1213,6 +1291,333 @@ std::string DatabaseManager::queryDeviceBaselines(const std::string& device_addr
     sqlite3_finalize(stmt);
     json << "]";
     return json.str();
+}
+
+bool DatabaseManager::upsertSiteIncident(const std::string& incident_id,
+                                         const std::string& site_id,
+                                         const std::string& gateway_id,
+                                         int64_t started_at_ms,
+                                         int64_t last_event_ms,
+                                         const std::optional<int64_t>& resolved_at_ms,
+                                         int64_t affected_devices,
+                                         const std::string& state,
+                                         const std::optional<std::string>& suspected_cause) {
+    if (!db_) return false;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // UPSERT 而非 INSERT OR IGNORE：关联器在每次状态推进（新开/吸收/结案）都写回
+    // 同一行，重启回放重新推导出的确定性 incident_id 也必须更新而不是被忽略——
+    // 否则库里永远停在第一次开事故时的 OPEN 快照。
+    const char* sql = R"(
+        INSERT INTO site_incidents (
+            incident_id, site_id, gateway_id,
+            started_at_ms, last_event_ms, resolved_at_ms,
+            affected_devices, state, suspected_cause
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(incident_id)
+        DO UPDATE SET
+            site_id          = excluded.site_id,
+            gateway_id       = excluded.gateway_id,
+            started_at_ms    = excluded.started_at_ms,
+            last_event_ms    = excluded.last_event_ms,
+            resolved_at_ms   = excluded.resolved_at_ms,
+            affected_devices = excluded.affected_devices,
+            state            = excluded.state,
+            suspected_cause  = excluded.suspected_cause;
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::upsertSiteIncident prepare failed: " << sqlite3_errmsg(db_));
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, incident_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, site_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, gateway_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 4, started_at_ms);
+    sqlite3_bind_int64(stmt, 5, last_event_ms);
+
+    // NULL 语义：仍在活跃时 resolved_at_ms 写 NULL，不写 0——0 会造出
+    // "1970 年结案"这种假事实，并让"是否已结案"的判断永远为真。
+    if (resolved_at_ms.has_value()) {
+        sqlite3_bind_int64(stmt, 6, *resolved_at_ms);
+    } else {
+        sqlite3_bind_null(stmt, 6);
+    }
+
+    sqlite3_bind_int64(stmt, 7, affected_devices);
+    sqlite3_bind_text(stmt, 8, state.c_str(), -1, SQLITE_TRANSIENT);
+
+    // suspected_cause 同为 NULL 语义（Phase 3a 恒为空：关联层不做根因推断）
+    if (suspected_cause.has_value()) {
+        sqlite3_bind_text(stmt, 9, suspected_cause->c_str(), -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 9);
+    }
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::upsertSiteIncident step failed: " << sqlite3_errmsg(db_));
+        return false;
+    }
+    return true;
+}
+
+bool DatabaseManager::insertSiteIncidentEvent(const std::string& incident_id,
+                                              const std::string& event_id) {
+    if (!db_) return false;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // OR IGNORE：incident 的每一次写回都会重放它的全部事件回链，
+    // 复合主键让重复插入成为无操作，回放/重试因此天然幂等。
+    const char* sql = R"(
+        INSERT OR IGNORE INTO site_incident_events (incident_id, event_id)
+        VALUES (?, ?);
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::insertSiteIncidentEvent prepare failed: "
+                      << sqlite3_errmsg(db_));
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, incident_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, event_id.c_str(), -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::insertSiteIncidentEvent step failed: "
+                      << sqlite3_errmsg(db_));
+        return false;
+    }
+    return true;
+}
+
+std::string DatabaseManager::querySiteIncidents(const std::string& state,
+                                                int64_t start_ms,
+                                                int64_t end_ms,
+                                                int limit,
+                                                bool include_devices) {
+    if (!db_) return "[]";
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    std::ostringstream sql;
+    sql << "SELECT incident_id, site_id, gateway_id, started_at_ms, last_event_ms, "
+        << "resolved_at_ms, affected_devices, state, suspected_cause "
+        << "FROM site_incidents WHERE 1=1";
+
+    if (!state.empty()) {
+        sql << " AND state = ?";
+    }
+    // 时间过滤以 last_event_ms 为准：用户问"凌晨 3 点发生了什么"时，
+    // 一起跨 3 点的事故应当落进 3 点这个窗口，而不是因为它开始于 2:58 而消失。
+    if (start_ms > 0) {
+        sql << " AND last_event_ms >= ?";
+    }
+    if (end_ms > 0) {
+        sql << " AND last_event_ms <= ?";
+    }
+    sql << " ORDER BY last_event_ms DESC LIMIT ?";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql.str().c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::querySiteIncidents prepare failed: " << sqlite3_errmsg(db_));
+        return "[]";
+    }
+
+    int bindIdx = 1;
+    if (!state.empty()) {
+        sqlite3_bind_text(stmt, bindIdx++, state.c_str(), -1, SQLITE_STATIC);
+    }
+    if (start_ms > 0) {
+        sqlite3_bind_int64(stmt, bindIdx++, start_ms);
+    }
+    if (end_ms > 0) {
+        sqlite3_bind_int64(stmt, bindIdx++, end_ms);
+    }
+    sqlite3_bind_int(stmt, bindIdx++, limit > 0 ? limit : 100);
+
+    std::ostringstream json;
+    json << "[";
+    bool first = true;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (!first) json << ",";
+        first = false;
+
+        auto textOrEmpty = [&](int col) -> std::string {
+            const char* v = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
+            return v ? v : "";
+        };
+
+        const std::string incident_id = textOrEmpty(0);
+
+        json << "{"
+             << "\"incident_id\":\"" << weaknet_utils::escapeJsonString(incident_id) << "\","
+             << "\"site_id\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(1)) << "\","
+             << "\"gateway_id\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(2)) << "\","
+             << "\"started_at_ms\":" << sqlite3_column_int64(stmt, 3) << ","
+             << "\"last_event_ms\":" << sqlite3_column_int64(stmt, 4) << ","
+             << "\"resolved_at_ms\":";
+        // 回读保持 NULL 语义：活跃 incident 输出 null 而不是 0
+        if (sqlite3_column_type(stmt, 5) == SQLITE_NULL) {
+            json << "null";
+        } else {
+            json << sqlite3_column_int64(stmt, 5);
+        }
+        json << ",\"affected_devices\":" << sqlite3_column_int64(stmt, 6) << ","
+             << "\"state\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(7)) << "\","
+             << "\"suspected_cause\":";
+        if (sqlite3_column_type(stmt, 8) == SQLITE_NULL) {
+            json << "null";
+        } else {
+            json << "\"" << weaknet_utils::escapeJsonString(textOrEmpty(8)) << "\"";
+        }
+
+        // 受影响设备清单：从回链表派生（不额外存第二份事实）。
+        // 用嵌套查询而不是 JOIN + GROUP_CONCAT：后者在设备地址含分隔符时
+        // 会被静默切错，而设备地址是外部观测数据，不能假设它干净。
+        if (include_devices) {
+            json << ",\"affected_device_ids\":[";
+
+            sqlite3_stmt* dev_stmt = nullptr;
+            const char* dev_sql =
+                "SELECT DISTINCT d.device_address "
+                "FROM site_incident_events e JOIN device_events d ON d.event_id = e.event_id "
+                "WHERE e.incident_id = ? ORDER BY d.device_address LIMIT ?";
+            if (sqlite3_prepare_v2(db_, dev_sql, -1, &dev_stmt, nullptr) == SQLITE_OK) {
+                sqlite3_bind_text(dev_stmt, 1, incident_id.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_int(dev_stmt, 2, 1000);
+                bool dev_first = true;
+                while (sqlite3_step(dev_stmt) == SQLITE_ROW) {
+                    if (!dev_first) json << ",";
+                    dev_first = false;
+                    const char* addr =
+                        reinterpret_cast<const char*>(sqlite3_column_text(dev_stmt, 0));
+                    json << "\"" << weaknet_utils::escapeJsonString(addr ? addr : "") << "\"";
+                }
+                sqlite3_finalize(dev_stmt);
+            }
+            json << "]";
+        }
+
+        json << "}";
+    }
+
+    sqlite3_finalize(stmt);
+    json << "]";
+    return json.str();
+}
+
+int64_t DatabaseManager::queryLatestIncidentResolvedAt(const std::string& site_id) {
+    if (!db_) return 0;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // 只认已结案的行（resolved_at_ms IS NOT NULL）：活跃 incident 不构成
+    // 回放下限，否则回放会因为"上一起还没结案"而完全跳过证据。
+    int64_t latest = 0;
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql =
+        "SELECT MAX(resolved_at_ms) FROM site_incidents "
+        "WHERE resolved_at_ms IS NOT NULL AND (? = '' OR site_id = ?)";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::queryLatestIncidentResolvedAt prepare failed: "
+                      << sqlite3_errmsg(db_));
+        return 0;
+    }
+    sqlite3_bind_text(stmt, 1, site_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, site_id.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
+        latest = sqlite3_column_int64(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return latest;
+}
+
+std::vector<WirelessDeviceEvent> DatabaseManager::loadDeviceEventsForReplay(int64_t start_ms,
+                                                                           int64_t end_ms) {
+    std::vector<WirelessDeviceEvent> out;
+    if (!db_) return out;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // 与 queryDeviceEvents 的区别是 **ORDER BY ts ASC**：回放必须按时间正序
+    // 重演关联决策，倒序会让"谁先到"完全颠倒。
+    const char* sql = R"(
+        SELECT event_id, ts, site_id, gateway_id, protocol, device_address,
+               address_type, hci_index, event_type, rssi_at_event_dbm, raw_reason_code,
+               reason, source, source_detail, suspected_cause, details_json
+        FROM device_events
+        WHERE ts >= ? AND ts <= ?
+        ORDER BY ts ASC
+        LIMIT 100000;
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::loadDeviceEventsForReplay prepare failed: "
+                      << sqlite3_errmsg(db_));
+        return out;
+    }
+
+    sqlite3_bind_int64(stmt, 1, start_ms);
+    sqlite3_bind_int64(stmt, 2, end_ms);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        auto textOrEmpty = [&](int col) -> std::string {
+            const char* v = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
+            return v ? v : "";
+        };
+
+        WirelessDeviceEvent ev;
+        ev.event_id = textOrEmpty(0);
+        ev.timestamp_ms = static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
+        ev.site_id = textOrEmpty(2);
+        ev.gateway_id = textOrEmpty(3);
+        ev.protocol = wirelessProtocolFromString(textOrEmpty(4), WirelessProtocol::Bluetooth);
+        ev.device_address = textOrEmpty(5);
+        ev.address_type = btAddressTypeFromString(textOrEmpty(6), BtAddressType::Unknown);
+        ev.hci_index = static_cast<uint32_t>(sqlite3_column_int(stmt, 7));
+        ev.event_type =
+            deviceEventTypeFromString(textOrEmpty(8), DeviceEventType::LinkDisconnected);
+        ev.rssi_at_event_dbm = (sqlite3_column_type(stmt, 9) == SQLITE_NULL)
+                                   ? std::nullopt
+                                   : std::optional<int>(sqlite3_column_int(stmt, 9));
+        ev.raw_reason_code = static_cast<uint8_t>(sqlite3_column_int(stmt, 10));
+        ev.reason = disconnectReasonFromString(textOrEmpty(11), DisconnectReason::Unknown);
+        ev.source = evidenceSourceFromString(textOrEmpty(12), EvidenceSource::Unknown);
+        ev.source_detail = textOrEmpty(13);
+        ev.suspected_cause = (sqlite3_column_type(stmt, 14) == SQLITE_NULL)
+                                 ? std::nullopt
+                                 : std::optional<std::string>(textOrEmpty(14));
+        ev.details_json = textOrEmpty(15);
+        // monotonic_ns 不落库（它是进程内单调时钟，跨重启无意义）。
+        // 回放只重建时空关联所需的墙钟时间线，因此这里保持 0。
+
+        out.push_back(std::move(ev));
+    }
+    sqlite3_finalize(stmt);
+    return out;
 }
 
 int64_t DatabaseManager::getRecordCountLocked() {

@@ -12,6 +12,7 @@
  */
 
 #include "monitor_registry.hpp"
+#include <chrono>
 #include <thread>
 #include <unistd.h>   // gethostname（bt_events 插件的 gateway_id 兜底）
 #include "logger.hpp"
@@ -27,6 +28,7 @@
 #include "tcp_connect_monitor.hpp"
 #include "bt_event_monitor.hpp"
 #include "bt_link_quality_tracker.hpp"
+#include "site_incident_correlator.hpp"
 #include "wireless_event_store.hpp"
 #include "utils/bpf_map_sizing.hpp"
 
@@ -366,6 +368,7 @@ class BtEventsPlugin : public IMonitorPlugin {
     ServerContext* ctx_ = nullptr;
     std::unique_ptr<WirelessEventStore> store_;
     std::unique_ptr<BtLinkQualityTracker> tracker_;
+    std::unique_ptr<SiteIncidentCorrelator> correlator_;
     std::unique_ptr<BtEventMonitor> monitor_;
 public:
     const char* name() const override { return "bt_events"; }
@@ -402,6 +405,29 @@ public:
         tracker_ = std::make_unique<BtLinkQualityTracker>();
         ctx->bt_link_quality_tracker = tracker_.get();
 
+        // Phase 3a: 区域级异常关联器——把散落的设备事件聚合成 SiteIncident。
+        //
+        // 构造顺序必须是 correlator → store（store 只存裸指针，无依赖），
+        // 但**回放必须早于绑定**：
+        //   1. 先 recoverFromStore() 恢复内存态。此时 store 尚未绑定关联器，
+        //      回放产出的事件不会反过来被重新投递进关联器（否则每条回放事件
+        //      都会触发一次关联，造成重复计数与无谓的 DB 写）。
+        //   2. 再绑定。此后运行期事件才自动进入关联。
+        //
+        // 关联器的 site_id 与 store 一致（Phase 3a 运行模型 1 Gateway = 1 Site）。
+        SiteIncidentConfig incident_cfg;
+        incident_cfg.site_id = store_->config().site_id;
+        correlator_ = std::make_unique<SiteIncidentCorrelator>(ctx->db_mgr.get(), incident_cfg);
+        ctx->site_incident_correlator = correlator_.get();
+
+        // 回放窗口右沿用当前墙钟：关联器只按事件时间做决策，
+        // 这个 now_ms 只用于确定"最近多久的事件值得回放"。
+        const uint64_t now_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+        correlator_->recoverFromStore(now_ms);
+        store_->setIncidentCorrelator(correlator_.get());
+
         monitor_ = std::make_unique<BtEventMonitor>(store_.get(), tracker_.get());
         if (!monitor_->init(ctx->cfg.bluetooth.events_bpf_obj.get(),
                             store_->config().gateway_id)) {
@@ -430,6 +456,11 @@ public:
             monitor_->stop();
             monitor_.reset();
         }
+        // 先解绑再销毁：store 在关联器之前构造、之后销毁，
+        // 中间任何时刻 recordEvent 都不能看到一个悬垂的关联器指针。
+        if (store_) {
+            store_->setIncidentCorrelator(nullptr);
+        }
         if (ctx_) {
             if (ctx_->wireless_event_store == store_.get()) {
                 ctx_->wireless_event_store = nullptr;
@@ -437,7 +468,11 @@ public:
             if (ctx_->bt_link_quality_tracker == tracker_.get()) {
                 ctx_->bt_link_quality_tracker = nullptr;
             }
+            if (ctx_->site_incident_correlator == correlator_.get()) {
+                ctx_->site_incident_correlator = nullptr;
+            }
         }
+        correlator_.reset();
         tracker_.reset();
         store_.reset();
     }

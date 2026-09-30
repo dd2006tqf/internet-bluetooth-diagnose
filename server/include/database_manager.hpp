@@ -21,6 +21,7 @@
 #include <mutex>
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 struct sqlite3;  ///< 前置声明 SQLite 句柄类型
 
@@ -28,6 +29,7 @@ namespace weaknet_dbus {
 
 class NetInfo;  ///< 前置声明
 struct NetworkQualityResult;  ///< 前置声明
+struct WirelessDeviceEvent;  ///< 前置声明（Phase 3a 启动回放）
 
 /**
  * @brief SQLite 历史数据持久化管理器
@@ -201,6 +203,88 @@ public:
      */
     std::string queryDeviceBaselines(const std::string& device_address = "",
                                     int limit = 100);
+
+    // ------------------------------------------------------------------
+    // Phase 3a：区域级异常事件（SiteIncident）
+    //
+    // 为什么必须有这两张表（而不是只放内存）：
+    //   1. incident 的生命周期长于进程——它可能有数分钟到数小时的跨度，
+    //      而网关会被重启/升级。只放内存 = 重启一次丢一起事故。
+    //   2. 证据回链必须可查：用户问"凌晨 3 点影响了哪些设备"时，答案不是
+    //      "若干设备"，而是"这几条具体事件"。文本塞进 incident 行做不到按
+    //      event_id 精确回溯，也无法保证不重复计数。
+    // ------------------------------------------------------------------
+
+    /**
+     * @brief 插入或更新一条区域级异常事件（按 incident_id UPSERT）
+     *
+     * UPSERT 而非 INSERT：关联器在 incident 的每一次状态推进（新开 / 吸收
+     * 新证据 / 结案）都会写回同一行；服务重启后的回放也会重新推导出
+     * **同一个** incident_id（确定性 ID），必须更新而不是插新行——
+     * 否则"重启一次多一起事故"。
+     *
+     * NULL 语义：`resolved_at_ms` 用 optional 表达"仍在活跃"（写 SQL NULL）；
+     * `suspected_cause` 同理（Phase 3a 恒为 NULL——关联层不做根因推断）。
+     * 用 0 冒充"未结案"会让"1970 年结案"这种假事实进入历史。
+     */
+    bool upsertSiteIncident(const std::string& incident_id,
+                            const std::string& site_id,
+                            const std::string& gateway_id,
+                            int64_t started_at_ms,
+                            int64_t last_event_ms,
+                            const std::optional<int64_t>& resolved_at_ms,
+                            int64_t affected_devices,
+                            const std::string& state,
+                            const std::optional<std::string>& suspected_cause);
+
+    /**
+     * @brief 建立 incident 与其证据事件的回链（1:N）
+     *
+     * 复合主键 (incident_id, event_id) 上的 INSERT OR IGNORE：回放与重试天然幂等，
+     * 同一事件不会被重复计入同一起事故。
+     *
+     * @return true 写入成功或已存在（幂等）；false SQL 失败
+     */
+    bool insertSiteIncidentEvent(const std::string& incident_id,
+                                 const std::string& event_id);
+
+    /**
+     * @brief 查询区域级异常事件，返回 JSON 数组字符串
+     *
+     * @param state   状态过滤（"OPEN"/"ONGOING"/"RESOLVED"），"" 表示不限
+     * @param start_ms 起始时间（Unix 毫秒，按 last_event_ms 过滤），0 表示不限
+     * @param end_ms   结束时间（Unix 毫秒），0 表示不限
+     * @param limit    最大条数
+     * @param include_devices 是否附带受影响设备清单（关联 site_incident_events
+     *                  → device_events 派生，不额外存第二份事实）
+     * @return JSON 数组字符串（失败时返回 "[]"）
+     */
+    std::string querySiteIncidents(const std::string& state,
+                                   int64_t start_ms,
+                                   int64_t end_ms,
+                                   int limit = 100,
+                                   bool include_devices = true);
+
+    /**
+     * @brief 该现场最近一次 incident 的结案时刻（Unix 毫秒），无记录返回 0
+     *
+     * 供关联器启动回放使用：只回放这一时刻之后的事件，避免把已结案的
+     * incident 重新拉回活跃态（"重启复活旧事故"）。
+     */
+    int64_t queryLatestIncidentResolvedAt(const std::string& site_id);
+
+    /**
+     * @brief 回放窗口内的规范化设备事件（时间正序），供关联器重建内存态
+     *
+     * 与 queryDeviceEvents 的区别是**排序方向**：查询出口按时间倒序给用户看，
+     * 回放必须按时间正序重演决策过程。两个方向刻意做成两个方法，
+     * 避免"加一个参数改变排序"这种让调用方踩坑的隐式开关。
+     *
+     * @param start_ms 起始时间（Unix 毫秒，闭区间）
+     * @param end_ms   结束时间（Unix 毫秒，闭区间）
+     */
+    std::vector<WirelessDeviceEvent> loadDeviceEventsForReplay(int64_t start_ms,
+                                                               int64_t end_ms);
 
     /**
      * @brief 清理过期快照

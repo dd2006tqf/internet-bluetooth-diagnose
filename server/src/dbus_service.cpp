@@ -132,6 +132,10 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
         self->handleQueryDeviceEvents(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodQuerySiteIncidents)) {
+        self->handleQuerySiteIncidents(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetCoexistenceConflict)) {
         self->handleGetCoexistenceConflict(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
@@ -1532,6 +1536,80 @@ bool DbusService::handleQueryDeviceEvents(DBusConnection* conn, DBusMessage* msg
             device_address, event_type, start_ms, end_ms, limit);
     } else {
         result = "{\"error\":\"event store not available\"}";
+    }
+
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    DBusMessageIter reply_args;
+    dbus_message_iter_init_append(reply, &reply_args);
+    const char* s = result.c_str();
+    dbus_message_iter_append_basic(&reply_args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+// ============================================================================
+// 区域级异常事件查询（Phase 3a，只读）
+//
+// 返回 SiteIncident 的 JSON 数组。与 QueryDeviceEvents 的关系是**抽象层次**不同：
+// 前者回答"哪台设备发生了什么"（设备层事实），本方法回答"这一片区域是否
+// 同时出了问题、影响了哪些设备"（区域层解释）。运维在"凌晨 3 点产线出过问题"
+// 场景下先看本方法，再按 incident_id 下钻到 device_events。
+// ============================================================================
+
+bool DbusService::handleQuerySiteIncidents(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleQuerySiteIncidents called");
+
+    // 可选参数：STRING state, INT64 start_ms, INT64 end_ms, INT32 limit
+    std::string state;
+    int64_t start_ms = 0, end_ms = 0;
+    int32_t limit = 100;
+
+    DBusMessageIter args;
+    if (dbus_message_iter_init(msg, &args) == TRUE) {
+        if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING) {
+            const char* val = nullptr;
+            dbus_message_iter_get_basic(&args, &val);
+            if (val) state = val;
+        }
+        if (dbus_message_iter_next(&args) &&
+            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT64) {
+            dbus_message_iter_get_basic(&args, &start_ms);
+        }
+        if (dbus_message_iter_next(&args) &&
+            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT64) {
+            dbus_message_iter_get_basic(&args, &end_ms);
+        }
+        if (dbus_message_iter_next(&args) &&
+            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT32) {
+            dbus_message_iter_get_basic(&args, &limit);
+        }
+    }
+
+    // 与 QueryDeviceEvents 同因的 limit 钳制：负数=无上限 / 0=空集，均归一处理
+    constexpr int32_t kMaxIncidentLimit = 10000;
+    if (limit <= 0) {
+        LOG_WARNING(LogModule::DBUS, "QuerySiteIncidents limit=" << limit
+                    << " is non-positive; clamped to 1");
+        limit = 1;
+    } else if (limit > kMaxIncidentLimit) {
+        LOG_WARNING(LogModule::DBUS, "QuerySiteIncidents limit=" << limit
+                    << " exceeds cap; clamped to " << kMaxIncidentLimit);
+        limit = kMaxIncidentLimit;
+    }
+    if (start_ms > 0 && end_ms > 0 && end_ms < start_ms) {
+        LOG_WARNING(LogModule::DBUS, "QuerySiteIncidents end_ms < start_ms; swapping");
+        std::swap(start_ms, end_ms);
+    }
+
+    std::string result = "[]";
+    if (ctx_ && ctx_->wireless_event_store) {
+        result = ctx_->wireless_event_store->querySiteIncidents(state, start_ms, end_ms, limit);
+    } else {
+        result = "{\"error\":\"incident store not available\"}";
     }
 
     DBusMessage* reply = dbus_message_new_method_return(msg);

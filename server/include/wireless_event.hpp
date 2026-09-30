@@ -304,6 +304,12 @@ DeviceEventType deviceEventTypeFromString(const std::string& s, DeviceEventType 
 DisconnectReason disconnectReasonFromString(const std::string& s, DisconnectReason fallback);
 LinkQualityState linkQualityStateFromString(const std::string& s, LinkQualityState fallback);
 
+/// Phase 3a：启动回放需要从 device_events 重建事件对象，因此地址类型与证据来源
+/// 也需要各自的逆映射。与上面五个解析函数同一约定：只解析本模块自己写出的字符串，
+/// 大小写敏感，无法识别时返回 fallback 而不抛异常。
+BtAddressType btAddressTypeFromString(const std::string& s, BtAddressType fallback);
+EvidenceSource evidenceSourceFromString(const std::string& s, EvidenceSource fallback);
+
 /**
  * @brief 把内核 HCI error code 映射为归一化断连原因
  *

@@ -138,6 +138,24 @@ LinkQualityState linkQualityStateFromString(const std::string& s, LinkQualitySta
     return fallback;
 }
 
+BtAddressType btAddressTypeFromString(const std::string& s, BtAddressType fallback) {
+    if (s == "BREDR")     return BtAddressType::Bredr;
+    if (s == "LE_PUBLIC") return BtAddressType::LePublic;
+    if (s == "LE_RANDOM") return BtAddressType::LeRandom;
+    if (s == "UNKNOWN")   return BtAddressType::Unknown;
+    return fallback;
+}
+
+EvidenceSource evidenceSourceFromString(const std::string& s, EvidenceSource fallback) {
+    if (s == "UNKNOWN")          return EvidenceSource::Unknown;
+    if (s == "KERNEL_MGMT")      return EvidenceSource::KernelMgmt;
+    if (s == "KERNEL_HCI")       return EvidenceSource::KernelHci;
+    if (s == "KERNEL_HCI_TIMEOUT") return EvidenceSource::KernelHciTimeout;
+    if (s == "BLUEZ_DBUS")       return EvidenceSource::BluezDbus;
+    if (s == "DERIVED")          return EvidenceSource::Derived;
+    return fallback;
+}
+
 // ============================================================================
 // HCI error code -> 归一化断连原因
 //

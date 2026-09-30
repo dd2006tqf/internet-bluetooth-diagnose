@@ -52,6 +52,7 @@ class SkbDropMonitor;       // 前置声明：Socket 丢包归因监控（eBPF�
 class DatabaseManager;      // 前置声明：SQLite 历史数据持久化
 class WirelessEventStore;   // 前置声明：规范化无线设备事件存储（Phase 1）
 class BtLinkQualityTracker; // 前置声明：蓝牙链路质量跟踪器（Phase 2）
+class SiteIncidentCorrelator; // 前置声明：区域级异常关联器（Phase 3a）
 class ConfigTransaction;    // 前置声明：配置事务状态机（weaknet_config.hpp 中定义）
 
 /**
@@ -131,6 +132,12 @@ struct ServerContext {
     // 由 bt_events 插件拥有，提供给 BtMonitor 喂入 fresh RSSI，
     // 以及供 BtEventMonitor 在 Normalizer 之后做因果断连 RSSI 回填。
     BtLinkQualityTracker* bt_link_quality_tracker = nullptr;
+
+    // ---------- 区域级异常关联器（Phase 3a: SiteIncident）----------
+    // 由 bt_events 插件拥有，是 D-Bus / CLI / 离线工具三条查询出口的取数点。
+    // 它同时是 WirelessEventStore 的下游消费者（事件流由 store 转发），
+    // 因此销毁顺序必须是 store 先解绑、关联器后析构。
+    SiteIncidentCorrelator* site_incident_correlator = nullptr;
 
     // ---------- 边缘遥测上报 ----------
     std::unique_ptr<weaknet::EdgeTelemetryExporter> edge_exporter;

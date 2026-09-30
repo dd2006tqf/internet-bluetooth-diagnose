@@ -720,6 +720,46 @@ bool weaknet_query_device_events(const char* device_address, const char* event_t
                                  char* error_buffer, size_t error_size);
 
 /**
+ * @brief 查询区域级异常事件 SiteIncident（只读）
+ *
+ * 与 weaknet_query_device_events 的区别是**抽象层次**：后者回答"哪台设备
+ * 发生了什么"（设备层事实），本函数回答"这一片区域是否同时出了问题、
+ * 影响了哪些设备"（区域层解释）。
+ *
+ * 当现场多台设备在关联窗口内同时出现非计划断连/链路劣化时，服务端会产出一条
+ * SiteIncident，并保留构成它的每一条 device_event 的可追溯回链。
+ *
+ * 字段语义：
+ *   - `state`             OPEN / ONGOING / RESOLVED（生命周期）
+ *   - `started_at_ms`     覆盖的最早异常时刻（不是"发现时刻"）
+ *   - `last_event_ms`     最近一次吸收异常的时刻；时间过滤以此为准
+ *   - `resolved_at_ms`    结案时刻；仍在活跃时为 null
+ *   - `affected_devices`  受影响设备数量（事实）
+ *   - `affected_device_ids` 受影响设备地址清单（由回链表派生）
+ *   - `suspected_cause`   推断原因，当前恒为 null——关联层只做时空聚合，
+ *                         不做根因推断（诊断器是后续阶段的能力）
+ *
+ * D-Bus 调用：
+ *   - Method: QuerySiteIncidents
+ *   - Args: STRING state, INT64 start_ms, INT64 end_ms, INT32 limit
+ *   - Returns: STRING（JSON 数组）
+ *
+ * @param state        状态过滤（如 "OPEN"；"" 表示不限）
+ * @param start_ms     起始时间 Unix 毫秒（0 表示不限）
+ * @param end_ms       结束时间 Unix 毫秒（0 表示不限）
+ * @param limit        最大返回条数（服务端上限 10000）
+ * @param buffer       结果缓冲区（JSON 数组）
+ * @param buffer_size  缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size   错误缓冲区大小
+ * @return true 成功；false 调用失败（error_buffer 含原因）
+ */
+bool weaknet_query_site_incidents(const char* state,
+                                  int64_t start_ms, int64_t end_ms, int32_t limit,
+                                  char* buffer, size_t buffer_size,
+                                  char* error_buffer, size_t error_size);
+
+/**
  * @brief 查询历史监控数据
  *
  * 通过 D-Bus 调用 GetHistory 方法，服务端从 SQLite 数据库中

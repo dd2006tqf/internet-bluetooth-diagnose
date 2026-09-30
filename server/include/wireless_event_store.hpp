@@ -33,7 +33,8 @@
 
 namespace weaknet_dbus {
 
-class DatabaseManager;  ///< 前置声明
+class DatabaseManager;         ///< 前置声明
+class SiteIncidentCorrelator;  ///< 前置声明（Phase 3a：区域级异常关联器）
 
 /**
  * @brief 事件存储配置
@@ -118,6 +119,37 @@ public:
     std::string queryDeviceBaselines(const std::string& device_address = "",
                                     int limit = 100) const;
 
+    /**
+     * @brief 绑定区域级异常关联器（Phase 3a）
+     *
+     * 由 bt_events 插件在构造 store 之后注入（非 owning）。绑定后，
+     * recordEvent() 会在**落库与内存缓冲完成之后**把同一事件投递给关联器，
+     * 使"设备事实"与"区域解释"由同一条事件流驱动，不需要第二个生产者。
+     *
+     * 传 nullptr 解除绑定。默认未绑定——不接关联器的 store 行为与本 change 之前
+     * 完全一致（单设备事件照常记录与查询），这是向后兼容的边界。
+     */
+    void setIncidentCorrelator(SiteIncidentCorrelator* correlator);
+
+    /**
+     * @brief 推进关联器的静默期（把已静默满 quiet_window 的 incident 结案）
+     *
+     * 关联器是事件驱动的：静默期内没有新事件，也就没有人调用它的 tick()。
+     * 由消费线程（BtEventMonitor::consumeLoop）每轮调用一次，保证
+     * "没有新异常"同样能推动事故走向 RESOLVED。
+     *
+     * @return 本次被结案的 incident 数量；未绑定关联器时返回 0
+     */
+    size_t tickIncidents(uint64_t now_ms);
+
+    /**
+     * @brief 查询持久化的区域异常事件列表（代理至关联器）
+     */
+    std::string querySiteIncidents(const std::string& state,
+                                   int64_t start_ms,
+                                   int64_t end_ms,
+                                   int limit = 100) const;
+
     /// 清空内存环形缓冲（不影响已落库数据）
     void clearMemory();
 
@@ -126,6 +158,9 @@ public:
 private:
     DatabaseManager* db_;              ///< 不拥有所有权
     WirelessEventStoreConfig cfg_;
+    /// 区域级异常关联器（非 owning，未绑定时为 nullptr）。归属在 bt_events 插件，
+    /// 与 store 同生共死；store 只负责把事件流接过去，不做任何关联决策。
+    SiteIncidentCorrelator* correlator_ = nullptr;
     mutable std::mutex mu_;
     std::deque<WirelessDeviceEvent> ring_;  ///< 内存环形缓冲（时间正序）
     uint64_t total_recorded_ = 0;

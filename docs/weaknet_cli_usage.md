@@ -68,6 +68,7 @@ weaknet-cli <command> [arguments...]
   monitor restart <name> 重启监控器
   monitor save           保存运行时启停状态到 override 文件
   events [过滤条件]       查询无线设备事件（Canonical Device Event，JSON）
+  incidents [过滤条件]    查询区域级异常事件（SiteIncident，JSON）
 ```
 
 `events` 的过滤条件全部可选，省略即不限制：
@@ -168,7 +169,51 @@ $ weaknet-cli events --start 1790700000000 --end 1790703600000
 | `rssi_at_event_dbm` | 可为 `null`（未采集；**不是 0**） |
 | `details.raw_evidence` | 支撑该事件的全部原始观测（可追溯性） |
 
-### 3.5 `weaknet-cli get <monitor>`
+### 3.5 `weaknet-cli incidents`
+
+查询**区域级异常事件**（SiteIncident），只读。与 `events` 的区别是抽象层次：
+`events` 回答"哪台设备发生了什么"（设备层事实），`incidents` 回答"这一片区域
+是否同时出了问题、影响了哪些设备"（区域层解释）。
+
+当现场多台设备在 60 秒关联窗口内同时出现非计划断连或链路劣化时，
+服务端自动产出一条 SiteIncident（`OPEN → ONGOING → RESOLVED`），
+并保留构成它的每一条 `device_events.event_id` 回链。
+
+```bash
+# 最近 24 小时的全部区域事件
+$ weaknet-cli incidents --start 1790700000000
+
+# 只看仍在活跃的事故
+$ weaknet-cli incidents --state OPEN
+```
+
+过滤条件全部可选：
+
+```
+  --state <STATE>       状态过滤（OPEN / ONGOING / RESOLVED）
+  --start <ms>          起始时间（Unix 毫秒，按 last_event_ms 过滤）
+  --end <ms>            结束时间（Unix 毫秒，0 表示不限）
+  --limit <N>           最大条数（默认 100，服务端上限 10000）
+```
+
+返回 JSON 数组，每条 incident 含：
+
+| 字段 | 说明 |
+| ---- | ---- |
+| `incident_id` | 区域事件 ID（`sitinc_<现场>_<started_at_ms>`；确定性 ID，重启回放写回同一行） |
+| `site_id` / `gateway_id` | 事件来源身份 |
+| `started_at_ms` | 覆盖的最早异常时刻（**不是**"发现时刻"） |
+| `last_event_ms` | 最近吸收异常的时刻；时间过滤以此为准 |
+| `resolved_at_ms` | 结案时刻；仍在活跃时为 `null`（**不是 0**） |
+| `affected_devices` | 受影响设备数量 |
+| `affected_device_ids` | 受影响设备地址清单（由证据回链派生） |
+| `suspected_cause` | **恒为 null**——关联层只做时空聚合，不做根因推断 |
+
+**不会成为事故证据的事件**：用户主动断开 / 对端设备断开（计划内行为，
+`REMOTE_USER_TERMINATED` / `LOCAL_HOST_TERMINATED`）。若计入，
+每天下班集体关机都会误报一起"区域无线故障"。
+
+### 3.6 `weaknet-cli get <monitor>`
 
 查询指定监控器的完整当前参数（JSON 格式）。
 

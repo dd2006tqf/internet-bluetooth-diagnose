@@ -6,6 +6,8 @@
  *   - 独立可执行程序（与服务端分开编译），连接 DatabaseManager 指向的同一个数据库文件
  *   - 支持按接口名、相对时间（--last 1h/30m/7d）或绝对时间范围（--start/--end）查询
  *   - --events：查询规范化无线设备事件（device_events 表，Unix 毫秒时间轴）
+ *   - --baselines：查询设备链路基线画像（device_baselines 表）
+ *   - --incidents：查询区域级异常事件（site_incidents 表，Phase 3a）
  *   - 输出模式：默认表格视图（人类可读）或 --json 原始 JSON（供脚本消费）
  *   - 内置 --info 显示数据库元信息，--cleanup N 天直接触发过期清理
  *
@@ -90,6 +92,8 @@ static void printUsage() {
               << "  --bt [MAC]           查询蓝牙历史时序 (可指定设备 MAC 地址)\n"
               << "  --events             查询规范化无线设备事件 (Canonical Device Event)\n"
               << "  --baselines          查询设备链路基线画像 (Phase 2: DeviceLinkProfile)\n"
+              << "  --incidents          查询区域级异常事件 (Phase 3a: SiteIncident)\n"
+              << "  --state <STATE>      --incidents: 状态过滤 (OPEN / ONGOING / RESOLVED)\n"
               << "  --device <addr>      --events / --baselines: 设备地址过滤 (XX:XX:XX:XX:XX:XX)\n"
               << "  --type <EVENT_TYPE>  --events: 事件类型过滤 (如 LINK_DISCONNECTED)\n"
               << "  --last <duration>    查询最近时间 (1h/30m/7d)\n"
@@ -109,6 +113,8 @@ static void printUsage() {
               << "  ./history_query_tool --events --last 24h\n"
               << "  ./history_query_tool --events --type LINK_DISCONNECTED --limit 20 --json\n"
               << "  ./history_query_tool --baselines --device AA:BB:CC:DD:EE:FF\n"
+              << "  ./history_query_tool --incidents --last 24h --json\n"
+              << "  ./history_query_tool --incidents --state OPEN\n"
               << "  ./history_query_tool --all --last 30m\n"
               << "  ./history_query_tool --info\n"
               << "  ./history_query_tool --cleanup 7\n";
@@ -120,7 +126,9 @@ int main(int argc, char* argv[]) {
     bool query_bt = false;
     bool query_events = false;
     bool query_baselines = false;
+    bool query_incidents = false;
     std::string event_device, event_type;
+    std::string incident_state;
     std::string start_time, end_time, last;
     int limit = 100;
     bool show_info = false;
@@ -135,6 +143,10 @@ int main(int argc, char* argv[]) {
             query_events = true;
         } else if (strcmp(argv[i], "--baselines") == 0) {
             query_baselines = true;
+        } else if (strcmp(argv[i], "--incidents") == 0) {
+            query_incidents = true;
+        } else if (strcmp(argv[i], "--state") == 0 && i + 1 < argc) {
+            incident_state = argv[++i];
         } else if (strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
             event_device = argv[++i];
         } else if (strcmp(argv[i], "--type") == 0 && i + 1 < argc) {
@@ -230,6 +242,22 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         std::cout << "设备基线画像 (JSON):\n" << result << "\n";
+        return 0;
+    }
+
+    if (query_incidents) {
+        const int64_t start_ms = isoToEpochMs(start_time);
+        const int64_t end_ms = isoToEpochMs(end_time);
+        std::string result = db.querySiteIncidents(incident_state, start_ms, end_ms, limit, true);
+        if (json_output) {
+            std::cout << result << "\n";
+            return 0;
+        }
+        if (result == "[]" || result.empty()) {
+            std::cout << "没有查询到区域级异常事件\n";
+            return 0;
+        }
+        std::cout << "区域级异常事件 (JSON):\n" << result << "\n";
         return 0;
     }
 

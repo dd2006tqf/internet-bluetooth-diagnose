@@ -9,6 +9,7 @@
 
 #include "database_manager.hpp"
 #include "logger.hpp"
+#include "site_incident_correlator.hpp"
 
 namespace weaknet_dbus {
 
@@ -19,51 +20,97 @@ WirelessEventStore::WirelessEventStore(DatabaseManager* db, WirelessEventStoreCo
 }
 
 bool WirelessEventStore::recordEvent(const WirelessDeviceEvent& event) {
-    std::lock_guard<std::mutex> lock(mu_);
+    // 待投递给关联器的事件快照。**必须在锁内拷贝**：调用方可能在栈上复用
+    // 同一个 event 对象，锁外再引用它就成了悬垂读（这不是假设——单元测试与
+    // 消费循环都会循环复用同一个变量）。
+    std::optional<WirelessDeviceEvent> to_observe;
 
-    // 补齐来源身份：Phase 1 运行模型是"1 Gateway = 1 Site"，
-    // 事件若未自带 site_id/gateway_id（如来自测试或未来的其它生产者），
-    // 用 store 配置兜底，保证落库行永远可回答"这个事件是哪台探针看到的"。
-    WirelessDeviceEvent ev = event;
-    if (ev.gateway_id.empty()) ev.gateway_id = cfg_.gateway_id;
-    if (ev.site_id.empty()) {
-        ev.site_id = cfg_.site_id.empty() ? ev.gateway_id : cfg_.site_id;
-    }
+    {
+        std::lock_guard<std::mutex> lock(mu_);
 
-    ring_.push_back(ev);
-    while (ring_.size() > cfg_.ring_capacity) {
-        ring_.pop_front();
-    }
-    ++total_recorded_;
+        // 补齐来源身份：Phase 1 运行模型是"1 Gateway = 1 Site"，
+        // 事件若未自带 site_id/gateway_id（如来自测试或未来的其它生产者），
+        // 用 store 配置兜底，保证落库行永远可回答"这个事件是哪台探针看到的"。
+        WirelessDeviceEvent ev = event;
+        if (ev.gateway_id.empty()) ev.gateway_id = cfg_.gateway_id;
+        if (ev.site_id.empty()) {
+            ev.site_id = cfg_.site_id.empty() ? ev.gateway_id : cfg_.site_id;
+        }
 
-    if (db_) {
-        const bool ok = db_->insertDeviceEvent(
-            ev.event_id,
-            static_cast<int64_t>(ev.timestamp_ms),
-            ev.site_id,
-            ev.gateway_id,
-            toString(ev.protocol),
-            ev.device_address,
-            toString(ev.address_type),
-            ev.hci_index,
-            toString(ev.event_type),
-            ev.rssi_at_event_dbm,
-            ev.raw_reason_code,
-            toString(ev.reason),
-            toString(ev.source),
-            ev.source_detail,
-            ev.suspected_cause,
-            ev.details_json);
-        if (!ok) {
-            ++persist_failures_;
-            LOG_WARNING(LogModule::BLUETOOTH,
-                        "WirelessEventStore: failed to persist event " << ev.event_id
-                        << " (device=" << ev.device_address
-                        << ", type=" << toString(ev.event_type) << ")");
+        ring_.push_back(ev);
+        while (ring_.size() > cfg_.ring_capacity) {
+            ring_.pop_front();
+        }
+        ++total_recorded_;
+
+        // 只有真的落库成功的事件才参与区域关联：关联窗口的证据回链要求
+        // site_incident_events 能 JOIN 到 device_events 行，未落库的事件
+        // 关联出来的 incident 查不出设备清单。db_ 为空（纯内存模式）时同样跳过。
+        bool persist_ok = false;
+        if (db_) {
+            persist_ok = db_->insertDeviceEvent(
+                ev.event_id,
+                static_cast<int64_t>(ev.timestamp_ms),
+                ev.site_id,
+                ev.gateway_id,
+                toString(ev.protocol),
+                ev.device_address,
+                toString(ev.address_type),
+                ev.hci_index,
+                toString(ev.event_type),
+                ev.rssi_at_event_dbm,
+                ev.raw_reason_code,
+                toString(ev.reason),
+                toString(ev.source),
+                ev.source_detail,
+                ev.suspected_cause,
+                ev.details_json);
+            if (!persist_ok) {
+                ++persist_failures_;
+                LOG_WARNING(LogModule::BLUETOOTH,
+                            "WirelessEventStore: failed to persist event " << ev.event_id
+                            << " (device=" << ev.device_address
+                            << ", type=" << toString(ev.event_type) << ")");
+            }
+        }
+
+        // Phase 3a：把同一条事件投递给区域级关联器，产出/推进 SiteIncident。
+        // 关联发生在**落库之后**：即使关联器失败，设备事件这一**事实**已经持久化。
+        if (correlator_ && persist_ok) {
+            to_observe = std::move(ev);
         }
     }
 
+    // 关联调用刻意放在锁外：correlator 有独立 mutex_，且会去拿
+    // DatabaseManager::mutex_。在持有 mu_ 时调用就形成
+    // store.mu_ -> correlator.mutex_ -> db.mutex_ 的三段嵌套，
+    // 一旦任何一处反向加锁即死锁。
+    if (to_observe.has_value()) {
+        correlator_->observe(*to_observe);
+    }
+
     return true;
+}
+
+void WirelessEventStore::setIncidentCorrelator(SiteIncidentCorrelator* correlator) {
+    std::lock_guard<std::mutex> lock(mu_);
+    correlator_ = correlator;
+}
+
+size_t WirelessEventStore::tickIncidents(uint64_t now_ms) {
+    // 关联器指针只在插件 start/stop 时变更，且 stop 会先停消费线程，
+    // 因此这里不加锁读取是安全的（与 queryPersisted 同一纪律：不制造
+    // store 锁 -> 关联器锁的嵌套）。
+    if (!correlator_) return 0;
+    return correlator_->tick(now_ms).size();
+}
+
+std::string WirelessEventStore::querySiteIncidents(const std::string& state,
+                                                   int64_t start_ms,
+                                                   int64_t end_ms,
+                                                   int limit) const {
+    if (!correlator_) return "[]";
+    return correlator_->queryPersisted(state, start_ms, end_ms, limit, true);
 }
 
 std::vector<WirelessDeviceEvent> WirelessEventStore::recentEvents(
