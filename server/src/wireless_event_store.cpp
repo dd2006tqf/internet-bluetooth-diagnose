@@ -103,6 +103,31 @@ std::string WirelessEventStore::queryPersisted(const std::string& device_address
     return db_->queryDeviceEvents(device_address, event_type, start_ms, end_ms, limit);
 }
 
+bool WirelessEventStore::saveDeviceBaseline(const DeviceLinkProfile& profile) {
+    if (!db_) return false;
+    return db_->upsertDeviceBaseline(
+        profile.key.site_id,
+        profile.key.gateway_id,
+        profile.key.hci_index,
+        toString(profile.key.protocol),
+        toString(profile.key.address_type),
+        profile.key.device_address,
+        profile.baseline_rssi_dbm,
+        profile.min_seen_rssi_dbm,
+        profile.max_seen_rssi_dbm,
+        profile.baseline_sample_count,
+        static_cast<int64_t>(profile.first_seen_ms),
+        static_cast<int64_t>(profile.last_seen_ms),
+        toString(profile.state),
+        static_cast<int64_t>(profile.updated_at_ms));
+}
+
+std::string WirelessEventStore::queryDeviceBaselines(const std::string& device_address,
+                                                    int limit) const {
+    if (!db_) return "[]";
+    return db_->queryDeviceBaselines(device_address, limit);
+}
+
 void WirelessEventStore::clearMemory() {
     std::lock_guard<std::mutex> lock(mu_);
     ring_.clear();

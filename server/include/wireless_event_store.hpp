@@ -107,6 +107,17 @@ public:
                                int64_t end_ms,
                                int limit = 100) const;
 
+    /**
+     * @brief 持久化设备基线画像（代理至 DatabaseManager::upsertDeviceBaseline）
+     */
+    bool saveDeviceBaseline(const DeviceLinkProfile& profile);
+
+    /**
+     * @brief 从持久化层查询设备基线画像列表
+     */
+    std::string queryDeviceBaselines(const std::string& device_address = "",
+                                    int limit = 100) const;
+
     /// 清空内存环形缓冲（不影响已落库数据）
     void clearMemory();
 

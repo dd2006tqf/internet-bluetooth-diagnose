@@ -89,7 +89,8 @@ static void printUsage() {
               << "  --iface <name>       指定网卡 (默认: wlan0)\n"
               << "  --bt [MAC]           查询蓝牙历史时序 (可指定设备 MAC 地址)\n"
               << "  --events             查询规范化无线设备事件 (Canonical Device Event)\n"
-              << "  --device <addr>      --events: 设备地址过滤 (XX:XX:XX:XX:XX:XX)\n"
+              << "  --baselines          查询设备链路基线画像 (Phase 2: DeviceLinkProfile)\n"
+              << "  --device <addr>      --events / --baselines: 设备地址过滤 (XX:XX:XX:XX:XX:XX)\n"
               << "  --type <EVENT_TYPE>  --events: 事件类型过滤 (如 LINK_DISCONNECTED)\n"
               << "  --last <duration>    查询最近时间 (1h/30m/7d)\n"
               << "  --start <timestamp>  起始时间 (ISO 8601)\n"
@@ -107,6 +108,7 @@ static void printUsage() {
               << "  ./history_query_tool --bt AA:BB:CC:DD:EE:FF\n"
               << "  ./history_query_tool --events --last 24h\n"
               << "  ./history_query_tool --events --type LINK_DISCONNECTED --limit 20 --json\n"
+              << "  ./history_query_tool --baselines --device AA:BB:CC:DD:EE:FF\n"
               << "  ./history_query_tool --all --last 30m\n"
               << "  ./history_query_tool --info\n"
               << "  ./history_query_tool --cleanup 7\n";
@@ -117,6 +119,7 @@ int main(int argc, char* argv[]) {
     std::string bt_mac;
     bool query_bt = false;
     bool query_events = false;
+    bool query_baselines = false;
     std::string event_device, event_type;
     std::string start_time, end_time, last;
     int limit = 100;
@@ -130,6 +133,8 @@ int main(int argc, char* argv[]) {
             iface = argv[++i];
         } else if (strcmp(argv[i], "--events") == 0) {
             query_events = true;
+        } else if (strcmp(argv[i], "--baselines") == 0) {
+            query_baselines = true;
         } else if (strcmp(argv[i], "--device") == 0 && i + 1 < argc) {
             event_device = argv[++i];
         } else if (strcmp(argv[i], "--type") == 0 && i + 1 < argc) {
@@ -211,6 +216,20 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         std::cout << "设备事件 (JSON):\n" << result << "\n";
+        return 0;
+    }
+
+    if (query_baselines) {
+        std::string result = db.queryDeviceBaselines(event_device, limit);
+        if (json_output) {
+            std::cout << result << "\n";
+            return 0;
+        }
+        if (result == "[]" || result.empty()) {
+            std::cout << "没有查询到设备基线画像\n";
+            return 0;
+        }
+        std::cout << "设备基线画像 (JSON):\n" << result << "\n";
         return 0;
     }
 

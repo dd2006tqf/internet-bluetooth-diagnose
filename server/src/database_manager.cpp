@@ -268,6 +268,33 @@ bool DatabaseManager::ensureSchema() {
         );
         CREATE INDEX IF NOT EXISTS idx_device_events_ts ON device_events(ts);
         CREATE INDEX IF NOT EXISTS idx_device_events_dev ON device_events(device_address);
+
+        -- device_baselines: 链路基线与轻量画像（Phase 2: 复合主键，UPSERT 策略）
+        --
+        -- 核心设计准则：
+        --   1. 复合主键：(site_id, gateway_id, hci_index, protocol, address_type, device_address)
+        --      杜绝跨网关、跨控制器、跨地址类型（BREDR vs LE Public vs LE Random）污染。
+        --   2. 去除派生统计：不存 degraded_count/disconnect_count，统计以 device_events 为单一真值。
+        --   3. 可信基线：baseline_rssi_dbm 为当前稳定的滑动中位数基线；
+        --      处于 DEGRADED 期间基线冻结，不更新入库；未收敛或初始为 NULL。
+        CREATE TABLE IF NOT EXISTS device_baselines (
+            site_id             TEXT    NOT NULL,
+            gateway_id          TEXT    NOT NULL,
+            hci_index           INTEGER NOT NULL,
+            protocol            TEXT    NOT NULL,
+            address_type        TEXT    NOT NULL,
+            device_address      TEXT    NOT NULL,
+            baseline_rssi_dbm   INTEGER DEFAULT NULL,
+            min_seen_rssi_dbm   INTEGER DEFAULT NULL,
+            max_seen_rssi_dbm   INTEGER DEFAULT NULL,
+            baseline_sample_count INTEGER DEFAULT 0,
+            first_seen_ms       INTEGER NOT NULL,
+            last_seen_ms        INTEGER NOT NULL,
+            state               TEXT    DEFAULT 'LEARNING',
+            updated_at          INTEGER NOT NULL,
+            PRIMARY KEY (site_id, gateway_id, hci_index, protocol, address_type, device_address)
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_baselines_updated ON device_baselines(updated_at);
     )";
     if (!exec(schema)) return false;
 
@@ -1012,6 +1039,174 @@ std::string DatabaseManager::queryDeviceEvents(const std::string& device_address
             json << "\"" << weaknet_utils::escapeJsonString(textOrEmpty(14)) << "\"";
         }
         json << ",\"details\":" << (textOrEmpty(15).empty() ? "{}" : textOrEmpty(15))
+             << "}";
+    }
+
+    sqlite3_finalize(stmt);
+    json << "]";
+    return json.str();
+}
+
+bool DatabaseManager::upsertDeviceBaseline(const std::string& site_id,
+                                          const std::string& gateway_id,
+                                          uint32_t hci_index,
+                                          const std::string& protocol,
+                                          const std::string& address_type,
+                                          const std::string& device_address,
+                                          const std::optional<int16_t>& baseline_rssi_dbm,
+                                          const std::optional<int16_t>& min_seen_rssi_dbm,
+                                          const std::optional<int16_t>& max_seen_rssi_dbm,
+                                          size_t baseline_sample_count,
+                                          int64_t first_seen_ms,
+                                          int64_t last_seen_ms,
+                                          const std::string& state,
+                                          int64_t updated_at_ms) {
+    if (!db_) return false;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    const char* sql = R"(
+        INSERT INTO device_baselines (
+            site_id, gateway_id, hci_index, protocol, address_type, device_address,
+            baseline_rssi_dbm, min_seen_rssi_dbm, max_seen_rssi_dbm, baseline_sample_count,
+            first_seen_ms, last_seen_ms, state, updated_at
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?, ?
+        )
+        ON CONFLICT(site_id, gateway_id, hci_index, protocol, address_type, device_address)
+        DO UPDATE SET
+            baseline_rssi_dbm = excluded.baseline_rssi_dbm,
+            min_seen_rssi_dbm = excluded.min_seen_rssi_dbm,
+            max_seen_rssi_dbm = excluded.max_seen_rssi_dbm,
+            baseline_sample_count = excluded.baseline_sample_count,
+            last_seen_ms = excluded.last_seen_ms,
+            state = excluded.state,
+            updated_at = excluded.updated_at;
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::upsertDeviceBaseline prepare failed: " << sqlite3_errmsg(db_));
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, site_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, gateway_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, static_cast<int>(hci_index));
+    sqlite3_bind_text(stmt, 4, protocol.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, address_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, device_address.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (baseline_rssi_dbm.has_value()) {
+        sqlite3_bind_int(stmt, 7, *baseline_rssi_dbm);
+    } else {
+        sqlite3_bind_null(stmt, 7);
+    }
+
+    if (min_seen_rssi_dbm.has_value()) {
+        sqlite3_bind_int(stmt, 8, *min_seen_rssi_dbm);
+    } else {
+        sqlite3_bind_null(stmt, 8);
+    }
+
+    if (max_seen_rssi_dbm.has_value()) {
+        sqlite3_bind_int(stmt, 9, *max_seen_rssi_dbm);
+    } else {
+        sqlite3_bind_null(stmt, 9);
+    }
+
+    sqlite3_bind_int(stmt, 10, static_cast<int>(baseline_sample_count));
+    sqlite3_bind_int64(stmt, 11, first_seen_ms);
+    sqlite3_bind_int64(stmt, 12, last_seen_ms);
+    sqlite3_bind_text(stmt, 13, state.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 14, updated_at_ms);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::upsertDeviceBaseline step failed: " << sqlite3_errmsg(db_));
+        return false;
+    }
+    return true;
+}
+
+std::string DatabaseManager::queryDeviceBaselines(const std::string& device_address,
+                                                 int limit) {
+    if (!db_) return "[]";
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    std::ostringstream sql;
+    sql << "SELECT site_id, gateway_id, hci_index, protocol, address_type, device_address, "
+        << "baseline_rssi_dbm, min_seen_rssi_dbm, max_seen_rssi_dbm, baseline_sample_count, "
+        << "first_seen_ms, last_seen_ms, state, updated_at "
+        << "FROM device_baselines WHERE 1=1";
+
+    if (!device_address.empty()) {
+        sql << " AND device_address = ?";
+    }
+    sql << " ORDER BY updated_at DESC LIMIT ?";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql.str().c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::queryDeviceBaselines prepare failed: " << sqlite3_errmsg(db_));
+        return "[]";
+    }
+
+    int bindIdx = 1;
+    if (!device_address.empty()) {
+        sqlite3_bind_text(stmt, bindIdx++, device_address.c_str(), -1, SQLITE_STATIC);
+    }
+    sqlite3_bind_int(stmt, bindIdx++, limit > 0 ? limit : 100);
+
+    std::ostringstream json;
+    json << "[";
+    bool first = true;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (!first) json << ",";
+        first = false;
+
+        auto textOrEmpty = [&](int col) -> std::string {
+            const char* v = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
+            return v ? v : "";
+        };
+
+        json << "{"
+             << "\"site_id\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(0)) << "\","
+             << "\"gateway_id\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(1)) << "\","
+             << "\"hci_index\":" << sqlite3_column_int(stmt, 2) << ","
+             << "\"protocol\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(3)) << "\","
+             << "\"address_type\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(4)) << "\","
+             << "\"device_address\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(5)) << "\","
+             << "\"baseline_rssi_dbm\":";
+        if (sqlite3_column_type(stmt, 6) == SQLITE_NULL) {
+            json << "null";
+        } else {
+            json << sqlite3_column_int(stmt, 6);
+        }
+        json << ",\"min_seen_rssi_dbm\":";
+        if (sqlite3_column_type(stmt, 7) == SQLITE_NULL) {
+            json << "null";
+        } else {
+            json << sqlite3_column_int(stmt, 7);
+        }
+        json << ",\"max_seen_rssi_dbm\":";
+        if (sqlite3_column_type(stmt, 8) == SQLITE_NULL) {
+            json << "null";
+        } else {
+            json << sqlite3_column_int(stmt, 8);
+        }
+        json << ",\"baseline_sample_count\":" << sqlite3_column_int(stmt, 9) << ","
+             << "\"first_seen_ms\":" << sqlite3_column_int64(stmt, 10) << ","
+             << "\"last_seen_ms\":" << sqlite3_column_int64(stmt, 11) << ","
+             << "\"state\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(12)) << "\","
+             << "\"updated_at\":" << sqlite3_column_int64(stmt, 13)
              << "}";
     }
 

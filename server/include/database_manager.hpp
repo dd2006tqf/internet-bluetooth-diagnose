@@ -179,6 +179,30 @@ public:
                                   int limit = 100);
 
     /**
+     * @brief 插入或更新设备链路基线画像（复合主键，UPSERT）
+     */
+    bool upsertDeviceBaseline(const std::string& site_id,
+                              const std::string& gateway_id,
+                              uint32_t hci_index,
+                              const std::string& protocol,
+                              const std::string& address_type,
+                              const std::string& device_address,
+                              const std::optional<int16_t>& baseline_rssi_dbm,
+                              const std::optional<int16_t>& min_seen_rssi_dbm,
+                              const std::optional<int16_t>& max_seen_rssi_dbm,
+                              size_t baseline_sample_count,
+                              int64_t first_seen_ms,
+                              int64_t last_seen_ms,
+                              const std::string& state,
+                              int64_t updated_at_ms);
+
+    /**
+     * @brief 查询设备链路基线画像列表，返回 JSON 数组字符串
+     */
+    std::string queryDeviceBaselines(const std::string& device_address = "",
+                                    int limit = 100);
+
+    /**
      * @brief 清理过期快照
      * @param retention_days 保留天数（默认 7）
      * @return 删除行数，失败返回 -1

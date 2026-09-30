@@ -713,3 +713,49 @@ TEST_F(WirelessEventStoreDbTest, TimeRangeFilterWorks) {
     EXPECT_EQ(json.find("ev-t1"), std::string::npos) << "早于起始时间的事件不应返回";
     EXPECT_EQ(json.find("ev-t3"), std::string::npos) << "晚于结束时间的事件不应返回";
 }
+
+TEST_F(WirelessEventStoreDbTest, BaselinePersistenceAndQueryWorks) {
+    WirelessEventStore store(db_.get());
+
+    DeviceLinkProfile p;
+    p.key.site_id = "site-A";
+    p.key.gateway_id = "gw-A";
+    p.key.hci_index = 0;
+    p.key.protocol = WirelessProtocol::Bluetooth;
+    p.key.address_type = BtAddressType::LeRandom;
+    p.key.device_address = "57:C3:50:93:C7:DE";
+    p.baseline_rssi_dbm = -62;
+    p.min_seen_rssi_dbm = -85;
+    p.max_seen_rssi_dbm = -50;
+    p.baseline_sample_count = 15;
+    p.first_seen_ms = 1000000;
+    p.last_seen_ms = 2000000;
+    p.state = LinkQualityState::Stable;
+    p.updated_at_ms = 2000000;
+
+    ASSERT_TRUE(store.saveDeviceBaseline(p));
+
+    // 查询验证
+    std::string res = store.queryDeviceBaselines("57:C3:50:93:C7:DE");
+    EXPECT_NE(res.find("\"baseline_rssi_dbm\":-62"), std::string::npos) << res;
+    EXPECT_NE(res.find("\"address_type\":\"LE_RANDOM\""), std::string::npos) << res;
+    EXPECT_NE(res.find("\"state\":\"STABLE\""), std::string::npos) << res;
+
+    // UPSERT 覆盖更新验证（同复合主键不新增行，只修改状态与基线）
+    p.baseline_rssi_dbm = -60;
+    p.state = LinkQualityState::Degraded;
+    p.updated_at_ms = 3000000;
+    ASSERT_TRUE(store.saveDeviceBaseline(p));
+
+    std::string updated_res = store.queryDeviceBaselines("57:C3:50:93:C7:DE");
+    EXPECT_NE(updated_res.find("\"baseline_rssi_dbm\":-60"), std::string::npos);
+    EXPECT_NE(updated_res.find("\"state\":\"DEGRADED\""), std::string::npos);
+
+    // 确认结果集内只有 1 个对象（复合主键唯一性成立）
+    size_t count = 0, pos = 0;
+    while ((pos = updated_res.find("\"site_id\":", pos)) != std::string::npos) {
+        ++count;
+        pos += 10;
+    }
+    EXPECT_EQ(count, 1u) << "复合主键 UPSERT 必须更新同一行而不是插入重复数据";
+}
