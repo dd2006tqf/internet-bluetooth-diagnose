@@ -26,6 +26,7 @@
 #include "skb_drop_monitor.hpp"
 #include "tcp_connect_monitor.hpp"
 #include "bt_event_monitor.hpp"
+#include "bt_link_quality_tracker.hpp"
 #include "wireless_event_store.hpp"
 #include "utils/bpf_map_sizing.hpp"
 
@@ -364,6 +365,7 @@ public:
 class BtEventsPlugin : public IMonitorPlugin {
     ServerContext* ctx_ = nullptr;
     std::unique_ptr<WirelessEventStore> store_;
+    std::unique_ptr<BtLinkQualityTracker> tracker_;
     std::unique_ptr<BtEventMonitor> monitor_;
 public:
     const char* name() const override { return "bt_events"; }
@@ -396,7 +398,11 @@ public:
         store_ = std::make_unique<WirelessEventStore>(ctx->db_mgr.get(), std::move(store_cfg));
         ctx->wireless_event_store = store_.get();
 
-        monitor_ = std::make_unique<BtEventMonitor>(store_.get());
+        // Phase 2: 初始化链路质量跟踪器，并预热加载历史基线画像
+        tracker_ = std::make_unique<BtLinkQualityTracker>();
+        ctx->bt_link_quality_tracker = tracker_.get();
+
+        monitor_ = std::make_unique<BtEventMonitor>(store_.get(), tracker_.get());
         if (!monitor_->init(ctx->cfg.bluetooth.events_bpf_obj.get(),
                             store_->config().gateway_id)) {
             LOG_WARNING(LogModule::BLUETOOTH, "BtEventsPlugin: init failed for "
@@ -404,7 +410,7 @@ public:
                         << " — bluetooth disconnect reason capture disabled ("
                         << monitor_->lastError() << ")");
             // 不是致命错误：事件采集失败不影响其它监控器，
-            // 但 store 仍然有效（后续 Phase 2/3 的事件可从 D-Bus 路径进入）
+            // 但 store 和 tracker 仍然有效（D-Bus 路径仍可产生 LinkDegraded）
             monitor_.reset();
             return true;
         }
@@ -428,7 +434,11 @@ public:
             if (ctx_->wireless_event_store == store_.get()) {
                 ctx_->wireless_event_store = nullptr;
             }
+            if (ctx_->bt_link_quality_tracker == tracker_.get()) {
+                ctx_->bt_link_quality_tracker = nullptr;
+            }
         }
+        tracker_.reset();
         store_.reset();
     }
 };

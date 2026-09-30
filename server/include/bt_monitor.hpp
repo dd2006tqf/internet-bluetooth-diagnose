@@ -57,6 +57,8 @@ class BtAudioAnalyzer;
 struct BtAudioFusionResult;
 class BtAudioFusion;
 struct BtTrafficStats;
+class BtLinkQualityTracker;
+class WirelessEventStore;
 }
 
 namespace weaknet_dbus {
@@ -92,6 +94,7 @@ struct BtDeviceInfo {
     std::string icon;                ///< 设备图标名称（BlueZ 提供，如 "audio-headset"）
     double estimatedDistance = -1.0; ///< 估算距离（米），-1.0 表示未知/未估算（哨兵值）
     int16_t calibratedTxPower = -59; ///< 校准后的 1 米参考 RSSI (dBm)，默认 -59
+    std::string addressType = "public"; ///< BlueZ AddressType 属性 ("public" / "random")
     std::chrono::system_clock::time_point lastSeen;    ///< 最近一次被发现的时间
     std::chrono::system_clock::time_point lastUpdated;  ///< 最近一次属性刷新的时间
 
@@ -220,6 +223,12 @@ public:
 
     /// 是否已完成 initialize() 且未 cleanup()
     bool isInitialized() const { return initialized_.load(); }
+
+    /// 设置外部链路质量跟踪器与事件存储（Phase 2）
+    void setQualityTracker(BtLinkQualityTracker* tracker, WirelessEventStore* store) {
+        tracker_ = tracker;
+        eventStore_ = store;
+    }
 
     /// 是否至少存在一个蓝牙适配器（从 adapterState_ 判断）
     bool hasAdapter() const;
@@ -486,6 +495,10 @@ private:
     std::unique_ptr<BtAudioFusion> btAudioFusion_;              ///< 融合评估器
     mutable std::map<std::string, BtTrafficStats> btPrevStats_; ///< 前次 eBPF 统计快照 (MAC→prev)
     static constexpr const char* BPF_OBJECT_PATH = "build/a2dp_media.bpf.o";
+
+    // ---- Phase 2: 链路质量跟踪器与规范化事件存储 ----
+    BtLinkQualityTracker* tracker_ = nullptr;
+    WirelessEventStore* eventStore_ = nullptr;
 };
 
 // ============================================================================

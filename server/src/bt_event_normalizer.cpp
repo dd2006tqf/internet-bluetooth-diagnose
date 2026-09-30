@@ -161,6 +161,7 @@ void BtEventNormalizer::applyObservation(PendingEvent& pending, const RawBtObser
     // 而不是最后一条证据到达的时刻。
     if (pending.evidence.empty() || obs.timestamp_ms < pending.event.timestamp_ms) {
         pending.event.timestamp_ms = obs.timestamp_ms;
+        pending.event.monotonic_ns = obs.monotonic_ns;
     }
     if (obs.timestamp_ms > pending.last_obs_ms) {
         pending.last_obs_ms = obs.timestamp_ms;

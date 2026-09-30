@@ -10,6 +10,7 @@
  */
 
 #include "bt_event_monitor.hpp"
+#include "bt_link_quality_tracker.hpp"
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
@@ -68,8 +69,10 @@ uint64_t softwareTimestampMs() {
 // 构造 / 析构
 // ============================================================================
 
-BtEventMonitor::BtEventMonitor(WirelessEventStore* store, BtNormalizerConfig normalizer_cfg)
-    : store_(store), normalizer_(std::move(normalizer_cfg)) {}
+BtEventMonitor::BtEventMonitor(WirelessEventStore* store,
+                               BtLinkQualityTracker* tracker,
+                               BtNormalizerConfig normalizer_cfg)
+    : store_(store), tracker_(tracker), normalizer_(std::move(normalizer_cfg)) {}
 
 BtEventMonitor::~BtEventMonitor() {
     stop();
@@ -273,7 +276,8 @@ void BtEventMonitor::handleObservation(const KernelBtObservation& obs) {
     // 注意本函数**不**决定"这是不是一个业务事件"——它只把事实投递给归一化器，
     // 由归一化器按合并键与时间窗决定最终产出几个 canonical 事件。
     RawBtObservation out;
-    out.timestamp_ms = softwareTimestampMs();  // 墙钟时间由用户态补（内核用的是 monotonic）
+    out.timestamp_ms = softwareTimestampMs();  // 墙钟时间（展示/持久化）
+    out.monotonic_ns = obs.timestamp_ns;       // 直接保留 BPF 产生的 bpf_ktime_get_ns()（严防因果倒错）
     out.gateway_id = gateway_id_;
     out.hci_index = obs.hci_index;
     out.device_address = formatBdaddr(obs.bdaddr);
@@ -311,7 +315,25 @@ void BtEventMonitor::flushToStore(uint64_t now_ms) {
     auto events = normalizer_.flushExpired(now_ms);
     if (events.empty()) return;
 
-    for (const auto& ev : events) {
+    for (auto& ev : events) {
+        // Phase 2 核心设计：RSSI 回填在 Normalizer 之后执行（Canonical Enrichment）。
+        // 一次断连确定只产生唯一一个 canonical event 并继承最早的单调时间戳后，
+        // 严格向前检索断连发生前的最近有效 RSSI（严禁取断开之后的新采样！）。
+        if (tracker_ && !ev.rssi_at_event_dbm.has_value() && ev.monotonic_ns > 0) {
+            WirelessDeviceKey dev_key;
+            dev_key.site_id = ev.site_id;
+            dev_key.gateway_id = ev.gateway_id;
+            dev_key.hci_index = ev.hci_index;
+            dev_key.protocol = ev.protocol;
+            dev_key.address_type = ev.address_type;
+            dev_key.device_address = ev.device_address;
+
+            auto recent_rssi = tracker_->getRssiBeforeEvent(dev_key, ev.monotonic_ns);
+            if (recent_rssi.has_value()) {
+                ev.rssi_at_event_dbm = *recent_rssi;
+            }
+        }
+
         if (store_) {
             store_->recordEvent(ev);
         }

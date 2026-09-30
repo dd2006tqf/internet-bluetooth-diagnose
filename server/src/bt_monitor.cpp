@@ -41,6 +41,8 @@
 #include "event_manager.hpp"
 #include "bt_audio_analyzer.hpp"
 #include "bt_audio_fusion.hpp"
+#include "bt_link_quality_tracker.hpp"
+#include "wireless_event_store.hpp"
 #include "logger.hpp"
 #include "common.hpp"
 
@@ -658,6 +660,8 @@ BtDeviceInfo BtMonitor::parseDeviceProperties(DBusConnection* conn,
                 extractStringArrayFromIter(&propEntry, &info.uuids);
             } else if (key == "Icon") {
                 extractStringFromIter(&propEntry, &info.icon);
+            } else if (key == "AddressType") {
+                extractStringFromIter(&propEntry, &info.addressType);
             }
 
             dbus_message_iter_next(&propsArray);
@@ -790,6 +794,27 @@ void BtMonitor::processPendingSignals() {
                                                     dev.rssiHistory.erase(dev.rssiHistory.begin());
                                                 }
                                                 dev.estimatedDistance = estimateDistance(newRssi);
+
+                                                // Phase 2: D-Bus PropertiesChanged 是真实物理射频更新的 Fresh Observation
+                                                if (tracker_) {
+                                                    WirelessDeviceKey k;
+                                                    if (eventStore_) {
+                                                        k.site_id = eventStore_->config().site_id;
+                                                        k.gateway_id = eventStore_->config().gateway_id;
+                                                    }
+                                                    k.device_address = dev.macAddress;
+                                                    k.address_type = (dev.addressType == "random") ? BtAddressType::LeRandom : BtAddressType::LePublic;
+
+                                                    struct timespec ts{};
+                                                    clock_gettime(CLOCK_MONOTONIC, &ts);
+                                                    uint64_t mono_ns = static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + ts.tv_nsec;
+                                                    uint64_t wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+
+                                                    auto deg_ev = tracker_->feedFreshRssi(k, newRssi, wall_ms, mono_ns);
+                                                    if (deg_ev.has_value() && eventStore_) {
+                                                        eventStore_->recordEvent(*deg_ev);
+                                                    }
+                                                }
                                             }
                                             break;
                                         }
@@ -922,6 +947,22 @@ void BtMonitor::refreshDeviceStates() {
                 }
                 devices_[info.macAddress] = info;
 
+                // 轮询快照：仅登记初次发现与时间戳，严禁推进基线或连续计数
+                if (tracker_) {
+                    WirelessDeviceKey k;
+                    if (eventStore_) {
+                        k.site_id = eventStore_->config().site_id;
+                        k.gateway_id = eventStore_->config().gateway_id;
+                    }
+                    k.device_address = info.macAddress;
+                    k.address_type = (info.addressType == "random") ? BtAddressType::LeRandom : BtAddressType::LePublic;
+                    struct timespec ts{};
+                    clock_gettime(CLOCK_MONOTONIC, &ts);
+                    uint64_t mono_ns = static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + ts.tv_nsec;
+                    uint64_t wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                    tracker_->registerDeviceSnapshot(k, wall_ms, mono_ns);
+                }
+
                 // 生成事件
                 BtEvent ev;
                 ev.type = BtEvent::Type::DeviceFound;
@@ -942,6 +983,7 @@ void BtMonitor::refreshDeviceStates() {
             } else {
                 // ---- 已有设备，更新 ----
                 auto& existing = it->second;
+                const int16_t prevRssiForFreshCheck = existing.rssiDbm;
                 existing.lastSeen = now;
 
                 // 检测连接状态变化
@@ -994,6 +1036,35 @@ void BtMonitor::refreshDeviceStates() {
                     existing.rssiHistory.push_back(info.rssiDbm);
                     if (existing.rssiHistory.size() > BtDeviceInfo::MAX_RSSI_HISTORY) {
                         existing.rssiHistory.erase(existing.rssiHistory.begin());
+                    }
+                }
+
+                // 轮询快照处理：
+                // 核心原则：绝不将未变化的轮询读数当成连续 3 次独立采样推进基线！
+                // 判定是否属于 Fresh Observation：
+                // 1. 本次读到有效 RSSI（!=0 且 > -1000）
+                // 2. 且该读数与上一次不同（数值发生物理波动，代表真实收到新射频报文）
+                // 满足条件才调用 feedFreshRssi 推进基线；数值不变时严格调用 registerDeviceSnapshot。
+                if (tracker_) {
+                    WirelessDeviceKey k;
+                    if (eventStore_) {
+                        k.site_id = eventStore_->config().site_id;
+                        k.gateway_id = eventStore_->config().gateway_id;
+                    }
+                    k.device_address = existing.macAddress;
+                    k.address_type = (existing.addressType == "random") ? BtAddressType::LeRandom : BtAddressType::LePublic;
+                    struct timespec ts{};
+                    clock_gettime(CLOCK_MONOTONIC, &ts);
+                    uint64_t mono_ns = static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL + ts.tv_nsec;
+                    uint64_t wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+
+                    if (info.rssiDbm != 0 && info.rssiDbm > -1000 && info.rssiDbm != prevRssiForFreshCheck) {
+                        auto deg_ev = tracker_->feedFreshRssi(k, info.rssiDbm, wall_ms, mono_ns);
+                        if (deg_ev.has_value() && eventStore_) {
+                            eventStore_->recordEvent(*deg_ev);
+                        }
+                    } else {
+                        tracker_->registerDeviceSnapshot(k, wall_ms, mono_ns);
                     }
                 }
 
@@ -1338,6 +1409,9 @@ void start_bt_monitor_thread(ServerContext* ctx, std::thread* worker, BtMonitor*
             return;
         }
 
+        // 注入 Phase 2 链路跟踪器与事件存储
+        monitor->setQualityTracker(ctx->bt_link_quality_tracker, ctx->wireless_event_store);
+
         if (!monitor->initialize()) {
             LOG_INFO(LogModule::BLUETOOTH, "BT monitor: no Bluetooth adapter available, "
                      "thread will run in passive mode (periodic retry)");
@@ -1438,8 +1512,15 @@ void start_bt_monitor_thread(ServerContext* ctx, std::thread* worker, BtMonitor*
                     }
                 }
 
-                // 每 6 轮 (~18s) 打印蓝牙状态摘要
+                // 每 6 轮 (~18s) 打印蓝牙状态摘要并周期持久化基线画像
                 if (loopCount % 6 == 0) {
+                    if (ctx->bt_link_quality_tracker && ctx->wireless_event_store) {
+                        auto profiles = ctx->bt_link_quality_tracker->getAllProfiles();
+                        for (const auto& p : profiles) {
+                            ctx->wireless_event_store->saveDeviceBaseline(p);
+                        }
+                    }
+
                     auto nearby = monitor->getNearbyDevices(30);
                     auto connected = monitor->getConnectedDevices();
 

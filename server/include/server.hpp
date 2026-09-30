@@ -51,6 +51,7 @@ class ActiveConnectivityMonitor; // 前置声明：受控主动连通性探测
 class SkbDropMonitor;       // 前置声明：Socket 丢包归因监控（eBPF）
 class DatabaseManager;      // 前置声明：SQLite 历史数据持久化
 class WirelessEventStore;   // 前置声明：规范化无线设备事件存储（Phase 1）
+class BtLinkQualityTracker; // 前置声明：蓝牙链路质量跟踪器（Phase 2）
 class ConfigTransaction;    // 前置声明：配置事务状态机（weaknet_config.hpp 中定义）
 
 /**
@@ -125,6 +126,11 @@ struct ServerContext {
     // 写入 WirelessEventStore。store 依赖 db_mgr，因此**必须在 db_mgr 之后构造**。
     // 裸指针供查询/其它消费者使用；store 由 key_bt_events 插件拥有。
     WirelessEventStore* wireless_event_store = nullptr;
+
+    // ---------- 蓝牙链路质量跟踪器（Phase 2: 基线与劣化检测）----------
+    // 由 bt_events 插件拥有，提供给 BtMonitor 喂入 fresh RSSI，
+    // 以及供 BtEventMonitor 在 Normalizer 之后做因果断连 RSSI 回填。
+    BtLinkQualityTracker* bt_link_quality_tracker = nullptr;
 
     // ---------- 边缘遥测上报 ----------
     std::unique_ptr<weaknet::EdgeTelemetryExporter> edge_exporter;

@@ -50,6 +50,8 @@ struct ring_buffer;
 
 namespace weaknet_dbus {
 
+class BtLinkQualityTracker;  ///< 前置声明：Phase 2 RSSI 回填源
+
 /// 单个挂点的挂载结果（用于诊断日志与 health 上报）
 struct BtHookStatus {
     std::string kernel_function;   ///< 内核函数名，如 "mgmt_device_disconnected"
@@ -63,10 +65,12 @@ struct BtHookStatus {
 class BtEventMonitor : public IEbpfMonitor {
 public:
     /**
-     * @param store 事件存储（不拥有所有权；可为 nullptr，此时只归一化不落库，
-     *              用于单元测试/降级）
+     * @param store   事件存储（不拥有所有权；可为 nullptr，此时只归一化不落库，
+     *                用于单元测试/降级）
+     * @param tracker 链路质量跟踪器（不拥有所有权；用于 Canonical 事件定案后的因果 RSSI 回填）
      */
     explicit BtEventMonitor(WirelessEventStore* store = nullptr,
+                            BtLinkQualityTracker* tracker = nullptr,
                             BtNormalizerConfig normalizer_cfg = {});
     ~BtEventMonitor() override;
 
@@ -172,7 +176,8 @@ private:
     /// 把归一化器刷出的事件写入 store
     void flushToStore(uint64_t now_ms);
 
-    WirelessEventStore* store_;      ///< 不拥有所有权
+    WirelessEventStore* store_ = nullptr;              ///< 不拥有所有权
+    BtLinkQualityTracker* tracker_ = nullptr;          ///< 不拥有所有权（因果 RSSI 回填源）
     BtEventNormalizer normalizer_;
     std::string gateway_id_;
 
