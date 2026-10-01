@@ -8,9 +8,9 @@ version = "0.1.0"
 description = "企业级多模态工业设备智能运维与售后 Agent 平台"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
-license = { text = "Proprietary" }
+license = { text = "MIT" }
 authors = [
-  { name = "cpp辅导的阿甘" },
+  { name = "tanqf" },
 ]
 dependencies = [
   "a2a-sdk==1.1.2",
