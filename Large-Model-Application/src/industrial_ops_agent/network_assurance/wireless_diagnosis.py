@@ -10,33 +10,29 @@ Orchestrates:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from hashlib import sha256
 import json
 import logging
+from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any
-from uuid import uuid4
+
 from sqlalchemy import select
 
 from industrial_ops_agent.guardrails.network_causal import (
+    WIRELESS_CAUSAL_POLICY_VERSION,
     NetworkCausalGuardrail,
     WirelessCausalContext,
-    WIRELESS_CAUSAL_POLICY_VERSION,
 )
 from industrial_ops_agent.network_assurance.upstream import complete_json
 from industrial_ops_agent.network_assurance.wireless_contracts import (
-    BaselineView,
     CanonicalDiagnosis,
     ConfidenceLevel,
     DiagnosisHypothesis,
     DiagnosisPresentation,
-    EnvironmentWindowView,
     EvidenceCitation,
     IncidentEvidenceBundle,
-    IncidentView,
     StructuredFinding,
     WirelessDiagnosisResponse,
-    WirelessEventView,
 )
 from industrial_ops_agent.network_assurance.wireless_rules import (
     WIRELESS_RULES_VERSION,
@@ -44,7 +40,6 @@ from industrial_ops_agent.network_assurance.wireless_rules import (
 )
 from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.models import (
-    NetworkSnapshotRecord,
     SiteIncidentDiagnosisRecord,
 )
 from industrial_ops_agent.persistence.tenant import TenantContext
@@ -158,7 +153,9 @@ class WirelessDiagnosisService:
             # 3. 若护栏审查未通过或模型失败，回退展示层为确定性报告
             presentation = llm_presentation or self._build_deterministic_presentation(canonical)
             guard_status = guard_decision.decision if guard_decision else "SKIPPED"
-            guard_findings = [f.audit_dict() for f in guard_decision.findings] if guard_decision else []
+            guard_findings = (
+                [f.audit_dict() for f in guard_decision.findings] if guard_decision else []
+            )
 
             # 4. 持久化独立诊断记录（保持 site_incidents 一尘不染）
             rec = self._persist_record(
@@ -186,9 +183,7 @@ class WirelessDiagnosisService:
     ) -> tuple[DiagnosisPresentation | None, Any | None]:
         """尝试调用大模型生成解释并执行 W1~W6 护栏审查。"""
         try:
-            prompt_def = default_prompt_registry().get(
-                WIRELESS_INCIDENT_DIAGNOSIS_PROMPT_BUNDLE_ID
-            )
+            prompt_def = default_prompt_registry().get(WIRELESS_INCIDENT_DIAGNOSIS_PROMPT_BUNDLE_ID)
             system_prompt = prompt_def.render_system()
         except Exception:
             system_prompt = (
@@ -197,11 +192,22 @@ class WirelessDiagnosisService:
             )
 
         evidence_catalog = [
-            {"id": e.event_id, "type": "event", "device": e.device_address, "desc": f"{e.event_type} ({e.reason})"}
+            {
+                "id": e.event_id,
+                "type": "event",
+                "device": e.device_address,
+                "desc": f"{e.event_type} ({e.reason})",
+            }
             for e in bundle.qualifying_events
         ]
         if bundle.environment.available and bundle.environment.wifi_anomaly:
-            evidence_catalog.append({"id": "WIFI_ANOMALY", "type": "wifi", "desc": "Concurrent 2.4GHz Wi-Fi loss/conflict"})
+            evidence_catalog.append(
+                {
+                    "id": "WIFI_ANOMALY",
+                    "type": "wifi",
+                    "desc": "Concurrent 2.4GHz Wi-Fi loss/conflict",
+                }
+            )
 
         payload = {
             "incident_id": incident_id,
@@ -212,10 +218,15 @@ class WirelessDiagnosisService:
                 "deterministic_reasons": list(canonical.deterministic_reasons),
             },
             "evidence_catalog": evidence_catalog,
-            "instruction": "Explain the established hypothesis based strictly on evidence_catalog. Do NOT change the hypothesis.",
+            "instruction": (
+                "Explain the established hypothesis based strictly on evidence_catalog. "
+                "Do NOT change the hypothesis."
+            ),
         }
 
-        user_content = json.dumps(payload, default=str, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        user_content = json.dumps(
+            payload, default=str, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
         model_out = complete_json(system_prompt, user_content, max_tokens=2048)
         if not isinstance(model_out, dict):
             return None, None
@@ -235,19 +246,27 @@ class WirelessDiagnosisService:
 
         decision = self._guardrail.inspect_wireless_report(model_out, guard_context)
         if decision.decision != "ALLOWED":
-            logger.warning("Wireless diagnosis model output blocked by guardrail: %s", decision.findings)
+            logger.warning(
+                "Wireless diagnosis model output blocked by guardrail: %s", decision.findings
+            )
             return None, decision
 
         # 护栏通过：解析 presentation 结构
         raw_findings = model_out.get("structured_findings") or []
         findings = [
-            StructuredFinding(text=str(f.get("text", "")), evidence_ids=list(f.get("evidence_ids", [])))
+            StructuredFinding(
+                text=str(f.get("text", "")), evidence_ids=list(f.get("evidence_ids", []))
+            )
             for f in raw_findings
             if isinstance(f, dict)
         ]
         raw_citations = model_out.get("evidence_citations") or []
         citations = [
-            EvidenceCitation(step=str(c.get("step", "")), claim=str(c.get("claim", "")), evidence_refs=list(c.get("evidence_refs", [])))
+            EvidenceCitation(
+                step=str(c.get("step", "")),
+                claim=str(c.get("claim", "")),
+                evidence_refs=list(c.get("evidence_refs", [])),
+            )
             for c in raw_citations
             if isinstance(c, dict)
         ]
@@ -264,7 +283,9 @@ class WirelessDiagnosisService:
         )
         return presentation, decision
 
-    def _build_deterministic_presentation(self, canonical: CanonicalDiagnosis) -> DiagnosisPresentation:
+    def _build_deterministic_presentation(
+        self, canonical: CanonicalDiagnosis
+    ) -> DiagnosisPresentation:
         """纯确定性兜底呈现文本生成。"""
         reasons_text = "；".join(canonical.deterministic_reasons)
         report = (
@@ -274,10 +295,14 @@ class WirelessDiagnosisService:
             f"证据置信等级：{canonical.confidence}\n"
             f"依据证据事实：{reasons_text}。"
         )
-        findings = [
-            StructuredFinding(text=r, evidence_ids=list(canonical.evidence_ids))
-            for r in canonical.deterministic_reasons
-        ] if canonical.evidence_ids else []
+        findings = (
+            [
+                StructuredFinding(text=r, evidence_ids=list(canonical.evidence_ids))
+                for r in canonical.deterministic_reasons
+            ]
+            if canonical.evidence_ids
+            else []
+        )
 
         recs = [
             "排查现场 2.4GHz 频段 AP 信道与射频冲突"
@@ -332,7 +357,10 @@ class WirelessDiagnosisService:
         guardrail_findings: list[dict[str, Any]],
     ) -> SiteIncidentDiagnosisRecord:
         evidence_fp = self._compute_evidence_fingerprint(bundle)
-        key_seed = f"{incident_id}:{evidence_fp}:{WIRELESS_RULES_VERSION}:{WIRELESS_PROMPT_VERSION}:{WIRELESS_CAUSAL_POLICY_VERSION}"
+        key_seed = (
+            f"{incident_id}:{evidence_fp}:{WIRELESS_RULES_VERSION}:"
+            f"{WIRELESS_PROMPT_VERSION}:{WIRELESS_CAUSAL_POLICY_VERSION}"
+        )
         key_hash = sha256(key_seed.encode()).hexdigest()[:12]
         diag_id = f"wdiag_{incident_id}_{key_hash}"
 
@@ -400,9 +428,7 @@ class WirelessDiagnosisService:
             StructuredFinding,
         )
 
-        dev_findings = [
-            DeviceFinding(**f) for f in (rec.device_findings or [])
-        ]
+        dev_findings = [DeviceFinding(**f) for f in (rec.device_findings or [])]
         canonical = CanonicalDiagnosis(
             observed_pattern=ObservedPattern(rec.observed_pattern),
             hypothesis=DiagnosisHypothesis(rec.hypothesis),
@@ -411,12 +437,8 @@ class WirelessDiagnosisService:
             deterministic_reasons=list(rec.deterministic_reasons or []),
             device_findings=dev_findings,
         )
-        findings = [
-            StructuredFinding(**f) for f in (rec.structured_findings or [])
-        ]
-        citations = [
-            EvidenceCitation(**c) for c in (rec.evidence_citations or [])
-        ]
+        findings = [StructuredFinding(**f) for f in (rec.structured_findings or [])]
+        citations = [EvidenceCitation(**c) for c in (rec.evidence_citations or [])]
         presentation = DiagnosisPresentation(
             llm_model_name=rec.llm_model_name,
             llm_used=rec.llm_used,

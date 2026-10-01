@@ -52,18 +52,18 @@ from industrial_ops_agent.network_assurance.contracts import (
     NetworkTimelinePoint,
 )
 from industrial_ops_agent.network_assurance.copilot import NetworkCopilotService
-from industrial_ops_agent.network_assurance.service import (
-    NetworkAssuranceConflict,
-    NetworkAssuranceNotFound,
-    NetworkAssuranceService,
-    edge_subject_id,
-)
 from industrial_ops_agent.network_assurance.model_config import (
     CopilotModelConfigRequest,
     CopilotModelConfigResponse,
     CopilotModelTestRequest,
     CopilotModelTestResponse,
     get_model_config_manager,
+)
+from industrial_ops_agent.network_assurance.service import (
+    NetworkAssuranceConflict,
+    NetworkAssuranceNotFound,
+    NetworkAssuranceService,
+    edge_subject_id,
 )
 from industrial_ops_agent.network_assurance.signing import (
     EdgeTelemetryVerifier,
@@ -242,7 +242,12 @@ async def ingest_edge_telemetry(
         # is running an incompatible version, which is worth failing loudly
         # rather than partially accepting.
         import logging
-        logging.getLogger("uvicorn.error").error("422 edge validation failure: %s, raw: %s", exc.errors(), raw.decode(errors='replace')[:500])
+
+        logging.getLogger("uvicorn.error").error(
+            "422 edge validation failure: %s, raw: %s",
+            exc.errors(),
+            raw.decode(errors="replace")[:500],
+        )
         raise AppError(
             status_code=422,
             code="edge_payload_invalid",
@@ -550,6 +555,7 @@ def _not_found(asset_id: str) -> AppError:
 # Phase 4b: 区域无线事故智能因果诊断端点
 # ============================================================================
 
+
 @router.get(
     "/assurance/incidents/{incident_id}/diagnosis",
     responses=STANDARD_ERROR_RESPONSES,
@@ -627,4 +633,3 @@ async def post_wireless_incident_diagnosis(
             details={"incident_id": incident_id},
         ) from exc
     return res.model_dump()
-

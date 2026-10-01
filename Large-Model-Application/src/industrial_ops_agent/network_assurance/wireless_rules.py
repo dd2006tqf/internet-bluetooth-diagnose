@@ -10,15 +10,15 @@ Implements:
 from __future__ import annotations
 
 from typing import Final
+
 from industrial_ops_agent.network_assurance.wireless_contracts import (
+    HYPOTHESIS_MAX_CONFIDENCE,
     CanonicalDiagnosis,
     ConfidenceLevel,
     DeviceFinding,
     DiagnosisHypothesis,
-    HYPOTHESIS_MAX_CONFIDENCE,
     IncidentEvidenceBundle,
     ObservedPattern,
-    WirelessEventView,
 )
 
 WIRELESS_RULES_VERSION: Final[str] = "rules-2026.10"
@@ -27,7 +27,6 @@ WIRELESS_RULES_VERSION: Final[str] = "rules-2026.10"
 def classify_incident(bundle: IncidentEvidenceBundle) -> CanonicalDiagnosis:
     """对事故证据包进行纯确定性物理模式提取与因果决裁。"""
     events = bundle.qualifying_events
-    affected_devs = bundle.incident.affected_devices
 
     # 1. 基础事实特征提取
     evidence_ids = [e.event_id for e in events]
@@ -42,7 +41,9 @@ def classify_incident(bundle: IncidentEvidenceBundle) -> CanonicalDiagnosis:
             is_all_explicit_term = True
 
     if is_all_explicit_term:
-        reasons.append("所记录断开事件全部为用户主动断连（RemoteUserTerminated / LocalHostTerminated）。")
+        reasons.append(
+            "所记录断开事件全部为用户主动断连（RemoteUserTerminated / LocalHostTerminated）。"
+        )
         return CanonicalDiagnosis(
             observed_pattern=ObservedPattern.EXPLICIT_TERMINATION_PATTERN,
             hypothesis=DiagnosisHypothesis.NORMAL_USER_ACTIVITY,
@@ -57,13 +58,21 @@ def classify_incident(bundle: IncidentEvidenceBundle) -> CanonicalDiagnosis:
     has_prior_degraded = any(e.event_type == "LINK_DEGRADED" for e in events)
 
     is_sub_second_sync = False
-    if len(dev_addresses) >= 2 and disconn_ts:
-        if (max(disconn_ts) - min(disconn_ts)) <= 1000 and not has_prior_degraded:
-            is_sub_second_sync = True
+    if (
+        len(dev_addresses) >= 2
+        and disconn_ts
+        and (max(disconn_ts) - min(disconn_ts)) <= 1000
+        and not has_prior_degraded
+    ):
+        is_sub_second_sync = True
 
     # 3. 检查环境 Wi-Fi 异常与频段冲突证据
     env = bundle.environment
-    wifi_abnormal = env.available and env.link_type.startswith("WIFI") and (env.wifi_anomaly or env.coexistence_warning)
+    wifi_abnormal = (
+        env.available
+        and env.link_type.startswith("WIFI")
+        and (env.wifi_anomaly or env.coexistence_warning)
+    )
 
     # 4. 模式决裁 (Pattern Classifier)
     if is_sub_second_sync:
@@ -91,31 +100,50 @@ def classify_incident(bundle: IncidentEvidenceBundle) -> CanonicalDiagnosis:
         else:
             hypothesis = DiagnosisHypothesis.LOCAL_ADAPTER_OR_HOST_STALL
             raw_confidence = ConfidenceLevel.MEDIUM
-            reasons.append("多设备在 1000ms 内亚秒级同步断开且断开前无衰减，高度符合本机适配器/总线假死特征。")
+            reasons.append(
+                "多设备在 1000ms 内亚秒级同步断开且断开前无衰减，高度符合本机适配器/总线假死特征。"
+            )
 
     elif pattern == ObservedPattern.MULTI_DEVICE_CONCURRENT_ANOMALY:
         if wifi_abnormal:
             hypothesis = DiagnosisHypothesis.COEXISTENCE_RF_INTERFERENCE
             raw_confidence = ConfidenceLevel.HIGH
-            reasons.append(f"事故窗口内 {len(dev_addresses)} 台设备协同异常，且伴随 Wi-Fi 2.4GHz 恶化/频段冲突警告。")
+            reasons.append(
+                f"事故窗口内 {len(dev_addresses)} 台设备协同异常，"
+                "且伴随 Wi-Fi 2.4GHz 恶化/频段冲突警告。"
+            )
         else:
             hypothesis = DiagnosisHypothesis.AREA_RF_DEGRADATION_OR_OBSTACLE
             raw_confidence = ConfidenceLevel.HIGH
-            reasons.append(f"事故窗口内 {len(dev_addresses)} 台设备协同异常，但未观察到 Wi-Fi 强相关性，指向区域 RF 遮挡或环境噪声。")
+            reasons.append(
+                f"事故窗口内 {len(dev_addresses)} 台设备协同异常，"
+                "但未观察到 Wi-Fi 强相关性，指向区域 RF 遮挡或环境噪声。"
+            )
 
     elif pattern == ObservedPattern.SINGLE_DEVICE_GRADUAL_DEGRADATION:
         dev_addr = next(iter(dev_addresses))
         baseline = bundle.baselines.get(dev_addr)
-        last_rssi = next((e.rssi_at_event_dbm for e in reversed(events) if e.rssi_at_event_dbm is not None), None)
+        last_rssi = next(
+            (e.rssi_at_event_dbm for e in reversed(events) if e.rssi_at_event_dbm is not None), None
+        )
 
         if last_rssi is None:
             hypothesis = DiagnosisHypothesis.INSUFFICIENT_EVIDENCE
             raw_confidence = ConfidenceLevel.INSUFFICIENT
-            reasons.append("设备虽然经历前置劣化，但断开瞬时有效 RSSI 未采集，无法定量判定距离/遮挡。")
-        elif baseline and baseline.baseline_rssi_dbm is not None and (last_rssi <= baseline.baseline_rssi_dbm - 10):
+            reasons.append(
+                "设备虽然经历前置劣化，但断开瞬时有效 RSSI 未采集，无法定量判定距离/遮挡。"
+            )
+        elif (
+            baseline
+            and baseline.baseline_rssi_dbm is not None
+            and (last_rssi <= baseline.baseline_rssi_dbm - 10)
+        ):
             hypothesis = DiagnosisHypothesis.DEVICE_DISTANCE_OR_SHADOWING
             raw_confidence = ConfidenceLevel.MEDIUM
-            reasons.append(f"设备信号从基线 {baseline.baseline_rssi_dbm}dBm 显著突跌至 {last_rssi}dBm 后断开，符合移动超距或物理遮挡。")
+            reasons.append(
+                f"设备信号从基线 {baseline.baseline_rssi_dbm}dBm 显著突跌至 {last_rssi}dBm "
+                "后断开，符合移动超距或物理遮挡。"
+            )
         else:
             hypothesis = DiagnosisHypothesis.DEVICE_DISTANCE_OR_SHADOWING
             raw_confidence = ConfidenceLevel.LOW
@@ -123,7 +151,9 @@ def classify_incident(bundle: IncidentEvidenceBundle) -> CanonicalDiagnosis:
 
     elif pattern == ObservedPattern.SINGLE_DEVICE_ABRUPT_LOSS:
         dev_addr = next(iter(dev_addresses))
-        last_rssi = next((e.rssi_at_event_dbm for e in reversed(events) if e.rssi_at_event_dbm is not None), None)
+        last_rssi = next(
+            (e.rssi_at_event_dbm for e in reversed(events) if e.rssi_at_event_dbm is not None), None
+        )
 
         if last_rssi is None:
             hypothesis = DiagnosisHypothesis.INSUFFICIENT_EVIDENCE
@@ -133,7 +163,10 @@ def classify_incident(bundle: IncidentEvidenceBundle) -> CanonicalDiagnosis:
             # 信号良好却突发失联 -> 掉电或崩溃
             hypothesis = DiagnosisHypothesis.DEVICE_POWER_LOSS_OR_CRASH
             raw_confidence = ConfidenceLevel.LOW
-            reasons.append(f"设备在良好信号 ({last_rssi}dBm) 下无前置衰减突发超时断开，疑似设备掉电、重启或固件崩溃。")
+            reasons.append(
+                f"设备在良好信号 ({last_rssi}dBm) 下无前置衰减突发超时断开，"
+                "疑似设备掉电、重启或固件崩溃。"
+            )
         else:
             hypothesis = DiagnosisHypothesis.INSUFFICIENT_EVIDENCE
             raw_confidence = ConfidenceLevel.INSUFFICIENT
@@ -153,15 +186,25 @@ def classify_incident(bundle: IncidentEvidenceBundle) -> CanonicalDiagnosis:
     for d in dev_addresses:
         d_evs = [e for e in events if e.device_address == d]
         has_deg = any(e.event_type == "LINK_DEGRADED" for e in d_evs)
-        d_pat = ObservedPattern.SINGLE_DEVICE_GRADUAL_DEGRADATION if has_deg else ObservedPattern.SINGLE_DEVICE_ABRUPT_LOSS
-        d_hyp = DiagnosisHypothesis.DEVICE_DISTANCE_OR_SHADOWING if has_deg else DiagnosisHypothesis.DEVICE_POWER_LOSS_OR_CRASH
-        device_findings.append(DeviceFinding(
-            device_address=d,
-            observed_pattern=d_pat,
-            hypothesis=d_hyp,
-            confidence=ConfidenceLevel.LOW,
-            note=f"事件数: {len(d_evs)}"
-        ))
+        d_pat = (
+            ObservedPattern.SINGLE_DEVICE_GRADUAL_DEGRADATION
+            if has_deg
+            else ObservedPattern.SINGLE_DEVICE_ABRUPT_LOSS
+        )
+        d_hyp = (
+            DiagnosisHypothesis.DEVICE_DISTANCE_OR_SHADOWING
+            if has_deg
+            else DiagnosisHypothesis.DEVICE_POWER_LOSS_OR_CRASH
+        )
+        device_findings.append(
+            DeviceFinding(
+                device_address=d,
+                observed_pattern=d_pat,
+                hypothesis=d_hyp,
+                confidence=ConfidenceLevel.LOW,
+                note=f"事件数: {len(d_evs)}",
+            )
+        )
 
     return CanonicalDiagnosis(
         observed_pattern=pattern,

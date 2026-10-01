@@ -39,25 +39,43 @@ jobs:
       - name: Edge telemetry contract cross-language check
         run: |
           sudo apt-get install -y -qq python3 python3-pip
-          # verify_telemetry_contract.py 虽然只要 contracts/copilot 两个模块，
-          # 但 Python import 子模块会先执行包的 __init__.py，它级联加载
-          # service → sqlalchemy/pgvector、signing → cryptography、
-          # model_gateway → structlog/jsonschema/opentelemetry/prometheus-client/httpx。
-          # 只装 pydantic 会在入口 ModuleNotFoundError（该步骤自 177bcaf 起即红）。
-          # 清单是 venv 里逐轮复现到 `OK edge-telemetry-contract` 的最小直接依赖集；
-          # 以后 __init__ 新增级联 import 时按同样的报错补包即可。
-          python3 -m pip install --quiet \
-            pydantic \
-            sqlalchemy \
-            pgvector \
-            cryptography \
-            structlog \
-            jsonschema \
-            opentelemetry-api \
-            opentelemetry-sdk \
-            prometheus-client \
-            httpx
+          # 依赖清单的唯一来源是 requirements-test.txt（P0 建立）：
+          # __init__.py 级联 import 需要 sqlalchemy/pgvector/cryptography/
+          # structlog/jsonschema/opentelemetry/prometheus-client/httpx 等，
+          # 以后新增级联 import 时只改该文件一处。
+          python3 -m pip install --quiet -r Large-Model-Application/requirements-test.txt
           python3 tools/verify_telemetry_contract.py --strict
+
+  cloud-tests:
+    name: 云端 Python 测试与连接路径静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装测试依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r Large-Model-Application/requirements-test.txt
+          pip install -e Large-Model-Application --no-deps
+
+      - name: pytest（排除 live 模型用例）
+        working-directory: Large-Model-Application
+        run: pytest tests/ -q -m "not live"
+
+      - name: ruff 连接路径门禁
+        # 全仓 src 尚有约 88 项历史 lint 债务（归 L3 阶段清偿，见集成设计 §九）；
+        # 先对边云连接路径设硬门禁，防止新增代码欠债。
+        working-directory: Large-Model-Application
+        run: >-
+          ruff check
+          src/industrial_ops_agent/network_assurance
+          src/industrial_ops_agent/edge
+          src/industrial_ops_agent/persistence
+          src/industrial_ops_agent/api/routes/network_assurance.py
 
   build-and-test:
     name: x86 编译与全量单元测试

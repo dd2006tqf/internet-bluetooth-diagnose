@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import threading
 from dataclasses import dataclass
-from typing import Any
+
 import httpx
 from pydantic import BaseModel, Field
 
@@ -75,10 +75,7 @@ class RuntimeModelConfigManager:
             key = self._config.api_key
             masked = ""
             if key:
-                if len(key) <= 8:
-                    masked = "sk-****"
-                else:
-                    masked = f"{key[:3]}...{key[-4:]}"
+                masked = "sk-****" if len(key) <= 8 else f"{key[:3]}...{key[-4:]}"
             return CopilotModelConfigResponse(
                 upstream_url=self._config.upstream_url,
                 model_name=self._config.model_name,

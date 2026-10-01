@@ -1,0 +1,20 @@
+# WeakNet 云端切片测试与静态检查的直接依赖（P0 起由 CI 与本地共用）
+# 安装：pip install -r requirements-test.txt && pip install -e . --no-deps
+# 说明：只覆盖 tests/ 所需的最小集合；平台全量依赖见 pyproject.toml / uv.lock。
+#       不含 pyspark/kafka/neo4j/opensearch 等重依赖——tests/ 目前不 import 它们。
+pytest
+pydantic
+pydantic-settings
+sqlalchemy
+pgvector
+httpx
+cryptography
+jsonschema
+structlog>=25.4,<26
+uvicorn
+prometheus-client
+opentelemetry-api>=1.44,<2
+opentelemetry-sdk>=1.44,<2
+opentelemetry-exporter-otlp-proto-http>=1.44,<2
+# 静态检查（make static 的 check 部分；mypy 依赖全量 import 图，暂不入此清单）
+ruff

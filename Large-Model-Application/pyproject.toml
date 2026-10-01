@@ -163,3 +163,10 @@ strict = true
 files = ["src"]
 plugins = ["pydantic.mypy"]
 warn_unused_configs = true
+
+[tool.pytest.ini_options]
+# @pytest.mark.live 的用例需要真实模型网关/网络，默认不跑；
+# 普通运行用 `-m "not live"` 显式排除（CI 即如此），跑真机链路时再 `-m live`。
+markers = [
+    "live: requires a live model gateway or network access; excluded from ordinary runs",
+]

@@ -108,7 +108,11 @@ def test_get_creates_deterministic_diagnosis_without_llm(test_db: Database, tena
     res = service.get_diagnosis(tenant_context, "sitinc_get", bundle_loader=lambda _: bundle)
     assert res.incident_id == "sitinc_get"
     assert res.presentation.llm_used is False
-    assert res.canonical.observed_pattern == ObservedPattern.MULTI_DEVICE_CONCURRENT_ANOMALY
+    # 本 fixture 两事件跨度 500ms（1000→1500）且断开前无衰减，按规则引擎
+    # 优先级（wireless_rules.py: 亚秒同步优先于窗口协同）应判 SUB_SECOND，
+    # 而非 MULTI_DEVICE；同 bundle 的假设断言不受影响（两种模式在
+    # wifi_anomaly=True 下均收敛到 COEXISTENCE_RF_INTERFERENCE）。
+    assert res.canonical.observed_pattern == ObservedPattern.SUB_SECOND_SIMULTANEOUS_DISCONNECT
     assert res.canonical.hypothesis == DiagnosisHypothesis.COEXISTENCE_RF_INTERFERENCE
 
     # 第二次调用 GET：直接命中已有缓存

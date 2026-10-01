@@ -403,9 +403,7 @@ class NetworkCopilotService:
 
         return chain, actions
 
-    def _sle_states(
-        self, snapshot: dict[str, Any], group: str
-    ) -> dict[str, dict[str, Any]]:
+    def _sle_states(self, snapshot: dict[str, Any], group: str) -> dict[str, dict[str, Any]]:
         """Return per-SLE info for one group, preserving capability bits.
 
         The copilot needs ``capability_level_negative`` to decide whether a
@@ -570,9 +568,7 @@ class NetworkCopilotService:
         context: TenantContext,
         asset_id: str,
     ) -> list[Any]:
-        points: list[Any] = list(
-            self._assurance.timeline(context, asset_id, window="24h")
-        )
+        points: list[Any] = list(self._assurance.timeline(context, asset_id, window="24h"))
         return points
 
     def _model_report_with(
@@ -584,15 +580,6 @@ class NetworkCopilotService:
         timeline: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
         """Synchronous model call wrapper; returns None on any gateway failure."""
-
-        import os, httpx
-        from industrial_ops_agent.network_assurance.model_config import get_model_config_manager
-
-        hot_cfg = get_model_config_manager().get_config()
-        upstream_base = hot_cfg.upstream_url or os.environ.get("IOAP_MODEL_GATEWAY_UPSTREAM_URL", "")
-        upstream_key = hot_cfg.api_key or os.environ.get("IOAP_MODEL_GATEWAY_API_KEY", "")
-        upstream_model = hot_cfg.model_name or os.environ.get("IOAP_MODEL_GATEWAY_MODEL_NAME", "deepseek-v4-pro-0813")
-        timeout = hot_cfg.timeout_seconds or _INFERENCE_TIMEOUT_SECONDS
 
         payload = {
             "device_id": asset_id,
@@ -614,10 +601,13 @@ class NetworkCopilotService:
                 "请严格按照 JSON Schema 格式输出结果。"
             )
 
-        user_content = json.dumps(payload, default=str, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        user_content = json.dumps(
+            payload, default=str, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
 
         # 优先使用配置的直通中转站（复用 upstream.py 工具）
         from industrial_ops_agent.network_assurance.upstream import complete_json
+
         system_instruction = (
             f"{sys_prompt}\n\n"
             "【要求】：请以严格合法的 JSON 对象格式返回，不要包含任何 markdown 标记（如 ```json）。"

@@ -1994,26 +1994,34 @@ class MaintenanceReviewAssignmentRecord(TenantScopedMixin, Base):
     __tablename__ = "maintenance_review_assignments"
     __table_args__ = (
         UniqueConstraint("tenant_id", "subject_id", "idempotency_key", name="uq_review_claim_key"),
-        UniqueConstraint("tenant_id", "subject_id", "evaluation_id", "case_id",
-                         name="uq_review_claim_case"),
+        UniqueConstraint(
+            "tenant_id", "subject_id", "evaluation_id", "case_id", name="uq_review_claim_case"
+        ),
         Index("ix_review_claim_subject_state", "tenant_id", "subject_id", "state"),
-        CheckConstraint("state IN ('ACTIVE', 'SUBMITTED', 'WITHDRAWN')",
-                        name="ck_maintenance_review_assignment_state"),
-        CheckConstraint("version > 0 AND policy_epoch_version > 0",
-                        name="ck_maintenance_review_assignment_version"),
+        CheckConstraint(
+            "state IN ('ACTIVE', 'SUBMITTED', 'WITHDRAWN')",
+            name="ck_maintenance_review_assignment_state",
+        ),
+        CheckConstraint(
+            "version > 0 AND policy_epoch_version > 0",
+            name="ck_maintenance_review_assignment_version",
+        ),
         CheckConstraint(
             "(state = 'ACTIVE' AND submitted_at IS NULL AND withdrawn_at IS NULL "
             "AND submission_digest IS NULL) OR "
             "(state = 'SUBMITTED' AND submitted_at IS NOT NULL AND withdrawn_at IS NULL "
             "AND submission_digest IS NOT NULL) OR "
             "(state = 'WITHDRAWN' AND submitted_at IS NULL AND withdrawn_at IS NOT NULL "
-            "AND submission_digest IS NULL)", name="ck_review_claim_timestamps"),
+            "AND submission_digest IS NULL)",
+            name="ck_review_claim_timestamps",
+        ),
     )
 
     claim_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     subject_id: Mapped[str] = mapped_column(ForeignKey("subjects.subject_id"), nullable=False)
     evaluation_id: Mapped[str] = mapped_column(
-        ForeignKey("maintenance_planning_evaluation_runs.evaluation_id"), nullable=False)
+        ForeignKey("maintenance_planning_evaluation_runs.evaluation_id"), nullable=False
+    )
     case_id: Mapped[str] = mapped_column(String(128), nullable=False)
     source_family_keys: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     source_binding_digest: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -6009,19 +6017,27 @@ class SiteIncidentDiagnosisRecord(TenantScopedMixin, Base):
     confidence: Mapped[str] = mapped_column(String(16), nullable=False)
     deterministic_reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     evidence_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    device_findings: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    device_findings: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
 
     # 呈现层 (Presentation: 大模型扩写或确定性兜底生成，供人类阅读)
     llm_model_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     llm_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     diagnosis_report: Mapped[str] = mapped_column(Text, nullable=False)
-    structured_findings: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
-    evidence_citations: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    structured_findings: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    evidence_citations: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
     recommendations: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     # 护栏审查审计
     guardrail_status: Mapped[str] = mapped_column(String(32), nullable=False, default="PASSED")
-    guardrail_findings: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    guardrail_findings: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
