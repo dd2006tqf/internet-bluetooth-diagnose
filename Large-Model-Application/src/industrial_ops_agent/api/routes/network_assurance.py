@@ -69,6 +69,10 @@ from industrial_ops_agent.network_assurance.signing import (
     EdgeTelemetryVerifier,
     NetworkSignatureError,
 )
+from industrial_ops_agent.network_assurance.wireless_contracts import (
+    WirelessEventIngestResult,
+    WirelessEventUplinkBatch,
+)
 from industrial_ops_agent.persistence.tenant import TenantContext, validate_boundary_identifier
 
 router = APIRouter(prefix="/network", tags=["network-assurance"])
@@ -279,6 +283,64 @@ async def ingest_edge_telemetry(
         duplicates=result.duplicates,
         pending_actions=list(result.pending_actions),
     )
+
+
+@router.post(
+    "/edge/wireless-events",
+    response_model=WirelessEventIngestResult,
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Ingest a signed batch of edge wireless events/incidents/baselines",
+)
+async def ingest_edge_wireless_events(
+    request: Request,
+    verifier: Annotated[EdgeTelemetryVerifier, Depends(get_edge_telemetry_verifier)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+    tenant_id: Annotated[str, Header(alias="X-Edge-Tenant")],
+) -> WirelessEventIngestResult:
+    """接受板端无线事实上行（Phase 4a 独立端点，决策 D1）。
+
+    与遥测端点共享验签前置（`_read_verified_body`：先验签后解析，拒绝
+    原因不回显），但幂等键分域：这里按 event_id / incident_id 计数，
+    不看 network_epoch/sequence。重放是常态路径（板端游标在确认前不前移）。
+    """
+
+    raw = await _read_verified_body(request, verifier)
+
+    try:
+        batch = WirelessEventUplinkBatch.model_validate_json(raw)
+    except ValidationError as exc:
+        import logging
+
+        logging.getLogger("uvicorn.error").error(
+            "422 edge wireless validation failure: %s, raw: %s",
+            exc.errors(),
+            raw.decode(errors="replace")[:500],
+        )
+        raise AppError(
+            status_code=422,
+            code="edge_payload_invalid",
+            category="validation",
+            message="Edge wireless payload failed contract validation",
+            details={"errors": exc.error_count()},
+        ) from exc
+
+    try:
+        context = TenantContext(
+            tenant_id=tenant_id,
+            subject_id=edge_subject_id(batch.device_id),
+        )
+    except ValueError as exc:
+        raise _bad_request("edge_tenant_invalid") from exc
+
+    try:
+        return service.ingest_wireless_batch(context, batch, key_id=verifier.key_id)
+    except NetworkAssuranceConflict as exc:
+        raise AppError(
+            status_code=409,
+            code="edge_device_tenant_conflict",
+            category="conflict",
+            message="Device is registered to another tenant",
+        ) from exc
 
 
 @router.post(

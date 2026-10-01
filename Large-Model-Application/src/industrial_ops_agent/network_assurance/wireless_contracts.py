@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class _ClosedModel(BaseModel):
@@ -163,6 +163,13 @@ class WirelessEventView(_ClosedModel):
 
 
 class BaselineView(_ClosedModel):
+    # 身份字段带默认值：兼容 4b 期只按 device_address 构造的既有测试；
+    # 上行链（Phase 4a）必须填全，云端据此落复合主键，杜绝跨网关/跨控制器合并。
+    site_id: str = ""
+    gateway_id: str = ""
+    hci_index: int = 0
+    protocol: str = "BLUETOOTH"
+    address_type: str = "UNKNOWN"
     device_address: str
     baseline_rssi_dbm: int | None = None
     min_seen_rssi_dbm: int | None = None
@@ -181,6 +188,9 @@ class IncidentView(_ClosedModel):
     affected_devices: int
     state: str
     suspected_cause: str | None = None
+    #: 构成该事故的 device_events.event_id 清板端 site_incident_events 回链；
+    #: 默认空列表 = 旧载荷/未知，装载时回退到时间窗选事件。
+    evidence_event_ids: list[str] = Field(default_factory=list)
 
 
 class EnvironmentWindowView(_ClosedModel):
@@ -188,6 +198,9 @@ class EnvironmentWindowView(_ClosedModel):
     link_type: str = "UNKNOWN"
     wifi_anomaly: bool = False
     coexistence_warning: bool = False
+    #: 窗口覆盖的事件时间范围（板端上行用；4b 期构造的既有测试缺省为 0）。
+    from_ms: int = 0
+    to_ms: int = 0
     snapshots: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -199,6 +212,70 @@ class IncidentEvidenceBundle(_ClosedModel):
     window_events: list[WirelessEventView]
     baselines: dict[str, BaselineView]
     environment: EnvironmentWindowView
+
+
+# ---------------------------------------------------------------------------
+# Phase 4a：板端 → 云端无线事实上行契约（network.edge.wireless-events.v1）
+# ---------------------------------------------------------------------------
+
+WIRELESS_EVENT_UPLINK_SCHEMA_VERSION = "network.edge.wireless-events.v1"
+
+#: 单批上限：事件是稀疏事实（断连/劣化），正常一批远小于此值；
+#: 上限只为给签名报文一个确定的体积边界（服务端另有 1MB 原始体上限）。
+MAX_UPLINK_EVENTS_PER_BATCH = 1000
+MAX_UPLINK_INCIDENTS_PER_BATCH = 200
+MAX_UPLINK_BASELINES_PER_BATCH = 2000
+
+
+class WirelessEventUplinkBatch(_ClosedModel):
+    """签名信封：单网关一次批量上行的无线事实（事件/事故/基线/环境窗口）。
+
+    与遥测信封 ``network.edge.telemetry.v1`` 分域（决策 D1）：
+    这里的幂等键是 ``event_id`` / ``incident_id`` / 复合基线键，
+    不走 ``(network_epoch, sequence_id)``——两者失败重试与演化语义不同
+    （不可变事实 vs 单调快照），混进一个信封会把两种幂等规则耦合死。
+    ``watermark_ms`` 只是板端游标的回显，服务端不依赖它做去重。
+    """
+
+    schema_version: Literal["network.edge.wireless-events.v1"] = (
+        WIRELESS_EVENT_UPLINK_SCHEMA_VERSION
+    )
+    device_id: str = Field(min_length=1, max_length=128)
+    watermark_ms: int = Field(ge=0)
+    events: list[WirelessEventView] = Field(default_factory=list)
+    incidents: list[IncidentView] = Field(default_factory=list)
+    baselines: list[BaselineView] = Field(default_factory=list)
+    env_window: EnvironmentWindowView | None = None
+
+    @model_validator(mode="after")
+    def _enforce_batch_limits(self) -> Self:
+        """给签名报文一个确定的体积边界，并保证载荷不空。
+
+        依赖已装 pydantic v2 的 model_validator，形态与 contracts.py
+        既有的 ``_require_single_device_and_ascending_sequence`` 一致。
+        """
+        if not (self.events or self.incidents or self.baselines or self.env_window):
+            raise ValueError("an uplink batch must carry at least one group")
+        if len(self.events) > MAX_UPLINK_EVENTS_PER_BATCH:
+            raise ValueError("too many events in one signed batch")
+        if len(self.incidents) > MAX_UPLINK_INCIDENTS_PER_BATCH:
+            raise ValueError("too many incidents in one signed batch")
+        if len(self.baselines) > MAX_UPLINK_BASELINES_PER_BATCH:
+            raise ValueError("too many baselines in one signed batch")
+        return self
+
+
+class WirelessGroupCounts(_ClosedModel):
+    """一组事实的接受/重复计数（重放安全的可观测出口）。"""
+
+    events: int = 0
+    incidents: int = 0
+    baselines: int = 0
+
+
+class WirelessEventIngestResult(_ClosedModel):
+    accepted: WirelessGroupCounts
+    duplicates: WirelessGroupCounts
 
 
 def wireless_report_schema() -> dict[str, Any]:

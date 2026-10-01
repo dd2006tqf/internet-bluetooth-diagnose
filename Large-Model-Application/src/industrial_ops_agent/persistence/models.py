@@ -6042,6 +6042,114 @@ class SiteIncidentDiagnosisRecord(TenantScopedMixin, Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+# ---------------------------------------------------------------------------
+# Phase 4a：WeakNet 无线事实上行（板端 → 云端四张事实表）
+#
+# 与 site_incident_diagnoses 的关系：本组四张表是"事实"，诊断表是"解释"；
+# 诊断按 evidence_fingerprint 锚定本组证据，任何路径都不得回写本组。
+# 全部租户作用域（TenantScopedMixin）+ 与 0087 同款 RLS 策略（见迁移 0090）。
+# ---------------------------------------------------------------------------
+
+
+class NetworkWirelessEventRecord(TenantScopedMixin, Base):
+    """一条板端 canonical 设备事件（不可变事实，按 event_id 幂等）。"""
+
+    __tablename__ = "network_wireless_events"
+    __table_args__ = (
+        Index("ix_network_wireless_events_ts", "tenant_id", "ts_ms"),
+        Index("ix_network_wireless_events_dev", "tenant_id", "device_address"),
+    )
+
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    #: 上传该事实的网关（= network_assets.asset_id），事件本身的身份见 device_address
+    asset_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    site_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    gateway_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    protocol: Mapped[str] = mapped_column(String(32), nullable=False, default="BLUETOOTH")
+    device_address: Mapped[str] = mapped_column(String(32), nullable=False)
+    address_type: Mapped[str] = mapped_column(String(16), nullable=False, default="UNKNOWN")
+    hci_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    ts_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    rssi_at_event_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    raw_reason_code: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False, default="UNKNOWN")
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="UNKNOWN")
+    source_detail: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    details_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
+class NetworkSiteIncidentRecord(TenantScopedMixin, Base):
+    """区域级事故（持续解释，非事件副本）；按 incident_id UPSERT 演化到 RESOLVED。"""
+
+    __tablename__ = "network_site_incidents"
+    __table_args__ = (
+        Index("ix_network_site_incidents_window", "tenant_id", "started_at_ms"),
+        Index("ix_network_site_incidents_state", "tenant_id", "state"),
+    )
+
+    incident_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    site_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    gateway_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    started_at_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_event_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    resolved_at_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    affected_devices: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
+    suspected_cause: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 板端 site_incident_events 回链的 event_id 列表（证据可追溯性）
+    evidence_event_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+
+
+class NetworkDeviceBaselineRecord(TenantScopedMixin, Base):
+    """设备链路基线画像（与板端 device_baselines 同键，UPSERT 演化）。"""
+
+    __tablename__ = "network_device_baselines"
+    __table_args__ = (
+        Index("ix_network_device_baselines_dev", "tenant_id", "asset_id", "device_address"),
+    )
+
+    #: 确定性代理键 = hash(tenant + 板端六段复合键)，跨重启/重放稳定
+    baseline_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    site_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    gateway_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    hci_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    protocol: Mapped[str] = mapped_column(String(32), nullable=False, default="BLUETOOTH")
+    address_type: Mapped[str] = mapped_column(String(16), nullable=False, default="UNKNOWN")
+    device_address: Mapped[str] = mapped_column(String(32), nullable=False)
+    baseline_rssi_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    min_seen_rssi_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_seen_rssi_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    baseline_sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="LEARNING")
+    first_seen_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_seen_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class NetworkEnvWindowRecord(TenantScopedMixin, Base):
+    """环境窗口摘要（Wi-Fi 异常/共存告警），供诊断 bundle 的 environment 视图。"""
+
+    __tablename__ = "network_env_windows"
+    __table_args__ = (
+        Index("ix_network_env_windows_range", "tenant_id", "from_ms"),
+    )
+
+    #: 确定性代理键 = hash(tenant, asset, from_ms, to_ms)
+    window_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    asset_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    from_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    to_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    link_type: Mapped[str] = mapped_column(String(32), nullable=False, default="UNKNOWN")
+    wifi_anomaly: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    coexistence_warning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    snapshots_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+
+
 TENANT_TABLE_NAMES = frozenset(
     table_name for table_name in Base.metadata.tables if table_name != TenantRecord.__tablename__
 )

@@ -43,6 +43,7 @@ compare ``sequence_id`` within an epoch, never timestamps across epochs.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -60,11 +61,22 @@ from industrial_ops_agent.network_assurance.contracts import (
     NetworkTelemetryBatch,
     NetworkTimelinePoint,
 )
+from industrial_ops_agent.network_assurance.wireless_contracts import (
+    BaselineView,
+    EnvironmentWindowView,
+    WirelessEventIngestResult,
+    WirelessEventUplinkBatch,
+    WirelessGroupCounts,
+)
 from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.models import (
     NetworkAssetRecord,
+    NetworkDeviceBaselineRecord,
+    NetworkEnvWindowRecord,
     NetworkPendingActionRecord,
+    NetworkSiteIncidentRecord,
     NetworkSnapshotRecord,
+    NetworkWirelessEventRecord,
 )
 from industrial_ops_agent.persistence.tenant import TenantContext, validate_boundary_identifier
 
@@ -240,6 +252,263 @@ class NetworkAssuranceService:
             outcomes=tuple(outcomes),
             pending_actions=pending,
         )
+
+    # ------------------------------------------------------------------
+    # Wireless fact uplink (Phase 4a: events / incidents / baselines / env)
+    # ------------------------------------------------------------------
+
+    def ingest_wireless_batch(
+        self,
+        context: TenantContext,
+        batch: WirelessEventUplinkBatch,
+        *,
+        key_id: str,
+        received_at: datetime | None = None,
+    ) -> WirelessEventIngestResult:
+        """Store a verified wireless-fact batch, tolerating replay.
+
+        Per-group idempotency mirrors the edge tables' own semantics:
+
+        - events     -> ``event_id``: immutable fact, insert-or-duplicate;
+        - incidents  -> ``incident_id``: lifecycle row; a payload that advances
+          state (OPEN -> RESOLVED) counts as accepted, an identical replay
+          counts as duplicate;
+        - baselines  -> natural-key hash: profile upsert with the same
+          accepted/duplicate accounting;
+        - env window -> refreshed silently (diagnostic context, not a counted
+          fact group).
+
+        The signature over the exact bytes was verified by the route; nothing
+        here re-parses the payload (same rule as :meth:`ingest_batch`).
+        ``received_at`` exists for testability and audit symmetry with the
+        telemetry path.
+        """
+
+        _ = received_at  # 板端事件自带 ts_ms；此参数仅保持与遥测路径的接口对称
+        with self._database.transaction(context) as session:
+            asset = self._ensure_uplink_asset(
+                session, context, device_id=batch.device_id, key_id=key_id
+            )
+
+            accepted_events = 0
+            duplicate_events = 0
+            for view in batch.events:
+                existing = session.get(NetworkWirelessEventRecord, view.event_id)
+                if existing is not None:
+                    self._require_same_tenant(context, existing.tenant_id, view.event_id)
+                    duplicate_events += 1
+                    continue
+                session.add(
+                    NetworkWirelessEventRecord(
+                        event_id=view.event_id,
+                        tenant_id=context.tenant_id,
+                        asset_id=asset.asset_id,
+                        site_id=view.site_id,
+                        gateway_id=view.gateway_id,
+                        protocol=view.protocol,
+                        device_address=view.device_address,
+                        address_type=view.address_type,
+                        hci_index=view.hci_index,
+                        event_type=view.event_type,
+                        ts_ms=view.ts_ms,
+                        rssi_at_event_dbm=view.rssi_at_event_dbm,
+                        raw_reason_code=view.raw_reason_code,
+                        reason=view.reason,
+                        source=view.source,
+                        source_detail=view.source_detail,
+                        details_json=view.details_json,
+                    )
+                )
+                accepted_events += 1
+
+            accepted_incidents = 0
+            duplicate_incidents = 0
+            for view in batch.incidents:
+                existing = session.get(NetworkSiteIncidentRecord, view.incident_id)
+                if existing is None:
+                    session.add(
+                        NetworkSiteIncidentRecord(
+                            incident_id=view.incident_id,
+                            tenant_id=context.tenant_id,
+                            asset_id=asset.asset_id,
+                            site_id=view.site_id,
+                            gateway_id=view.gateway_id,
+                            started_at_ms=view.started_at_ms,
+                            last_event_ms=view.last_event_ms,
+                            resolved_at_ms=view.resolved_at_ms,
+                            affected_devices=view.affected_devices,
+                            state=view.state,
+                            suspected_cause=view.suspected_cause,
+                            evidence_event_ids_json=list(view.evidence_event_ids),
+                        )
+                    )
+                    accepted_incidents += 1
+                    continue
+                self._require_same_tenant(context, existing.tenant_id, view.incident_id)
+                changed = (
+                    existing.state != view.state
+                    or existing.resolved_at_ms != view.resolved_at_ms
+                    or existing.last_event_ms != view.last_event_ms
+                    or existing.affected_devices != view.affected_devices
+                    or existing.suspected_cause != view.suspected_cause
+                )
+                if changed:
+                    # 时间窗与板端一致：last_event 只右移、started 只左移，
+                    # 乱序/迟到的重放不得把事故窗口拉回去。
+                    existing.state = view.state
+                    existing.resolved_at_ms = view.resolved_at_ms
+                    existing.last_event_ms = max(existing.last_event_ms, view.last_event_ms)
+                    existing.started_at_ms = min(existing.started_at_ms, view.started_at_ms)
+                    existing.affected_devices = view.affected_devices
+                    existing.suspected_cause = view.suspected_cause
+                    if view.evidence_event_ids:
+                        existing.evidence_event_ids_json = list(view.evidence_event_ids)
+                    accepted_incidents += 1
+                else:
+                    duplicate_incidents += 1
+
+            accepted_baselines = 0
+            duplicate_baselines = 0
+            for view in batch.baselines:
+                baseline_id = self._wireless_baseline_id(context, asset.asset_id, view)
+                existing = session.get(NetworkDeviceBaselineRecord, baseline_id)
+                if existing is None:
+                    session.add(
+                        NetworkDeviceBaselineRecord(
+                            baseline_id=baseline_id,
+                            tenant_id=context.tenant_id,
+                            asset_id=asset.asset_id,
+                            site_id=view.site_id,
+                            gateway_id=view.gateway_id,
+                            hci_index=view.hci_index,
+                            protocol=view.protocol,
+                            address_type=view.address_type,
+                            device_address=view.device_address,
+                            baseline_rssi_dbm=view.baseline_rssi_dbm,
+                            min_seen_rssi_dbm=view.min_seen_rssi_dbm,
+                            max_seen_rssi_dbm=view.max_seen_rssi_dbm,
+                            baseline_sample_count=view.baseline_sample_count,
+                            state=view.state,
+                        )
+                    )
+                    accepted_baselines += 1
+                    continue
+                self._require_same_tenant(context, existing.tenant_id, baseline_id)
+                changed = (
+                    existing.baseline_rssi_dbm != view.baseline_rssi_dbm
+                    or existing.min_seen_rssi_dbm != view.min_seen_rssi_dbm
+                    or existing.max_seen_rssi_dbm != view.max_seen_rssi_dbm
+                    or existing.baseline_sample_count != view.baseline_sample_count
+                    or existing.state != view.state
+                )
+                if changed:
+                    existing.baseline_rssi_dbm = view.baseline_rssi_dbm
+                    existing.min_seen_rssi_dbm = view.min_seen_rssi_dbm
+                    existing.max_seen_rssi_dbm = view.max_seen_rssi_dbm
+                    existing.baseline_sample_count = view.baseline_sample_count
+                    existing.state = view.state
+                    accepted_baselines += 1
+                else:
+                    duplicate_baselines += 1
+
+            if batch.env_window is not None:
+                self._upsert_env_window(session, context, asset.asset_id, batch.env_window)
+
+        return WirelessEventIngestResult(
+            accepted=WirelessGroupCounts(
+                events=accepted_events,
+                incidents=accepted_incidents,
+                baselines=accepted_baselines,
+            ),
+            duplicates=WirelessGroupCounts(
+                events=duplicate_events,
+                incidents=duplicate_incidents,
+                baselines=duplicate_baselines,
+            ),
+        )
+
+    def _ensure_uplink_asset(
+        self,
+        session: Session,
+        context: TenantContext,
+        *,
+        device_id: str,
+        key_id: str,
+    ) -> NetworkAssetRecord:
+        """Resolve (or implicitly register) the gateway asset for an uplink.
+
+        Same implicit-registration rule as telemetry: a device that presents a
+        valid signature over a well-formed payload is by definition part of
+        this deployment. No snapshot/heartbeat is touched here — wireless
+        facts must not fake telemetry liveness.
+        """
+
+        record = session.get(NetworkAssetRecord, device_id)
+        if record is not None and record.tenant_id != context.tenant_id:
+            raise NetworkAssuranceConflict("device is registered to another tenant")
+        if record is None:
+            record = NetworkAssetRecord(
+                asset_id=device_id,
+                tenant_id=context.tenant_id,
+                version=1,
+            )
+            session.add(record)
+        record.signing_key_id = key_id
+        return record
+
+    @staticmethod
+    def _require_same_tenant(context: TenantContext, row_tenant: str, row_id: str) -> None:
+        if row_tenant != context.tenant_id:
+            raise NetworkAssuranceConflict(f"row {row_id} is registered to another tenant")
+
+    @staticmethod
+    def _wireless_baseline_id(
+        context: TenantContext, asset_id: str, view: BaselineView
+    ) -> str:
+        seed = (
+            f"{context.tenant_id}|{asset_id}|{view.site_id}|{view.gateway_id}"
+            f"|{view.hci_index}|{view.protocol}|{view.address_type}|{view.device_address}"
+        )
+        return "nbli-" + hashlib.sha1(seed.encode()).hexdigest()[:32]
+
+    @staticmethod
+    def _wireless_window_id(
+        context: TenantContext, asset_id: str, view: EnvironmentWindowView
+    ) -> str:
+        seed = f"{context.tenant_id}|{asset_id}|{view.from_ms}|{view.to_ms}"
+        return "nenv-" + hashlib.sha1(seed.encode()).hexdigest()[:32]
+
+    def _upsert_env_window(
+        self,
+        session: Session,
+        context: TenantContext,
+        asset_id: str,
+        view: EnvironmentWindowView,
+    ) -> None:
+        window_id = self._wireless_window_id(context, asset_id, view)
+        existing = session.get(NetworkEnvWindowRecord, window_id)
+        if existing is None:
+            session.add(
+                NetworkEnvWindowRecord(
+                    window_id=window_id,
+                    tenant_id=context.tenant_id,
+                    asset_id=asset_id,
+                    from_ms=view.from_ms,
+                    to_ms=view.to_ms,
+                    available=view.available,
+                    link_type=view.link_type,
+                    wifi_anomaly=view.wifi_anomaly,
+                    coexistence_warning=view.coexistence_warning,
+                    snapshots_json=list(view.snapshots),
+                )
+            )
+            return
+        self._require_same_tenant(context, existing.tenant_id, window_id)
+        existing.available = view.available
+        existing.link_type = view.link_type
+        existing.wifi_anomaly = view.wifi_anomaly
+        existing.coexistence_warning = view.coexistence_warning
+        existing.snapshots_json = list(view.snapshots)
 
     def record_action_results(
         self,
