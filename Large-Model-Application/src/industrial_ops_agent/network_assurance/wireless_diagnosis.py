@@ -18,10 +18,14 @@ from typing import Any
 
 from sqlalchemy import select
 
+from industrial_ops_agent.auth.identity import IdentityContext
 from industrial_ops_agent.guardrails.network_causal import (
     WIRELESS_CAUSAL_POLICY_VERSION,
     NetworkCausalGuardrail,
     WirelessCausalContext,
+)
+from industrial_ops_agent.network_assurance.knowledge_citation import (
+    retrieve_reference_knowledge,
 )
 from industrial_ops_agent.network_assurance.upstream import complete_json
 from industrial_ops_agent.network_assurance.wireless_contracts import (
@@ -121,6 +125,7 @@ class WirelessDiagnosisService:
         *,
         force: bool = False,
         bundle_loader: Any = None,
+        identity: IdentityContext | None = None,
     ) -> WirelessDiagnosisResponse:
         """POST 语义：显式触发深度诊断与模型润色。
 
@@ -155,7 +160,7 @@ class WirelessDiagnosisService:
 
             # 2. 调用大模型润色解释 (LLM Explanation)
             llm_presentation, guard_decision = self._attempt_llm_presentation(
-                incident_id, bundle, canonical
+                incident_id, bundle, canonical, identity=identity
             )
 
             # 3. 若护栏审查未通过或模型失败，回退展示层为确定性报告
@@ -188,8 +193,16 @@ class WirelessDiagnosisService:
         incident_id: str,
         bundle: IncidentEvidenceBundle,
         canonical: CanonicalDiagnosis,
+        *,
+        identity: IdentityContext | None = None,
     ) -> tuple[DiagnosisPresentation | None, Any | None]:
-        """尝试调用大模型生成解释并执行 W1~W6 护栏审查。"""
+        """尝试调用大模型生成解释并执行 W1~W6 护栏审查。
+
+        ``identity`` 缺省为 None → 完全不检索知识库（GET 路径与既有测试的
+        零副作用语义不变）。传入时检索到的既往案例作为**背景**注入独立的
+        ``knowledge_context`` 键——绝不进入 ``evidence_catalog``，因此
+        ``valid_evidence_ids`` 仍只含本案事件，W6 对"拿知识当证据"保持闭合。
+        """
         try:
             prompt_def = default_prompt_registry().get(WIRELESS_INCIDENT_DIAGNOSIS_PROMPT_BUNDLE_ID)
             system_prompt = prompt_def.render_system()
@@ -231,6 +244,17 @@ class WirelessDiagnosisService:
                 "Do NOT change the hypothesis."
             ),
         }
+
+        if identity is not None:
+            references = retrieve_reference_knowledge(self._database, identity, canonical)
+            if references:
+                payload["knowledge_context"] = [ref.as_payload() for ref in references]
+                payload["instruction"] = (
+                    payload["instruction"]
+                    + " knowledge_context 是平台知识库中的既往案例，仅作背景参考："
+                    + "不得把其中任何 document_id 写进 evidence_ids，"
+                    + "也不得据此改变 hypothesis。"
+                )
 
         user_content = json.dumps(
             payload, default=str, ensure_ascii=False, sort_keys=True, separators=(",", ":")

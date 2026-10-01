@@ -685,7 +685,9 @@ async def post_wireless_incident_diagnosis(
     from industrial_ops_agent.network_assurance.wireless_diagnosis import WirelessIncidentNotFound
 
     try:
-        res = service.diagnose_incident(identity.tenant_context, incident_id, force=force)
+        res = service.diagnose_incident(
+            identity.tenant_context, incident_id, force=force, identity=identity
+        )
     except WirelessIncidentNotFound as exc:
         raise AppError(
             status_code=404,
