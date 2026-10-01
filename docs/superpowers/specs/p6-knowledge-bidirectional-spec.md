@@ -83,8 +83,8 @@
 |---|---|
 | `test_knowledge_draft_action.py` | 新动作授给谁 / 未授角色被拒 / create_document 走新动作（create_version 不受影响） |
 | `test_knowledge_bridge.py` | 内容构造（字段齐全、无 LLM 报告）；RESOLVED 建、OPEN 不建；幂等不重复；缺 base URL 时静默跳过；创建者=edge-automation（审核分离前提） |
-| `test_knowledge_retrieval_in_diagnosis.py` | 有已发布 release（按 `seed.py` 形态造夹具：PUBLISHED+is_active+chunks）→ 命中并进入 LLM 载荷；无 release → 不报错不检索；**知识文本从不进入 evidence_catalog** |
-| `test_automation_subject.py` | provision 幂等、状态小写、字段合法 |
+| `test_knowledge_citation.py` | 有已发布 release（按 `seed.py` 形态造夹具：PUBLISHED+is_active+chunks）→ 命中并进入 LLM 载荷；无 release / 无 identity / 后端失败 → 不报错不检索；角色 ACL 排除；**知识文本从不进入 evidence_catalog**；W6 拒绝知识 id 当证据 |
+| （主体 provision 并入 `test_knowledge_draft_action.py`） | provision 幂等、status 小写（`lock_subject` 只认小写） |
 
 夹具说明：release/version/chunk 三表按 `knowledge/seed.py` 的方式直接构造，
 **不改生产门禁**（build→evaluate→promote 仍需 Temporal，已在部署中具备）。
@@ -108,3 +108,21 @@
 **DoD**：① 事故结案自动产生一篇待审知识草稿（人审后人发 release）；
 ② 诊断在存在 active release 时能带着知识参考做解释，且护栏仍只认证据 ID；
 ③ 无 release / 无配置时全链路安全降级、零异常。
+
+## 八、交付状态（截至 2026-10-02）
+
+| 阶段 | 状态 | commit |
+|---|---|---|
+| P6a 权限与配置地基 | ✅ 完成 | `2e11dce` |
+| P6b 收录侧（结案 → 知识草稿） | ✅ 完成 | `cbd0b1c` |
+| P6c 引用侧（知识 → 解释背景） | ✅ 完成 | `32e473e` |
+
+**门禁现状**：云端 pytest **87 passed + 1 deselected**（含 P6 全部 19 例新测试）；
+门禁路径 ruff clean；契约脚本 OK；x86 ctest 46/46；GitHub Actions
+`2e11dce`、`cbd0b1c` 两次 CI 全绿（`32e473e` 见当次运行）。
+
+**留给人工的两步（本设计刻意不自动化）**：
+1. 事故结案产生的 DRAFT 由 DOMAIN_EXPERT 审核（创建者=edge-automation，
+   平台审核分离强制换人）；
+2. `build_release` → 评估（Temporal）→ promote，由人发布 release——
+   引用侧才检索得到。
