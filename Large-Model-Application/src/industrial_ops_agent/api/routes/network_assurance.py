@@ -38,6 +38,7 @@ from industrial_ops_agent.api.dependencies import (
     get_identity,
     get_network_assurance_service,
     get_network_copilot_service,
+    get_wireless_diagnosis_service,
 )
 from industrial_ops_agent.api.errors import STANDARD_ERROR_RESPONSES, AppError
 from industrial_ops_agent.auth.identity import IdentityContext
@@ -543,3 +544,87 @@ def _not_found(asset_id: str) -> AppError:
         message="Network asset not found",
         details={"asset_id": asset_id},
     )
+
+
+# ============================================================================
+# Phase 4b: 区域无线事故智能因果诊断端点
+# ============================================================================
+
+@router.get(
+    "/assurance/incidents/{incident_id}/diagnosis",
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Get wireless incident causal diagnosis (deterministic-first, zero model overhead)",
+)
+async def get_wireless_incident_diagnosis(
+    request: Request,
+    incident_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    service: Annotated[Any, Depends(get_wireless_diagnosis_service)],
+) -> Any:
+    """只读快速获取诊断结论。
+
+    - 命中任何记录（不管是纯确定性还是带大模型润色）直接返回；
+    - 若无记录，秒级跑完确定性推理入库（llm_used=false）后返回；
+    - GET 绝对不调用模型，保证零调用成本与超低时延。
+    """
+    authorizer.require(
+        identity,
+        Action.READ_NETWORK_ASSURANCE,
+        ResourceContext(identity.tenant_id),
+        request_id=getattr(request.state, "request_id", "unavailable"),
+    )
+    from industrial_ops_agent.network_assurance.wireless_diagnosis import WirelessIncidentNotFound
+
+    try:
+        res = service.get_diagnosis(identity.tenant_context, incident_id)
+    except WirelessIncidentNotFound as exc:
+        raise AppError(
+            status_code=404,
+            code="wireless_incident_not_found",
+            category="not_found",
+            message="Wireless site incident not found",
+            details={"incident_id": incident_id},
+        ) from exc
+    return res.model_dump()
+
+
+@router.post(
+    "/assurance/incidents/{incident_id}/diagnosis",
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Deep diagnose wireless incident with LLM enrichment and causal guardrail",
+)
+async def post_wireless_incident_diagnosis(
+    request: Request,
+    incident_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    service: Annotated[Any, Depends(get_wireless_diagnosis_service)],
+    force: Annotated[bool, Query()] = False,
+) -> Any:
+    """触发深度诊断与大模型解释润色。
+
+    - 确定性 Canonical 结论在模型调用前即确立，大模型无权改动假说；
+    - 经过 W1~W6 安全护栏审查；违规即刻降级展示确定性结论；
+    - GET 产出的 llm_used=false 记录绝不会阻断本接口执行 LLM enrichment。
+    """
+    authorizer.require(
+        identity,
+        Action.START_DIAGNOSIS,
+        ResourceContext(identity.tenant_id, resource_id=incident_id),
+        request_id=getattr(request.state, "request_id", "unavailable"),
+    )
+    from industrial_ops_agent.network_assurance.wireless_diagnosis import WirelessIncidentNotFound
+
+    try:
+        res = service.diagnose_incident(identity.tenant_context, incident_id, force=force)
+    except WirelessIncidentNotFound as exc:
+        raise AppError(
+            status_code=404,
+            code="wireless_incident_not_found",
+            category="not_found",
+            message="Wireless site incident not found",
+            details={"incident_id": incident_id},
+        ) from exc
+    return res.model_dump()
+

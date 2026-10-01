@@ -5972,6 +5972,60 @@ class NetworkPendingActionRecord(TenantScopedMixin, Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
 
+class SiteIncidentDiagnosisRecord(TenantScopedMixin, Base):
+    """【Phase 4b】区域无线事故诊断记录（独立于物理事实，支持版本演进与审计）。
+
+    与 site_incidents 物理事实表完全解耦，绝不回写污染事实。
+    多维版本约束防止并发重复写入相同的逻辑诊断结果。
+    """
+
+    __tablename__ = "site_incident_diagnoses"
+    __table_args__ = (
+        Index("ix_site_incident_diagnoses_lookup", "tenant_id", "incident_id", "created_at"),
+        # 【约束3】数据库唯一约束兜底：防并发竞态生成重复逻辑诊断
+        UniqueConstraint(
+            "tenant_id",
+            "incident_id",
+            "evidence_fingerprint",
+            "rules_version",
+            "prompt_version",
+            "guardrail_version",
+            name="uq_site_incident_diagnosis_versioned",
+        ),
+    )
+
+    diagnosis_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    incident_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+
+    diagnosis_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    rules_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    guardrail_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # 确定性结论 (Canonical Diagnosis: 物理事实与确定性假说，真实判定)
+    observed_pattern: Mapped[str] = mapped_column(String(64), nullable=False)
+    hypothesis: Mapped[str] = mapped_column(String(64), nullable=False)
+    confidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    deterministic_reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    evidence_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    device_findings: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+
+    # 呈现层 (Presentation: 大模型扩写或确定性兜底生成，供人类阅读)
+    llm_model_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    llm_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    diagnosis_report: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_findings: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    evidence_citations: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    recommendations: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+
+    # 护栏审查审计
+    guardrail_status: Mapped[str] = mapped_column(String(32), nullable=False, default="PASSED")
+    guardrail_findings: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 TENANT_TABLE_NAMES = frozenset(
     table_name for table_name in Base.metadata.tables if table_name != TenantRecord.__tablename__
 )

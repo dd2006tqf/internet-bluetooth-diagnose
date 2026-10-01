@@ -683,6 +683,13 @@ async def get_network_copilot_service(request: Request) -> Any:
     )
 
 
+async def get_wireless_diagnosis_service(request: Request) -> Any:
+    """【Phase 4b】Build the wireless incident diagnosis service per request."""
+    from industrial_ops_agent.network_assurance.wireless_diagnosis import WirelessDiagnosisService
+
+    return WirelessDiagnosisService(request.app.state.database)
+
+
 async def get_edge_telemetry_verifier(request: Request) -> EdgeTelemetryVerifier:
     """Return the provisioned edge trust anchor.
 

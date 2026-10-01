@@ -616,54 +616,18 @@ class NetworkCopilotService:
 
         user_content = json.dumps(payload, default=str, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
-        # 优先使用配置的直通中转站（必须提供有效 key，杜绝源码硬编码）
-        if upstream_base and upstream_key and upstream_key not in {"disabled", ""}:
-            try:
-                system_instruction = (
-                    f"{sys_prompt}\n\n"
-                    "【要求】：请以严格合法的 JSON 对象格式返回，不要包含任何 markdown 标记（如 ```json）。"
-                    "包含字段：overall_state（取值 GOOD, DEGRADED, BAD, UNKNOWN）, "
-                    "primary_issue（字符串）, causal_chain（数组，每项包含 step 和 explanation 字符串）, "
-                    "evidence_refs（字符串数组）, recommended_actions（字符串数组）。"
-                )
-                with httpx.Client(base_url=upstream_base, timeout=_INFERENCE_TIMEOUT_SECONDS) as client:
-                    resp = client.post(
-                        "/chat/completions",
-                        headers={"Authorization": f"Bearer {upstream_key}"},
-                        json={
-                            "model": upstream_model,
-                            "messages": [
-                                {"role": "system", "content": system_instruction},
-                                {"role": "user", "content": user_content},
-                            ],
-                            "response_format": {"type": "json_object"},
-                            "temperature": 0.0,
-                            "max_tokens": _MAX_OUTPUT_TOKENS,
-                        },
-                    )
-                if resp.status_code == 200:
-                    resp_data = resp.json()
-                    choice = resp_data.get("choices", [{}])[0]
-                    message = choice.get("message", {})
-                    raw_text = message.get("content") or ""
-                    # 针对中转站可能返回 reasoning_content 或包装的情况
-                    if not raw_text and "reasoning" in message:
-                        raw_text = str(message.get("reasoning"))
-                    if raw_text:
-                        # 剥除可能包裹的 markdown 标签
-                        clean_text = raw_text.strip()
-                        if clean_text.startswith("```json"):
-                            clean_text = clean_text[7:]
-                        if clean_text.startswith("```"):
-                            clean_text = clean_text[3:]
-                        if clean_text.endswith("```"):
-                            clean_text = clean_text[:-3]
-                        parsed = json.loads(clean_text.strip())
-                        if isinstance(parsed, dict) and "causal_chain" in parsed:
-                            return parsed
-            except Exception as e:
-                import logging
-                logging.getLogger("uvicorn.error").warning("Direct upstream model call failed: %s", e)
+        # 优先使用配置的直通中转站（复用 upstream.py 工具）
+        from industrial_ops_agent.network_assurance.upstream import complete_json
+        system_instruction = (
+            f"{sys_prompt}\n\n"
+            "【要求】：请以严格合法的 JSON 对象格式返回，不要包含任何 markdown 标记（如 ```json）。"
+            "包含字段：overall_state（取值 GOOD, DEGRADED, BAD, UNKNOWN）, "
+            "primary_issue（字符串）, causal_chain（数组，每项包含 step 和 explanation 字符串）, "
+            "evidence_refs（字符串数组）, recommended_actions（字符串数组）。"
+        )
+        parsed = complete_json(system_instruction, user_content, max_tokens=_MAX_OUTPUT_TOKENS)
+        if isinstance(parsed, dict) and "causal_chain" in parsed:
+            return parsed
 
         # 回落至内置的企业级 model_gateway / model_resolver 路径
         if self._model_gateway is None or self._model_resolver is None:

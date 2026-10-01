@@ -301,3 +301,104 @@ class NetworkCausalGuardrail:
                 )
             ]
         return []
+
+    # ------------------------------------------------------------------
+    # Wireless Causal Guardrails (Phase 4b: W1 - W6)
+    # ------------------------------------------------------------------
+
+    def inspect_wireless_report(
+        self, report: dict[str, Any], context: WirelessCausalContext
+    ) -> GuardrailDecision:
+        """Inspect a model-generated wireless incident diagnosis report."""
+        findings: list[GuardrailFinding] = []
+
+        rep_text = str(report.get("diagnosis_report", ""))
+        structured_findings = report.get("structured_findings") or []
+
+        # W1: 显式主动正常断开严禁诬陷为环境故障
+        if context.canonical.observed_pattern == "EXPLICIT_TERMINATION_PATTERN":
+            if re.search(r"干扰|interference|coexist|故障|受损|异常", rep_text):
+                findings.append(
+                    _finding(
+                        "explicit_termination_blamed_as_fault",
+                        "causal_inversion",
+                        rep_text,
+                    )
+                )
+
+        # W2: 多设备事故严禁把根因归咎于单设备电量/距离
+        if context.affected_devices >= 2:
+            if re.search(r"电池|电量|battery|充电|单台设备.{0,12}距离|超出范围", rep_text):
+                findings.append(
+                    _finding(
+                        "single_device_blame_on_multi_device_incident",
+                        "scope_inversion",
+                        rep_text,
+                    )
+                )
+
+        # W3: 无 Wi-Fi 恶化时严禁妄言同频干扰
+        if not context.wifi_anomaly:
+            if re.search(r"wi-?fi|2\.4\s*g|同频|信道利用率|频段冲突", rep_text, re.IGNORECASE):
+                findings.append(
+                    _finding(
+                        "wifi_blame_without_wifi_anomaly",
+                        "unsupported_claim",
+                        rep_text,
+                    )
+                )
+
+        # W4: NULL RSSI 绝不能当成 0 dBm 计算
+        if context.null_rssi_events:
+            if re.search(r"(?<![\d.-])0\s*d[bB]m|\"rssi\"\s*:\s*0\b|RSSI\s*[=:]?\s*0\b", rep_text):
+                findings.append(
+                    _finding(
+                        "null_rssi_treated_as_zero",
+                        "metric_hallucination",
+                        rep_text,
+                    )
+                )
+
+        # W5 & W6: 结构化事实断言必须附带有效 Evidence ID（纯确定性集合检查，绝不NLP猜测）
+        for item in structured_findings:
+            if not isinstance(item, dict):
+                continue
+            e_ids = item.get("evidence_ids")
+            if not e_ids:
+                findings.append(
+                    _finding(
+                        "missing_evidence_citation",
+                        "missing_citation",
+                        str(item),
+                    )
+                )
+            else:
+                for eid in e_ids:
+                    if eid not in context.valid_evidence_ids:
+                        findings.append(
+                            _finding(
+                                "fabricated_evidence_id",
+                                "evidence_hallucination",
+                                str(eid),
+                            )
+                        )
+
+        return GuardrailDecision(
+            "BLOCKED" if findings else "ALLOWED",
+            WIRELESS_CAUSAL_POLICY_VERSION,
+            tuple(findings),
+        )
+
+
+WIRELESS_CAUSAL_POLICY_VERSION: Final[str] = "wireless-incident-causal-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class WirelessCausalContext:
+    incident_id: str
+    canonical: Any
+    affected_devices: int
+    wifi_anomaly: bool
+    valid_evidence_ids: frozenset[str]
+    null_rssi_events: frozenset[str] = frozenset()
+
