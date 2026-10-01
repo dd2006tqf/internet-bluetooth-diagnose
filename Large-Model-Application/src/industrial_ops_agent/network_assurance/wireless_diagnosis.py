@@ -25,14 +25,18 @@ from industrial_ops_agent.guardrails.network_causal import (
 )
 from industrial_ops_agent.network_assurance.upstream import complete_json
 from industrial_ops_agent.network_assurance.wireless_contracts import (
+    BaselineView,
     CanonicalDiagnosis,
     ConfidenceLevel,
     DiagnosisHypothesis,
     DiagnosisPresentation,
+    EnvironmentWindowView,
     EvidenceCitation,
     IncidentEvidenceBundle,
+    IncidentView,
     StructuredFinding,
     WirelessDiagnosisResponse,
+    WirelessEventView,
 )
 from industrial_ops_agent.network_assurance.wireless_rules import (
     WIRELESS_RULES_VERSION,
@@ -40,6 +44,10 @@ from industrial_ops_agent.network_assurance.wireless_rules import (
 )
 from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.models import (
+    NetworkDeviceBaselineRecord,
+    NetworkEnvWindowRecord,
+    NetworkSiteIncidentRecord,
+    NetworkWirelessEventRecord,
     SiteIncidentDiagnosisRecord,
 )
 from industrial_ops_agent.persistence.tenant import TenantContext
@@ -329,8 +337,146 @@ class WirelessDiagnosisService:
         if bundle_loader is not None:
             return bundle_loader(incident_id)
 
-        # 默认从已就绪的四张 Phase 4a 表加载
-        raise WirelessIncidentNotFound(f"Incident {incident_id} not found")
+        # 默认路径：从 Phase 4a 四张事实表装配（板端签名的无线事实上行落库）。
+        # 在此之前这里是 `raise WirelessIncidentNotFound`，导致诊断接口在真实
+        # 数据上永远 404——只有注入 bundle_loader 的测试能跑通。
+        return self._load_bundle_from_tables(session, context, incident_id)
+
+    def _load_bundle_from_tables(
+        self,
+        session: Any,
+        context: TenantContext,
+        incident_id: str,
+    ) -> IncidentEvidenceBundle:
+        """从上行事实表装配证据包。
+
+        组包规则（与板端关联器的语义一一对应）：
+
+        - qualifying_events：以 ``site_incident_events`` 回链为准。回链是
+          "哪些事件支撑这起事故"的权威表述，比按时间窗重算更精确，也不会因为
+          上游保留期清理而悄悄改变结论。回链缺失（旧数据/未上行）时回退到
+          ``[started_at_ms, last_event_ms]`` 时间窗内的解连事件。
+        - window_events：同窗口内**全部**事件（含非解连、含计划内断开）。
+          规则引擎据此判 ``has_prior_degraded`` 与"显式主动终止"模式，
+          因此必须比 qualifying 集合更宽——两者混用会让模式判定失真。
+        - baselines：以事件 ``device_address`` 命中的画像为准。Phase 4a 起
+          画像带复合身份字段，装载时按该复合键匹配到具体设备。
+        """
+
+        row = session.scalars(
+            select(NetworkSiteIncidentRecord).where(
+                NetworkSiteIncidentRecord.tenant_id == context.tenant_id,
+                NetworkSiteIncidentRecord.incident_id == incident_id,
+            )
+        ).first()
+        if row is None:
+            # 与注入 loader 的失败语义保持一致：确实没有这起事故
+            raise WirelessIncidentNotFound(f"Incident {incident_id} not found")
+
+        incident = IncidentView(
+            incident_id=row.incident_id,
+            site_id=row.site_id,
+            gateway_id=row.gateway_id,
+            started_at_ms=row.started_at_ms,
+            last_event_ms=row.last_event_ms,
+            resolved_at_ms=row.resolved_at_ms,
+            affected_devices=row.affected_devices,
+            state=row.state,
+            suspected_cause=row.suspected_cause,
+            evidence_event_ids=list(row.evidence_event_ids_json or []),
+        )
+
+        window_rows = session.scalars(
+            select(NetworkWirelessEventRecord)
+            .where(
+                NetworkWirelessEventRecord.tenant_id == context.tenant_id,
+                NetworkWirelessEventRecord.ts_ms >= row.started_at_ms,
+                NetworkWirelessEventRecord.ts_ms <= row.last_event_ms,
+            )
+            .order_by(NetworkWirelessEventRecord.ts_ms.asc())
+        ).all()
+        window_events = [self._event_view(item) for item in window_rows]
+
+        linked = set(incident.evidence_event_ids)
+        if linked:
+            qualifying = [ev for ev in window_events if ev.event_id in linked]
+        else:
+            # 回链缺失时的确定性回退：只看断连类事件，且缩到已结算窗口
+            qualifying = [ev for ev in window_events if ev.event_type == "LINK_DISCONNECTED"]
+
+        addresses = {ev.device_address for ev in qualifying}
+        baseline_rows = (
+            session.scalars(
+                select(NetworkDeviceBaselineRecord).where(
+                    NetworkDeviceBaselineRecord.tenant_id == context.tenant_id,
+                    NetworkDeviceBaselineRecord.device_address.in_(addresses),
+                )
+            ).all()
+            if addresses
+            else []
+        )
+        baselines = {
+            item.device_address: BaselineView(
+                device_address=item.device_address,
+                baseline_rssi_dbm=item.baseline_rssi_dbm,
+                min_seen_rssi_dbm=item.min_seen_rssi_dbm,
+                max_seen_rssi_dbm=item.max_seen_rssi_dbm,
+                baseline_sample_count=item.baseline_sample_count,
+                state=item.state,
+            )
+            for item in baseline_rows
+        }
+
+        env_row = session.scalars(
+            select(NetworkEnvWindowRecord)
+            .where(
+                NetworkEnvWindowRecord.tenant_id == context.tenant_id,
+                NetworkEnvWindowRecord.asset_id == row.asset_id,
+                NetworkEnvWindowRecord.to_ms >= row.started_at_ms,
+            )
+            .order_by(NetworkEnvWindowRecord.to_ms.desc())
+        ).first()
+        environment = (
+            EnvironmentWindowView(
+                available=env_row.available,
+                link_type=env_row.link_type,
+                wifi_anomaly=env_row.wifi_anomaly,
+                coexistence_warning=env_row.coexistence_warning,
+                from_ms=env_row.from_ms,
+                to_ms=env_row.to_ms,
+                snapshots=list(env_row.snapshots_json or []),
+            )
+            if env_row is not None
+            else EnvironmentWindowView()
+        )
+
+        return IncidentEvidenceBundle(
+            incident=incident,
+            qualifying_events=qualifying,
+            window_events=window_events,
+            baselines=baselines,
+            environment=environment,
+        )
+
+    @staticmethod
+    def _event_view(row: NetworkWirelessEventRecord) -> WirelessEventView:
+        return WirelessEventView(
+            event_id=row.event_id,
+            ts_ms=row.ts_ms,
+            site_id=row.site_id,
+            gateway_id=row.gateway_id,
+            protocol=row.protocol,
+            device_address=row.device_address,
+            address_type=row.address_type,
+            hci_index=row.hci_index,
+            event_type=row.event_type,
+            rssi_at_event_dbm=row.rssi_at_event_dbm,
+            raw_reason_code=row.raw_reason_code,
+            reason=row.reason,
+            source=row.source,
+            source_detail=row.source_detail,
+            details_json=row.details_json,
+        )
 
     def _compute_evidence_fingerprint(self, bundle: IncidentEvidenceBundle) -> str:
         parts = [

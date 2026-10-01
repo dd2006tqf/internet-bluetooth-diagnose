@@ -1,10 +1,9 @@
 """Unit tests for wireless causal guardrail invariants (W1 - W6)."""
 
-import pytest
 from industrial_ops_agent.guardrails.network_causal import (
+    WIRELESS_CAUSAL_POLICY_VERSION,
     NetworkCausalGuardrail,
     WirelessCausalContext,
-    WIRELESS_CAUSAL_POLICY_VERSION,
 )
 from industrial_ops_agent.network_assurance.wireless_contracts import (
     CanonicalDiagnosis,
@@ -67,7 +66,10 @@ def test_w2_multi_device_incident_cannot_blame_single_device_battery():
     }
     decision = guard.inspect_wireless_report(bad_report, ctx)
     assert decision.decision == "BLOCKED"
-    assert any(f.pattern_id == "single_device_blame_on_multi_device_incident" for f in decision.findings)
+    assert any(
+        f.pattern_id == "single_device_blame_on_multi_device_incident"
+        for f in decision.findings
+    )
 
 
 def test_w3_wifi_blame_requires_concurrent_wifi_anomaly():
@@ -141,7 +143,10 @@ def test_clean_report_passes_guardrail():
         valid_evidence_ids=frozenset({"E1", "E2"})
     )
     good_report = {
-        "diagnosis_report": "现场在 30 秒内有 2 台机械臂传感器相继超时断连，同期检测到 Wi-Fi 2.4GHz 频段冲突与丢包恶化，分析为同频竞争干扰。",
+        "diagnosis_report": (
+            "现场在 30 秒内有 2 台机械臂传感器相继超时断连，"
+            "同期检测到 Wi-Fi 2.4GHz 频段冲突与丢包恶化，分析为同频竞争干扰。"
+        ),
         "structured_findings": [
             {"text": "2 台设备超时断开", "evidence_ids": ["E1", "E2"]}
         ],

@@ -94,9 +94,7 @@ class RuntimeModelConfigManager:
                 self._config.api_key = req.api_key.strip()
         return self.get_public_view()
 
-    async def test_connection(
-        self, req: CopilotModelTestRequest
-    ) -> CopilotModelTestResponse:
+    async def test_connection(self, req: CopilotModelTestRequest) -> CopilotModelTestResponse:
         url = req.upstream_url.strip().rstrip("/")
         model = req.model_name.strip()
         key = req.api_key.strip() if req.api_key else ""

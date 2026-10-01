@@ -29,9 +29,7 @@ def complete_json(
     Returns None on any network error, timeout, non-200 status, or JSON parse failure.
     """
     hot_cfg = get_model_config_manager().get_config()
-    upstream_base = hot_cfg.upstream_url or os.environ.get(
-        "IOAP_MODEL_GATEWAY_UPSTREAM_URL", ""
-    )
+    upstream_base = hot_cfg.upstream_url or os.environ.get("IOAP_MODEL_GATEWAY_UPSTREAM_URL", "")
     upstream_key = hot_cfg.api_key or os.environ.get("IOAP_MODEL_GATEWAY_API_KEY", "")
     upstream_model = hot_cfg.model_name or os.environ.get(
         "IOAP_MODEL_GATEWAY_MODEL_NAME", "deepseek-v4-pro-0813"

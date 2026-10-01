@@ -3,7 +3,6 @@
 100% pure deterministic tests without DB or network dependencies.
 """
 
-import pytest
 from industrial_ops_agent.network_assurance.wireless_contracts import (
     BaselineView,
     ConfidenceLevel,

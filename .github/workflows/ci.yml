@@ -68,7 +68,8 @@ jobs:
 
       - name: ruff 连接路径门禁
         # 全仓 src 尚有约 88 项历史 lint 债务（归 L3 阶段清偿，见集成设计 §九）；
-        # 先对边云连接路径设硬门禁，防止新增代码欠债。
+        # 先对边云连接路径设硬门禁，防止新增代码欠债。tests/ 一并纳入：
+        # 测试是契约的一部分，新测试文件不得带 lint 债进来。
         working-directory: Large-Model-Application
         run: >-
           ruff check
@@ -76,6 +77,10 @@ jobs:
           src/industrial_ops_agent/edge
           src/industrial_ops_agent/persistence
           src/industrial_ops_agent/api/routes/network_assurance.py
+          tests/test_wireless_ingest.py
+          tests/test_wireless_diagnosis_from_tables.py
+          tests/test_wireless_causal_rules.py
+          tests/test_wireless_guardrail.py
 
   build-and-test:
     name: x86 编译与全量单元测试

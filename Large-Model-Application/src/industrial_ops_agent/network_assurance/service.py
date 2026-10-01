@@ -462,9 +462,7 @@ class NetworkAssuranceService:
             raise NetworkAssuranceConflict(f"row {row_id} is registered to another tenant")
 
     @staticmethod
-    def _wireless_baseline_id(
-        context: TenantContext, asset_id: str, view: BaselineView
-    ) -> str:
+    def _wireless_baseline_id(context: TenantContext, asset_id: str, view: BaselineView) -> str:
         seed = (
             f"{context.tenant_id}|{asset_id}|{view.site_id}|{view.gateway_id}"
             f"|{view.hci_index}|{view.protocol}|{view.address_type}|{view.device_address}"
@@ -667,15 +665,12 @@ class NetworkAssuranceService:
                 raise NetworkAssuranceNotFound(asset_id)
 
             # 动作 generation：每个 asset 维护自己的单调递增序列，与快照失效解耦。
-            max_gen = (
-                session.execute(
-                    select(func.coalesce(func.max(NetworkPendingActionRecord.generation), 0))
-                    .where(
-                        NetworkPendingActionRecord.tenant_id == context.tenant_id,
-                        NetworkPendingActionRecord.asset_id == asset_id,
-                    )
-                ).scalar_one()
-            )
+            max_gen = session.execute(
+                select(func.coalesce(func.max(NetworkPendingActionRecord.generation), 0)).where(
+                    NetworkPendingActionRecord.tenant_id == context.tenant_id,
+                    NetworkPendingActionRecord.asset_id == asset_id,
+                )
+            ).scalar_one()
             next_generation = int(max_gen) + 1
 
             session.add(
@@ -856,9 +851,7 @@ class NetworkAssuranceService:
         asset.version += 1
 
     @staticmethod
-    def _is_current_headline(
-        asset: NetworkAssetRecord, telemetry: NetworkDeviceTelemetry
-    ) -> bool:
+    def _is_current_headline(asset: NetworkAssetRecord, telemetry: NetworkDeviceTelemetry) -> bool:
         if asset.network_epoch is None or asset.latest_sequence_id is None:
             return True
         if telemetry.network_epoch != asset.network_epoch:
