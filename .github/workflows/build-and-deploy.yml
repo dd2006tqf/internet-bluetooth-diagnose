@@ -136,8 +136,12 @@ jobs:
           path: dist-arm64/
 
       - name: 检查开发板连通性
+        # 注意：参数展开必须留在 shell 侧——GitHub 表达式不支持 ${VAR#*@}，
+        # 把它写进 ${{ }} 会让整个 workflow 文件校验失败（表现为该 workflow
+        # 在每次 push 产生一个 0 step 的 failure run）。workflow 级 env BOARD
+        # 会导出为步骤环境变量，这里直接用纯 shell 展开。
         run: |
-          if ! ping -c 1 -W 3 ${{ env.BOARD#*@ }} >/dev/null 2>&1; then
+          if ! ping -c 1 -W 3 ${BOARD#*@} >/dev/null 2>&1; then
             echo "❌ 开发板不可达，跳过部署"
             exit 1
           fi
