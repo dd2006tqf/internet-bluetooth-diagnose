@@ -30,6 +30,7 @@
 #include "assurance/evidence_id_generator.hpp"
 #include "assurance/action_registry.hpp"
 #include "edge_telemetry_exporter.hpp"
+#include "edge_wireless_uplink_exporter.hpp"
 
 // 前置声明，避免强依赖 dbus 头
 struct DBusConnection;
@@ -141,6 +142,9 @@ struct ServerContext {
 
     // ---------- 边缘遥测上报 ----------
     std::unique_ptr<weaknet::EdgeTelemetryExporter> edge_exporter;
+    /// Phase 4a：无线事实（事件/事故/基线）独立上行器。与遥测并列，
+    /// 幂等域与失败重发语义不同，故不合并（见集成设计决策 D1）。
+    std::unique_ptr<weaknet::EdgeWirelessUplinkExporter> wireless_uplink;
 
     // ---------- 端侧确定性诊断引擎与证据生成服务 ----------
     std::shared_ptr<weaknet::ActionRegistry> action_registry;

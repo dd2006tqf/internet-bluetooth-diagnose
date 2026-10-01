@@ -109,7 +109,7 @@ private:
 
         // --- 采样时序缓冲（用于断连因果回填，保留最近 N 个，带单调时间） ---
         static constexpr size_t kMaxSampleHistory = 30;
-        std::deque<RssiSample> recent_samples;
+        std::deque<BtLinkRssiSample> recent_samples;
 
         // --- 可信基线滑动窗口（仅限 STABLE 期间的非恶化样本） ---
         std::deque<int16_t> baseline_window;

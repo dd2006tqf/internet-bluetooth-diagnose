@@ -1519,6 +1519,29 @@ int start_server(int argc, char** argv) {
         LOG_INFO(LogModule::SYSTEM, "edge telemetry exporter started");
     }
 
+    // 启动无线事实上行（Phase 4a，可选）。
+    //
+    // 与遥测上报**并列独立**：幂等域不同（event_id/incident_id vs
+    // network_epoch+sequence_id），失败重发语义也不同，故各自线程与游标。
+    // 数据源是 SQLite（跨重启延续的事实），因此必须等 db_mgr 已就绪。
+    {
+        const std::string uplink_state_path =
+            resolveDatabasePath(ctx.cfg.data_dir.get())
+                .substr(0, resolveDatabasePath(ctx.cfg.data_dir.get()).size() -
+                                std::string("history.db").size()) +
+            "wireless-uplink-state";
+        if (ctx.db_mgr) {
+            ctx.wireless_uplink = std::make_unique<weaknet::EdgeWirelessUplinkExporter>(
+                ctx.cfg, *ctx.db_mgr, uplink_state_path);
+            if (ctx.wireless_uplink->start()) {
+                LOG_INFO(LogModule::SYSTEM, "edge wireless uplink started");
+            }
+        } else {
+            LOG_WARNING(LogModule::SYSTEM,
+                        "无线事实上行未启动：数据库不可用（无持久化事实可上行）");
+        }
+    }
+
     // 主线程进入阻塞式 looper
     auto* lp = Looper::current();
     lp->attach(ctx.connection);
@@ -1547,6 +1570,13 @@ int start_server(int argc, char** argv) {
     if (ctx.edge_exporter) {
         ctx.edge_exporter->stop();
         ctx.edge_exporter.reset();
+    }
+
+    // 停止无线事实上行：同样必须早于 ~ServerContext 释放 db_mgr，
+    // 否则工作线程可能在数据库析构后读取事实。
+    if (ctx.wireless_uplink) {
+        ctx.wireless_uplink->stop();
+        ctx.wireless_uplink.reset();
     }
 
     // 停止文件日志（在 glog 关闭之前）

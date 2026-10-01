@@ -46,6 +46,7 @@
 #include "net_info.hpp"
 #include "logger.hpp"
 #include "network_quality_result.hpp"
+#include "site_incident.hpp"
 #include "utils/json_escape.hpp"
 #include "wireless_event.hpp"
 #include <sqlite3.h>
@@ -1618,6 +1619,163 @@ std::vector<WirelessDeviceEvent> DatabaseManager::loadDeviceEventsForReplay(int6
     }
     sqlite3_finalize(stmt);
     return out;
+}
+
+std::vector<SiteIncident> DatabaseManager::loadSiteIncidentsSince(int64_t start_ms, int limit) {
+    std::vector<SiteIncident> out;
+    if (!db_) return out;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // 正序 + 按 last_event_ms 过滤：上行按"事故最近演化时间"推进，
+    // 这样一起仍在吸收证据的事故会被反复重发（云端 UPSERT 幂等）。
+    const char* sql = R"(
+        SELECT incident_id, site_id, gateway_id, started_at_ms, last_event_ms,
+               resolved_at_ms, affected_devices, state, suspected_cause
+        FROM site_incidents
+        WHERE last_event_ms >= ?
+        ORDER BY last_event_ms ASC
+        LIMIT ?;
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::loadSiteIncidentsSince prepare failed: "
+                                         << sqlite3_errmsg(db_));
+        return out;
+    }
+    sqlite3_bind_int64(stmt, 1, start_ms);
+    sqlite3_bind_int(stmt, 2, limit > 0 ? limit : 200);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        auto textOrEmpty = [&](int col) -> std::string {
+            const char* v = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
+            return v ? v : "";
+        };
+
+        SiteIncident inc;
+        inc.incident_id = textOrEmpty(0);
+        inc.site_id = textOrEmpty(1);
+        inc.gateway_id = textOrEmpty(2);
+        inc.started_at_ms = static_cast<uint64_t>(sqlite3_column_int64(stmt, 3));
+        inc.last_event_ms = static_cast<uint64_t>(sqlite3_column_int64(stmt, 4));
+        inc.resolved_at_ms = (sqlite3_column_type(stmt, 5) == SQLITE_NULL)
+                                 ? std::nullopt
+                                 : std::optional<uint64_t>(
+                                       static_cast<uint64_t>(sqlite3_column_int64(stmt, 5)));
+        inc.affected_devices = static_cast<size_t>(sqlite3_column_int64(stmt, 6));
+        inc.state = incidentStateFromString(textOrEmpty(7), IncidentState::Open);
+        inc.suspected_cause = (sqlite3_column_type(stmt, 8) == SQLITE_NULL)
+                                  ? std::nullopt
+                                  : std::optional<std::string>(textOrEmpty(8));
+        out.push_back(std::move(inc));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+std::vector<std::string> DatabaseManager::loadIncidentEvidenceEventIds(
+    const std::string& incident_id) {
+    std::vector<std::string> out;
+    if (!db_) return out;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    const char* sql = "SELECT event_id FROM site_incident_events WHERE incident_id = ? "
+                      "ORDER BY event_id ASC;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::loadIncidentEvidenceEventIds prepare failed: "
+                      << sqlite3_errmsg(db_));
+        return out;
+    }
+    sqlite3_bind_text(stmt, 1, incident_id.c_str(), -1, SQLITE_TRANSIENT);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* v = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        if (v) out.emplace_back(v);
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+std::vector<DeviceLinkProfile> DatabaseManager::loadDeviceBaselinesSince(
+    int64_t since_updated_at_ms, int limit) {
+    std::vector<DeviceLinkProfile> out;
+    if (!db_) return out;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // 稳定顺序（updated_at 有并列时用复合主键收尾），保证游标推进不漏不重。
+    const char* sql = R"(
+        SELECT site_id, gateway_id, hci_index, protocol, address_type, device_address,
+               baseline_rssi_dbm, min_seen_rssi_dbm, max_seen_rssi_dbm, baseline_sample_count,
+               first_seen_ms, last_seen_ms, state, updated_at
+        FROM device_baselines
+        WHERE updated_at > ?
+        ORDER BY updated_at ASC, site_id ASC, gateway_id ASC, hci_index ASC,
+                 protocol ASC, address_type ASC, device_address ASC
+        LIMIT ?;
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::loadDeviceBaselinesSince prepare failed: "
+                                         << sqlite3_errmsg(db_));
+        return out;
+    }
+    sqlite3_bind_int64(stmt, 1, since_updated_at_ms);
+    sqlite3_bind_int(stmt, 2, limit > 0 ? limit : 2000);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        auto textOrEmpty = [&](int col) -> std::string {
+            const char* v = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
+            return v ? v : "";
+        };
+        auto optInt = [&](int col) -> std::optional<int16_t> {
+            if (sqlite3_column_type(stmt, col) == SQLITE_NULL) return std::nullopt;
+            return static_cast<int16_t>(sqlite3_column_int(stmt, col));
+        };
+
+        DeviceLinkProfile p;
+        p.key.site_id = textOrEmpty(0);
+        p.key.gateway_id = textOrEmpty(1);
+        p.key.hci_index = static_cast<uint32_t>(sqlite3_column_int(stmt, 2));
+        p.key.protocol = wirelessProtocolFromString(textOrEmpty(3), WirelessProtocol::Bluetooth);
+        p.key.address_type = btAddressTypeFromString(textOrEmpty(4), BtAddressType::Unknown);
+        p.key.device_address = textOrEmpty(5);
+        p.baseline_rssi_dbm = optInt(6);
+        p.min_seen_rssi_dbm = optInt(7);
+        p.max_seen_rssi_dbm = optInt(8);
+        p.baseline_sample_count = static_cast<size_t>(sqlite3_column_int64(stmt, 9));
+        p.first_seen_ms = static_cast<uint64_t>(sqlite3_column_int64(stmt, 10));
+        p.last_seen_ms = static_cast<uint64_t>(sqlite3_column_int64(stmt, 11));
+        p.state = linkQualityStateFromString(textOrEmpty(12), LinkQualityState::Learning);
+        p.updated_at_ms = static_cast<uint64_t>(sqlite3_column_int64(stmt, 13));
+        out.push_back(std::move(p));
+    }
+    sqlite3_finalize(stmt);
+    return out;
+}
+
+int64_t DatabaseManager::queryMaxDeviceEventTs() {
+    if (!db_) return 0;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    int64_t max_ts = 0;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT MAX(ts) FROM device_events", -1, &stmt, nullptr) !=
+        SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::queryMaxDeviceEventTs prepare failed: "
+                                         << sqlite3_errmsg(db_));
+        return 0;
+    }
+    if (sqlite3_step(stmt) == SQLITE_ROW && sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
+        max_ts = sqlite3_column_int64(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return max_ts;
 }
 
 int64_t DatabaseManager::getRecordCountLocked() {

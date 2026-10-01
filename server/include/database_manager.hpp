@@ -30,6 +30,8 @@ namespace weaknet_dbus {
 class NetInfo;  ///< 前置声明
 struct NetworkQualityResult;  ///< 前置声明
 struct WirelessDeviceEvent;  ///< 前置声明（Phase 3a 启动回放）
+struct SiteIncident;         ///< 前置声明（Phase 4a 无线事实上行）
+struct DeviceLinkProfile;    ///< 前置声明（Phase 4a 无线事实上行）
 
 /**
  * @brief SQLite 历史数据持久化管理器
@@ -285,6 +287,45 @@ public:
      */
     std::vector<WirelessDeviceEvent> loadDeviceEventsForReplay(int64_t start_ms,
                                                                int64_t end_ms);
+
+    /**
+     * @brief 事故本体的类型化读取（时间正序），供无线事实上行使用
+     *
+     * 与 querySiteIncidents（JSON 出口，时间倒序）刻意分开：上行需要的是
+     * 类型化对象与**正序**（回放/补发的确定性顺序），而查询出口服务的是
+     * "按时间倒序看最近发生了什么"。
+     *
+     * @param start_ms 起始事实时间（闭区间，0 表示不限）
+     * @param limit    最大条数（<=0 时取默认 200）
+     */
+    std::vector<SiteIncident> loadSiteIncidentsSince(int64_t start_ms, int limit = 200);
+
+    /**
+     * @brief 事故 → 证据事件回链（site_incident_events）
+     *
+     * 证据可追溯性的载体：上行必须随事故本体携带，否则云端诊断无法枚举
+     * 支撑该事故的具体事件（诊断 bundle 的 qualifying_events）。
+     */
+    std::vector<std::string> loadIncidentEvidenceEventIds(const std::string& incident_id);
+
+    /**
+     * @brief 设备链路基线画像的类型化读取（按 updated_at 正序）
+     *
+     * 上行要求**稳定顺序**：游标按 last_seen_ms 过滤，若读取顺序不稳，
+     * 同一条画像在两轮之间可能被跳过或重复（重复无害但浪费流量）。
+     * @param since_updated_at_ms 只取 updated_at 大于该值的画像（0 表示不限）
+     */
+    std::vector<DeviceLinkProfile> loadDeviceBaselinesSince(int64_t since_updated_at_ms,
+                                                            int limit = 2000);
+
+    /**
+     * @brief 指定时间之后出现过的最大事件时间（用于建立初始上行游标）
+     *
+     * 与 loadDeviceEventsForReplay 配对：首次启动时游标为 0 会把历史事件
+     * 全量重发（云端幂等，安全但浪费）。调用方可先取 max(ts) 作为起点。
+     * 无记录时返回 0。
+     */
+    int64_t queryMaxDeviceEventTs();
 
     /**
      * @brief 清理过期快照

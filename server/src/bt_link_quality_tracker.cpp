@@ -102,7 +102,7 @@ std::optional<WirelessDeviceEvent> BtLinkQualityTracker::feedFreshRssi(
     }
 
     // 塞入时序样本环（用于后续断连回填）
-    RssiSample sample;
+    BtLinkRssiSample sample;
     sample.rssi_dbm = rssi_dbm;
     sample.observed_at_ms = wall_ms;
     sample.monotonic_ns = mono_ns;

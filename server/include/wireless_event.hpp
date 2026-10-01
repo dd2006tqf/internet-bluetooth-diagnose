@@ -234,9 +234,13 @@ struct WirelessDeviceKey {
 };
 
 /**
- * @brief 射频采样观测
+ * @brief 蓝牙链路射频采样观测
+ *
+ * 命名带 Bt 前缀是刻意的：``net_wifiriss.h`` 另有一个语义无关的 Wi-Fi
+ * RSSI 结构（``RssiSample``，来自 wpa_supplicant 读值）。两者同名会让任何
+ * 同时包含二者的 TU 编译失败（server.hpp 链即如此，2026-10-01 实测）。
  */
-struct RssiSample {
+struct BtLinkRssiSample {
     int16_t rssi_dbm = -1000;
     uint64_t observed_at_ms = 0;   ///< 墙钟毫秒（展示/持久化）
     uint64_t monotonic_ns = 0;     ///< CLOCK_MONOTONIC 纳秒（因果判定/TTL）
