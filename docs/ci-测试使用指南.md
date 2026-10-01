@@ -39,7 +39,7 @@
 只在本地容器内编译并打包 `dist-arm64/`，不部署到开发板。
 
 > 注意：`ci.sh` **不在本地跑单元测试**。本地跑单测请直接用
-> `ctest --test-dir build-x86/server`（x86，43 个套件）或容器内
+> `ctest --test-dir build-x86/server`（x86，46 个套件）或容器内
 > `ctest --test-dir build-arm64/server`。
 
 ### 完整参数列表
@@ -91,7 +91,7 @@ ci-reports/
 
 ## 测试覆盖
 
-### 单元测试（43 个套件，约 447 个用例）
+### 单元测试（46 个套件，543 个用例）
 
 跑法：`ctest --test-dir build-x86/server --output-on-failure`
 
@@ -136,6 +136,13 @@ ci-reports/
 | test_weaknet_config_gtest | YAML 解析、白名单、ConfigTransaction |
 | test_monitor_registry_gtest | 插件注册表 |
 | test_monitor_manager_gtest | 插件生命周期与依赖拓扑 |
+| test_wireless_event_gtest | 无线设备事件模型（HCI reason 映射与规范化） |
+| test_bt_link_quality_gtest | 蓝牙链路质量跟踪（基线画像与异常判定） |
+| test_site_incident_gtest | 区域级 SiteIncident 关联（合格异常策略/聚合开单） |
+| test_edge_wireless_uplink_gtest | 无线回传上行遥测契约（schema/分组/批校验） |
+| test_bpf_map_sizing_gtest | BPF map 容量测算（fixed/auto 模式与钳制） |
+| test_map_sizing_spec_sync_gtest | map sizing 规格表与 BPF 源码常量同步校验 |
+| test_per_key_counter_tracker_gtest | 按键计数器追踪（新增/增长/重置差分） |
 
 ### 功能测试
 

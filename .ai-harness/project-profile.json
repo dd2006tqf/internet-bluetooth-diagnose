@@ -23,8 +23,8 @@
       },
       "capability_status": {
         "configure": {"status": "available", "reason": "cmake -B build-x86 configures the x86 local tree with BUILD_EBPF=OFF; measured 8.3s cold"},
-        "build": {"status": "available", "reason": "cmake --build build-x86 compiles server, client and 39 gtest targets; measured 5s incremental (5m43s from an empty build directory); requires configure-x86 to have run once"},
-        "test": {"status": "available", "reason": "ctest --test-dir build-x86/server --output-on-failure runs the 39 registered x86 gtest suites; measured 5.5s, 39/39 pass"},
+        "build": {"status": "available", "reason": "cmake --build build-x86 compiles server, client and 47 test targets; measured 5s incremental (5m43s from an empty build directory); requires configure-x86 to have run once"},
+        "test": {"status": "available", "reason": "ctest --test-dir build-x86/server --output-on-failure runs the 46 registered x86 test suites; measured 4.6s, 46/46 pass (543 cases, re-verified 2026-10-01)"},
         "install": {"status": "needs-approval", "reason": "there are no CMake install() rules: deployment is rsync to the ARM64 board plus systemd, driven by tools/ci.sh, which needs SSH and sudo"},
         "target-run": {"status": "unavailable", "reason": "eBPF attach and Bluetooth need the Radxa Cubie A7A board; the dev host is x86_64 and BUILD_EBPF=OFF skips the probes"},
         "static-analysis": {"status": "needs-approval", "reason": "no static analyzer is configured; the toolchain-probe command only reports the compiler identity"},

@@ -252,7 +252,7 @@ $ weaknet-cli get all
 
 ---
 
-### 3.6 `weaknet-cli set <key> <value>`
+### 3.7 `weaknet-cli set <key> <value>`
 
 实时修改监控器参数。**立即生效**，无需重启服务。
 

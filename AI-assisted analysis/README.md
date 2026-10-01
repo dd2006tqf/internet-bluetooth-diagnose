@@ -1,5 +1,11 @@
 # AI-assisted analysis - 弱网服务日志分析与向量库RAG系统
 
+> **[已弃用 / DEPRECATED]** 本目录是项目早期的独立 Python RAG 原型（LangChain + FAISS），
+> **当前代码树中没有任何模块导入或执行它**。云端 RAG 职责已由
+> `Large-Model-Application/src/industrial_ops_agent/` 的 `knowledge*` / `graph_rag/` /
+> `search_profiles/` 取代。本 README 与脚本仅作历史学习材料保留，
+> 状态标注以 `docs/架构设计.md` 的「关于 AI-assisted analysis」一节为准。
+
 ## 概述
 
 本文件夹包含用于弱网服务日志截取、分析和**真正的向量库RAG（检索增强生成）**系统的核心组件。系统使用FAISS向量库存储网络知识库，通过相似度搜索检索相关知识，并结合AI模型进行智能分析，回答关于特定时间点网络状况的问题。
