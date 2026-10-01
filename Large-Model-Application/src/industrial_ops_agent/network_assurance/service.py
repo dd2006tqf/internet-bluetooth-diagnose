@@ -70,6 +70,7 @@ from industrial_ops_agent.network_assurance.wireless_contracts import (
 )
 from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.models import (
+    AssetRecord,
     NetworkAssetRecord,
     NetworkDeviceBaselineRecord,
     NetworkEnvWindowRecord,
@@ -750,7 +751,72 @@ class NetworkAssuranceService:
         # actively reporting appear to stop.
         newest = max(batch.snapshots, key=lambda item: item.sequence_id)
         self._touch_heartbeat(record, newest, now=now)
+
+        # S6 资产桥：网关在售后资产域（assets）取得同一身份。
+        # 没有这一步，平台 incidents.asset_id 的外键无从满足，区域事故就
+        # 永远开不出工单（见集成设计 §四）。桥在网关注册/心跳成功后同事务内
+        # 建立，保证"出现在资产池"与"被本平台观测"两件事同时为真。
+        self._bridge_gateway_asset(session, context, record, now=now)
         return record
+
+    @staticmethod
+    def _bridge_gateway_asset(
+        session: Session,
+        context: TenantContext,
+        record: NetworkAssetRecord,
+        *,
+        now: datetime,
+    ) -> AssetRecord:
+        """把网关镜像为 assets 表的资产行（幂等 UPSERT）。
+
+        身份约定：
+        - ``source_system="weaknet"``、``source_record_id=<network asset_id>``
+          构成 UPSERT 键（唯一约束 uq_asset_source），device_id 变化不会造出重复行；
+        - ``asset_id`` 沿用 device_id —— 事故/工单链路直接引用它可读性最好；
+        - 现场被观测的无线设备**不**入资产池（决策 D2）：它们是被观测对象，
+          不是被维护对象，只有网关本身是平台的服务对象。
+
+        幂等：已有行只刷新描述字段并推进 version，绝不覆盖运营方在平台侧
+        补充的 serial_number / lifecycle_status（那是人的输入，不是遥测能覆盖的）。
+        """
+
+        source_system = "weaknet"
+        source_record_id = record.asset_id
+
+        existing = session.execute(
+            select(AssetRecord).where(
+                AssetRecord.tenant_id == context.tenant_id,
+                AssetRecord.source_system == source_system,
+                AssetRecord.source_record_id == source_record_id,
+            )
+        ).scalar_one_or_none()
+
+        display_name = record.display_name or record.asset_id
+        if existing is None:
+            asset = AssetRecord(
+                asset_id=record.asset_id,
+                tenant_id=context.tenant_id,
+                source_system=source_system,
+                source_record_id=source_record_id,
+                as_of=now,
+                model_code="weaknet-gateway",
+                display_name=display_name,
+                lifecycle_status="IN_SERVICE",
+                version=1,
+            )
+            session.add(asset)
+            return asset
+
+        changed = (
+            existing.display_name != display_name
+            or not (existing.model_code or "").strip()
+        )
+        if changed:
+            existing.display_name = display_name
+            existing.model_code = existing.model_code or "weaknet-gateway"
+            existing.as_of = now
+            existing.version = (existing.version or 1) + 1
+        return existing
 
     def _touch_heartbeat(
         self,
