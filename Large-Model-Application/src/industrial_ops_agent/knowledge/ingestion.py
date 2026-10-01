@@ -150,6 +150,7 @@ class KnowledgeIngestionService:
             parser_version=self.PARSER_VERSION,
             source_checksum_override=None,
             extraction_metadata=None,
+            required_action=Action.CREATE_KNOWLEDGE_DRAFT,
         )
 
     def create_extracted_document(
@@ -195,6 +196,8 @@ class KnowledgeIngestionService:
             parser_version=parser_version,
             source_checksum_override=source_checksum,
             extraction_metadata=extraction_metadata,
+            # 与 create_document 同类：新建文档，属"放进待审队列"
+            required_action=Action.CREATE_KNOWLEDGE_DRAFT,
         )
 
     def create_version(
@@ -577,8 +580,11 @@ class KnowledgeIngestionService:
         parser_version: str,
         source_checksum_override: str | None,
         extraction_metadata: dict[str, Any] | None,
+        required_action: Action = Action.PUBLISH_KNOWLEDGE,
     ) -> KnowledgeVersionView:
-        self._require_manage(identity, document_id or "new-document", request_id)
+        self._require_manage(
+            identity, document_id or "new-document", request_id, action=required_action
+        )
         _validate_idempotency_key(idempotency_key)
         normalized = _normalize_text(content)
         _validate_scope(
@@ -722,10 +728,16 @@ class KnowledgeIngestionService:
         identity: IdentityContext,
         resource_id: str,
         request_id: str,
+        *,
+        action: Action = Action.PUBLISH_KNOWLEDGE,
     ) -> None:
+        # 默认仍是 PUBLISH_KNOWLEDGE（审核/建发布/激活这条治理链）。
+        # 只有"新建文档草稿"降一级到 CREATE_KNOWLEDGE_DRAFT：自动化主体可以
+        # 把案例放进待审队列，但不能审、不能发、也不能改既有文档（create_version
+        # 走默认动作，因此自动化对它依然无权）。
         self._authorizer.require(
             identity,
-            Action.PUBLISH_KNOWLEDGE,
+            action,
             ResourceContext(identity.tenant_id, resource_id),
             request_id=request_id,
         )

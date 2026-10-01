@@ -76,8 +76,11 @@ jobs:
           src/industrial_ops_agent/network_assurance
           src/industrial_ops_agent/edge
           src/industrial_ops_agent/persistence
+          src/industrial_ops_agent/auth
+          src/industrial_ops_agent/knowledge
           src/industrial_ops_agent/api/routes/network_assurance.py
           tests/test_wireless_ingest.py
+          tests/test_knowledge_draft_action.py
           tests/test_wireless_diagnosis_from_tables.py
           tests/test_asset_bridge.py
           tests/test_incident_draft_automation.py

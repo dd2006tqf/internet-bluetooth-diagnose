@@ -207,6 +207,11 @@ class Settings(BaseSettings):
     #: the loop the platform would have to manufacture that evidence, which
     #: this integration deliberately refuses to do.
     network_auto_incident_draft_enabled: bool = True
+    #: 生成知识案例 source_uri 所需的平台对外基址（https，无路径尾斜杠），
+    #: 例如 ``https://ops.example.com``。source_uri 必须是 https（平台校验
+    #: 强制 scheme ∈ {https, s3, minio}），因此这里只接受 https。
+    #: **为空时知识案例自动建档会跳过并告警**——不伪造 URL。
+    network_public_base_url: str = ""
     model_gateway_required_environment: ModelTargetEnvironment = ModelTargetEnvironment.STAGING
     model_gateway_alias: str = "industrial-diagnosis-staging"
     model_gateway_timeout_seconds: float = Field(default=90.0, gt=0, le=180)
@@ -461,6 +466,20 @@ class Settings(BaseSettings):
             "https://"
         ):
             raise ValueError("Prometheus must use HTTPS in production")
+        if self.network_public_base_url:
+            parsed = urlparse(self.network_public_base_url)
+            if (
+                parsed.scheme != "https"
+                or not parsed.netloc
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError(
+                    "network_public_base_url must be an https origin "
+                    "without credentials, query or fragment"
+                )
         if (
             self.environment is Environment.PRODUCTION
             and self.otel_enabled

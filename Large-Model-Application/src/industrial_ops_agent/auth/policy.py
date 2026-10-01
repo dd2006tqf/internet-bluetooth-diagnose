@@ -22,6 +22,11 @@ class Action(StrEnum):
     READ_ASSET = "asset.read"
     CREATE_INCIDENT_DRAFT = "incident_draft.create"
     UPDATE_INCIDENT_DRAFT = "incident_draft.update"
+    #: 创建知识文档草稿。刻意与 PUBLISH_KNOWLEDGE 分开：前者只能"放进队列"，
+    #: 后者才拥有审核/构建发布/激活这条治理链。自动化主体（edge-automation）
+    #: 只拿前者，因此永远无法自我审核或直接发布——审核分离由 review_version
+    #: 的创建者≠审核者再兜一层。与 CREATE_INCIDENT_DRAFT 同理，不进 OPA 强制集。
+    CREATE_KNOWLEDGE_DRAFT = "knowledge_draft.create"
     UPLOAD_MEDIA = "media.upload"
     RUN_RECOGNITION = "recognition.run"
     CONFIRM_RECOGNITION = "recognition.confirm"
@@ -242,6 +247,7 @@ ROLE_ACTIONS: dict[Role, frozenset[Action]] = {
             Action.READ_MAINTENANCE_COUNCIL,
             Action.READ_DEVICE_FAMILY,
             Action.READ_NETWORK_ASSURANCE,
+            Action.CREATE_KNOWLEDGE_DRAFT,
         }
     ),
     Role.AFTER_SALES_ENGINEER: frozenset(
@@ -334,6 +340,7 @@ ROLE_ACTIONS: dict[Role, frozenset[Action]] = {
             Action.WRITE_MEMORY,
             Action.REVOKE_MEMORY,
             Action.EVALUATE_KNOWLEDGE_INDEX,
+            Action.CREATE_KNOWLEDGE_DRAFT,
             Action.PUBLISH_KNOWLEDGE,
             Action.READ_KNOWLEDGE_GRAPH,
             Action.MANAGE_KNOWLEDGE_GRAPH,
@@ -399,6 +406,7 @@ ROLE_ACTIONS: dict[Role, frozenset[Action]] = {
             Action.WRITE_MEMORY,
             Action.REVOKE_MEMORY,
             Action.EVALUATE_KNOWLEDGE_INDEX,
+            Action.CREATE_KNOWLEDGE_DRAFT,
             Action.PUBLISH_KNOWLEDGE,
             Action.READ_KNOWLEDGE_GRAPH,
             Action.ACTIVATE_KNOWLEDGE_GRAPH,

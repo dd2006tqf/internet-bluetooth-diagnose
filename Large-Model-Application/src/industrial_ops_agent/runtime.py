@@ -13,6 +13,7 @@ from urllib.request import urlopen
 from fastapi import FastAPI
 from minio import Minio
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 from temporalio.contrib.opentelemetry import OpenTelemetryInterceptor
 
 from industrial_ops_agent import __version__
@@ -62,6 +63,10 @@ from industrial_ops_agent.multimodal.speech import (
 from industrial_ops_agent.multimodal.transcription import (
     OpenAiCompatibleTranscriptionTransport,
     TranscriptionGateway,
+)
+from industrial_ops_agent.network_assurance.automation_subject import (
+    EDGE_AUTOMATION_SUBJECT_ID,
+    ensure_edge_automation_subject,
 )
 from industrial_ops_agent.network_assurance.service import NetworkAssuranceService
 from industrial_ops_agent.network_assurance.signing import EdgeTelemetryVerifier
@@ -418,11 +423,17 @@ def create_runtime_app(settings: Settings | None = None) -> FastAPI:
         且作用域只覆盖本租户。这样自动草稿仍走完整的授权与审计路径。
         """
 
+        # 先确保主体存在：两个桥（事故草稿 / 知识草稿）都会走平台的
+        # lock_subject，而它要求一个 status="active" 的成员行。
+        with Session(database.engine) as session:
+            ensure_edge_automation_subject(session, tenant_id=tenant_context.tenant_id)
+            session.commit()
+
         return (
             IncidentDraftService(database, authorizer),
             IdentityContext(
-                subject_id="edge-automation",
-                oidc_subject="edge-automation",
+                subject_id=EDGE_AUTOMATION_SUBJECT_ID,
+                oidc_subject=EDGE_AUTOMATION_SUBJECT_ID,
                 tenant_id=tenant_context.tenant_id,
                 roles=frozenset({Role.FIELD_ENGINEER}),
                 asset_ids=frozenset(),
