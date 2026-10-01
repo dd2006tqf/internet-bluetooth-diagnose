@@ -39,7 +39,24 @@ jobs:
       - name: Edge telemetry contract cross-language check
         run: |
           sudo apt-get install -y -qq python3 python3-pip
-          python3 -m pip install --quiet pydantic
+          # verify_telemetry_contract.py 虽然只要 contracts/copilot 两个模块，
+          # 但 Python import 子模块会先执行包的 __init__.py，它级联加载
+          # service → sqlalchemy/pgvector、signing → cryptography、
+          # model_gateway → structlog/jsonschema/opentelemetry/prometheus-client/httpx。
+          # 只装 pydantic 会在入口 ModuleNotFoundError（该步骤自 177bcaf 起即红）。
+          # 清单是 venv 里逐轮复现到 `OK edge-telemetry-contract` 的最小直接依赖集；
+          # 以后 __init__ 新增级联 import 时按同样的报错补包即可。
+          python3 -m pip install --quiet \
+            pydantic \
+            sqlalchemy \
+            pgvector \
+            cryptography \
+            structlog \
+            jsonschema \
+            opentelemetry-api \
+            opentelemetry-sdk \
+            prometheus-client \
+            httpx
           python3 tools/verify_telemetry_contract.py --strict
 
   build-and-test:
