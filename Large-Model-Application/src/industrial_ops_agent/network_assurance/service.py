@@ -193,6 +193,7 @@ class NetworkAssuranceService:
         offline_after_seconds: int = DEFAULT_OFFLINE_AFTER_SECONDS,
         auto_incident_draft_enabled: bool = True,
         incident_draft_service_factory: Any = None,
+        knowledge_case_bridge: Any = None,
     ) -> None:
         if offline_after_seconds <= 0:
             raise ValueError("offline_after_seconds must be positive")
@@ -204,6 +205,9 @@ class NetworkAssuranceService:
         #: 工厂注入点：草稿创建走平台既有 IncidentDraftService（含审计与
         #: 权限判定）。未注入时静默跳过——集成测试与纯遥测部署不需要它。
         self._incident_draft_service_factory = incident_draft_service_factory
+        #: S8 收录侧：事故结案时把确定性诊断归档为待审知识案例。
+        #: 未注入即跳过（集成测试 / 纯遥测部署不需要它）。
+        self._knowledge_case_bridge = knowledge_case_bridge
 
     @property
     def offline_after_seconds(self) -> int:
@@ -340,6 +344,7 @@ class NetworkAssuranceService:
             accepted_incidents = 0
             duplicate_incidents = 0
             opened_incident_ids: list[str] = []
+            resolved_incident_ids: list[str] = []
             for view in batch.incidents:
                 existing = session.get(NetworkSiteIncidentRecord, view.incident_id)
                 if existing is None:
@@ -362,6 +367,13 @@ class NetworkAssuranceService:
                     accepted_incidents += 1
                     if view.state in _ACTIVE_INCIDENT_STATES:
                         opened_incident_ids.append(view.incident_id)
+                    elif view.state == "RESOLVED":
+                        # 按状态入队，不判"是否首次"：上游游标在确认送达前不
+                        # 前移，同一 RESOLVED 载荷会重放，而 create_case 按
+                        # incident_id 幂等。注意这提供的是**请求级**重试（整批
+                        # 失败时板端重发）；create_case 自身失败只记日志——
+                        # 归档是下游增强，不值得让事实上行反复失败重试。
+                        resolved_incident_ids.append(view.incident_id)
                     continue
                 self._require_same_tenant(context, existing.tenant_id, view.incident_id)
                 changed = (
@@ -371,6 +383,9 @@ class NetworkAssuranceService:
                     or existing.affected_devices != view.affected_devices
                     or existing.suspected_cause != view.suspected_cause
                 )
+                if view.state == "RESOLVED":
+                    # 与插入分支同理：按状态触发、按 id 幂等，重放即重试。
+                    resolved_incident_ids.append(view.incident_id)
                 if changed:
                     # 时间窗与板端一致：last_event 只右移、started 只左移，
                     # 乱序/迟到的重放不得把事故窗口拉回去。
@@ -437,6 +452,21 @@ class NetworkAssuranceService:
         # 自带事务；在 ingest 事务内调用会形成跨服务的锁嵌套。
         for incident_id in opened_incident_ids:
             self._open_incident_draft(context, incident_id, device_id=batch.device_id)
+
+        # S8 收录侧：结案事故归档为知识案例草稿（同样在 ingest 事务之外）。
+        # "绝不冒泡"在这里兜底而不是只托付给桥内部：归档是下游增强，调用方
+        # 必须保证它不会把已经提交的事实上行变成 500。
+        if self._knowledge_case_bridge is not None:
+            for incident_id in resolved_incident_ids:
+                try:
+                    self._knowledge_case_bridge.create_case(context, incident_id)
+                except Exception as exc:  # noqa: BLE001 - 下游增强不许拖垮入库
+                    LOGGER.warning(
+                        "knowledge archival failed for %s: %s",
+                        incident_id,
+                        exc,
+                        exc_info=True,
+                    )
 
         return WirelessEventIngestResult(
             accepted=WirelessGroupCounts(

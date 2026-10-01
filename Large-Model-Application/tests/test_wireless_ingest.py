@@ -44,6 +44,8 @@ from industrial_ops_agent.persistence.tenant import TenantContext
 
 DEVICE = "radxa-cubie-a7a"
 KEY_ID = "weaknet-edge-telemetry-v1"
+#: 与 _incident() 的默认 incident_id 一致
+INCIDENT = "site-1_1700000001000"
 
 
 @pytest.fixture
@@ -305,3 +307,62 @@ def test_empty_and_oversized_batches_are_rejected_by_contract():
                 "events": [_event(f"evt-{i}") for i in range(1001)],
             }
         )
+
+
+class _RecordingKnowledgeBridge:
+    """Records create_case calls so the wiring test observes the real trigger."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def create_case(self, context, incident_id: str):  # noqa: ANN001, ANN201
+        self.calls.append(incident_id)
+        return f"doc-{incident_id}"
+
+
+def test_resolved_incident_triggers_knowledge_archival(
+    test_db: Database, tenant_context: TenantContext
+):
+    bridge = _RecordingKnowledgeBridge()
+    service = NetworkAssuranceService(database=test_db, knowledge_case_bridge=bridge)
+
+    # OPEN 不触发：故事还没讲完，入库的案例会是半截的
+    service.ingest_wireless_batch(tenant_context, _batch(), key_id=KEY_ID)
+    assert bridge.calls == []
+
+    resolved = _batch(
+        incidents=[_incident(state="RESOLVED")], events=[], baselines=[], env_window=None
+    )
+    service.ingest_wireless_batch(tenant_context, resolved, key_id=KEY_ID)
+    assert bridge.calls == [INCIDENT]
+
+
+def test_replayed_resolved_incident_reaches_an_idempotent_bridge(
+    test_db: Database, tenant_context: TenantContext
+):
+    """重放会再次进入 create_case——调用方必须按 incident_id 幂等。"""
+
+    bridge = _RecordingKnowledgeBridge()
+    service = NetworkAssuranceService(database=test_db, knowledge_case_bridge=bridge)
+    resolved = _batch(
+        incidents=[_incident(state="RESOLVED")], events=[], baselines=[], env_window=None
+    )
+    service.ingest_wireless_batch(tenant_context, resolved, key_id=KEY_ID)
+    service.ingest_wireless_batch(tenant_context, resolved, key_id=KEY_ID)
+
+    assert bridge.calls == [INCIDENT, INCIDENT]
+
+
+def test_archival_failure_never_breaks_ingest(test_db: Database, tenant_context: TenantContext):
+    class _ExplodingBridge:
+        def create_case(self, context, incident_id: str):  # noqa: ANN001, ANN201
+            raise RuntimeError("knowledge backend down")
+
+    service = NetworkAssuranceService(
+        database=test_db, knowledge_case_bridge=_ExplodingBridge()
+    )
+    resolved = _batch(
+        incidents=[_incident(state="RESOLVED")], events=[], baselines=[], env_window=None
+    )
+    result = service.ingest_wireless_batch(tenant_context, resolved, key_id=KEY_ID)
+    assert result.accepted.incidents == 1  # 事实照常入库

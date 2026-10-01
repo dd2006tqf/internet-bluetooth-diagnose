@@ -68,6 +68,7 @@ from industrial_ops_agent.network_assurance.automation_subject import (
     EDGE_AUTOMATION_SUBJECT_ID,
     ensure_edge_automation_subject,
 )
+from industrial_ops_agent.network_assurance.knowledge_bridge import KnowledgeCaseBridge
 from industrial_ops_agent.network_assurance.service import NetworkAssuranceService
 from industrial_ops_agent.network_assurance.signing import EdgeTelemetryVerifier
 from industrial_ops_agent.object_store.minio import MinioTenantObjectStore
@@ -443,11 +444,18 @@ def create_runtime_app(settings: Settings | None = None) -> FastAPI:
             ),
         )
 
+    knowledge_case_bridge = KnowledgeCaseBridge(
+        database,
+        authorizer,
+        public_base_url=resolved.network_public_base_url,
+        api_prefix=resolved.api_prefix,
+    )
     network_assurance_service = NetworkAssuranceService(
         database,
         offline_after_seconds=resolved.network_edge_offline_after_seconds,
         auto_incident_draft_enabled=resolved.network_auto_incident_draft_enabled,
         incident_draft_service_factory=_incident_draft_factory,
+        knowledge_case_bridge=knowledge_case_bridge,
     )
     network_model_gateway: ModelGateway | None = None
     if model_resolver is not None:
