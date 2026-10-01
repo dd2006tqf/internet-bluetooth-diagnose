@@ -6,6 +6,7 @@ import asyncio
 import socket
 from base64 import b64decode
 from binascii import Error as Base64Error
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from urllib.request import urlopen
 
@@ -16,7 +17,9 @@ from temporalio.contrib.opentelemetry import OpenTelemetryInterceptor
 
 from industrial_ops_agent import __version__
 from industrial_ops_agent.api.app import create_app
+from industrial_ops_agent.application.incidents import IncidentDraftService
 from industrial_ops_agent.assurance.service import AssuranceService
+from industrial_ops_agent.auth.identity import IdentityContext, Role
 from industrial_ops_agent.auth.oidc import JwksSigningKeyProvider, OidcVerifier
 from industrial_ops_agent.auth.opa import OpaPolicyClient
 from industrial_ops_agent.auth.policy import Authorizer
@@ -77,6 +80,7 @@ from industrial_ops_agent.orchestration.workflows import (
     LazyTemporalRecognitionDispatcher,
 )
 from industrial_ops_agent.persistence.database import Database
+from industrial_ops_agent.persistence.tenant import TenantContext
 from industrial_ops_agent.predictive_maintenance.dataset_pipeline import (
     TelemetryDatasetPipelineService,
 )
@@ -159,7 +163,9 @@ def create_runtime_app(settings: Settings | None = None) -> FastAPI:
                     resolved.network_edge_telemetry_public_key_b64, validate=True
                 ).decode("utf-8")
             except (Base64Error, UnicodeDecodeError) as exc:
-                raise ValueError("network edge telemetry public key must be valid base64-encoded PEM") from exc
+                raise ValueError(
+                    "network edge telemetry public key must be valid base64-encoded PEM"
+                ) from exc
         device_token = resolved.network_edge_telemetry_device_token
         if not public_key_pem or not device_token:
             raise ValueError(
@@ -402,9 +408,35 @@ def create_runtime_app(settings: Settings | None = None) -> FastAPI:
     )
     gpu_operations_service = GpuOperationsService(database, prometheus_reader)
     assurance_service = AssuranceService(database, authorizer, operations_service)
+    def _incident_draft_factory(
+        tenant_context: TenantContext,
+    ) -> tuple[IncidentDraftService, IdentityContext]:
+        """S7 草稿创建所需的 (服务, 系统主体) 对。
+
+        主体用 edge-automation：它不是任何设备，也不是任何自然人，权限边界
+        由平台既有的角色表决定（FIELD_ENGINEER 具备 CREATE_INCIDENT_DRAFT），
+        且作用域只覆盖本租户。这样自动草稿仍走完整的授权与审计路径。
+        """
+
+        return (
+            IncidentDraftService(database, authorizer),
+            IdentityContext(
+                subject_id="edge-automation",
+                oidc_subject="edge-automation",
+                tenant_id=tenant_context.tenant_id,
+                roles=frozenset({Role.FIELD_ENGINEER}),
+                asset_ids=frozenset(),
+                site_ids=frozenset(),
+                issued_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            ),
+        )
+
     network_assurance_service = NetworkAssuranceService(
         database,
         offline_after_seconds=resolved.network_edge_offline_after_seconds,
+        auto_incident_draft_enabled=resolved.network_auto_incident_draft_enabled,
+        incident_draft_service_factory=_incident_draft_factory,
     )
     network_model_gateway: ModelGateway | None = None
     if model_resolver is not None:

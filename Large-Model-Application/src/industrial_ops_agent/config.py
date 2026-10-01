@@ -199,6 +199,14 @@ class Settings(BaseSettings):
     #: Must comfortably exceed the edge reporting interval (default 10s) so
     #: ordinary transient loss does not read as a device outage.
     network_edge_offline_after_seconds: int = Field(default=45, gt=0, le=3600)
+    #: Automatically open an incident draft when an uplinked site incident
+    #: arrives (S7). Default on: the draft is a *proposal* placed in the
+    #: operator's queue, not a state change — the platform's evidence gate
+    #: (confirmed evidence bundle + clean media) still requires a human before
+    #: anything becomes a formal incident or a work order. Without a human in
+    #: the loop the platform would have to manufacture that evidence, which
+    #: this integration deliberately refuses to do.
+    network_auto_incident_draft_enabled: bool = True
     model_gateway_required_environment: ModelTargetEnvironment = ModelTargetEnvironment.STAGING
     model_gateway_alias: str = "industrial-diagnosis-staging"
     model_gateway_timeout_seconds: float = Field(default=90.0, gt=0, le=180)

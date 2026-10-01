@@ -80,6 +80,7 @@ jobs:
           tests/test_wireless_ingest.py
           tests/test_wireless_diagnosis_from_tables.py
           tests/test_asset_bridge.py
+          tests/test_incident_draft_automation.py
           tests/test_wireless_causal_rules.py
           tests/test_wireless_guardrail.py
 

@@ -44,6 +44,7 @@ compare ``sequence_id`` within an epoch, never timestamps across epochs.
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -81,6 +82,8 @@ from industrial_ops_agent.persistence.models import (
 )
 from industrial_ops_agent.persistence.tenant import TenantContext, validate_boundary_identifier
 
+LOGGER = logging.getLogger("industrial_ops_agent.network_assurance.service")
+
 #: Devices are marked OFFLINE once this long passes with no successful
 #: upload. Generation cadence is 10s, so this tolerates several consecutive
 #: failures — including the device being bounced by a genuine outage —
@@ -110,6 +113,10 @@ _DEGRADED_STATES = frozenset({"DEGRADED", "BAD"})
 #: Joined with `.` because `TenantContext` accepts only
 #: ``[A-Za-z0-9._-]`` in boundary identifiers.
 _EDGE_SUBJECT_PREFIX = "edge."
+
+#: 事故状态里"正在发生"的那两个；只有它们才值得开草稿。
+#: RESOLVED 不补开——事故已经结束，再开一张草稿只会制造噪音。
+_ACTIVE_INCIDENT_STATES = frozenset({"OPEN", "ONGOING"})
 
 
 def edge_subject_id(device_id: str) -> str:
@@ -184,11 +191,19 @@ class NetworkAssuranceService:
         database: Database,
         *,
         offline_after_seconds: int = DEFAULT_OFFLINE_AFTER_SECONDS,
+        auto_incident_draft_enabled: bool = True,
+        incident_draft_service_factory: Any = None,
     ) -> None:
         if offline_after_seconds <= 0:
             raise ValueError("offline_after_seconds must be positive")
         self._database = database
         self._offline_after_seconds = offline_after_seconds
+        #: S7：收到上行的区域事故时自动开一张**工单草稿**（见 §五）。
+        #: 默认开；关掉后仅落事实、不进草稿队列（保留纯观测部署形态）。
+        self._auto_incident_draft_enabled = auto_incident_draft_enabled
+        #: 工厂注入点：草稿创建走平台既有 IncidentDraftService（含审计与
+        #: 权限判定）。未注入时静默跳过——集成测试与纯遥测部署不需要它。
+        self._incident_draft_service_factory = incident_draft_service_factory
 
     @property
     def offline_after_seconds(self) -> int:
@@ -324,6 +339,7 @@ class NetworkAssuranceService:
 
             accepted_incidents = 0
             duplicate_incidents = 0
+            opened_incident_ids: list[str] = []
             for view in batch.incidents:
                 existing = session.get(NetworkSiteIncidentRecord, view.incident_id)
                 if existing is None:
@@ -344,6 +360,8 @@ class NetworkAssuranceService:
                         )
                     )
                     accepted_incidents += 1
+                    if view.state in _ACTIVE_INCIDENT_STATES:
+                        opened_incident_ids.append(view.incident_id)
                     continue
                 self._require_same_tenant(context, existing.tenant_id, view.incident_id)
                 changed = (
@@ -415,6 +433,11 @@ class NetworkAssuranceService:
             if batch.env_window is not None:
                 self._upsert_env_window(session, context, asset.asset_id, batch.env_window)
 
+        # 事务提交后再开草稿：草稿创建走平台既有服务（含审计与权限判定），
+        # 自带事务；在 ingest 事务内调用会形成跨服务的锁嵌套。
+        for incident_id in opened_incident_ids:
+            self._open_incident_draft(context, incident_id, device_id=batch.device_id)
+
         return WirelessEventIngestResult(
             accepted=WirelessGroupCounts(
                 events=accepted_events,
@@ -456,6 +479,51 @@ class NetworkAssuranceService:
             session.add(record)
         record.signing_key_id = key_id
         return record
+
+    def _open_incident_draft(
+        self,
+        context: TenantContext,
+        incident_id: str,
+        *,
+        device_id: str,
+    ) -> None:
+        """为新开的区域事故自动建一张**工单草稿**（S7）。
+
+        为什么止步于草稿，而不是直接开单：
+        平台的正式 incident 需要 ``evidence.status == CONFIRMED`` 且至少一个
+        CLEAN 媒体对象（``application/incidents.py:1433``），工单还需要已批准的
+        proposal。平台没有"系统主体已确认证据"的通道，自动开单就必须伪造证据或
+        绕过证据门禁——两者都会摧毁这套系统的可信度，因此不做。
+
+        草稿是**提议**而非状态变更：它进入运营方的队列，由人补证据并确认，
+        之后平台原有的提交/审批/派工链路照常运转。这就是本阶段能给的自动化边界。
+
+        幂等：以确定性 idempotency_key 调用平台服务；重复上行同一事故不会产生
+        第二张草稿（服务端按 key 返回既有草稿，created=False）。
+
+        失败绝不抛给调用方：草稿是诊断事实的下游增强，不能被它拖垮上游入库。
+        """
+
+        if not self._auto_incident_draft_enabled or self._incident_draft_service_factory is None:
+            return
+
+        try:
+            service, identity = self._incident_draft_service_factory(context)
+            service.create(
+                identity,
+                asset_id=device_id,
+                description=(
+                    f"区域无线异常自动草稿：网关 {device_id} 上报区域事故 "
+                    f"{incident_id}（多台设备同时段异常）。"
+                    "请在补充现场证据后确认提交。"
+                ),
+                idempotency_key=f"weaknet-incident-draft:{incident_id}",
+                request_id=f"weaknet-auto-draft:{incident_id}",
+            )
+        except Exception as exc:  # noqa: BLE001 - 草稿失败不得影响事实入库
+            LOGGER.warning(
+                "auto incident draft failed for %s: %s", incident_id, exc, exc_info=True
+            )
 
     @staticmethod
     def _require_same_tenant(context: TenantContext, row_tenant: str, row_id: str) -> None:
