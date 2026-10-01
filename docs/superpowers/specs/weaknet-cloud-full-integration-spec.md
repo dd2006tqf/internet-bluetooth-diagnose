@@ -16,7 +16,7 @@
 |---|---|---|
 | D1 | 事件/事故上行通道 | **独立端点** `POST /network/edge/wireless-events`，沿用现有 Ed25519 验签器；幂等键用 `event_id`/`incident_id`，与遥测的 `(epoch, sequence)` 分域 |
 | D2 | 资产对齐范围 | **只桥网关**：`network_assets` ↔ `AssetRecord`（`source_system="weaknet"`）；现场无线设备保持诊断域实体，不入资产池 |
-| D3 | incident→工单触发 | **自动开单，配置默认开**（见 §5 的治理链与降级条件） |
+| D3 | incident→工单触发 | 原定「自动开单、默认开」；**P5 实测后修正为「自动开工单草稿、默认开」**——见 §5 的治理边界说明与修正理由 |
 
 范围合并 = 原第三类 S6（资产桥）+ S7（自动开单）+ S8（知识双向），
 外加它们的共同前置 Phase 4a（四张表 + 上行）。
@@ -118,43 +118,50 @@ SiteIncident(板端事实)
 
 ---
 
-## 五、自动开单设计（S7，决策 D3）与治理链降级条件
+## 五、自动开单设计（S7）：实测后修正为「自动开工单草稿」
 
-新增 `network_assurance/workorder_bridge.py`：当上行的 `site_incidents` 出现
-**新 incident（state=OPEN/ONGOING）** 时，按平台既有治理链推进：
+### 5.1 修正说明（2026-10-01，P5 实测）
 
+原设计（决策 D3：自动开单、配置默认开）在**不改平台治理**的前提下**做不到**。
+实测证据（`Large-Model-Application/src/industrial_ops_agent/application/incidents.py:1433`）：
+
+```python
+submitted, incident, event = current.submit(
+    evidence_confirmed=evidence.status == EvidenceStatus.CONFIRMED.value,
+    all_media_clean=bool(media) and all(item.scan_state == ScanState.CLEAN.value for item in media),
+    device_authorized=True,
+    ...
+)
 ```
-1) IncidentRecord: asset_id = 网关 AssetRecord（S6 桥提供）
-                   reporter_subject_id = "edge-automation"（系统主体）
-                   description = 事故摘要（受影响设备数/时间窗/证据 incident_id）
-                   evidence_bundle_id = 诊断记录 id 或 incident_id
-2) ActionProposalRecord: tool_id = 既有的"网络诊断/现场检查"类注册工具
-                   risk_tier 按平台规则；自动提交
-3) WorkOrderRecord: 若平台治理允许自动推进 → 创建；
-                   若命中审批门（高风险需人批）→ 停在 approval 队列并通知——
-                   仍属"自动开单"（自动推进，人仅在平台要求时介入）
-```
 
-**降级条件（写死在实现里）**：若 `tool_id` 注册表/授权/entitlement 缺少适配
-无人值守链所需的条目，则自动创建**止步于 IncidentRecord + proposal 草稿**，
-workorder 改由 `/network` 页一键推进，并在设计回执中如实上报该降级
-（不静默、不伪造 D3 已达成）。
+创建正式 incident 需要①证据包已确认 ②至少一个 CLEAN 媒体对象；随后开 workorder
+还需一条已批准的 `action_proposals`。平台**没有**「系统主体已确认证据」的通道。
 
-配置键：`network_assurance.auto_workorder_enabled`（默认 **true**，
-与 D3 一致；tenant 级策略如平台已有则复用）。
+因此「自动开单」只有两条实现路径：伪造一份已确认的证据包，或放宽平台证据门禁。
+两者都会摧毁这套系统赖以成立的可信度（正是产品定位里反复强调的那条），**均不采纳**。
+经用户确认，改为**自动开工单草稿**：
 
-### 定位文档修订草案（`docs/产品定位-工业无线诊断网关.md`，随 S7 提交）
+> 自动化止步于**提议**。事故一到，系统自动建一张草稿放进运营方队列；
+> 人补证据、确认提交后，平台既有的提交/审批/派工链路照常运转。
 
-- 第二节"产品不做什么"的"设备管理"行**保持不变**，其下新增一行：
+### 5.2 实现
 
-  > | 自动开单（平台侧） | 板端仍不控制、不管理任何设备；云端依据已确诊的
-  > | `SiteIncident` 自动向平台履约流程建单（配置默认开，可关）。这是诊断结论的
-  > | 下游消费，不改变"板端只观测诊断"的边界。 |
+- 配置键 `network_auto_incident_draft_enabled`（默认 **true**，与 D3 的「默认开」一致）。
+- 触发条件：上行的 `site_incidents` 中**新开**且状态为 `OPEN`/`ONGOING` 的事故。
+  `RESOLVED` 不补开——事故已结束，补开只制造噪音。
+- 幂等键：`weaknet-incident-draft:<incident_id>`；重复上行不产生第二张草稿。
+- 授权与审计：走平台既有 `IncidentDraftService`，主体 `edge-automation`
+  以 `FIELD_ENGINEER` 角色（具备 `CREATE_INCIDENT_DRAFT`）、作用域限本租户。
+- 草稿挂在**网关资产**上（S6 桥提供身份）。
+- 草稿失败绝不冒泡到入库：草稿是下游增强，不能拖垮事实持久化。
 
-- 第七节"边缘与云端职责"表格"云端"行补充：跨时间/跨设备聚合分析、可视化、
-  知识辅助诊断，**以及依据区域事故自动触发履约工单**。
+### 5.3 定位文档修订草案（`docs/产品定位-工业无线诊断网关.md`，随 P5 提交）
 
----
+- 第二节「产品不做什么」的「设备管理」行**保持不变**，其下建议新增一行：
+
+  > | 自动建单（平台侧） | 板端仍不控制、不管理任何设备；云端依据已确诊的
+  > | `SiteIncident` 自动建一张**草稿**，由人补证据后确认提交。这是诊断结论的
+  > | 下游消费，不改变「板端只观测诊断」的边界。 |
 
 ## 六、知识双向（S8）
 
@@ -223,3 +230,28 @@ workorder 改由 `/network` 页一键推进，并在设计回执中如实上报�
 4. `verify_telemetry_contract.py --strict` 含 wireless-events 双侧校验并在 CI 通过；
 5. 文档同步：产品定位（修订）、架构设计（云端章节）、README 接入状态；
 6. 署名/许可口径保持 `tanqf`/MIT（`0c90c45` 之后不得回退）。
+
+
+---
+
+## 十二、交付状态（截至 2026-10-01）
+
+| 阶段 | 状态 | commit |
+|---|---|---|
+| P0 CI 基线（pytest + ruff 门禁） | ✅ 完成 | `88acb32` |
+| P1 云端四张事实表 + ingest 端点 | ✅ 完成 | `7a37976` |
+| P2 板端无线事实上行器（含 `RssiSample` 重名修复） | ✅ 完成 | `c5dfe5c` |
+| P3 诊断默认路径从四张表装配（不再永远 404） | ✅ 完成 | `e7edfbb` |
+| P4 资产桥（网关入售后资产域） | ✅ 完成 | `a146189` |
+| P5 自动开工单草稿（S7，按 §5.1 修正） | ✅ 完成 | `60a6f27` |
+| P6 知识双向（S8） | ⬜ 未开始 | — |
+| P7 端到端排练 + 文档同步 | ⬜ 未开始 | — |
+
+**门禁现状**：x86 CTest 46/46；云端 pytest 61 passed（`-m "not live"`）+
+连接路径 ruff 全绿；GitHub Actions `CI` 三个 job 全绿。
+
+**S8 未开始的理由**：知识检索（`knowledge/retrieval.py`）需要**已发布的索引
+release**（`RetrievalQuery.release_id` 来自 release manifest），收录侧
+（`KnowledgeIngestionService.create_document`）需要 `PUBLISH_KNOWLEDGE` 权限且
+审核分离（创建者不能自审）。这不是一条「加两行」的连接，而是需要先决定：
+诊断案例以何种粒度入库、谁来审核、索引 release 由谁发布。建议单独立项。

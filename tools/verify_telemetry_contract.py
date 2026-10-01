@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cross-language contract verifier for WeakNet edge telemetry.
 
-Three checks in one shot:
+Four checks in one shot (the fourth covers the Phase 4a wireless uplink):
 
 1. **C++ source-of-truth extraction** — parse
    ``server/include/assurance/edge_telemetry_serializer.hpp`` for every
@@ -15,6 +15,12 @@ Three checks in one shot:
    by the copilot's ``_causal_chain`` (reachable via ``CAUSAL_CONSUMED_SLE_KEYS``)
    or be explicitly classified non-blocking (``NON_BLOCKING_SLE_KEYS``).
    Uncovered keys fail CI.
+
+4. **Wireless-fact uplink contract** — the edge's ``buildBody`` emitter
+   (``server/src/edge_wireless_uplink_exporter.cpp``) and the cloud's
+   ``WirelessEventUplinkBatch`` must agree on the schema version, the four
+   group names and every event/incident/baseline field. A rename on either
+   side is otherwise only caught by an end-to-end run against the board.
 
 The script is intentionally stdlib + pydantic only so it can run in both the
 root CI image and the LMA venv without extra provisioning.
@@ -36,17 +42,24 @@ COPILOT_PATH = (
     / "Large-Model-Application/src/industrial_ops_agent/network_assurance/copilot.py"
 )
 
+WIRELESS_UPLINK_CPP_PATH = (
+    REPO_ROOT / "server/src/edge_wireless_uplink_exporter.cpp"
+)
+
 sys.path.insert(0, str(REPO_ROOT / "Large-Model-Application/src"))
 
 from industrial_ops_agent.network_assurance.contracts import (  # noqa: E402
     NETWORK_SLE_KEYS,
     SERVICE_SLE_KEYS,
     NetworkExperienceSnapshot,
-    NetworkSleResult,
 )
 from industrial_ops_agent.network_assurance.copilot import (  # noqa: E402
     CAUSAL_CONSUMED_SLE_KEYS,
     NON_BLOCKING_SLE_KEYS,
+)
+from industrial_ops_agent.network_assurance.wireless_contracts import (  # noqa: E402
+    WIRELESS_EVENT_UPLINK_SCHEMA_VERSION,
+    WirelessEventUplinkBatch,
 )
 
 
@@ -158,6 +171,101 @@ def _check_causal_coverage(emitted: dict[str, set[str]]) -> list[str]:
     return errors
 
 
+def _cpp_key(name: str) -> str:
+    """C++ 发射器里 JSON 键的写法（源码层带转义反斜杠）。
+
+    源码文本是 ``\\"name\\"``（反斜杠 + 引号），看源码而不是编译产物是为了
+    让这条检查在 CI 与本地都不需要先构建。
+    """
+
+    return chr(92) + chr(34) + name + chr(92) + chr(34)
+
+
+def _check_wireless_uplink_contract(cpp_src: str) -> list[str]:
+    """C++ 无线事实发射器 vs 云端 pydantic 契约。
+
+    只做**字段名级别的双向核对**（不比较值域）：两侧允许用不同表示
+    （板端枚举 toString 与云端 StrEnum 取值相同，各由自己的单测守护）。
+    这里要防的是加/改字段只改了一侧——那种漂移在端到端跑板子前完全不可见。
+    """
+
+    errors: list[str] = []
+
+    if WIRELESS_EVENT_UPLINK_SCHEMA_VERSION not in cpp_src:
+        errors.append(
+            "wireless uplink: C++ emitter does not carry the cloud schema "
+            f"version {WIRELESS_EVENT_UPLINK_SCHEMA_VERSION!r}"
+        )
+
+    for group in ("events", "incidents", "baselines", "env_window"):
+        if _cpp_key(group) not in cpp_src:
+            errors.append(f"wireless uplink: C++ emitter is missing the '{group}' group")
+
+    # 信封 + 三组事实的全部字段名（云端契约为准，人工维护此清单；
+    # 集合漂移会被下面第 4 步的契约一致性断言兜住）。
+    expected_fields = (
+        "schema_version",
+        "device_id",
+        "watermark_ms",
+        # event
+        "event_id",
+        "ts_ms",
+        "site_id",
+        "gateway_id",
+        "protocol",
+        "device_address",
+        "address_type",
+        "hci_index",
+        "event_type",
+        "rssi_at_event_dbm",
+        "raw_reason_code",
+        "reason",
+        "source",
+        "source_detail",
+        "details_json",
+        # incident
+        "incident_id",
+        "started_at_ms",
+        "last_event_ms",
+        "resolved_at_ms",
+        "affected_devices",
+        "state",
+        "suspected_cause",
+        "evidence_event_ids",
+        # baseline
+        "baseline_rssi_dbm",
+        "min_seen_rssi_dbm",
+        "max_seen_rssi_dbm",
+        "baseline_sample_count",
+    )
+    missing = [name for name in expected_fields if _cpp_key(name) not in cpp_src]
+    if missing:
+        errors.append(
+            "wireless uplink: C++ emitter is missing contract fields: " f"{sorted(missing)}"
+        )
+
+    # 反向守护：清单里的字段必须真的存在于云端契约（防止清单自己烂掉后
+    # 依然"全绿"）。
+    events_model = WirelessEventUplinkBatch.model_fields["events"].annotation.__args__[0]
+    event_fields = set(events_model.model_fields)
+    incident_fields = set(
+        WirelessEventUplinkBatch.model_fields["incidents"].annotation.__args__[0].model_fields
+    )
+    baseline_fields = set(
+        WirelessEventUplinkBatch.model_fields["baselines"].annotation.__args__[0].model_fields
+    )
+    envelope_fields = set(WirelessEventUplinkBatch.model_fields)
+    known = event_fields | incident_fields | baseline_fields | envelope_fields
+    unknown = [name for name in expected_fields if name not in known]
+    if unknown:
+        errors.append(
+            "wireless uplink: verifier's field list no longer matches the cloud "
+            f"contract (typo or removed field): {sorted(unknown)}"
+        )
+
+    return errors
+
+
 def _selftest() -> int:
     """Verify the verifier fails when the C++ emitter drifts."""
     fixture = {
@@ -217,6 +325,16 @@ def main(argv: list[str] | None = None) -> int:
 
     failures: list[str] = []
     failures.extend(_check_key_whitelists(emitted))
+    if WIRELESS_UPLINK_CPP_PATH.exists():
+        failures.extend(
+            _check_wireless_uplink_contract(
+                WIRELESS_UPLINK_CPP_PATH.read_text(encoding="utf-8")
+            )
+        )
+    else:
+        failures.append(
+            f"wireless uplink: missing C++ emitter at {WIRELESS_UPLINK_CPP_PATH}"
+        )
     sample = _build_sample_snapshot(emitted["network_health"], emitted["service_health"])
     failures.extend(_check_deserialization(sample))
     failures.extend(_check_causal_coverage(emitted))
