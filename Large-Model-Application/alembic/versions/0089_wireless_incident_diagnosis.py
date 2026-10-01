@@ -43,7 +43,16 @@ def upgrade() -> None:
         sa.Column("recommendations", sa.JSON(), nullable=False, server_default="[]"),
         sa.Column("guardrail_status", sa.String(32), nullable=False, server_default="PASSED"),
         sa.Column("guardrail_findings", sa.JSON(), nullable=False, server_default="[]"),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        # ``TimestampMixin`` (via TenantScopedMixin) declares BOTH created_at and
+        # updated_at; a table carrying only one of them makes every ORM SELECT
+        # fail on PostgreSQL with UndefinedColumn. The hermetic SQLite tests
+        # never catch this because they build the schema from the models.
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.UniqueConstraint(
             "tenant_id",
             "incident_id",
