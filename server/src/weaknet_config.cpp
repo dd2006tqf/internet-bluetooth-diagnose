@@ -419,6 +419,7 @@ bool applyEdgeField(WeakNetConfig* cfg, const std::string& field,
     if (field == "url") { cfg->edge.url.set(trim(val)); return true; }
     if (field == "tenant") { cfg->edge.tenant.set(trim(val)); return true; }
     if (field == "device_id") { cfg->edge.device_id.set(trim(val)); return true; }
+    if (field == "site_id") { cfg->edge.site_id.set(trim(val)); return true; }
     if (field == "token") { cfg->edge.token.set(trim(val)); return true; }
     if (field == "private_key_path") { cfg->edge.private_key_path.set(trim(val)); return true; }
     if (field == "key_id") { cfg->edge.key_id.set(trim(val)); return true; }
@@ -1243,6 +1244,8 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeString("url", cfg.edge.url.get());
         writeString("tenant", cfg.edge.tenant.get());
         writeString("device_id", cfg.edge.device_id.get());
+        // site_id 空表示"回落 device_id"（单网关部署的常态），如实回显空串
+        writeString("site_id", cfg.edge.site_id.get());
         writeString("key_id", cfg.edge.key_id.get());
         // 刻意**不**回显 token 与私钥路径：
         //   - token 是凭据，序列化出去就等于把它散播到日志/前端；

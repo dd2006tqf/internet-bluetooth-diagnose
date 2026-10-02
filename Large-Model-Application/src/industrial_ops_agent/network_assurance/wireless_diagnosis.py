@@ -410,25 +410,43 @@ class WirelessDiagnosisService:
             evidence_event_ids=list(row.evidence_event_ids_json or []),
         )
 
+        # 窗口事件按 **site 内、时间窗内** 取，而不是全租户按时间取。
+        #
+        # 全租户取在多网关/多现场部署下会把无关现场的事件拉进本事故的
+        # window_events —— 规则引擎据此判 has_prior_degraded 与多设备协同时，
+        # 结论会被别的现场污染。site 过滤让窗口恰好是"这一片区域当时发生了什么"。
+        #
+        # 注意这里**不**按 gateway 过滤：同一 site 下其它网关的观测属于
+        # 同一片区域，正是多网关场景下需要被看见的（M2）。qualifying_events
+        # 仍严格由本事故的证据回链决定，不受此影响。
+        window_filters = [
+            NetworkWirelessEventRecord.tenant_id == context.tenant_id,
+            NetworkWirelessEventRecord.ts_ms >= row.started_at_ms,
+            NetworkWirelessEventRecord.ts_ms <= row.last_event_ms,
+        ]
+        if row.site_id:
+            window_filters.append(NetworkWirelessEventRecord.site_id == row.site_id)
+
         window_rows = session.scalars(
             select(NetworkWirelessEventRecord)
-            .where(
-                NetworkWirelessEventRecord.tenant_id == context.tenant_id,
-                NetworkWirelessEventRecord.ts_ms >= row.started_at_ms,
-                NetworkWirelessEventRecord.ts_ms <= row.last_event_ms,
-            )
+            .where(*window_filters)
             .order_by(NetworkWirelessEventRecord.ts_ms.asc())
         ).all()
         window_events = [self._event_view(item) for item in window_rows]
 
         linked = set(incident.evidence_event_ids)
         if linked:
+            # qualifying 只认回链里的事件——**绝不**因为窗口里出现了别的
+            # 网关的同类事件就把它们算作本事故的证据（那会让"哪几条事件
+            # 支撑这起事故"失真）。
             qualifying = [ev for ev in window_events if ev.event_id in linked]
         else:
             # 回链缺失时的确定性回退：只看断连类事件，且缩到已结算窗口
             qualifying = [ev for ev in window_events if ev.event_type == "LINK_DISCONNECTED"]
 
         addresses = {ev.device_address for ev in qualifying}
+        # 基线按 (gateway_id, device_address) 双键索引：多网关下同一 MAC
+        # 会在每台网关各有一条基线，单键字典会互相覆盖，只剩最后一条。
         baseline_rows = (
             session.scalars(
                 select(NetworkDeviceBaselineRecord).where(
@@ -439,17 +457,22 @@ class WirelessDiagnosisService:
             if addresses
             else []
         )
-        baselines = {
-            item.device_address: BaselineView(
-                device_address=item.device_address,
-                baseline_rssi_dbm=item.baseline_rssi_dbm,
-                min_seen_rssi_dbm=item.min_seen_rssi_dbm,
-                max_seen_rssi_dbm=item.max_seen_rssi_dbm,
-                baseline_sample_count=item.baseline_sample_count,
-                state=item.state,
-            )
-            for item in baseline_rows
-        }
+        baselines: dict[str, BaselineView] = {}
+        for item in baseline_rows:
+            # 主键保持 device_address（规则引擎按事件设备地址取用）；
+            # 同址多网关时优先取本事故所属网关的那一条，避免覆盖成别人的画像。
+            if (
+                item.device_address not in baselines
+                or item.gateway_id == row.gateway_id
+            ):
+                baselines[item.device_address] = BaselineView(
+                    device_address=item.device_address,
+                    baseline_rssi_dbm=item.baseline_rssi_dbm,
+                    min_seen_rssi_dbm=item.min_seen_rssi_dbm,
+                    max_seen_rssi_dbm=item.max_seen_rssi_dbm,
+                    baseline_sample_count=item.baseline_sample_count,
+                    state=item.state,
+                )
 
         env_row = session.scalars(
             select(NetworkEnvWindowRecord)

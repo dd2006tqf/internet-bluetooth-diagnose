@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -366,3 +366,71 @@ def test_archival_failure_never_breaks_ingest(test_db: Database, tenant_context:
     )
     result = service.ingest_wireless_batch(tenant_context, resolved, key_id=KEY_ID)
     assert result.accepted.incidents == 1  # 事实照常入库
+
+
+def test_two_gateways_on_one_site_coexist(test_db: Database, tenant_context: TenantContext):
+    """多网关共存：同 site 的两台网关各自的事故/事件落成独立行（schema 天然支持）。"""
+
+    gw1 = WirelessEventView(
+        event_id="gw1-e1",
+        ts_ms=1_700_000_001_000,
+        site_id="shop-floor-A",
+        gateway_id="gw-1",
+        protocol="BLUETOOTH",
+        device_address="AA:01",
+        address_type="LE_RANDOM",
+        hci_index=0,
+        event_type="LINK_DISCONNECTED",
+        reason="CONNECTION_TIMEOUT",
+        source="KERNEL_MGMT",
+    )
+    gw2 = gw1.model_copy(update={"event_id": "gw2-e1", "gateway_id": "gw-2"})
+
+    service = NetworkAssuranceService(database=test_db)
+    service.ingest_wireless_batch(
+        tenant_context,
+        WirelessEventUplinkBatch.model_validate(
+            {
+                "device_id": DEVICE,
+                "watermark_ms": 1_700_000_001_500,
+                "events": [gw1.model_dump(), gw2.model_dump()],
+                "incidents": [
+                    {
+                        "incident_id": "sitinc_shop-floor-A_gw-1_1700000001000",
+                        "site_id": "shop-floor-A",
+                        "gateway_id": "gw-1",
+                        "started_at_ms": 1_700_000_001_000,
+                        "last_event_ms": 1_700_000_001_500,
+                        "affected_devices": 2,
+                        "state": "OPEN",
+                        "evidence_event_ids": ["gw1-e1"],
+                    },
+                    {
+                        "incident_id": "sitinc_shop-floor-A_gw-2_1700000001000",
+                        "site_id": "shop-floor-A",
+                        "gateway_id": "gw-2",
+                        "started_at_ms": 1_700_000_001_000,
+                        "last_event_ms": 1_700_000_001_500,
+                        "affected_devices": 2,
+                        "state": "OPEN",
+                        "evidence_event_ids": ["gw2-e1"],
+                    },
+                ],
+            }
+        ),
+        key_id=KEY_ID,
+    )
+
+    with Session(test_db.engine) as session:  # type: ignore[attr-defined]
+        incidents = list(session.scalars(select(NetworkSiteIncidentRecord)).all())
+        events = list(session.scalars(select(NetworkWirelessEventRecord)).all())
+
+    # 同一 site 下两台网关：两行事故、两条事件，互不覆盖
+    assert len(incidents) == 2
+    assert {i.incident_id for i in incidents} == {
+        "sitinc_shop-floor-A_gw-1_1700000001000",
+        "sitinc_shop-floor-A_gw-2_1700000001000",
+    }
+    assert {i.site_id for i in incidents} == {"shop-floor-A"}
+    assert {i.gateway_id for i in incidents} == {"gw-1", "gw-2"}
+    assert len(events) == 2

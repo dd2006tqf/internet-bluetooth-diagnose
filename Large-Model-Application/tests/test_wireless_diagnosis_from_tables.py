@@ -196,3 +196,50 @@ def test_missing_links_fall_back_to_window_of_disconnects(
 
     result = WirelessDiagnosisService(test_db).get_diagnosis(tenant_context, INCIDENT)
     assert set(result.canonical.evidence_ids) == {"e1", "e2"}
+
+
+def test_qualifying_events_stay_pure_when_other_gateway_events_are_in_window(
+    test_db: Database, tenant_context: TenantContext
+):
+    """多网关窗口并入时，qualifying 仍只认本事故的证据回链。
+
+    同一 site 的另一台网关在同一时间窗内也上报了事件——它应该出现在
+    window_events（规则引擎需要看见"这片区域当时还有什么"），但**绝不能**
+    进入 qualifying_events，否则"哪几条事件支撑这起事故"就失真了。
+    """
+
+    batch = WirelessEventUplinkBatch.model_validate(
+        {
+            "device_id": DEVICE,
+            "watermark_ms": 1_700_000_001_500,
+            "events": [
+                _event("e1", "AA:01", 1_700_000_001_000).model_dump(),
+                _event("e2", "AA:02", 1_700_000_001_500).model_dump(),
+                # 另一台网关对同一现场的观测（同 site、同窗口、不同 gateway）
+                _event("other-gw-e1", "AA:09", 1_700_000_001_200)
+                .model_copy(update={"gateway_id": "gw-2"})
+                .model_dump(),
+            ],
+            "incidents": [
+                {
+                    "incident_id": INCIDENT,
+                    "site_id": "site-1",
+                    "gateway_id": "gw-1",
+                    "started_at_ms": 1_700_000_001_000,
+                    "last_event_ms": 1_700_000_001_500,
+                    "affected_devices": 2,
+                    "state": "OPEN",
+                    # 只回链本网关的两条事件
+                    "evidence_event_ids": ["e1", "e2"],
+                }
+            ],
+        }
+    )
+    service = NetworkAssuranceService(database=test_db)
+    service.ingest_wireless_batch(tenant_context, batch, key_id=KEY_ID)
+
+    diagnosis = WirelessDiagnosisService(test_db)
+    result = diagnosis.get_diagnosis(tenant_context, INCIDENT)
+
+    # qualifying 纯净：只有回链里的两条
+    assert set(result.canonical.evidence_ids) == {"e1", "e2"}

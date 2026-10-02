@@ -257,6 +257,12 @@ struct WeakNetConfig {
         ConfigString tenant{""};
         // 设备唯一标识（同时是服务端资产主键），字符集 [A-Za-z0-9._-]
         ConfigString device_id{""};
+        // 现场标识（site_id）：多网关部署时**同一现场的多台网关共享此值**，
+        // 云端据此把多探针观测聚合成一个现场视图。
+        //
+        // 留空则回落 device_id —— 即 Phase 1/3a 的 "1 Gateway = 1 Site"
+        // 行为完全不变，单网关部署无需配置此项。
+        ConfigString site_id{""};
         // 设备预共享令牌，作为 X-Edge-Token 头（非机密中的机密，仍是凭据）
         ConfigString token{""};
         // Ed25519 私钥 PEM 路径；与 token 一起决定上报身份

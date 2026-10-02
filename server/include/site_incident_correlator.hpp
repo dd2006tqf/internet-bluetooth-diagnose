@@ -196,8 +196,10 @@ private:
     /// tick 的无锁实现
     std::vector<SiteIncident> tickLocked(uint64_t now_ms);
 
-    /// 生成 incident_id：<prefix>_<site>_<started_at_ms>（确定性，回放幂等）
-    std::string makeIncidentId(const std::string& site_id, uint64_t started_at_ms) const;
+    /// 生成 incident_id：<prefix>_<site>_<gateway>_<started_at_ms>
+    /// 确定性（回放幂等），且带 gateway 段避免多网关同 site 同毫秒碰撞。
+    std::string makeIncidentId(const std::string& site_id, const std::string& gateway_id,
+                               uint64_t started_at_ms) const;
 
     /// 动态分母：活跃设备记忆中仍然新鲜的设备数
     size_t activeDeviceCount(uint64_t now_ms) const;

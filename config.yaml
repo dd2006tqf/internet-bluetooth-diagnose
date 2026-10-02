@@ -122,6 +122,9 @@ edge:
   url: "http://127.0.0.1:8000/api/v1/network/edge/telemetry"
   tenant: "tenant-m1-demo"
   device_id: "radxa-cubie-a7a"
+  # 现场标识（多网关部署时同一现场的多台网关填同一个值）。
+  # 留空 = 回落 device_id，即单网关 "1 Gateway = 1 Site" 行为不变。
+  site_id: ""
   token: "dev-edge-token-20260915"
   key_id: "weaknet-edge-telemetry-v1"
   private_key_path: "/home/radxa/weaknet/config/edge_priv.pem"

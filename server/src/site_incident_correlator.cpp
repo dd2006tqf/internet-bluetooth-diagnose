@@ -102,18 +102,29 @@ std::string SiteIncidentCorrelator::deviceKeyOf(const WirelessDeviceEvent& event
 }
 
 std::string SiteIncidentCorrelator::makeIncidentId(const std::string& site_id,
+                                                   const std::string& gateway_id,
                                                    uint64_t started_at_ms) const {
-    // incident_id 是**确定性**的：只由 (site_id, started_at_ms) 决定，
+    // incident_id 是**确定性**的：只由 (site_id, gateway_id, started_at_ms) 决定，
     // 刻意**不带**进程实例随机码（对比 device_events.event_id 的做法）。
     //
     // 原因：重启回放会重新推导出同一份 incident，必须写回同一行（UPSERT）
     // 而不是插入新行——否则"重启一次多一起事故"。确定性 ID 让回放天然幂等。
     //
-    // 同一 site 内 started_at_ms 不会重复：新 incident 只能由一条新的合格异常
-    // 开启（窗口缓冲在产出时清空），其时间戳严格晚于上一起的
+    // **为什么必须带 gateway_id**：多网关部署下同一个 site 会有多台探针，
+    // 它们完全可能在相近毫秒各自开一起事故（例如同一次区域干扰被两台网关
+    // 同时观测到）。若 ID 只含 (site, started_at_ms)，两台网关推导出的
+    // incident_id 相同，云端 UPSERT 会把两起独立事故合并成一行，证据链互相
+    // 污染。带上 gateway 后，同一网关切重启依旧幂等，不同网关互不覆盖。
+    //
+    // 单网关（1 Gateway = 1 Site，site_id == gateway_id）时行为不变：
+    // 只是 ID 里多了一段与 site 相同的文本，幂等语义完全保持。
+    //
+    // 同一 (site, gateway) 内 started_at_ms 不会重复：新 incident 只能由一条
+    // 新的合格异常开启（窗口缓冲在产出时清空），其时间戳严格晚于上一起的
     // last_event_ms + quiet_window_ms >= 上一轮的 started_at_ms。
     std::ostringstream oss;
     oss << cfg_.incident_id_prefix << "_" << sanitizeIdPart(site_id)
+        << "_" << sanitizeIdPart(gateway_id)
         << "_" << started_at_ms;
     return oss.str();
 }
@@ -267,12 +278,15 @@ bool SiteIncidentCorrelator::tryOpenLocked(const WirelessDeviceEvent& event,
     if (ratio < cfg_.min_affected_ratio) return false;
 
     const std::string site_id = event.site_id.empty() ? cfg_.site_id : event.site_id;
+    // gateway_id 由 WirelessEventStore 在落库前补齐（store_cfg.gateway_id），
+    // 因此事件到达关联器时必然非空；这里只做空值兜底以防直接构造的测试事件。
+    const std::string gateway_id = event.gateway_id.empty() ? cfg_.site_id : event.gateway_id;
 
     ActiveIncident active;
     SiteIncident& inc = active.incident;
-    inc.incident_id = makeIncidentId(site_id, earliest_ms);
+    inc.incident_id = makeIncidentId(site_id, gateway_id, earliest_ms);
     inc.site_id = site_id;
-    inc.gateway_id = event.gateway_id;
+    inc.gateway_id = gateway_id;
     // started_at_ms 取窗口内最早（现实事故从最早那条异常就开始），
     // last_event_ms 取窗口内最新——事件流是乱序的（normalizer 合并窗口、
     // ringbuf 消费批次都会让早时间戳晚到），两条都必须按窗口极值算，

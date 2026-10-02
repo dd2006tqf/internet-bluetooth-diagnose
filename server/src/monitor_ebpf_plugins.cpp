@@ -387,7 +387,10 @@ public:
 
         // 事件来源身份：gateway_id 对齐 edge.device_id（云端资产主键），
         // 为空时回落到 hostname，保证每条事件都能回答"是哪台探针看到的"。
-        // Phase 1 运行模型是 1 Gateway = 1 Site，因此 site 直接取 gateway。
+        //
+        // site_id 来自 edge.site_id 配置：多网关部署时同一现场的多台网关共享
+        // 此值，云端据此聚合现场视图。留空则回落 gateway_id —— 即
+        // "1 Gateway = 1 Site" 的历史行为完全不变。
         WirelessEventStoreConfig store_cfg;
         store_cfg.gateway_id = ctx->cfg.edge.device_id.get();
         if (store_cfg.gateway_id.empty()) {
@@ -396,7 +399,8 @@ public:
                 store_cfg.gateway_id = hostname;
             }
         }
-        store_cfg.site_id = store_cfg.gateway_id;
+        const std::string configured_site = ctx->cfg.edge.site_id.get();
+        store_cfg.site_id = configured_site.empty() ? store_cfg.gateway_id : configured_site;
 
         store_ = std::make_unique<WirelessEventStore>(ctx->db_mgr.get(), std::move(store_cfg));
         ctx->wireless_event_store = store_.get();

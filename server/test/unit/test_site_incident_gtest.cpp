@@ -379,8 +379,10 @@ TEST_F(SiteIncidentPersistenceTest, ReplayRestoresActiveIncidentWithoutDuplicati
 
     const auto recovered = after.activeIncidents();
     ASSERT_EQ(recovered.size(), 1u);
-    // 确定性 ID：回放推导出的 incident_id 与重启前完全一致（否则 UPSERT 会插新行）
-    EXPECT_EQ(recovered[0].incident_id, "sitinc_site_test_" + std::to_string(window_start));
+    // 确定性 ID：回放推导出的 incident_id 与重启前完全一致（否则 UPSERT 会插新行）。
+    // 格式含 gateway 段 —— 多网关同 site 同毫秒时必须互不碰撞（见下一条测试）。
+    EXPECT_EQ(recovered[0].incident_id,
+              "sitinc_site_test_gw_test_" + std::to_string(window_start));
     EXPECT_EQ(recovered[0].affected_devices, 2u);
 
     // 库里仍然只有一行
@@ -578,4 +580,77 @@ TEST_F(SiteIncidentPersistenceTest, CleanupKeepsRecentIncidentsAndTheirBacklinks
     EXPECT_EQ(countIncidentLinks(dbPath_), 2u);
     // 设备清单仍能回链出来
     EXPECT_NE(json.find("AA:BB:CC:DD:EE:01"), std::string::npos);
+}
+
+// ============================================================================
+// 多网关身份解耦（M1）：同 site 不同 gateway 不得互相覆盖
+// ============================================================================
+
+TEST_F(SiteIncidentPersistenceTest, TwoGatewaysOnOneSiteProduceDistinctIncidentIds) {
+    // 多网关部署下，同一现场的两台探针完全可能在相近毫秒各自开一起事故
+    // （同一次区域干扰被两台网关同时观测到）。若 incident_id 只由
+    // (site_id, started_at_ms) 决定，两者会推导出同一个 ID，云端 UPSERT
+    // 会把两起独立事故合并成一行，证据链互相污染。
+    const uint64_t same_ms = 5000 * kSecond;
+    SiteIncidentConfig cfg;
+    cfg.site_id = "shop-floor-A";  // 同一现场
+
+    SiteIncidentCorrelator gw1(db_.get(), cfg);
+    SiteIncidentCorrelator gw2(db_.get(), cfg);
+
+    auto ev_gw1a = disconnectEvent("AA:BB:CC:DD:EE:01", same_ms, "gw1-e1");
+    ev_gw1a.gateway_id = "gw-1";
+    auto ev_gw1b = disconnectEvent("AA:BB:CC:DD:EE:02", same_ms, "gw1-e2");
+    ev_gw1b.gateway_id = "gw-1";
+
+    auto ev_gw2a = disconnectEvent("AA:BB:CC:DD:EE:03", same_ms, "gw2-e1");
+    ev_gw2a.gateway_id = "gw-2";
+    auto ev_gw2b = disconnectEvent("AA:BB:CC:DD:EE:04", same_ms, "gw2-e2");
+    ev_gw2b.gateway_id = "gw-2";
+
+    gw1.observe(ev_gw1a);
+    gw1.observe(ev_gw1b);
+    gw2.observe(ev_gw2a);
+    gw2.observe(ev_gw2b);
+
+    const auto inc1 = gw1.activeIncidents();
+    const auto inc2 = gw2.activeIncidents();
+    ASSERT_EQ(inc1.size(), 1u);
+    ASSERT_EQ(inc2.size(), 1u);
+
+    // 同一 site、同一毫秒，但 gateway 不同 → ID 必须不同
+    EXPECT_NE(inc1[0].incident_id, inc2[0].incident_id);
+    EXPECT_EQ(inc1[0].site_id, inc2[0].site_id);
+    EXPECT_NE(inc1[0].gateway_id, inc2[0].gateway_id);
+
+    // 库里是两行，不是被合并成一行
+    const std::string json = db_->querySiteIncidents("", 0, 0, 100, true);
+    EXPECT_EQ(countOccurrences(json, "\"incident_id\":\""), 2u);
+    EXPECT_NE(json.find("gw-1"), std::string::npos);
+    EXPECT_NE(json.find("gw-2"), std::string::npos);
+}
+
+TEST_F(SiteIncidentPersistenceTest, SameGatewayReplayStillDeduplicates) {
+    // 反向保证：加了 gateway 段之后，**同一台网关**的重启回放仍然幂等
+    // （否则一次重启就会多一起事故，这正是原设计要防的）。
+    const uint64_t window_start = 7000 * kSecond;
+    auto ev1 = disconnectEvent("AA:BB:CC:DD:EE:01", window_start, "r-e1");
+    auto ev2 = disconnectEvent("AA:BB:CC:DD:EE:02", window_start + kSecond, "r-e2");
+    persistEvent(ev1);
+    persistEvent(ev2);
+
+    SiteIncidentConfig cfg;
+    cfg.site_id = "site-test";
+    {
+        SiteIncidentCorrelator before(db_.get(), cfg);
+        before.observe(ev1);
+        ASSERT_TRUE(before.observe(ev2).has_value());
+    }
+    {
+        SiteIncidentCorrelator after(db_.get(), cfg);
+        after.recoverFromStore(window_start + 2 * kSecond);
+    }
+
+    const std::string json = db_->querySiteIncidents("", 0, 0, 100, true);
+    EXPECT_EQ(countOccurrences(json, "\"incident_id\":\""), 1u);
 }
