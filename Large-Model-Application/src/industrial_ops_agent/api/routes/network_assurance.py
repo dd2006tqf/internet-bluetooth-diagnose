@@ -697,3 +697,135 @@ async def post_wireless_incident_diagnosis(
             details={"incident_id": incident_id},
         ) from exc
     return res.model_dump()
+
+
+# ============================================================================
+# Phase 4b & 前端可视化：指定网关下的无线区域事故与外围设备列表
+# ============================================================================
+
+
+class SiteIncidentItem(BaseModel):
+    incident_id: str
+    asset_id: str
+    site_id: str
+    gateway_id: str
+    started_at_ms: int
+    last_event_ms: int
+    resolved_at_ms: int | None
+    affected_devices: int
+    state: str
+    suspected_cause: str | None
+    evidence_event_ids: list[str] = Field(default_factory=list)
+
+
+class WirelessDeviceBaselineItem(BaseModel):
+    baseline_id: str
+    asset_id: str
+    site_id: str
+    gateway_id: str
+    device_address: str
+    address_type: str
+    protocol: str
+    baseline_rssi_dbm: int | None
+    min_seen_rssi_dbm: int | None
+    max_seen_rssi_dbm: int | None
+    baseline_sample_count: int
+    state: str
+    first_seen_ms: int | None
+    last_seen_ms: int | None
+
+
+@router.get(
+    "/assets/{asset_id}/incidents",
+    response_model=list[SiteIncidentItem],
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="List wireless site incidents recorded by this gateway asset",
+)
+async def list_asset_site_incidents(
+    request: Request,
+    asset_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+) -> list[SiteIncidentItem]:
+    _require_read_scope(request, identity, authorizer, asset_id)
+    from sqlalchemy import select
+    from industrial_ops_agent.persistence.models import NetworkSiteIncidentRecord
+
+    with service._database.transaction(identity.tenant_context) as session:
+        stmt = (
+            select(NetworkSiteIncidentRecord)
+            .where(
+                NetworkSiteIncidentRecord.tenant_id == identity.tenant_id,
+                NetworkSiteIncidentRecord.asset_id == asset_id,
+            )
+            .order_by(NetworkSiteIncidentRecord.started_at_ms.desc())
+            .limit(100)
+        )
+        records = session.scalars(stmt).all()
+        return [
+            SiteIncidentItem(
+                incident_id=r.incident_id,
+                asset_id=r.asset_id,
+                site_id=r.site_id,
+                gateway_id=r.gateway_id,
+                started_at_ms=r.started_at_ms,
+                last_event_ms=r.last_event_ms,
+                resolved_at_ms=r.resolved_at_ms,
+                affected_devices=r.affected_devices,
+                state=r.state,
+                suspected_cause=r.suspected_cause,
+                evidence_event_ids=list(r.evidence_event_ids_json or []),
+            )
+            for r in records
+        ]
+
+
+@router.get(
+    "/assets/{asset_id}/wireless-devices",
+    response_model=list[WirelessDeviceBaselineItem],
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="List peripheral wireless devices observed by this gateway asset",
+)
+async def list_asset_wireless_devices(
+    request: Request,
+    asset_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+) -> list[WirelessDeviceBaselineItem]:
+    _require_read_scope(request, identity, authorizer, asset_id)
+    from sqlalchemy import select
+    from industrial_ops_agent.persistence.models import NetworkDeviceBaselineRecord
+
+    with service._database.transaction(identity.tenant_context) as session:
+        stmt = (
+            select(NetworkDeviceBaselineRecord)
+            .where(
+                NetworkDeviceBaselineRecord.tenant_id == identity.tenant_id,
+                NetworkDeviceBaselineRecord.asset_id == asset_id,
+            )
+            .order_by(NetworkDeviceBaselineRecord.last_seen_ms.desc().nullslast())
+            .limit(200)
+        )
+        records = session.scalars(stmt).all()
+        return [
+            WirelessDeviceBaselineItem(
+                baseline_id=r.baseline_id,
+                asset_id=r.asset_id,
+                site_id=r.site_id,
+                gateway_id=r.gateway_id,
+                device_address=r.device_address,
+                address_type=r.address_type,
+                protocol=r.protocol,
+                baseline_rssi_dbm=r.baseline_rssi_dbm,
+                min_seen_rssi_dbm=r.min_seen_rssi_dbm,
+                max_seen_rssi_dbm=r.max_seen_rssi_dbm,
+                baseline_sample_count=r.baseline_sample_count,
+                state=r.state,
+                first_seen_ms=r.first_seen_ms,
+                last_seen_ms=r.last_seen_ms,
+            )
+            for r in records
+        ]
+

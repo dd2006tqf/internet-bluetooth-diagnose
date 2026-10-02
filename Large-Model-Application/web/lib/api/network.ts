@@ -66,6 +66,80 @@ type CopilotAnswer = {
   model_used: boolean;
 };
 
+// ---------------------------------------------------------------------------
+// Phase 4b & 无线可视化类型定义
+// ---------------------------------------------------------------------------
+
+type SiteIncidentItem = {
+  incident_id: string;
+  asset_id: string;
+  site_id: string;
+  gateway_id: string;
+  started_at_ms: number;
+  last_event_ms: number;
+  resolved_at_ms: number | null;
+  affected_devices: number;
+  state: "OPEN" | "ONGOING" | "RESOLVED";
+  suspected_cause: string | null;
+  evidence_event_ids: string[];
+};
+
+type WirelessDeviceBaselineItem = {
+  baseline_id: string;
+  asset_id: string;
+  site_id: string;
+  gateway_id: string;
+  device_address: string;
+  address_type: string;
+  protocol: string;
+  baseline_rssi_dbm: number | null;
+  min_seen_rssi_dbm: number | null;
+  max_seen_rssi_dbm: number | null;
+  baseline_sample_count: number;
+  state: "LEARNING" | "STABLE" | "DEGRADED";
+  first_seen_ms: number | null;
+  last_seen_ms: number | null;
+};
+
+type CanonicalDiagnosis = {
+  observed_pattern: string;
+  hypothesis: string;
+  confidence: "HIGH" | "MEDIUM" | "LOW" | "INSUFFICIENT";
+  evidence_ids: string[];
+  deterministic_reasons: string[];
+  device_findings: Array<{
+    device_address: string;
+    observed_pattern: string;
+    hypothesis: string;
+    confidence: string;
+    note: string;
+  }>;
+};
+
+type DiagnosisPresentation = {
+  llm_model_name: string | null;
+  llm_used: boolean;
+  diagnosis_report: string;
+  structured_findings: Array<{ text: string; evidence_ids: string[] }>;
+  evidence_citations: Array<{ step: string; claim: string; evidence_refs: string[] }>;
+  recommendations: string[];
+};
+
+type WirelessDiagnosisResponse = {
+  diagnosis_id: string;
+  incident_id: string;
+  diagnosis_version: string;
+  rules_version: string;
+  prompt_version: string;
+  guardrail_version: string;
+  created_at: string;
+  canonical: CanonicalDiagnosis;
+  presentation: DiagnosisPresentation;
+  guardrail_status: string;
+  guardrail_findings: Array<Record<string, unknown>>;
+};
+
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`, {
     ...init,
@@ -152,6 +226,40 @@ export const apiClient = {
       body: JSON.stringify(payload),
     });
   },
+
+  // ---- Phase 4b & 无线可视化 API ----
+  listAssetIncidents(assetId: string): Promise<SiteIncidentItem[]> {
+    return request<SiteIncidentItem[]>(
+      `/api/v1/network/assets/${encodeURIComponent(assetId)}/incidents`,
+    );
+  },
+  listAssetWirelessDevices(assetId: string): Promise<WirelessDeviceBaselineItem[]> {
+    return request<WirelessDeviceBaselineItem[]>(
+      `/api/v1/network/assets/${encodeURIComponent(assetId)}/wireless-devices`,
+    );
+  },
+  getIncidentDiagnosis(incidentId: string): Promise<WirelessDiagnosisResponse> {
+    return request<WirelessDiagnosisResponse>(
+      `/api/v1/network/assurance/incidents/${encodeURIComponent(incidentId)}/diagnosis`,
+    );
+  },
+  triggerDeepDiagnosis(incidentId: string, force = false): Promise<WirelessDiagnosisResponse> {
+    return request<WirelessDiagnosisResponse>(
+      `/api/v1/network/assurance/incidents/${encodeURIComponent(incidentId)}/diagnosis?force=${force}`,
+      { method: "POST" },
+    );
+  },
 };
 
-export type { NetworkAssetSummary, NetworkAssetDetail, TimelinePoint, CopilotAnswer };
+export type {
+  NetworkAssetSummary,
+  NetworkAssetDetail,
+  TimelinePoint,
+  CopilotAnswer,
+  SiteIncidentItem,
+  WirelessDeviceBaselineItem,
+  CanonicalDiagnosis,
+  DiagnosisPresentation,
+  WirelessDiagnosisResponse,
+};
+
