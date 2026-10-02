@@ -128,6 +128,12 @@ def _build_sample_snapshot(network_keys: set[str], service_keys: set[str]) -> di
         "warnings": [],
         "primary_issue": None,
         "link_type": "WIFI_2_4G",
+        "mac_address": "AA:BB:CC:DD:EE:01",
+        "ip_address": "192.168.2.100",
+        "gateway_ip": "192.168.2.1",
+        "dns_servers": ["223.5.5.5", "114.114.114.114"],
+        "ap_ssid": "Test-Workshop-WiFi",
+        "ap_bssid": "00:11:22:33:44:55",
     }
 
 

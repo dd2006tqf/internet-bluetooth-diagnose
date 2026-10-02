@@ -701,6 +701,28 @@ int WiFiRssiClient::getFrequency() {
     }
 }
 
+std::string WiFiRssiClient::getAssociatedSsid() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::string status = sendCommand("STATUS\n");
+    const std::string key = "\nssid=";
+    size_t pos = status.find(key);
+    if (pos == std::string::npos) {
+        if (status.rfind("ssid=", 0) == 0) {
+            pos = 0;
+        } else {
+            return "";
+        }
+    } else {
+        pos += 1; // 跳过换行符
+    }
+    const size_t prefix_len = 5; // "ssid="
+    const size_t end = status.find_first_of("\r\n", pos + prefix_len);
+    if (end == std::string::npos) {
+        return status.substr(pos + prefix_len);
+    }
+    return status.substr(pos + prefix_len, end - (pos + prefix_len));
+}
+
 int WiFiRssiClient::getRssi() {
     std::lock_guard<std::mutex> lock(mutex_);
     std::string resp = sendCommand("SIGNAL_POLL\n");

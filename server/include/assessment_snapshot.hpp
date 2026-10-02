@@ -39,11 +39,13 @@
 
 #include "assurance/network_experience.hpp"
 #include "assurance/health_state.hpp"
+#include "topology_collector.hpp"
 #include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
 #include <cstdint>
+#include <optional>
 
 namespace weaknet {
 
@@ -56,6 +58,7 @@ struct AssessmentSnapshot {
     uint32_t config_generation{0};            ///< 配置代（变更即失效）
     uint64_t network_epoch{0};                ///< 网络代（重连/epoch 变化即失效）
     NetworkExperience experience;             ///< stabilizer 后的最终结论 + 全部 SLE + source/scope
+    std::optional<TopologySnapshot> topology;  ///< 快照时刻采集到的底层 L2/L3 拓扑元数据
 };
 
 /**

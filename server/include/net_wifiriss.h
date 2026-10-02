@@ -80,6 +80,9 @@ public:
     /// 读取当前关联 AP 的频率（MHz，如 2462、5180）；失败返回 0。
     int getFrequency();
 
+    /// 读取当前关联 AP 的 SSID；失败或未关联返回空字符串。
+    std::string getAssociatedSsid();
+
     /**
      * @brief 在**单次持锁**内完成 connect + 取 BSSID。
      *

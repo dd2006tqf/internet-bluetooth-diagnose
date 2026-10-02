@@ -123,11 +123,38 @@ TEST(EdgeTelemetrySerializer, OmitsTopologyFieldsNotCollected) {
     const auto snap = makeDegradedSnapshot();
     const std::string json = toEdgeTelemetrySnapshotJson(snap.experience);
 
-    // C++ 侧尚无地址采集实现（NetInfo 不暴露地址信息）。
-    // 契约中这些字段可选；缺失表示"未采集"而不是"不存在"。
+    // 未传递 TopologySnapshot 时，拓扑字段不出现在 JSON 中（对齐云端 None）
     EXPECT_EQ(json.find("\"mac_address\""), std::string::npos);
     EXPECT_EQ(json.find("\"ip_address\""), std::string::npos);
     EXPECT_EQ(json.find("\"gateway_ip\""), std::string::npos);
+    EXPECT_EQ(json.find("\"dns_servers\""), std::string::npos);
+    EXPECT_EQ(json.find("\"ap_ssid\""), std::string::npos);
+    EXPECT_EQ(json.find("\"ap_bssid\""), std::string::npos);
+}
+
+TEST(EdgeTelemetrySerializer, EmitsTopologyFieldsWhenCollected) {
+    const auto snap = makeDegradedSnapshot();
+    weaknet::TopologySnapshot topo;
+    topo.mac_address = "AA:BB:CC:DD:EE:01";
+    topo.ip_address = "192.168.2.100";
+    topo.gateway_ip = "192.168.2.1";
+    topo.dns_servers = {"223.5.5.5", "114.114.114.114"};
+    topo.ap_ssid = "Workshop-AP";
+    topo.ap_bssid = "00:11:22:33:44:55";
+    topo.ap_freq_mhz = 5180;
+    topo.collected = true;
+
+    const std::string json = toEdgeTelemetrySnapshotJson(snap.experience, &topo);
+
+    // 字段出现且内容完整
+    EXPECT_NE(json.find("\"mac_address\":\"AA:BB:CC:DD:EE:01\""), std::string::npos);
+    EXPECT_NE(json.find("\"ip_address\":\"192.168.2.100\""), std::string::npos);
+    EXPECT_NE(json.find("\"gateway_ip\":\"192.168.2.1\""), std::string::npos);
+    EXPECT_NE(json.find("\"dns_servers\":[\"223.5.5.5\",\"114.114.114.114\"]"), std::string::npos);
+    EXPECT_NE(json.find("\"ap_ssid\":\"Workshop-AP\""), std::string::npos);
+    EXPECT_NE(json.find("\"ap_bssid\":\"00:11:22:33:44:55\""), std::string::npos);
+    // 5180 MHz 对应 WIFI_5G
+    EXPECT_NE(json.find("\"link_type\":\"WIFI_5G\""), std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

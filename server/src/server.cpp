@@ -365,6 +365,11 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
         weaknet::StateStabilizer stabilizer;
         weaknet::HealthState lastStableState = weaknet::HealthState::UNKNOWN;
 
+        // 拓扑元数据 30 秒 TTL 缓存：避免每 15 秒评估循环都频繁调用 getifaddrs 和 wpa 命令
+        std::chrono::steady_clock::time_point last_topo_time{};
+        weaknet::TopologySnapshot cached_topo;
+        std::string last_topo_iface;
+
         int loop_count = 0;
         while ((ctx->running.load() && !ctx->quality_stop.load())) {
             loop_count++;
@@ -553,6 +558,16 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     exp.overall, newest_rev, std::chrono::steady_clock::now(), dns_bypass);
                 exp.overall = stableState;
 
+                // 采集或复用底层 L2/L3 拓扑元数据 (MAC, IP, Gateway, DNS, SSID, BSSID)
+                bool is_wireless_iface = (active_iface.rfind("wl", 0) == 0);
+                auto now_mono = std::chrono::steady_clock::now();
+                if (!cached_topo.collected || active_iface != last_topo_iface ||
+                    (now_mono - last_topo_time) > std::chrono::seconds(30)) {
+                    cached_topo = weaknet::TopologyCollector::collect(active_iface, is_wireless_iface);
+                    last_topo_time = now_mono;
+                    last_topo_iface = active_iface;
+                }
+
                 // W2: 发布权威评估快照（单一事实源）。
                 // quality 线程是唯一 evaluator 执行点；HealthCheck /
                 // GetNetworkExperience / history persistence 全部只读本快照。
@@ -565,6 +580,9 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     snap->config_generation = ctx->cfg.config_generation.load();
                     snap->network_epoch = ctx->dns_tracker ? ctx->dns_tracker->currentBindingEpoch() : ctx->dns_binding_epoch.load();
                     snap->experience = exp;
+                    if (cached_topo.collected) {
+                        snap->topology = cached_topo;
+                    }
                     // 以 const 指针发布：读侧拿到后不可修改（不可变快照语义）
                     ctx->assessment_store.publish(std::const_pointer_cast<const weaknet::AssessmentSnapshot>(std::move(snap)));
                 }

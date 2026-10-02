@@ -34,12 +34,18 @@
 #include "assurance/dns_types.hpp"
 #include "assurance/health_state.hpp"
 #include "assurance/network_experience.hpp"
+#include "topology_collector.hpp"
 #include "utils/json_escape.hpp"
 
 namespace weaknet {
 
 /// 链路媒介类型：决定哪些诊断假设成立（有线链路无 RF 退化等）。
-inline const char* edgeLinkTypeToString(const NetworkExperience& exp) {
+inline const char* edgeLinkTypeToString(const NetworkExperience& exp, const TopologySnapshot* topo = nullptr) {
+    if (topo && topo->ap_freq_mhz > 0) {
+        if (topo->ap_freq_mhz >= 2400 && topo->ap_freq_mhz <= 2500) return "WIFI_2_4G";
+        if (topo->ap_freq_mhz >= 5000 && topo->ap_freq_mhz <= 5900) return "WIFI_5G";
+        if (topo->ap_freq_mhz >= 5925 && topo->ap_freq_mhz <= 7125) return "WIFI_6G";
+    }
     // 仅根据已有信息做保守判定：无法确知时返回 UNKNOWN，
     // 绝不用接口名猜频段（那会伪造出一份不存在的观测）。
     if (exp.rf_health.applicability == Applicability::NOT_APPLICABLE) {
@@ -58,9 +64,10 @@ inline const char* edgeLinkTypeToString(const NetworkExperience& exp) {
  *   {"interface":"wlan0","assessment_profile":"INTERNET_ACCESS",
  *    "overall_state":"DEGRADED","overall_coverage":"PARTIAL","display_score":55,
  *    "network_health":{...},"service_health":{...},
- *    "warnings":[...],"primary_issue":"...","link_type":"..."}
+ *    "warnings":[...],"primary_issue":"...","link_type":"...",
+ *    "mac_address":"...","ip_address":"...","gateway_ip":"...","dns_servers":[...]}
  */
-inline std::string toEdgeTelemetrySnapshotJson(const NetworkExperience& exp) {
+inline std::string toEdgeTelemetrySnapshotJson(const NetworkExperience& exp, const TopologySnapshot* topo = nullptr) {
     using weaknet_utils::escapeJsonString;
     std::ostringstream json;
 
@@ -134,11 +141,31 @@ inline std::string toEdgeTelemetrySnapshotJson(const NetworkExperience& exp) {
                  : "null");
     json << ",";
 
-    json << "\"link_type\":\"" << edgeLinkTypeToString(exp) << "\"";
-    // 说明：mac/ip/gateway/dns_servers/ap_* 等拓扑字段当前不在此处填充——
-    // C++ 侧尚无采集实现（NetInfo 不暴露地址信息）。契约中它们均为可选，
-    // 缺失即表示"本端未采集"，而不是"不存在"。补采集时在此追加，
-    // 并在 contracts.py 同步字段。
+    json << "\"link_type\":\"" << edgeLinkTypeToString(exp, topo) << "\"";
+
+    if (topo && topo->collected) {
+        if (topo->mac_address) {
+            json << ",\"mac_address\":\"" << escapeJsonString(*topo->mac_address) << "\"";
+        }
+        if (topo->ip_address) {
+            json << ",\"ip_address\":\"" << escapeJsonString(*topo->ip_address) << "\"";
+        }
+        if (topo->gateway_ip) {
+            json << ",\"gateway_ip\":\"" << escapeJsonString(*topo->gateway_ip) << "\"";
+        }
+        json << ",\"dns_servers\":[";
+        for (size_t i = 0; i < topo->dns_servers.size(); ++i) {
+            json << "\"" << escapeJsonString(topo->dns_servers[i]) << "\"";
+            if (i + 1 < topo->dns_servers.size()) json << ",";
+        }
+        json << "]";
+        if (topo->ap_ssid) {
+            json << ",\"ap_ssid\":\"" << escapeJsonString(*topo->ap_ssid) << "\"";
+        }
+        if (topo->ap_bssid) {
+            json << ",\"ap_bssid\":\"" << escapeJsonString(*topo->ap_bssid) << "\"";
+        }
+    }
     json << "}";
     return json.str();
 }

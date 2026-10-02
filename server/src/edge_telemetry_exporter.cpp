@@ -437,7 +437,8 @@ bool EdgeTelemetryExporter::buildRecord(const AssessmentSnapshot& snapshot,
     // 专用序列化器：直接产出上报契约的嵌套形态。
     // 不复用 toExperienceJsonV2 再改写形状——那等于对刚产出的 JSON 做字符串
     // 手术，脆弱且会让两份契约互相污染（见 serializer 头文件说明）。
-    body << "\"snapshot\":" << toEdgeTelemetrySnapshotJson(exp) << "}]}";
+    const auto* topo_ptr = snapshot.topology.has_value() ? &snapshot.topology.value() : nullptr;
+    body << "\"snapshot\":" << toEdgeTelemetrySnapshotJson(exp, topo_ptr) << "}]}";
 
     out->sequence_id = snapshot.sequence_id;
     out->network_epoch = snapshot.network_epoch;
