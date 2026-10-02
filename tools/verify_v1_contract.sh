@@ -203,9 +203,58 @@ C_HTTPS=$(echo "$CAPLINE" | grep -oE 'https=[A-Z]+' | cut -d= -f2)
 
 log "C4 Snapshot 跨消费者一致性（HealthCheck vs GetNetworkExperience）"
 
-# 两条链都读取同一份不可变快照；若结果冲突说明快照不再是单一事实源。
-HC=$(${SSH} "sudo journalctl -u weaknet-server --since '-3 min' --no-pager | grep -oE '\"overall_quality\":\"[A-Z]+\"' | tail -1")
-info "HealthCheck overall_quality = ${HC:-（日志未含，需 D-Bus 消费者调用）}"
+# 通过 D-Bus 实际调用 HealthCheck 与 GetNetworkExperience，提取并比较核心判决字段
+C4_COMPARE=$(${SSH} "python3 -c '
+import subprocess, json, sys
+
+def call_dbus(method):
+    cmd = [\"dbus-send\", \"--system\", \"--print-reply\", \"--dest=com.example.WeakNet\", \"/com/example/WeakNet\", f\"com.example.WeakNet.{method}\"]
+    out = subprocess.check_output(cmd).decode()
+    for line in out.splitlines():
+        if \"string\" in line:
+            raw = line.split(\"string \")[-1].strip().strip(\"\\\"\")
+            return json.loads(raw)
+    return {}
+
+try:
+    hc = call_dbus(\"HealthCheck\")
+    exp = call_dbus(\"GetNetworkExperience\")
+
+    # 状态映射契约：HealthCheck overall_quality 对应 GetNetworkExperience overall.state
+    state_map = {\"BAD\": [\"POOR\"], \"DEGRADED\": [\"FAIR\"], \"GOOD\": [\"GOOD\", \"EXCELLENT\"], \"UNKNOWN\": [\"UNKNOWN\"]}
+
+    exp_state = exp.get(\"overall\", {}).get(\"state\")
+    hc_state = hc.get(\"data\", {}).get(\"overall_quality\")
+    allowed_hc = state_map.get(exp_state, [])
+
+    exp_score = exp.get(\"overall\", {}).get(\"display_score\")
+    hc_score = int(hc.get(\"data\", {}).get(\"quality_score\", -1))
+
+    exp_issue = exp.get(\"overall\", {}).get(\"primary_issue\")
+    hc_issue = hc.get(\"data\", {}).get(\"primary_issue\")
+
+    if hc_state not in allowed_hc:
+        print(f\"FAIL:state_mismatch:exp={exp_state}:hc={hc_state}\")
+        sys.exit(0)
+    if exp_score != hc_score:
+        print(f\"FAIL:score_mismatch:exp={exp_score}:hc={hc_score}\")
+        sys.exit(0)
+    if exp_issue != hc_issue:
+        print(f\"FAIL:issue_mismatch:exp={exp_issue}:hc={hc_issue}\")
+        sys.exit(0)
+
+    print(f\"OK:exp_state={exp_state},hc_state={hc_state},score={exp_score}\")
+except Exception as e:
+    print(f\"ERR:{e}\")
+'")
+
+if [[ "${C4_COMPARE}" == OK:* ]]; then
+    ok "C4 D-Bus 跨方法一致性校验通过 (${C4_COMPARE#OK:})"
+elif [[ "${C4_COMPARE}" == FAIL:* ]]; then
+    fail "C4 快照一致性违规: ${C4_COMPARE}"
+else
+    fail "C4 无法完成 D-Bus 接口比对: ${C4_COMPARE}"
+fi
 
 BAD_MARK=$(${SSH} "sudo journalctl -u weaknet-server --since '-5 min' --no-pager | grep -cE 'stale_assessment'")
 if [ "${BAD_MARK:-0}" -eq 0 ]; then

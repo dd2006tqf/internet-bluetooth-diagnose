@@ -67,10 +67,13 @@ TEST(ActionRegistryTest, StrongTypingAndNoShell) {
     // 生成安全 ExecSpec
     auto spec_opt = reg.buildExecSpec("PROBE_PUBLIC_RESOLVER", {{"resolver", "223.5.5.5"}});
     ASSERT_TRUE(spec_opt.has_value());
-    EXPECT_EQ(spec_opt->executable, "/usr/bin/dig");
+    EXPECT_EQ(spec_opt->executable, "/usr/bin/host");
     ASSERT_EQ(spec_opt->argv.size(), 5u);
-    EXPECT_EQ(spec_opt->argv[0], "/usr/bin/dig");
-    EXPECT_EQ(spec_opt->argv[1], "223.5.5.5");
+    EXPECT_EQ(spec_opt->argv[0], "/usr/bin/host");
+    EXPECT_EQ(spec_opt->argv[1], "-W");
+    EXPECT_EQ(spec_opt->argv[2], "2");
+    EXPECT_EQ(spec_opt->argv[3], "www.baidu.com");
+    EXPECT_EQ(spec_opt->argv[4], "223.5.5.5");
 
     // 验证 SafeExec 真实调用能力（例如执行 /bin/cat 查看 resolv.conf）
     auto cat_spec = reg.buildExecSpec("CHECK_RESOLVER_CONFIG", {});

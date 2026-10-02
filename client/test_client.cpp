@@ -163,7 +163,20 @@ bool testNetworkInfo() {
     // weaknet_health_check → D-Bus Method: HealthCheck → STRING (JSON 诊断报告)
     TEST_API_CALL(weaknet_health_check, buffer, sizeof(buffer), error, sizeof(error));
     printf("   💚 健康检查: %s\n", buffer);
-    
+
+    // weaknet_get_network_experience → D-Bus Method: GetNetworkExperience → STRING (Schema v2 快照)
+    TEST_API_CALL(weaknet_get_network_experience, buffer, sizeof(buffer), error, sizeof(error));
+    printf("   🧭 网络体验: %s\n", buffer);
+
+    // weaknet_get_diagnosis → D-Bus Method: GetDiagnosis → STRING (DiagnosisFacts JSON)
+    TEST_API_CALL(weaknet_get_diagnosis, buffer, sizeof(buffer), error, sizeof(error));
+    printf("   🧠 机器诊断: %s\n", buffer);
+
+    // weaknet_execute_action → D-Bus Method: ExecuteAction → STRING (ExecutionResult JSON)
+    // 使用只读的白名单动作 CHECK_RESOLVER_CONFIG 测试执行能力
+    TEST_API_CALL(weaknet_execute_action, "CHECK_RESOLVER_CONFIG", "", "", buffer, sizeof(buffer), error, sizeof(error));
+    printf("   ⚡ 动作执行: %s\n", buffer);
+
     // weaknet_get_from_file —— 离线模式，不发起 D-Bus 调用，直接读取服务端序列化文件
     if (weaknet_get_from_file(buffer, sizeof(buffer), error, sizeof(error))) {
         printf("   📄 文件内容: %s\n", buffer);

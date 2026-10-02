@@ -315,8 +315,8 @@ private:
             {
                 {"resolver", "ipv4_address", true, {"223.5.5.5", "119.29.29.29", "8.8.8.8", "114.114.114.114"}}
             },
-            "/usr/bin/dig",
-            {"@{resolver}", "www.baidu.com", "+time=2", "+tries=1"}
+            "/usr/bin/host",
+            {"-W", "2", "www.baidu.com", "@{resolver}"}
         });
 
         // 3. 检查默认路由网关

@@ -39,6 +39,9 @@ static void printUsage(const char* prog) {
         "  %s incidents [--state <STATE>]\n"
         "         [--start <ms>] [--end <ms>] [--limit <N>]\n"
         "                                 # 查询区域级异常事件 SiteIncident（JSON，只读）\n"
+        "  %s diagnosis                   # 查询当前网络确定性诊断事实（DiagnosisFacts JSON，只读）\n"
+        "  %s experience                  # 查询当前网络体验权威快照（NetworkExperience JSON，只读）\n"
+        "  %s action <action_id> [<key> <val>] # 执行白名单安全排查动作（仅限 root）\n"
         "\n"
         "事件类型（--type）：LINK_DISCONNECTED, LINK_DEGRADED, DEVICE_APPEARED, ...\n"
         "区域事件状态（--state）：OPEN, ONGOING, RESOLVED\n"
@@ -52,7 +55,12 @@ static void printUsage(const char* prog) {
         "示例：\n"
         "  %s set rtt.interval 5s\n"
         "  %s get rtt\n"
-        "  %s list\n", prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+        "  %s diagnosis\n"
+        "  %s experience\n"
+        "  sudo %s action CHECK_RESOLVER_CONFIG\n"
+        "  sudo %s action PROBE_PUBLIC_RESOLVER resolver 223.5.5.5\n"
+        "  %s list\n",
+        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static bool callSet(const char* key, const char* value) {
@@ -204,6 +212,46 @@ static bool callSaveOverrides() {
     return true;
 }
 
+static bool callDiagnosis() {
+    std::vector<char> buf(64 * 1024);
+    char err[256];
+    if (!weaknet_get_diagnosis(buf.data(), buf.size(), err, sizeof(err))) {
+        fprintf(stderr, "GetDiagnosis 失败: %s\n", err);
+        return false;
+    }
+    printf("%s\n", buf.data());
+    return true;
+}
+
+static bool callExperience() {
+    std::vector<char> buf(64 * 1024);
+    char err[256];
+    if (!weaknet_get_network_experience(buf.data(), buf.size(), err, sizeof(err))) {
+        fprintf(stderr, "GetNetworkExperience 失败: %s\n", err);
+        return false;
+    }
+    printf("%s\n", buf.data());
+    return true;
+}
+
+static bool callAction(int argc, char** argv) {
+    if (argc < 3 || argc > 5) {
+        printUsage(argv[0]);
+        return false;
+    }
+    const char* action_id = argv[2];
+    const char* param_key = (argc >= 4) ? argv[3] : "";
+    const char* param_val = (argc >= 5) ? argv[4] : "";
+    std::vector<char> buf(64 * 1024);
+    char err[256];
+    if (!weaknet_execute_action(action_id, param_key, param_val, buf.data(), buf.size(), err, sizeof(err))) {
+        fprintf(stderr, "ExecuteAction 失败: %s\n", err);
+        return false;
+    }
+    printf("%s\n", buf.data());
+    return true;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         printUsage(argv[0]);
@@ -257,6 +305,12 @@ int main(int argc, char** argv) {
         ok = callEvents(argc, argv);
     } else if (strcmp(cmd, "incidents") == 0) {
         ok = callIncidents(argc, argv);
+    } else if (strcmp(cmd, "diagnosis") == 0) {
+        ok = callDiagnosis();
+    } else if (strcmp(cmd, "experience") == 0) {
+        ok = callExperience();
+    } else if (strcmp(cmd, "action") == 0) {
+        ok = callAction(argc, argv);
     } else if (strcmp(cmd, "list") == 0) {
         // 必须与 serializers 端的有效名集合保持一致（weaknet_config.cpp 的
         // serializeMonitorJson）。此前这里漏了 skb_drop / tcp_connect /

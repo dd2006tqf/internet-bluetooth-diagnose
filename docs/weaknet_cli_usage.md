@@ -69,6 +69,9 @@ weaknet-cli <command> [arguments...]
   monitor save           保存运行时启停状态到 override 文件
   events [过滤条件]       查询无线设备事件（Canonical Device Event，JSON）
   incidents [过滤条件]    查询区域级异常事件（SiteIncident，JSON）
+  diagnosis              查询当前网络确定性诊断事实（DiagnosisFacts，JSON）
+  experience             查询当前网络体验权威快照（NetworkExperience Schema v2，JSON）
+  action <action_id> [<key> <val>] 执行白名单安全排查动作（仅限 root）
 ```
 
 `events` 的过滤条件全部可选，省略即不限制：
@@ -219,7 +222,24 @@ $ weaknet-cli incidents --state OPEN
 `REMOTE_USER_TERMINATED` / `LOCAL_HOST_TERMINATED`）。若计入，
 每天下班集体关机都会误报一起"区域无线故障"。
 
-### 3.6 `weaknet-cli get <monitor>`
+### 3.6 `weaknet-cli diagnosis` / `weaknet-cli experience` / `weaknet-cli action`
+
+端侧诊断、权威网络体验评估快照与安全排查动作（Phase 4a+ / 消解孤儿接口）：
+
+```bash
+# 查询端侧确定性机器诊断事实（DiagnosisFacts）
+$ weaknet-cli diagnosis
+
+# 查询权威网络体验快照（Schema v2）
+$ weaknet-cli experience
+
+# 执行安全白名单排查动作（仅限 root / sudo）
+$ sudo weaknet-cli action CHECK_RESOLVER_CONFIG
+$ sudo weaknet-cli action PROBE_PUBLIC_RESOLVER resolver 223.5.5.5
+$ sudo weaknet-cli action INSPECT_DEFAULT_GATEWAY
+```
+
+### 3.7 `weaknet-cli get <monitor>`
 
 查询指定监控器的完整当前参数（JSON 格式）。
 

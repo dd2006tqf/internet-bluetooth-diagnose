@@ -143,6 +143,7 @@ install -m 0755 build-arm64/server/test/test_ebpf dist-arm64/server/test/
 for f in build-arm64/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true; done
 install -m 0755 build-arm64/client/bin/test_client_bin dist-arm64/client/bin/test-client
 install -m 0755 build-arm64/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
+install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
 install -m 0644 build-arm64/client/lib/libweaknet.so dist-arm64/client/lib/
 cp -a /usr/local/lib/libbpf.so* dist-arm64/lib/ 2>/dev/null || true
 
