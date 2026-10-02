@@ -22,7 +22,7 @@ the snapshot, just sometimes a plainer one.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -151,14 +151,62 @@ class NetworkCopilotService:
             snapshot=snapshot,
             timeline=[point.__dict__ for point in timeline[-20:]],
         )
+        result = answer
         if model_report is not None:
             verdict = self._guardrail.inspect_json_report(
                 model_report,
                 CausalContext(device_id=asset_id, snapshot=snapshot),
             )
             if verdict.decision == "ALLOWED":
-                return self._from_model_report(asset_id, model_report, answer)
-        return answer
+                result = self._from_model_report(asset_id, model_report, answer)
+
+        # 深度内核观测作为附录追加（呈现层佐证，不参与因果判定）
+        observation = self.kernel_observation(context, asset_id)
+        if observation:
+            result = replace(result, answer=result.answer + "\n\n" + observation)
+        return result
+
+    def kernel_observation(self, context: TenantContext, asset_id: str) -> str | None:
+        """深度内核观测的可读摘要（进程 Top N / 内核 drop 归因）。
+
+        定位是**呈现层的佐证材料**，不是判据：它不参与 `_causal_chain`，
+        也不进 `CausalContext`，因此因果护栏对"结论只能来自 SLE"的约束不变。
+        没有数据时返回 None，调用方静默省略整段。
+        """
+
+        extras = self._assurance.get_kernel_snapshot_extras(context, asset_id)
+        if not extras:
+            return None
+
+        lines: list[str] = []
+        processes = extras.get("process_top") or []
+        if processes:
+            lines.append("占用带宽最高的进程：")
+            for item in processes[:5]:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    f"  - {item.get('comm', '?')} (pid={item.get('pid', '?')}) "
+                    f"发送 {item.get('tx_bytes', 0)} B / {item.get('tx_packets', 0)} 包，"
+                    f"重传 {item.get('retrans_count', 0)} 次"
+                )
+
+        drop = extras.get("skb_drop_hist")
+        if isinstance(drop, dict):
+            total = drop.get("total_drops", 0)
+            lines.append(f"内核协议栈丢包 {total} 次，按原因分布：")
+            for item in (drop.get("top_reasons") or [])[:5]:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    f"  - {item.get('reason_name', '?')}"
+                    f"（{item.get('protocol', '?')}）：{item.get('count', 0)} 次"
+                    f" — {item.get('description', '')}"
+                )
+
+        if not lines:
+            return None
+        return "内核侧观测（佐证材料，不改变上面的结论）：\n" + "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Device selection
@@ -554,14 +602,20 @@ class NetworkCopilotService:
             snapshot=snapshot,
             timeline=[point.__dict__ for point in timeline[-20:]],
         )
+        result = answer
         if model_report is not None:
             verdict = self._guardrail.inspect_json_report(
                 model_report,
                 CausalContext(device_id=asset_id, snapshot=snapshot),
             )
             if verdict.decision == "ALLOWED":
-                return self._from_model_report(asset_id, model_report, answer)
-        return answer
+                result = self._from_model_report(asset_id, model_report, answer)
+
+        # 与同步路径同一纪律：内核观测只作附录，不参与因果判定。
+        observation = self.kernel_observation(context, asset_id)
+        if observation:
+            result = replace(result, answer=result.answer + "\n\n" + observation)
+        return result
 
     async def _assurance_timeline_async(
         self,

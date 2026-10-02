@@ -122,9 +122,69 @@ TEST(EdgeWirelessUplinkBody, EmitsSchemaAndAllGroups) {
     EXPECT_NE(body.find("\"baseline_sample_count\":12"), std::string::npos);
     EXPECT_NE(body.find("\"state\":\"STABLE\""), std::string::npos);
 
-    // 环境证据：诚实上报不可用，不发伪证据
+    // 环境证据：无深度内核快照时诚实上报不可用，不发伪证据
     EXPECT_NE(body.find("\"available\":false"), std::string::npos);
     EXPECT_NE(body.find("\"snapshots\":[]"), std::string::npos);
+}
+
+TEST(EdgeWirelessUplinkBody, EmitsKernelSnapshotsWhenPresent) {
+    WirelessUplinkPayload payload;
+    payload.device_id = "gw";
+    payload.events = {makeEvent("evt-k", 1'700'000'001'000ULL)};
+    payload.env_to_ms = 1'700'000'010'000ULL;
+
+    weaknet_dbus::ProcessNetInfo proc;
+    proc.pid = 1234;
+    proc.comm = "iperf3";
+    proc.txBytes = 80'000'000;
+    proc.txPackets = 60'000;
+    proc.retransCount = 42;
+    payload.top_processes = {proc};
+
+    weaknet_dbus::DropStatsSummary drop;
+    drop.totalDrops = 1024;
+    weaknet_dbus::DropReasonItem item;
+    item.reasonCode = 6;
+    item.reasonName = "NETFILTER_DROP";
+    item.humanDesc = "被 netfilter 规则丢弃";
+    item.protocol = "TCP/IPv4";
+    item.count = 1024;
+    drop.topReasons = {item};
+    payload.drop_stats = drop;
+
+    std::string error;
+    const std::string body = EdgeWirelessUplinkExporter::buildBody(payload, &error);
+    ASSERT_FALSE(body.empty()) << error;
+
+    // 有数据时才 available=true（绝不空壳冒充）
+    EXPECT_NE(body.find("\"available\":true"), std::string::npos);
+
+    // 进程画像条目
+    EXPECT_NE(body.find("\"kind\":\"process_top\""), std::string::npos);
+    EXPECT_NE(body.find("\"pid\":1234"), std::string::npos);
+    EXPECT_NE(body.find("\"comm\":\"iperf3\""), std::string::npos);
+    EXPECT_NE(body.find("\"retrans_count\":42"), std::string::npos);
+
+    // 内核丢包归因条目
+    EXPECT_NE(body.find("\"kind\":\"skb_drop_hist\""), std::string::npos);
+    EXPECT_NE(body.find("\"reason_name\":\"NETFILTER_DROP\""), std::string::npos);
+    EXPECT_NE(body.find("\"total_drops\":1024"), std::string::npos);
+}
+
+TEST(EdgeWirelessUplinkBody, OmitsKernelSnapshotsWhenAbsent) {
+    WirelessUplinkPayload payload;
+    payload.device_id = "gw";
+    payload.events = {makeEvent("evt-nk", 1'700'000'001'000ULL)};
+    payload.env_to_ms = 1'700'000'010'000ULL;
+    // top_processes / drop_stats 均为空
+
+    std::string error;
+    const std::string body = EdgeWirelessUplinkExporter::buildBody(payload, &error);
+    ASSERT_FALSE(body.empty()) << error;
+
+    EXPECT_NE(body.find("\"available\":false"), std::string::npos);
+    EXPECT_EQ(body.find("process_top"), std::string::npos);
+    EXPECT_EQ(body.find("skb_drop_hist"), std::string::npos);
 }
 
 TEST(EdgeWirelessUplinkBody, NullRssiStaysJsonNull) {

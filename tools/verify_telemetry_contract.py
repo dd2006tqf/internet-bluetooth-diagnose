@@ -269,6 +269,46 @@ def _check_wireless_uplink_contract(cpp_src: str) -> list[str]:
             f"contract (typo or removed field): {sorted(unknown)}"
         )
 
+    errors.extend(_check_kernel_snapshot_contract(cpp_src))
+
+    return errors
+
+
+#: `env_window.snapshots[]` 条目允许的 kind 值。云端该字段是自由 JSON 数组
+#: （EnvironmentWindowView.snapshots: list[dict]），没有 pydantic 结构约束，
+#: 因此这份白名单是板端"乱写 kind 云端照单全收"的唯一防线。
+KERNEL_SNAPSHOT_KINDS = ("process_top", "skb_drop_hist")
+
+
+def _check_kernel_snapshot_contract(cpp_src: str) -> list[str]:
+    """深度内核快照（进程画像 / skb_drop）的 kind 与字段双侧核对。"""
+
+    errors: list[str] = []
+    for kind in KERNEL_SNAPSHOT_KINDS:
+        if _cpp_key("kind") + ":" + _cpp_key(kind) not in cpp_src:
+            errors.append(
+                f"kernel snapshot: C++ emitter does not emit the '{kind}' kind "
+                "(cloud accepts an untyped JSON array, so this drift is otherwise invisible)"
+            )
+
+    # process_top 条目字段
+    for field in ("top_processes", "pid", "comm", "tx_bytes", "tx_packets", "retrans_count"):
+        if _cpp_key(field) not in cpp_src:
+            errors.append(f"kernel snapshot: C++ emitter is missing process field '{field}'")
+
+    # skb_drop_hist 条目字段
+    for field in (
+        "total_drops",
+        "top_reasons",
+        "reason_code",
+        "reason_name",
+        "description",
+        "count",
+        "last_timestamp_ns",
+    ):
+        if _cpp_key(field) not in cpp_src:
+            errors.append(f"kernel snapshot: C++ emitter is missing drop field '{field}'")
+
     return errors
 
 

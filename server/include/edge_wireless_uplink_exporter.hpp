@@ -40,12 +40,16 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "process_net_profiler.hpp"
 #include "site_incident.hpp"
+#include "skb_drop_monitor.hpp"
 #include "weaknet_config.hpp"
 #include "wireless_event.hpp"
 
@@ -86,8 +90,11 @@ struct WirelessUplinkPayload {
     std::vector<std::vector<std::string>> incident_evidence;  ///< 与 incidents 同序
     std::vector<weaknet_dbus::DeviceLinkProfile> baselines;
 
-    /// 环境窗口（Wi-Fi 侧证据）。当前板端尚未采集结构化环境快照，
-    /// 因此 available=false 恒定诚实上报——绝不用 0/空值冒充"观测过且正常"。
+    /// 深度内核快照（进程画像 Top N + 协议栈丢包归因）
+    std::vector<weaknet_dbus::ProcessNetInfo> top_processes;
+    std::optional<weaknet_dbus::DropStatsSummary> drop_stats;
+
+    /// 环境窗口（Wi-Fi 侧证据与深度内核快照）。
     uint64_t env_from_ms = 0;
     uint64_t env_to_ms = 0;
 };
@@ -101,10 +108,20 @@ public:
      * @param config     运行时配置（读 edge.* 字段）
      * @param db         数据库管理器（事实的唯一来源）
      * @param state_path 游标文件路径（通常位于 data_dir 下）
+     *
+     * `profiler_provider` / `drop_provider` 是**每次采集时才求值**的回调，
+     * 而不是构造期缓存的裸指针。原因是这两个监控器由插件持有 unique_ptr，
+     * `monitor disable` / `restart` 会在运行时 delete 它们——缓存指针会变成
+     * 悬垂；回调让每次采集都从 ServerContext 重新取当前有效对象，禁用期间
+     * 自然返回 nullptr 并诚实跳过该维度。
      */
     EdgeWirelessUplinkExporter(const weaknet_dbus::WeakNetConfig& config,
                                weaknet_dbus::DatabaseManager& db,
-                               std::string state_path);
+                               std::string state_path,
+                               std::function<weaknet_dbus::ProcessNetProfiler*()>
+                                   profiler_provider = {},
+                               std::function<weaknet_dbus::SkbDropMonitor*()>
+                                   drop_provider = {});
     ~EdgeWirelessUplinkExporter();
 
     EdgeWirelessUplinkExporter(const EdgeWirelessUplinkExporter&) = delete;
@@ -165,6 +182,8 @@ private:
     const weaknet_dbus::WeakNetConfig& config_;
     weaknet_dbus::DatabaseManager& db_;
     std::string state_path_;
+    std::function<weaknet_dbus::ProcessNetProfiler*()> profiler_provider_;
+    std::function<weaknet_dbus::SkbDropMonitor*()> drop_provider_;
 
     std::thread thread_;
     std::atomic<bool> running_{false};

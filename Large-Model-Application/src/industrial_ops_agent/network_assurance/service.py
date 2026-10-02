@@ -572,7 +572,19 @@ class NetworkAssuranceService:
     def _wireless_window_id(
         context: TenantContext, asset_id: str, view: EnvironmentWindowView
     ) -> str:
-        seed = f"{context.tenant_id}|{asset_id}|{view.from_ms}|{view.to_ms}"
+        """环境窗口的确定性键：**(tenant, asset, 批次最小事实时间)**。
+
+        窗口的 `to_ms` 与板端上行批次绑定——同一批事实无论重放多少次、无论
+        携带的深度内核快照内容如何变化，都是同一行（内容 UPSERT 覆盖）。
+        用 `from_ms`（板端恒为 0）+ `to_ms` 的组合而非墙钟，保证"同一批事实
+        只占一行"这一幂等语义在两端一致。
+
+        板端把 `to_ms` 设为该批事件/事故的最新时间；纯基线批次没有稀疏事实，
+        `to_ms` 为 0 —— 此时窗口不含内核快照（快照只在有事件时携带），
+        因此不会与"真实事实窗口"混淆。
+        """
+
+        seed = f"{context.tenant_id}|{asset_id}|{view.to_ms}"
         return "nenv-" + hashlib.sha1(seed.encode()).hexdigest()[:32]
 
     def _upsert_env_window(
@@ -683,6 +695,48 @@ class NetworkAssuranceService:
                 rtt_probe_targets=list(record.rtt_probe_targets_json or []),
                 latest_experience=record.latest_snapshot_json,
             )
+
+    def get_kernel_snapshot_extras(
+        self, context: TenantContext, asset_id: str
+    ) -> dict[str, Any]:
+        """最新一条环境窗口里的深度内核快照（进程画像 / skb_drop 归因）。
+
+        这是**呈现层证据**，不是判定输入：云端规则引擎与 W1~W6 因果护栏都不读
+        它。Copilot 用它把"网络拥塞/丢包"解释到具体进程与内核 drop 原因，
+        但结论仍只能来自边缘的 SLE 判定。
+
+        取最近一条 `to_ms` 最大的窗口；无窗口或无快照条目时返回空字典，
+        调用方据此静默省略该段（绝不伪造"内核观测正常"）。
+        """
+
+        with self._database.transaction(context) as session:
+            record = session.scalars(
+                select(NetworkEnvWindowRecord)
+                .where(
+                    NetworkEnvWindowRecord.tenant_id == context.tenant_id,
+                    NetworkEnvWindowRecord.asset_id == asset_id,
+                )
+                .order_by(NetworkEnvWindowRecord.to_ms.desc())
+                .limit(1)
+            ).first()
+            if record is None or not record.snapshots_json:
+                return {}
+
+            extras: dict[str, Any] = {}
+            for item in record.snapshots_json:
+                if not isinstance(item, dict):
+                    continue
+                kind = item.get("kind")
+                # 只认已评审的两种 kind；板端写错值时忽略而不是透传，
+                # 否则前端会拿到无法解释的结构。
+                if kind == "process_top" and isinstance(item.get("top_processes"), list):
+                    extras["process_top"] = item["top_processes"]
+                elif kind == "skb_drop_hist":
+                    extras["skb_drop_hist"] = {
+                        "total_drops": item.get("total_drops", 0),
+                        "top_reasons": item.get("top_reasons", []),
+                    }
+            return extras
 
     def timeline(
         self,

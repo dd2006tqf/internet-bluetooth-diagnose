@@ -189,18 +189,53 @@ std::string EdgeWirelessUplinkExporter::buildBody(const WirelessUplinkPayload& p
     }
     body << "],";
 
-    // 环境证据：当前恒为诚实不可用（available=false）。
-    // 云端契约把 snapshots 视为审计性证据，不参与规则判定（规则只看
-    // wifi_anomaly / coexistence_warning 两个布尔），因此这里不发伪证据。
+    // 环境窗口：承载深度内核快照（进程画像 Top N + 协议栈丢包归因）。
+    // 只有确实取到数据时才 available=true——绝不用空数组冒充"观测过且正常"。
+    const bool has_process_data = !payload.top_processes.empty();
+    const bool has_drop_data = payload.drop_stats.has_value();
     body << "\"env_window\":{"
-         << "\"available\":false,"
+         << "\"available\":" << ((has_process_data || has_drop_data) ? "true" : "false") << ","
          << "\"link_type\":\"UNKNOWN\","
          << "\"wifi_anomaly\":false,"
          << "\"coexistence_warning\":false,"
          << "\"from_ms\":" << payload.env_from_ms << ","
          << "\"to_ms\":" << payload.env_to_ms << ","
-         << "\"snapshots\":[]"
-         << "}}";
+         << "\"snapshots\":[";
+
+    bool first_snapshot = true;
+    if (has_process_data) {
+        body << "{\"kind\":\"process_top\",\"ts_ms\":" << payload.env_to_ms << ",\"top_processes\":[";
+        for (size_t i = 0; i < payload.top_processes.size(); ++i) {
+            const auto& p = payload.top_processes[i];
+            if (i) body << ",";
+            body << "{\"pid\":" << p.pid
+                 << ",\"comm\":" << jsonStr(p.comm)
+                 << ",\"tx_bytes\":" << p.txBytes
+                 << ",\"tx_packets\":" << p.txPackets
+                 << ",\"retrans_count\":" << p.retransCount << "}";
+        }
+        body << "]}";
+        first_snapshot = false;
+    }
+    if (has_drop_data) {
+        const auto& ds = *payload.drop_stats;
+        if (!first_snapshot) body << ",";
+        body << "{\"kind\":\"skb_drop_hist\",\"ts_ms\":" << payload.env_to_ms
+             << ",\"total_drops\":" << ds.totalDrops << ",\"top_reasons\":[";
+        for (size_t i = 0; i < ds.topReasons.size(); ++i) {
+            const auto& r = ds.topReasons[i];
+            if (i) body << ",";
+            body << "{\"reason_code\":" << r.reasonCode
+                 << ",\"reason_name\":" << jsonStr(r.reasonName)
+                 << ",\"description\":" << jsonStr(r.humanDesc)
+                 << ",\"protocol\":" << jsonStr(r.protocol)
+                 << ",\"count\":" << r.count
+                 << ",\"last_timestamp_ns\":" << r.lastTimestampNs << "}";
+        }
+        body << "]}";
+    }
+
+    body << "]}}";
     return body.str();
 }
 
@@ -218,10 +253,17 @@ WirelessUplinkPayload EdgeWirelessUplinkExporter::selectSince(const WirelessUpli
 // 构造 / 生命周期
 // ============================================================================
 
-EdgeWirelessUplinkExporter::EdgeWirelessUplinkExporter(const weaknet_dbus::WeakNetConfig& config,
-                                                       weaknet_dbus::DatabaseManager& db,
-                                                       std::string state_path)
-    : config_(config), db_(db), state_path_(std::move(state_path)) {}
+EdgeWirelessUplinkExporter::EdgeWirelessUplinkExporter(
+    const weaknet_dbus::WeakNetConfig& config,
+    weaknet_dbus::DatabaseManager& db,
+    std::string state_path,
+    std::function<weaknet_dbus::ProcessNetProfiler*()> profiler_provider,
+    std::function<weaknet_dbus::SkbDropMonitor*()> drop_provider)
+    : config_(config),
+      db_(db),
+      state_path_(std::move(state_path)),
+      profiler_provider_(std::move(profiler_provider)),
+      drop_provider_(std::move(drop_provider)) {}
 
 EdgeWirelessUplinkExporter::~EdgeWirelessUplinkExporter() { stop(); }
 
@@ -362,10 +404,43 @@ bool EdgeWirelessUplinkExporter::collect(WirelessUplinkPayload* out, std::string
     auto baselines = db_.loadDeviceBaselinesSince(since, EDGE_WIRELESS_MAX_BASELINES_PER_BATCH);
     out->baselines = std::move(baselines);
 
-    // 环境窗口：当前无结构化采集，下界=0/上界=now 仅用于让信封字段合法；
-    // available 恒 false（见 buildBody）。
+    // 深度内核快照：进程画像 Top N 与协议栈丢包归因。
+    // provider 为空 / 返回 nullptr（未启用、加载失败或运行期被 disable）时
+    // 诚实跳过该维度，绝不伪造空观测。
+    if (profiler_provider_) {
+        if (auto* profiler = profiler_provider_(); profiler && profiler->isAvailable()) {
+            out->top_processes = profiler->getTopBandwidth(5);
+        }
+    }
+    if (drop_provider_) {
+        if (auto* drop_mon = drop_provider_(); drop_mon && drop_mon->isAvailable()) {
+            auto drop_stats = drop_mon->getDropStats();
+            // 只为有效数据上报：全 0 且无原因项视为"无观测"，不发送空壳
+            if (drop_stats.totalDrops > 0 || !drop_stats.topReasons.empty()) {
+                if (drop_stats.topReasons.size() > 5) {
+                    drop_stats.topReasons.resize(5);
+                }
+                out->drop_stats = std::move(drop_stats);
+            }
+        }
+    }
+
+    // 环境窗口的时间轴：**只由稀疏事实（事件/事故）决定**，不用墙钟，
+    // 也不用基线画像时间。
+    //
+    // 用墙钟会让每一轮产生新的 to_ms → 云端 window_id 每轮都变 → 每 10 秒新建
+    // 一行（实测 10 分钟涨到 606 行）。而基线画像 `updated_at_ms` 每轮都会刷新
+    // （设备一直被重新观测），把它算进来同样会让窗口每轮漂移——实测只降到
+    // 3 行/分钟。
+    //
+    // 事件与事故才是真正的稀疏事实：没有它们时窗口恒为 (0, 0)，云端 UPSERT
+    // 到同一行；有新事件时才产生新窗口。这既让行数与真实事实量成正比，
+    // 也让回放一批旧事件时窗口回到对应时间段，不会把历史事实伪造成"当前窗口"。
+    uint64_t newest_fact_ms = 0;
+    for (const auto& ev : out->events) newest_fact_ms = std::max(newest_fact_ms, ev.timestamp_ms);
+    for (const auto& inc : out->incidents) newest_fact_ms = std::max(newest_fact_ms, inc.last_event_ms);
     out->env_from_ms = 0;
-    out->env_to_ms = static_cast<uint64_t>(now_ms);
+    out->env_to_ms = newest_fact_ms;
 
     if (out->events.empty() && out->incidents.empty() && out->baselines.empty()) {
         if (error) *error = "no new facts";

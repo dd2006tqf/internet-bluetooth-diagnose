@@ -1549,8 +1549,12 @@ int start_server(int argc, char** argv) {
                                 std::string("history.db").size()) +
             "wireless-uplink-state";
         if (ctx.db_mgr) {
+            // 传 provider 而非缓存指针：插件可被运行期 disable/restart，
+            // 那时 unique_ptr 已 delete，缓存指针会悬垂。
             ctx.wireless_uplink = std::make_unique<weaknet::EdgeWirelessUplinkExporter>(
-                ctx.cfg, *ctx.db_mgr, uplink_state_path);
+                ctx.cfg, *ctx.db_mgr, uplink_state_path,
+                [&ctx]() { return ctx.process_net_profiler; },
+                [&ctx]() { return ctx.skb_drop_monitor; });
             if (ctx.wireless_uplink->start()) {
                 LOG_INFO(LogModule::SYSTEM, "edge wireless uplink started");
             }
