@@ -155,7 +155,7 @@ def _load_public_key() -> str | None:
 
 
 def build_app() -> FastAPI:
-    app = FastAPI(title="WeakNet rehearsal slice", version="0.1.0")
+    app = FastAPI(title="WeakNet Network Assurance Gateway", version="0.1.0")
     database = _build_database()
     _ensure_tenant(database)
 

@@ -735,6 +735,25 @@ class WirelessDeviceBaselineItem(BaseModel):
     last_seen_ms: int | None
 
 
+class WirelessDeviceEventItem(BaseModel):
+    event_id: str
+    asset_id: str
+    site_id: str
+    gateway_id: str
+    protocol: str
+    device_address: str
+    address_type: str
+    hci_index: int
+    event_type: str
+    ts_ms: int
+    rssi_at_event_dbm: int | None
+    raw_reason_code: int
+    reason: str
+    source: str
+    source_detail: str
+    details_json: str
+
+
 @router.get(
     "/assets/{asset_id}/incidents",
     response_model=list[SiteIncidentItem],
@@ -750,6 +769,7 @@ async def list_asset_site_incidents(
 ) -> list[SiteIncidentItem]:
     _require_read_scope(request, identity, authorizer, asset_id)
     from sqlalchemy import select
+
     from industrial_ops_agent.persistence.models import NetworkSiteIncidentRecord
 
     with service._database.transaction(identity.tenant_context) as session:
@@ -796,6 +816,7 @@ async def list_asset_wireless_devices(
 ) -> list[WirelessDeviceBaselineItem]:
     _require_read_scope(request, identity, authorizer, asset_id)
     from sqlalchemy import select
+
     from industrial_ops_agent.persistence.models import NetworkDeviceBaselineRecord
 
     with service._database.transaction(identity.tenant_context) as session:
@@ -828,4 +849,57 @@ async def list_asset_wireless_devices(
             )
             for r in records
         ]
+
+
+@router.get(
+    "/assets/{asset_id}/wireless-events",
+    response_model=list[WirelessDeviceEventItem],
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="List normalized wireless device events recorded by this gateway asset",
+)
+async def list_asset_wireless_events(
+    request: Request,
+    asset_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+) -> list[WirelessDeviceEventItem]:
+    _require_read_scope(request, identity, authorizer, asset_id)
+    from sqlalchemy import select
+
+    from industrial_ops_agent.persistence.models import NetworkWirelessEventRecord
+
+    with service._database.transaction(identity.tenant_context) as session:
+        stmt = (
+            select(NetworkWirelessEventRecord)
+            .where(
+                NetworkWirelessEventRecord.tenant_id == identity.tenant_id,
+                NetworkWirelessEventRecord.asset_id == asset_id,
+            )
+            .order_by(NetworkWirelessEventRecord.ts_ms.desc())
+            .limit(200)
+        )
+        records = session.scalars(stmt).all()
+        return [
+            WirelessDeviceEventItem(
+                event_id=r.event_id,
+                asset_id=r.asset_id,
+                site_id=r.site_id,
+                gateway_id=r.gateway_id,
+                protocol=r.protocol,
+                device_address=r.device_address,
+                address_type=r.address_type,
+                hci_index=r.hci_index,
+                event_type=r.event_type,
+                ts_ms=r.ts_ms,
+                rssi_at_event_dbm=r.rssi_at_event_dbm,
+                raw_reason_code=r.raw_reason_code,
+                reason=r.reason,
+                source=r.source,
+                source_detail=r.source_detail,
+                details_json=r.details_json,
+            )
+            for r in records
+        ]
+
 

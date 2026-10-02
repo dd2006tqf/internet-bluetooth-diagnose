@@ -101,6 +101,25 @@ type WirelessDeviceBaselineItem = {
   last_seen_ms: number | null;
 };
 
+type WirelessDeviceEventItem = {
+  event_id: string;
+  asset_id: string;
+  site_id: string;
+  gateway_id: string;
+  protocol: string;
+  device_address: string;
+  address_type: string;
+  hci_index: number;
+  event_type: string;
+  ts_ms: number;
+  rssi_at_event_dbm: number | null;
+  raw_reason_code: number;
+  reason: string;
+  source: string;
+  source_detail: string;
+  details_json: string;
+};
+
 type CanonicalDiagnosis = {
   observed_pattern: string;
   hypothesis: string;
@@ -238,6 +257,11 @@ export const apiClient = {
       `/api/v1/network/assets/${encodeURIComponent(assetId)}/wireless-devices`,
     );
   },
+  listAssetWirelessEvents(assetId: string): Promise<WirelessDeviceEventItem[]> {
+    return request<WirelessDeviceEventItem[]>(
+      `/api/v1/network/assets/${encodeURIComponent(assetId)}/wireless-events`,
+    );
+  },
   getIncidentDiagnosis(incidentId: string): Promise<WirelessDiagnosisResponse> {
     return request<WirelessDiagnosisResponse>(
       `/api/v1/network/assurance/incidents/${encodeURIComponent(incidentId)}/diagnosis`,
@@ -258,6 +282,7 @@ export type {
   CopilotAnswer,
   SiteIncidentItem,
   WirelessDeviceBaselineItem,
+  WirelessDeviceEventItem,
   CanonicalDiagnosis,
   DiagnosisPresentation,
   WirelessDiagnosisResponse,

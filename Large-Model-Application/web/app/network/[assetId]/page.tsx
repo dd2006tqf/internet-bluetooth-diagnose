@@ -33,6 +33,7 @@ import type {
   SiteIncidentItem,
   TimelinePoint,
   WirelessDeviceBaselineItem,
+  WirelessDeviceEventItem,
 } from "@/lib/api/network";
 import { WirelessDiagnosisDrawer } from "@/components/network/WirelessDiagnosisDrawer";
 
@@ -83,8 +84,10 @@ export default function NetworkAssetDetailPage() {
   // 无线事故与蓝牙外围设备状态
   const [incidents, setIncidents] = useState<SiteIncidentItem[]>([]);
   const [wirelessDevices, setWirelessDevices] = useState<WirelessDeviceBaselineItem[]>([]);
+  const [wirelessEvents, setWirelessEvents] = useState<WirelessDeviceEventItem[]>([]);
   const [loadingIncidents, setLoadingIncidents] = useState(false);
   const [loadingDevices, setLoadingDevices] = useState(false);
+  const [loadingEvents, setLoadingEvents] = useState(false);
 
   // 诊断抽屉状态
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
@@ -125,6 +128,13 @@ export default function NetworkAssetDetailPage() {
       .then(setWirelessDevices)
       .catch(() => setWirelessDevices([]))
       .finally(() => setLoadingDevices(false));
+
+    setLoadingEvents(true);
+    apiClient
+      .listAssetWirelessEvents(assetId)
+      .then(setWirelessEvents)
+      .catch(() => setWirelessEvents([]))
+      .finally(() => setLoadingEvents(false));
   };
 
   useEffect(() => {
@@ -407,6 +417,84 @@ export default function NetworkAssetDetailPage() {
                         title: "最近观测",
                         dataIndex: "last_seen_ms",
                         render: (ms: number | null) => (ms ? new Date(ms).toLocaleTimeString() : "—"),
+                      },
+                    ]}
+                  />
+                ),
+              },
+              {
+                key: "wireless_events",
+                label: `规范化无线事件流水 (${wirelessEvents.length})`,
+                children: (
+                  <Table
+                    rowKey="event_id"
+                    loading={loadingEvents}
+                    dataSource={wirelessEvents}
+                    pagination={{ pageSize: 10 }}
+                    locale={{ emptyText: "该网关暂未记录任何离线/劣化设备事件" }}
+                    columns={[
+                      {
+                        title: "事件时间",
+                        dataIndex: "ts_ms",
+                        render: (ms: number) => new Date(ms).toLocaleString(),
+                      },
+                      {
+                        title: "设备地址 (MAC)",
+                        dataIndex: "device_address",
+                        render: (text: string, r: WirelessDeviceEventItem) => (
+                          <Space orientation="vertical" size={2}>
+                            <Typography.Text code copyable>{text}</Typography.Text>
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              {r.protocol} · {r.address_type}
+                            </Typography.Text>
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: "事件类型",
+                        dataIndex: "event_type",
+                        render: (type: string) => {
+                          const color = type.includes("DISCONNECTED")
+                            ? "red"
+                            : type.includes("DEGRADED")
+                              ? "gold"
+                              : "blue";
+                          return <Tag color={color}>{type}</Tag>;
+                        },
+                      },
+                      {
+                        title: "归一化原因 (WHY)",
+                        dataIndex: "reason",
+                        render: (reason: string, r: WirelessDeviceEventItem) => (
+                          <Space size={4}>
+                            <Typography.Text strong>{reason}</Typography.Text>
+                            {r.raw_reason_code !== 0 && (
+                              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                (raw: {r.raw_reason_code})
+                              </Typography.Text>
+                            )}
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: "事件瞬时 RSSI",
+                        dataIndex: "rssi_at_event_dbm",
+                        render: (rssi: number | null) =>
+                          rssi !== null ? `${rssi} dBm` : <Typography.Text type="secondary">未采集</Typography.Text>,
+                      },
+                      {
+                        title: "内核事实来源",
+                        dataIndex: "source",
+                        render: (src: string, r: WirelessDeviceEventItem) => (
+                          <Space size={4}>
+                            <Tag color="cyan">{src}</Tag>
+                            {r.source_detail && (
+                              <Typography.Text code style={{ fontSize: 12 }}>
+                                {r.source_detail}
+                              </Typography.Text>
+                            )}
+                          </Space>
+                        ),
                       },
                     ]}
                   />
