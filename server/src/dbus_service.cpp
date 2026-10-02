@@ -1609,7 +1609,7 @@ bool DbusService::handleQuerySiteIncidents(DBusConnection* conn, DBusMessage* ms
     if (ctx_ && ctx_->wireless_event_store) {
         result = ctx_->wireless_event_store->querySiteIncidents(state, start_ms, end_ms, limit);
     } else {
-        result = "{\"error\":\"incident store not available\"}";
+        result = "[]";
     }
 
     DBusMessage* reply = dbus_message_new_method_return(msg);

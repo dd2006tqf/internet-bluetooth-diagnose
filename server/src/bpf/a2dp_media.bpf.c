@@ -167,28 +167,25 @@ struct bdaddr_t {
 };
 
 /*
- * 简化的 l2cap_chan 结构（仅含我们需要的字段）
+ * 最小化 l2cap_chan 结构定义
  *
- * 完整的 l2cap_chan 定义在 include/net/bluetooth/l2cap.h，
- * 但内核 BTF 中可能没有完整的类型信息（蓝牙子系统不一定被编进 BTF）。
- * 我们定义一个"最小版"结构，通过硬编码偏移 +24 来读取 dst/src BDADDR。
- *
- * 典型的 l2cap_chan 内存布局（不同内核版本可能有差异）:
- *   offset 0-7   : struct sock *sk
- *   offset 8-23  : 其他内部字段（约 16 字节）
- *   offset 24-29 : bdaddr_t dst（目标蓝牙设备地址，6 字节） ← 我们读这个
- *   offset 30-35 : bdaddr_t src（源蓝牙设备地址，6 字节）
- *
- * 用 __pad[16] 跳过 offset 8-23 的字段，dst 在偏移 24 正好对齐。
- * 如果某内核版本字段偏移不同，extract_bdaddr_kprobe 会因
- * bpf_probe_read_kernel 返回错误而 gracefully 失败（该次统计跳过），
- * 不会导致整个程序崩溃。
+ * 字段偏移经由目标板（Radxa Cubie A7A，内核 5.15）模块 BTF (/sys/kernel/btf/bluetooth)
+ * 实测确立（详情见 docs/蓝牙监控优化实现方案.md 第 11.3 节）：
+ *   conn=0 / hs_hcon=8 / hs_hchan=16 / kref=24 / nesting=28 / state=32 / dst=33 / src=39
+ * 历史代码错误假设 offset 24 为 dst（实际是 kref），导致提取出错误内存数据。
+ * 正确偏移: dst 位于 33 字节处。
  */
+#define L2CAP_CHAN_DST_OFFSET 33
+
 struct l2cap_chan_minimal {
-    struct sock *sk;
-    __u8 __pad[16];     // 跳过一些内部字段
-    struct bdaddr_t dst;  // 目标 BDADDR（offset 24）
-    struct bdaddr_t src;  // 源 BDADDR（offset 30）
+    void *conn;           // offset 0
+    void *hs_hcon;        // offset 8
+    void *hs_hchan;       // offset 16
+    __u32 kref;           // offset 24
+    __u32 nesting;        // offset 28
+    __u8  state;          // offset 32
+    struct bdaddr_t dst;  // offset 33 (目标 BDADDR)
+    struct bdaddr_t src;  // offset 39 (源 BDADDR)
 };
 
 // =============================================================================
@@ -260,11 +257,11 @@ static __always_inline int extract_bdaddr_kprobe(struct sock *sk, __u8 *bdaddr_o
         return -1;
 
     // 第三步：从 l2cap_chan 结构中读取 dst BDADDR
-    // 使用硬编码偏移 +24（见 struct l2cap_chan_minimal 的注释）
+    // 使用实测偏移 L2CAP_CHAN_DST_OFFSET (33 字节)
     // bpf_probe_read_kernel 会验证该地址可读，失败则返回错误
     struct bdaddr_t dst;
     if (bpf_probe_read_kernel(&dst, sizeof(dst),
-                               (char *)user_data + 24 /* approximate dst offset */) < 0)
+                               (char *)user_data + L2CAP_CHAN_DST_OFFSET) < 0)
         return -1;
 
     __builtin_memcpy(bdaddr_out, dst.b, 6);

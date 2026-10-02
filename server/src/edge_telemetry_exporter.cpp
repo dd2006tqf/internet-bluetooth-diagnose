@@ -202,9 +202,31 @@ std::vector<PendingAction> parsePendingActions(const std::string& body) {
 
     // 寻找 pending_actions 数组的开括号 '[' 与闭括号 ']'，限制解析范围在数组内，
     // 避免误把响应体其它顶层对象或嵌套字段里的 action_id 误认为下行动作。
+    // 防御处理：忽略双引号字符串内部的 ']' 字符，保证数组边界准确。
     const size_t array_start = body.find('[', pos + array_key.size());
     if (array_start == std::string::npos) return actions;
-    const size_t array_end = body.find(']', array_start);
+    size_t array_end = std::string::npos;
+    bool in_string = false;
+    bool escaped = false;
+    for (size_t i = array_start + 1; i < body.size(); ++i) {
+        char c = body[i];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (c == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (c == '"') {
+            in_string = !in_string;
+            continue;
+        }
+        if (c == ']' && !in_string) {
+            array_end = i;
+            break;
+        }
+    }
     if (array_end == std::string::npos) return actions;
 
     pos = array_start + 1;

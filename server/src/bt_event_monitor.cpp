@@ -149,6 +149,12 @@ bool BtEventMonitor::init(const std::string& bpf_object_path, const std::string&
     const int rb_map_fd = bpf_object__find_map_fd_by_name(bpf_obj_, "bt_events");
     if (rb_map_fd < 0) {
         last_error_ = "ringbuf map 'bt_events' not found";
+        for (bpf_link* link : links_) {
+            if (link) bpf_link__destroy(link);
+        }
+        links_.clear();
+        bpf_object__close(bpf_obj_);
+        bpf_obj_ = nullptr;
         stateSupport_.setState(EbpfMonitorState::Fallback, false, last_error_);
         LOG_WARNING(LogModule::BLUETOOTH, "BtEventMonitor: " << last_error_);
         return false;
@@ -156,6 +162,12 @@ bool BtEventMonitor::init(const std::string& bpf_object_path, const std::string&
     ringbuf_ = ring_buffer__new(rb_map_fd, &BtEventMonitor::onRingbufSample, this, nullptr);
     if (!ringbuf_) {
         last_error_ = "ring_buffer__new failed: " + std::string(strerror(errno));
+        for (bpf_link* link : links_) {
+            if (link) bpf_link__destroy(link);
+        }
+        links_.clear();
+        bpf_object__close(bpf_obj_);
+        bpf_obj_ = nullptr;
         stateSupport_.setState(EbpfMonitorState::Fallback, false, last_error_);
         LOG_WARNING(LogModule::BLUETOOTH, "BtEventMonitor: " << last_error_);
         return false;
