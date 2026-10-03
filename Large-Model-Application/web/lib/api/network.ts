@@ -185,6 +185,51 @@ type DiagnosisPresentation = {
   recommendations: string[];
 };
 
+type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
+
+type RiskDriver = {
+  metric: string;
+  contribution_pct: number; // 产品文案："风险驱动贡献度"（不是原因占比）
+  direction: "DETERIORATING" | "STABLE";
+  evidence_ids: string[];
+};
+
+type TrendEvidence = {
+  metric: string;
+  statement: string;
+  evidence_ids: string[];
+};
+
+type RiskWindow = {
+  subject_type: "DEVICE" | "SITE";
+  subject_id: string;
+  risk_level: RiskLevel;
+  window_estimation_status: "AVAILABLE" | "UNAVAILABLE";
+  window_earliest_hours: number | null;
+  window_latest_hours: number | null;
+  forecast_horizon_hours: number;
+  prediction_confidence: RiskLevel;
+  data_sufficiency: "PARTIAL" | "SUFFICIENT";
+  drivers: RiskDriver[];
+  trend_evidence: TrendEvidence[];
+  failure_criterion_id: string;
+  failure_criterion_version: string;
+  model_version: string;
+  generated_at: string;
+};
+
+type InsufficientPrediction = {
+  subject_type: "DEVICE" | "SITE";
+  subject_id: string;
+  data_sufficiency: "INSUFFICIENT";
+  missing_requirements: string[];
+  available_evidence_ids: string[];
+  model_version: string;
+  generated_at: string;
+};
+
+type PredictionResult = RiskWindow | InsufficientPrediction;
+
 type WirelessDiagnosisResponse = {
   diagnosis_id: string;
   incident_id: string;
@@ -322,6 +367,17 @@ export const apiClient = {
       { method: "POST" },
     );
   },
+  getDeviceRiskPrediction(
+    assetId: string,
+    deviceAddress: string,
+    windowHours = 168,
+  ): Promise<PredictionResult> {
+    return request<PredictionResult>(
+      `/api/v1/network/assets/${encodeURIComponent(assetId)}` +
+        `/wireless-devices/${encodeURIComponent(deviceAddress)}` +
+        `/risk-prediction?window_hours=${windowHours}`,
+    );
+  },
 };
 
 export type {
@@ -340,5 +396,11 @@ export type {
   CanonicalDiagnosis,
   DiagnosisPresentation,
   WirelessDiagnosisResponse,
+  RiskLevel,
+  RiskDriver,
+  TrendEvidence,
+  RiskWindow,
+  InsufficientPrediction,
+  PredictionResult,
 };
 

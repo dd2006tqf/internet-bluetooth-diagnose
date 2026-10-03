@@ -4065,6 +4065,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network/assets/{asset_id}/wireless-devices/{device_address}/risk-prediction": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Predict the link-failure risk window for one wireless device (L3)
+         * @description 契约 C 的三态之一：RiskWindow（AVAILABLE/UNAVAILABLE）或 InsufficientPrediction。
+         *
+         *     纯读路径：L3 是确定性算法，不调用任何大模型；GET 语义，不写任何表。
+         */
+        get: operations["get_device_risk_prediction_api_v1_network_assets__asset_id__wireless_devices__device_address__risk_prediction_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/network/assets/{asset_id}/wireless-events": {
         parameters: {
             query?: never;
@@ -8339,6 +8361,11 @@ export interface components {
             /** Work Order Id */
             work_order_id: string;
         };
+        /**
+         * DataSufficiency
+         * @enum {string}
+         */
+        DataSufficiency: "INSUFFICIENT" | "PARTIAL" | "SUFFICIENT";
         /** DatasetArtifactResponse */
         DatasetArtifactResponse: {
             /** Artifact Id */
@@ -13013,6 +13040,29 @@ export interface components {
             /** Version */
             version: number;
         };
+        /**
+         * InsufficientPrediction
+         * @description 风险无法判断时产出——系统没有产生风险判断，而不是"风险未知"。
+         */
+        InsufficientPrediction: {
+            /** Available Evidence Ids */
+            available_evidence_ids?: string[];
+            /** @default INSUFFICIENT */
+            data_sufficiency: components["schemas"]["DataSufficiency"];
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Missing Requirements */
+            missing_requirements?: string[];
+            /** Model Version */
+            model_version: string;
+            /** Subject Id */
+            subject_id: string;
+            /** @default DEVICE */
+            subject_type: components["schemas"]["SubjectType"];
+        };
         /** JointSignoffEvidence */
         JointSignoffEvidence: {
             /** Acceptance Id */
@@ -17600,6 +17650,65 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /**
+         * RiskDriver
+         * @description 单个风险驱动因子。
+         *
+         *     ``contribution_pct`` 的产品文案一律是"风险驱动贡献度"，**不是"原因占比"**：
+         *     它只表示该指标对预测模型输出的贡献，不表示现实故障的因果配比。
+         */
+        RiskDriver: {
+            /** Contribution Pct */
+            contribution_pct: number;
+            direction: components["schemas"]["TrendDirection"];
+            /** Evidence Ids */
+            evidence_ids?: string[];
+            /** Metric */
+            metric: string;
+        };
+        /**
+         * RiskLevel
+         * @enum {string}
+         */
+        RiskLevel: "LOW" | "MEDIUM" | "HIGH";
+        /**
+         * RiskWindow
+         * @description 风险可判断时产出。窗口可估与否由 window_estimation_status 表达。
+         */
+        RiskWindow: {
+            data_sufficiency: components["schemas"]["DataSufficiency"];
+            /** Drivers */
+            drivers?: components["schemas"]["RiskDriver"][];
+            /** Failure Criterion Id */
+            failure_criterion_id: string;
+            /** Failure Criterion Version */
+            failure_criterion_version: string;
+            /**
+             * Forecast Horizon Hours
+             * @default 168
+             */
+            forecast_horizon_hours: number;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Model Version */
+            model_version: string;
+            prediction_confidence: components["schemas"]["RiskLevel"];
+            risk_level: components["schemas"]["RiskLevel"];
+            /** Subject Id */
+            subject_id: string;
+            /** @default DEVICE */
+            subject_type: components["schemas"]["SubjectType"];
+            /** Trend Evidence */
+            trend_evidence?: components["schemas"]["TrendEvidence"][];
+            /** Window Earliest Hours */
+            window_earliest_hours?: number | null;
+            window_estimation_status: components["schemas"]["WindowEstimationStatus"];
+            /** Window Latest Hours */
+            window_latest_hours?: number | null;
+        };
         /** RollbackBody */
         RollbackBody: {
             /** Reason Code */
@@ -19472,6 +19581,12 @@ export interface components {
             /** Scope */
             scope: components["schemas"]["RecoveryComponent"][];
         };
+        /**
+         * SubjectType
+         * @description 预测主体类型。v1 只实现 DEVICE；SITE 保留枚举但显式不支持。
+         * @enum {string}
+         */
+        SubjectType: "DEVICE" | "SITE";
         /** SubmitExpertRecommendationRequest */
         SubmitExpertRecommendationRequest: {
             /** Basis */
@@ -20373,6 +20488,23 @@ export interface components {
             value: string;
         };
         /**
+         * TrendDirection
+         * @enum {string}
+         */
+        TrendDirection: "DETERIORATING" | "STABLE";
+        /**
+         * TrendEvidence
+         * @description 事实性趋势证据（如"基线在 72h 内自 -60 漂移到 -64"）。
+         */
+        TrendEvidence: {
+            /** Evidence Ids */
+            evidence_ids?: string[];
+            /** Metric */
+            metric: string;
+            /** Statement */
+            statement: string;
+        };
+        /**
          * UnverifiedScenario
          * @enum {string}
          */
@@ -20498,6 +20630,12 @@ export interface components {
             /** Source Frame Id */
             source_frame_id: string | null;
         };
+        /**
+         * WindowEstimationStatus
+         * @description 窗口是否可估。UNAVAILABLE 时 earliest/latest 为 null，但风险判断仍成立。
+         * @enum {string}
+         */
+        WindowEstimationStatus: "AVAILABLE" | "UNAVAILABLE";
         /** WirelessDeviceBaselineItem */
         WirelessDeviceBaselineItem: {
             /** Address Type */
@@ -35147,6 +35285,105 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WirelessDeviceBaselineItem"][];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_device_risk_prediction_api_v1_network_assets__asset_id__wireless_devices__device_address__risk_prediction_get: {
+        parameters: {
+            query?: {
+                window_hours?: number;
+            };
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                asset_id: string;
+                device_address: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RiskWindow"] | components["schemas"]["InsufficientPrediction"];
                 };
             };
             /** @description Invalid request precondition */

@@ -30,6 +30,7 @@ import { AppShell } from "@/components/AppShell";
 import { apiClient } from "@/lib/api/network";
 import type {
   KernelDropReason,
+  PredictionResult,
   KernelObservations,
   KernelProcessEntry,
   NetworkAssetDetail,
@@ -38,7 +39,13 @@ import type {
   WirelessDeviceBaselineItem,
   WirelessDeviceEventItem,
 } from "@/lib/api/network";
-import { WirelessDiagnosisDrawer } from "@/components/network/WirelessDiagnosisDrawer";
+import Link from "next/link";
+import {
+  RiskPredictionPanel,
+  formatWindow,
+  isRiskWindow,
+  riskLevelColor,
+} from "@/components/network/RiskPredictionPanel";
 
 function healthColor(state: string) {
   if (state === "GOOD") return "green";
@@ -102,9 +109,9 @@ export default function NetworkAssetDetailPage() {
   // 板端"没有数据就不上报"，接口可能整体缺席——null 时整块不渲染。
   const [kernel, setKernel] = useState<KernelObservations | null>(null);
 
-  // 诊断抽屉状态
-  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  // L3 链路预测状态（真实数据，替代原 HI 占位）
+  const [deviceRisks, setDeviceRisks] = useState<Record<string, PredictionResult>>({});
+  const [loadingRisks, setLoadingRisks] = useState(false);
 
   // 远程调参模态框状态
   const [actionModalOpen, setActionModalOpen] = useState(false);
@@ -155,6 +162,36 @@ export default function NetworkAssetDetailPage() {
       .then(setKernel)
       .catch(() => setKernel(null));
   };
+
+  // L3 预测：设备列表就绪后批量取（上限 10 台；GET 纯确定性、零模型成本）
+  useEffect(() => {
+    if (!assetId || wirelessDevices.length === 0) return;
+    const targets = wirelessDevices.slice(0, 10).map((d) => d.device_address);
+    let cancelled = false;
+    setLoadingRisks(true);
+    Promise.all(
+      targets.map((addr) =>
+        apiClient
+          .getDeviceRiskPrediction(assetId, addr)
+          .then((r) => [addr, r] as const)
+          .catch(() => [addr, null] as const),
+      ),
+    )
+      .then((pairs) => {
+        if (cancelled) return;
+        const map: Record<string, PredictionResult> = {};
+        for (const [addr, r] of pairs) {
+          if (r) map[addr] = r;
+        }
+        setDeviceRisks(map);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingRisks(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [assetId, wirelessDevices]);
 
   useEffect(() => {
     fetchDetail();
@@ -445,18 +482,14 @@ export default function NetworkAssetDetailPage() {
                         ),
                       },
                       {
-                        title: "AI 因果诊断",
+                        title: "详情与诊断",
                         key: "action",
                         render: (_: unknown, record: SiteIncidentItem) => (
-                          <Button
-                            type="link"
-                            onClick={() => {
-                              setSelectedIncidentId(record.incident_id);
-                              setDrawerOpen(true);
-                            }}
+                          <Link
+                            href={`/network/${assetId}/incidents/${record.incident_id}`}
                           >
-                            AI 诊断详情
-                          </Button>
+                            <Button type="link">打开事故详情 →</Button>
+                          </Link>
                         ),
                       },
                     ]}
@@ -603,64 +636,90 @@ export default function NetworkAssetDetailPage() {
               },
               {
                 key: "predictive_maintenance",
-                label: "链路预测性维护 (RUL)",
+                label: "链路预测（L3 风险窗口）",
                 children: (
-                  <div style={{ padding: "16px 0" }}>
-                    <Row gutter={[16, 16]}>
-                      <Col xs={24} md={8}>
-                        <Card size="small" title="📶 综合链路健康指数 (HI)">
-                          <Progress
-                            type="circle"
-                            percent={88}
-                            strokeColor="#52c41a"
-                            format={(percent) => `${(percent! / 100).toFixed(2)}`}
-                          />
-                          <div style={{ marginTop: 12 }}>
-                            <Badge status="processing" text="健康状态良好 (无量纲归一化特征)" />
-                          </div>
-                        </Card>
-                      </Col>
-                      <Col xs={24} md={16}>
-                        <Card size="small" title="⏳ 剩余可用时间预测 (RUL / Time-To-Failure)">
-                          <Alert
-                            type="success"
-                            showIcon
-                            message="各设备链路当前衰退速率平缓"
-                            description="基于基线突跌量 (ΔRSSI)、Wi-Fi 空口丢包率和延时抖动的归一化时序退化拟合，目前未发现将在 72 小时内突发断连的濒危设备。"
-                          />
-                          <Descriptions size="small" style={{ marginTop: 16 }} column={2}>
-                            <Descriptions.Item label="活跃受控设备">
-                              {wirelessDevices.length} 台
-                            </Descriptions.Item>
-                            <Descriptions.Item label="早期隐性衰退">
-                              0 台
-                            </Descriptions.Item>
-                            <Descriptions.Item label="失效判定门限">
-                              突跌 ≥15 dBm 或丢包 ≥3.0%
-                            </Descriptions.Item>
-                            <Descriptions.Item label="特征通道状态">
-                              动态注册表已装配 (delta_rssi, loss_rate, jitter)
-                            </Descriptions.Item>
-                          </Descriptions>
-                        </Card>
-                      </Col>
-                    </Row>
+                  <div style={{ padding: "8px 0" }}>
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 12 }}
+                      message="L3 风险窗口 —— 确定性趋势检测，零模型调用"
+                      description="展示 risk_level / 置信度 / 风险窗口 / 风险驱动贡献度。HI 分数是模型内部量，不作产品主指标；证据不足时如实显示“未产生风险判断”，不编造倒计时。"
+                    />
+                    <Table
+                      rowKey="device_address"
+                      loading={loadingRisks}
+                      dataSource={wirelessDevices.slice(0, 10)}
+                      pagination={false}
+                      locale={{ emptyText: "暂无外围设备基线（尚未观测到可预测的设备）" }}
+                      expandable={{
+                        expandedRowRender: (record: WirelessDeviceBaselineItem) => {
+                          const r = deviceRisks[record.device_address];
+                          return r ? (
+                            <RiskPredictionPanel
+                              deviceAddress={record.device_address}
+                              result={r}
+                            />
+                          ) : (
+                            <Typography.Text type="secondary">风险预测加载中或暂不可用</Typography.Text>
+                          );
+                        },
+                      }}
+                      columns={[
+                        {
+                          title: "设备",
+                          dataIndex: "device_address",
+                          render: (addr: string) => <Typography.Text code>{addr}</Typography.Text>,
+                        },
+                        {
+                          title: "风险等级",
+                          key: "risk",
+                          render: (_: unknown, rec: WirelessDeviceBaselineItem) => {
+                            const r = deviceRisks[rec.device_address];
+                            if (!r) return <Typography.Text type="secondary">…</Typography.Text>;
+                            if (!isRiskWindow(r)) {
+                              return <Tag color="default">未产生风险判断</Tag>;
+                            }
+                            return <Tag color={riskLevelColor(r.risk_level)}>{r.risk_level}</Tag>;
+                          },
+                        },
+                        {
+                          title: "置信度",
+                          key: "confidence",
+                          render: (_: unknown, rec: WirelessDeviceBaselineItem) => {
+                            const r = deviceRisks[rec.device_address];
+                            if (!r || !isRiskWindow(r)) return "—";
+                            return r.prediction_confidence;
+                          },
+                        },
+                        {
+                          title: "风险窗口",
+                          key: "window",
+                          render: (_: unknown, rec: WirelessDeviceBaselineItem) => {
+                            const r = deviceRisks[rec.device_address];
+                            if (!r) return "—";
+                            const w = formatWindow(r);
+                            return <Tag color={w.color}>{w.text}</Tag>;
+                          },
+                        },
+                        {
+                          title: "主要驱动（风险驱动贡献度）",
+                          key: "driver",
+                          render: (_: unknown, rec: WirelessDeviceBaselineItem) => {
+                            const r = deviceRisks[rec.device_address];
+                            if (!r || !isRiskWindow(r) || r.drivers.length === 0) return "—";
+                            const top = r.drivers[0];
+                            return `${top.metric} ${top.contribution_pct.toFixed(1)}%`;
+                          },
+                        },
+                      ]}
+                    />
                   </div>
                 ),
               },
             ]}
           />
         </Card>
-
-        {/* AI 因果诊断详情抽屉 */}
-        <WirelessDiagnosisDrawer
-          incidentId={selectedIncidentId}
-          open={drawerOpen}
-          onClose={() => {
-            setDrawerOpen(false);
-            setSelectedIncidentId(null);
-          }}
-        />
 
         {/* 远程调参下发弹窗 */}
         <Modal
