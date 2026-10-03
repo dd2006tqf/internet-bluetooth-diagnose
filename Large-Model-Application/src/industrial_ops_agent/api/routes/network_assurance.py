@@ -903,3 +903,26 @@ async def list_asset_wireless_events(
         ]
 
 
+
+
+@router.get(
+    "/assets/{asset_id}/kernel-observations",
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Latest deep kernel observations (process top-N, skb drop attribution)",
+)
+async def get_asset_kernel_observations(
+    request: Request,
+    asset_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+) -> dict[str, Any]:
+    """最近一批上行的深度内核观测（只读）。
+
+    返回 `{"process_top": [...], "skb_drop_hist": {...}}`，任一维度缺失时该键
+    省略——与板端"没有数据就不发"的纪律一致，前端据此隐藏对应卡片而不是显示
+    伪造的零值。
+    """
+
+    _require_read_scope(request, identity, authorizer, asset_id)
+    return service.get_kernel_snapshot_extras(identity.tenant_context, asset_id)

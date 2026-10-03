@@ -29,6 +29,9 @@ import { useParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { apiClient } from "@/lib/api/network";
 import type {
+  KernelDropReason,
+  KernelObservations,
+  KernelProcessEntry,
   NetworkAssetDetail,
   SiteIncidentItem,
   TimelinePoint,
@@ -49,6 +52,12 @@ function sleBadge(state: string | undefined) {
   if (state === "DEGRADED") return <Badge status="warning" text="DEGRADED" />;
   if (state === "BAD") return <Badge status="error" text="BAD" />;
   return <Badge status="default" text="UNKNOWN" />;
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 type SleGroup = Record<string, { state?: string } | undefined>;
@@ -88,6 +97,10 @@ export default function NetworkAssetDetailPage() {
   const [loadingIncidents, setLoadingIncidents] = useState(false);
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [loadingEvents, setLoadingEvents] = useState(false);
+
+  // 深度内核观测（板端 process_profiler / skb_drop eBPF 探针）。
+  // 板端"没有数据就不上报"，接口可能整体缺席——null 时整块不渲染。
+  const [kernel, setKernel] = useState<KernelObservations | null>(null);
 
   // 诊断抽屉状态
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
@@ -135,6 +148,12 @@ export default function NetworkAssetDetailPage() {
       .then(setWirelessEvents)
       .catch(() => setWirelessEvents([]))
       .finally(() => setLoadingEvents(false));
+
+    // 深度内核观测：可能缺席（板端无数据时不发），失败时静默隐藏整块
+    apiClient
+      .getAssetKernelObservations(assetId)
+      .then(setKernel)
+      .catch(() => setKernel(null));
   };
 
   useEffect(() => {
@@ -257,6 +276,88 @@ export default function NetworkAssetDetailPage() {
             <SleMatrix title="服务层 SLE（service_health）" group={experience.service_health} />
           </Col>
         </Row>
+
+        {/* 深度内核观测：数据来自板端 process_profiler / skb_drop eBPF 探针。
+            板端"没有数据就不上报"，因此两个键都可能缺席——缺席时整块不渲染。 */}
+        {kernel && (kernel.process_top?.length || kernel.skb_drop_hist) && (
+          <Row gutter={[16, 16]}>
+            {kernel.process_top && kernel.process_top.length > 0 && (
+              <Col xs={24} md={12}>
+                <Card size="small" title="内核侧观测 — 进程带宽 Top N">
+                  <Table
+                    rowKey="pid"
+                    size="small"
+                    pagination={false}
+                    dataSource={kernel.process_top}
+                    locale={{ emptyText: "未采集到进程网络画像" }}
+                    columns={[
+                      {
+                        title: "进程",
+                        dataIndex: "comm",
+                        render: (comm: string, r: KernelProcessEntry) => (
+                          <Space size={4}>
+                            <Typography.Text strong>{comm}</Typography.Text>
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              pid {r.pid}
+                            </Typography.Text>
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: "发送",
+                        dataIndex: "tx_bytes",
+                        render: (bytes: number) => formatBytes(bytes),
+                      },
+                      {
+                        title: "重传",
+                        dataIndex: "retrans_count",
+                        render: (n: number) =>
+                          n > 0 ? <Tag color="volcano">{n}</Tag> : <Typography.Text type="secondary">0</Typography.Text>,
+                      },
+                    ]}
+                  />
+                </Card>
+              </Col>
+            )}
+            {kernel.skb_drop_hist && (
+              <Col xs={24} md={12}>
+                <Card size="small" title={`内核侧观测 — 协议栈丢包归因（共 ${kernel.skb_drop_hist.total_drops} 次）`}>
+                  <Table
+                    rowKey="reason_code"
+                    size="small"
+                    pagination={false}
+                    dataSource={kernel.skb_drop_hist.top_reasons}
+                    locale={{ emptyText: "未采集到内核丢包归因" }}
+                    columns={[
+                      {
+                        title: "丢包原因",
+                        dataIndex: "reason_name",
+                        render: (name: string, r: KernelDropReason) => (
+                          <Space orientation="vertical" size={0}>
+                            <Typography.Text code>{name}</Typography.Text>
+                            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                              {r.protocol}
+                            </Typography.Text>
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: "次数",
+                        dataIndex: "count",
+                        render: (n: number) => <Tag color="red">{n}</Tag>,
+                      },
+                    ]}
+                    expandable={{
+                      expandedRowRender: (r: KernelDropReason) => (
+                        <Typography.Text type="secondary">{r.description}</Typography.Text>
+                      ),
+                    }}
+                  />
+                </Card>
+              </Col>
+            )}
+          </Row>
+        )}
 
         <Card title="15 分钟评估时间线">
           {points.length === 0 ? (

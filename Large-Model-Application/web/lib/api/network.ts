@@ -120,6 +120,33 @@ type WirelessDeviceEventItem = {
   details_json: string;
 };
 
+type KernelProcessEntry = {
+  pid: number;
+  comm: string;
+  tx_bytes: number;
+  tx_packets: number;
+  retrans_count: number;
+};
+
+type KernelDropReason = {
+  reason_code: number;
+  reason_name: string;
+  description: string;
+  protocol: string;
+  count: number;
+  last_timestamp_ns: number;
+};
+
+// 深度内核观测。板端"没有数据就不发"，因此两个键都可能缺席——
+// 前端据此隐藏卡片，而不是渲染伪造的零值。
+type KernelObservations = {
+  process_top?: KernelProcessEntry[];
+  skb_drop_hist?: {
+    total_drops: number;
+    top_reasons: KernelDropReason[];
+  };
+};
+
 type CanonicalDiagnosis = {
   observed_pattern: string;
   hypothesis: string;
@@ -257,6 +284,11 @@ export const apiClient = {
       `/api/v1/network/assets/${encodeURIComponent(assetId)}/wireless-devices`,
     );
   },
+  getAssetKernelObservations(assetId: string): Promise<KernelObservations> {
+    return request<KernelObservations>(
+      `/api/v1/network/assets/${encodeURIComponent(assetId)}/kernel-observations`,
+    );
+  },
   listAssetWirelessEvents(assetId: string): Promise<WirelessDeviceEventItem[]> {
     return request<WirelessDeviceEventItem[]>(
       `/api/v1/network/assets/${encodeURIComponent(assetId)}/wireless-events`,
@@ -283,6 +315,9 @@ export type {
   SiteIncidentItem,
   WirelessDeviceBaselineItem,
   WirelessDeviceEventItem,
+  KernelObservations,
+  KernelProcessEntry,
+  KernelDropReason,
   CanonicalDiagnosis,
   DiagnosisPresentation,
   WirelessDiagnosisResponse,
