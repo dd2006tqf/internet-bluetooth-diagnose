@@ -3990,6 +3990,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network/assets/{asset_id}/incidents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List wireless site incidents recorded by this gateway asset */
+        get: operations["list_asset_site_incidents_api_v1_network_assets__asset_id__incidents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/assets/{asset_id}/kernel-observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Latest deep kernel observations (process top-N, skb drop attribution)
+         * @description 最近一批上行的深度内核观测（只读）。
+         *
+         *     返回 `{"process_top": [...], "skb_drop_hist": {...}}`，任一维度缺失时该键
+         *     省略——与板端"没有数据就不发"的纪律一致，前端据此隐藏对应卡片而不是显示
+         *     伪造的零值。
+         */
+        get: operations["get_asset_kernel_observations_api_v1_network_assets__asset_id__kernel_observations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/network/assets/{asset_id}/timeline": {
         parameters: {
             query?: never;
@@ -4001,6 +4042,72 @@ export interface paths {
         get: operations["get_network_timeline_api_v1_network_assets__asset_id__timeline_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/assets/{asset_id}/wireless-devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List peripheral wireless devices observed by this gateway asset */
+        get: operations["list_asset_wireless_devices_api_v1_network_assets__asset_id__wireless_devices_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/assets/{asset_id}/wireless-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List normalized wireless device events recorded by this gateway asset */
+        get: operations["list_asset_wireless_events_api_v1_network_assets__asset_id__wireless_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/assurance/incidents/{incident_id}/diagnosis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get wireless incident causal diagnosis (deterministic-first, zero model overhead)
+         * @description 只读快速获取诊断结论。
+         *
+         *     - 命中任何记录（不管是纯确定性还是带大模型润色）直接返回；
+         *     - 若无记录，秒级跑完确定性推理入库（llm_used=false）后返回；
+         *     - GET 绝对不调用模型，保证零调用成本与超低时延。
+         */
+        get: operations["get_wireless_incident_diagnosis_api_v1_network_assurance_incidents__incident_id__diagnosis_get"];
+        put?: never;
+        /**
+         * Deep diagnose wireless incident with LLM enrichment and causal guardrail
+         * @description 触发深度诊断与大模型解释润色。
+         *
+         *     - 确定性 Canonical 结论在模型调用前即确立，大模型无权改动假说；
+         *     - 经过 W1~W6 安全护栏审查；违规即刻降级展示确定性结论；
+         *     - GET 产出的 llm_used=false 记录绝不会阻断本接口执行 LLM enrichment。
+         */
+        post: operations["post_wireless_incident_diagnosis_api_v1_network_assurance_incidents__incident_id__diagnosis_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4026,6 +4133,41 @@ export interface paths {
          *     contradicts.
          */
         post: operations["network_copilot_api_v1_network_copilot_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/copilot/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get current hot model gateway configuration */
+        get: operations["get_copilot_model_config_api_v1_network_copilot_config_get"];
+        put?: never;
+        /** Update hot model gateway configuration without restart */
+        post: operations["update_copilot_model_config_api_v1_network_copilot_config_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/copilot/config/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test model gateway connection with provided parameters */
+        post: operations["test_copilot_model_connection_api_v1_network_copilot_config_test_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4063,6 +4205,30 @@ export interface paths {
          * @description Accept a batch, tolerating replay after a lost acknowledgement.
          */
         post: operations["ingest_edge_telemetry_api_v1_network_edge_telemetry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/edge/wireless-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ingest a signed batch of edge wireless events/incidents/baselines
+         * @description 接受板端无线事实上行（Phase 4a 独立端点，决策 D1）。
+         *
+         *     与遥测端点共享验签前置（`_read_verified_body`：先验签后解析，拒绝
+         *     原因不回显），但幂等键分域：这里按 event_id / incident_id 计数，
+         *     不看 network_epoch/sequence。重放是常态路径（板端游标在确认前不前移）。
+         */
+        post: operations["ingest_edge_wireless_events_api_v1_network_edge_wireless_events_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -6990,6 +7156,54 @@ export interface components {
             /** Recommended Actions */
             recommended_actions: string[];
         };
+        /** CopilotModelConfigRequest */
+        CopilotModelConfigRequest: {
+            /** Api Key */
+            api_key?: string | null;
+            /** Model Name */
+            model_name: string;
+            /**
+             * Timeout Seconds
+             * @default 90
+             */
+            timeout_seconds: number;
+            /** Upstream Url */
+            upstream_url: string;
+        };
+        /** CopilotModelConfigResponse */
+        CopilotModelConfigResponse: {
+            /** Api Key Masked */
+            api_key_masked: string;
+            /** Has Api Key */
+            has_api_key: boolean;
+            /** Model Name */
+            model_name: string;
+            /** Timeout Seconds */
+            timeout_seconds: number;
+            /** Upstream Url */
+            upstream_url: string;
+        };
+        /** CopilotModelTestRequest */
+        CopilotModelTestRequest: {
+            /** Api Key */
+            api_key?: string | null;
+            /** Model Name */
+            model_name: string;
+            /** Upstream Url */
+            upstream_url: string;
+        };
+        /** CopilotModelTestResponse */
+        CopilotModelTestResponse: {
+            /**
+             * Latency Ms
+             * @default 0
+             */
+            latency_ms: number;
+            /** Message */
+            message: string;
+            /** Ok */
+            ok: boolean;
+        };
         /** CopilotQuestionRequest */
         CopilotQuestionRequest: {
             /** Question */
@@ -8825,7 +9039,7 @@ export interface components {
             duplicates: number;
             /** Pending Actions */
             pending_actions?: {
-                [key: string]: string;
+                [key: string]: unknown;
             }[];
         };
         /** EligibilityDecisionBody */
@@ -18935,6 +19149,31 @@ export interface components {
              */
             status: "SIMULATED_ENTERPRISE_DATA_MODEL_CLOSURE_PASSED";
         };
+        /** SiteIncidentItem */
+        SiteIncidentItem: {
+            /** Affected Devices */
+            affected_devices: number;
+            /** Asset Id */
+            asset_id: string;
+            /** Evidence Event Ids */
+            evidence_event_ids?: string[];
+            /** Gateway Id */
+            gateway_id: string;
+            /** Incident Id */
+            incident_id: string;
+            /** Last Event Ms */
+            last_event_ms: number;
+            /** Resolved At Ms */
+            resolved_at_ms: number | null;
+            /** Site Id */
+            site_id: string;
+            /** Started At Ms */
+            started_at_ms: number;
+            /** State */
+            state: string;
+            /** Suspected Cause */
+            suspected_cause: string | null;
+        };
         /** SloEvidence */
         SloEvidence: {
             /**
@@ -20206,6 +20445,98 @@ export interface components {
             model_release_id: string;
             /** Source Frame Id */
             source_frame_id: string | null;
+        };
+        /** WirelessDeviceBaselineItem */
+        WirelessDeviceBaselineItem: {
+            /** Address Type */
+            address_type: string;
+            /** Asset Id */
+            asset_id: string;
+            /** Baseline Id */
+            baseline_id: string;
+            /** Baseline Rssi Dbm */
+            baseline_rssi_dbm: number | null;
+            /** Baseline Sample Count */
+            baseline_sample_count: number;
+            /** Device Address */
+            device_address: string;
+            /** First Seen Ms */
+            first_seen_ms: number | null;
+            /** Gateway Id */
+            gateway_id: string;
+            /** Last Seen Ms */
+            last_seen_ms: number | null;
+            /** Max Seen Rssi Dbm */
+            max_seen_rssi_dbm: number | null;
+            /** Min Seen Rssi Dbm */
+            min_seen_rssi_dbm: number | null;
+            /** Protocol */
+            protocol: string;
+            /** Site Id */
+            site_id: string;
+            /** State */
+            state: string;
+        };
+        /** WirelessDeviceEventItem */
+        WirelessDeviceEventItem: {
+            /** Address Type */
+            address_type: string;
+            /** Asset Id */
+            asset_id: string;
+            /** Details Json */
+            details_json: string;
+            /** Device Address */
+            device_address: string;
+            /** Event Id */
+            event_id: string;
+            /** Event Type */
+            event_type: string;
+            /** Gateway Id */
+            gateway_id: string;
+            /** Hci Index */
+            hci_index: number;
+            /** Protocol */
+            protocol: string;
+            /** Raw Reason Code */
+            raw_reason_code: number;
+            /** Reason */
+            reason: string;
+            /** Rssi At Event Dbm */
+            rssi_at_event_dbm: number | null;
+            /** Site Id */
+            site_id: string;
+            /** Source */
+            source: string;
+            /** Source Detail */
+            source_detail: string;
+            /** Ts Ms */
+            ts_ms: number;
+        };
+        /** WirelessEventIngestResult */
+        WirelessEventIngestResult: {
+            accepted: components["schemas"]["WirelessGroupCounts"];
+            duplicates: components["schemas"]["WirelessGroupCounts"];
+        };
+        /**
+         * WirelessGroupCounts
+         * @description 一组事实的接受/重复计数（重放安全的可观测出口）。
+         */
+        WirelessGroupCounts: {
+            /**
+             * Baselines
+             * @default 0
+             */
+            baselines: number;
+            /**
+             * Events
+             * @default 0
+             */
+            events: number;
+            /**
+             * Incidents
+             * @default 0
+             */
+            incidents: number;
         };
         /** WorkOrderAssignmentOptionResponse */
         WorkOrderAssignmentOptionResponse: {
@@ -34452,6 +34783,200 @@ export interface operations {
             };
         };
     };
+    list_asset_site_incidents_api_v1_network_assets__asset_id__incidents_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SiteIncidentItem"][];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_asset_kernel_observations_api_v1_network_assets__asset_id__kernel_observations_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
     get_network_timeline_api_v1_network_assets__asset_id__timeline_get: {
         parameters: {
             query?: {
@@ -34550,6 +35075,392 @@ export interface operations {
             };
         };
     };
+    list_asset_wireless_devices_api_v1_network_assets__asset_id__wireless_devices_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WirelessDeviceBaselineItem"][];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    list_asset_wireless_events_api_v1_network_assets__asset_id__wireless_events_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WirelessDeviceEventItem"][];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_wireless_incident_diagnosis_api_v1_network_assurance_incidents__incident_id__diagnosis_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                incident_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_wireless_incident_diagnosis_api_v1_network_assurance_incidents__incident_id__diagnosis_post: {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                incident_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
     network_copilot_api_v1_network_copilot_post: {
         parameters: {
             query?: never;
@@ -34572,6 +35483,296 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CopilotAnswerResponse"];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_copilot_model_config_api_v1_network_copilot_config_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CopilotModelConfigResponse"];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    update_copilot_model_config_api_v1_network_copilot_config_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CopilotModelConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CopilotModelConfigResponse"];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    test_copilot_model_connection_api_v1_network_copilot_config_test_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CopilotModelTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CopilotModelTestResponse"];
                 };
             };
             /** @description Invalid request precondition */
@@ -34758,6 +35959,100 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EdgeTelemetryAcceptedResponse"];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    ingest_edge_wireless_events_api_v1_network_edge_wireless_events_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Edge-Tenant": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WirelessEventIngestResult"];
                 };
             };
             /** @description Invalid request precondition */
