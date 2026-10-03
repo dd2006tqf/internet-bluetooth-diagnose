@@ -38,6 +38,7 @@ from industrial_ops_agent.api.dependencies import (
     get_identity,
     get_network_assurance_service,
     get_network_copilot_service,
+    get_risk_prediction_service,
     get_wireless_diagnosis_service,
 )
 from industrial_ops_agent.api.errors import STANDARD_ERROR_RESPONSES, AppError
@@ -71,6 +72,7 @@ from industrial_ops_agent.network_assurance.signing import (
     NetworkSignatureError,
 )
 from industrial_ops_agent.network_assurance.wireless_contracts import (
+    PredictionResult,
     WirelessEventIngestResult,
     WirelessEventUplinkBatch,
 )
@@ -955,3 +957,36 @@ async def get_asset_kernel_observations(
 
     _require_read_scope(request, identity, authorizer, asset_id)
     return service.get_kernel_snapshot_extras(identity.tenant_context, asset_id)
+
+
+# ============================================================================
+# L3 Prediction: 单设备风险窗口（路线图 ③）
+# ============================================================================
+
+
+@router.get(
+    "/assets/{asset_id}/wireless-devices/{device_address}/risk-prediction",
+    response_model=PredictionResult,
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Predict the link-failure risk window for one wireless device (L3)",
+)
+async def get_device_risk_prediction(
+    request: Request,
+    asset_id: str,
+    device_address: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    risk_service: Annotated[Any, Depends(get_risk_prediction_service)],
+    window_hours: Annotated[int, Query(ge=24, le=1440)] = 168,
+) -> PredictionResult:
+    """契约 C 的三态之一：RiskWindow（AVAILABLE/UNAVAILABLE）或 InsufficientPrediction。
+
+    纯读路径：L3 是确定性算法，不调用任何大模型；GET 语义，不写任何表。
+    """
+    _require_read_scope(request, identity, authorizer, asset_id)
+    return risk_service.predict_device(
+        identity.tenant_context,
+        asset_id,
+        device_address,
+        horizon_hours=window_hours,
+    )

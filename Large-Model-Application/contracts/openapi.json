@@ -7567,6 +7567,15 @@
         "title": "DataLineageSourceChainResponse",
         "type": "object"
       },
+      "DataSufficiency": {
+        "enum": [
+          "INSUFFICIENT",
+          "PARTIAL",
+          "SUFFICIENT"
+        ],
+        "title": "DataSufficiency",
+        "type": "string"
+      },
       "DatasetArtifactResponse": {
         "properties": {
           "artifact_id": {
@@ -21042,6 +21051,54 @@
         "title": "IncidentResponse",
         "type": "object"
       },
+      "InsufficientPrediction": {
+        "additionalProperties": false,
+        "description": "风险无法判断时产出——系统没有产生风险判断，而不是\"风险未知\"。",
+        "properties": {
+          "available_evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Available Evidence Ids",
+            "type": "array"
+          },
+          "data_sufficiency": {
+            "$ref": "#/components/schemas/DataSufficiency",
+            "default": "INSUFFICIENT"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "missing_requirements": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Requirements",
+            "type": "array"
+          },
+          "model_version": {
+            "title": "Model Version",
+            "type": "string"
+          },
+          "subject_id": {
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "subject_type": {
+            "$ref": "#/components/schemas/SubjectType",
+            "default": "DEVICE"
+          }
+        },
+        "required": [
+          "subject_id",
+          "model_version",
+          "generated_at"
+        ],
+        "title": "InsufficientPrediction",
+        "type": "object"
+      },
       "JointSignoffEvidence": {
         "additionalProperties": false,
         "properties": {
@@ -34086,6 +34143,148 @@
         "title": "RevokeOfflinePackBody",
         "type": "object"
       },
+      "RiskDriver": {
+        "additionalProperties": false,
+        "description": "单个风险驱动因子。\n\n``contribution_pct`` 的产品文案一律是\"风险驱动贡献度\"，**不是\"原因占比\"**：\n它只表示该指标对预测模型输出的贡献，不表示现实故障的因果配比。",
+        "properties": {
+          "contribution_pct": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Contribution Pct",
+            "type": "number"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/TrendDirection"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          }
+        },
+        "required": [
+          "metric",
+          "contribution_pct",
+          "direction"
+        ],
+        "title": "RiskDriver",
+        "type": "object"
+      },
+      "RiskLevel": {
+        "enum": [
+          "LOW",
+          "MEDIUM",
+          "HIGH"
+        ],
+        "title": "RiskLevel",
+        "type": "string"
+      },
+      "RiskWindow": {
+        "additionalProperties": false,
+        "description": "风险可判断时产出。窗口可估与否由 window_estimation_status 表达。",
+        "properties": {
+          "data_sufficiency": {
+            "$ref": "#/components/schemas/DataSufficiency"
+          },
+          "drivers": {
+            "items": {
+              "$ref": "#/components/schemas/RiskDriver"
+            },
+            "title": "Drivers",
+            "type": "array"
+          },
+          "failure_criterion_id": {
+            "title": "Failure Criterion Id",
+            "type": "string"
+          },
+          "failure_criterion_version": {
+            "title": "Failure Criterion Version",
+            "type": "string"
+          },
+          "forecast_horizon_hours": {
+            "default": 168,
+            "exclusiveMinimum": 0.0,
+            "title": "Forecast Horizon Hours",
+            "type": "integer"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "model_version": {
+            "title": "Model Version",
+            "type": "string"
+          },
+          "prediction_confidence": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "risk_level": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "subject_id": {
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "subject_type": {
+            "$ref": "#/components/schemas/SubjectType",
+            "default": "DEVICE"
+          },
+          "trend_evidence": {
+            "items": {
+              "$ref": "#/components/schemas/TrendEvidence"
+            },
+            "title": "Trend Evidence",
+            "type": "array"
+          },
+          "window_earliest_hours": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Earliest Hours"
+          },
+          "window_estimation_status": {
+            "$ref": "#/components/schemas/WindowEstimationStatus"
+          },
+          "window_latest_hours": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Latest Hours"
+          }
+        },
+        "required": [
+          "subject_id",
+          "risk_level",
+          "window_estimation_status",
+          "prediction_confidence",
+          "data_sufficiency",
+          "failure_criterion_id",
+          "failure_criterion_version",
+          "model_version",
+          "generated_at"
+        ],
+        "title": "RiskWindow",
+        "type": "object"
+      },
       "RollbackBody": {
         "properties": {
           "reason_code": {
@@ -39114,6 +39313,15 @@
         "title": "StartRecoveryDrillBody",
         "type": "object"
       },
+      "SubjectType": {
+        "description": "预测主体类型。v1 只实现 DEVICE；SITE 保留枚举但显式不支持。",
+        "enum": [
+          "DEVICE",
+          "SITE"
+        ],
+        "title": "SubjectType",
+        "type": "string"
+      },
       "SubmitExpertRecommendationRequest": {
         "properties": {
           "basis": {
@@ -41584,6 +41792,41 @@
         "title": "TranscriptEntityResponse",
         "type": "object"
       },
+      "TrendDirection": {
+        "enum": [
+          "DETERIORATING",
+          "STABLE"
+        ],
+        "title": "TrendDirection",
+        "type": "string"
+      },
+      "TrendEvidence": {
+        "additionalProperties": false,
+        "description": "事实性趋势证据（如\"基线在 72h 内自 -60 漂移到 -64\"）。",
+        "properties": {
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "statement": {
+            "title": "Statement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "metric",
+          "statement"
+        ],
+        "title": "TrendEvidence",
+        "type": "object"
+      },
       "UnverifiedScenario": {
         "enum": [
           "KSERVE_METRIC_LABEL_QUERY",
@@ -41983,6 +42226,15 @@
         ],
         "title": "VisualFindingResponse",
         "type": "object"
+      },
+      "WindowEstimationStatus": {
+        "description": "窗口是否可估。UNAVAILABLE 时 earliest/latest 为 null，但风险判断仍成立。",
+        "enum": [
+          "AVAILABLE",
+          "UNAVAILABLE"
+        ],
+        "title": "WindowEstimationStatus",
+        "type": "string"
       },
       "WirelessDeviceBaselineItem": {
         "properties": {
@@ -68332,6 +68584,164 @@
           }
         },
         "summary": "List peripheral wireless devices observed by this gateway asset",
+        "tags": [
+          "network-assurance"
+        ]
+      }
+    },
+    "/api/v1/network/assets/{asset_id}/wireless-devices/{device_address}/risk-prediction": {
+      "get": {
+        "description": "契约 C 的三态之一：RiskWindow（AVAILABLE/UNAVAILABLE）或 InsufficientPrediction。\n\n纯读路径：L3 是确定性算法，不调用任何大模型；GET 语义，不写任何表。",
+        "operationId": "get_device_risk_prediction_api_v1_network_assets__asset_id__wireless_devices__device_address__risk_prediction_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "device_address",
+            "required": true,
+            "schema": {
+              "title": "Device Address",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "window_hours",
+            "required": false,
+            "schema": {
+              "default": 168,
+              "maximum": 1440,
+              "minimum": 24,
+              "title": "Window Hours",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RiskWindow"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InsufficientPrediction"
+                    }
+                  ],
+                  "title": "Response Get Device Risk Prediction Api V1 Network Assets  Asset Id  Wireless Devices  Device Address  Risk Prediction Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Invalid request precondition"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Action is not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Resource not found or not visible"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Idempotency or version conflict"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Media type mismatch"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Required dependency unavailable"
+          }
+        },
+        "summary": "Predict the link-failure risk window for one wireless device (L3)",
         "tags": [
           "network-assurance"
         ]

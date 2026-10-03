@@ -690,6 +690,16 @@ async def get_wireless_diagnosis_service(request: Request) -> Any:
     return WirelessDiagnosisService(request.app.state.database)
 
 
+async def get_risk_prediction_service(request: Request) -> Any:
+    """【路线图 ③】Build the L3 risk prediction service per request.
+
+    纯确定性组装（取数 + 调用），每次请求新建：provider 无跨请求状态。
+    """
+    from industrial_ops_agent.network_assurance.risk_service import RiskPredictionService
+
+    return RiskPredictionService(request.app.state.database)
+
+
 async def get_edge_telemetry_verifier(request: Request) -> EdgeTelemetryVerifier:
     """Return the provisioned edge trust anchor.
 
