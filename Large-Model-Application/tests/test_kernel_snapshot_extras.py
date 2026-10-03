@@ -68,9 +68,11 @@ def tenant_context() -> TenantContext:
 
 
 def _window(
-    db: Database, snapshots: list[dict[str, Any]], *, to_ms: int = 1_700_000_010_000
+    db: Database, snapshots: list[dict[str, Any]], *, to_ms: int = 1_700_000_010_000,
+    updated_at: datetime | None = None,
 ) -> None:
     with Session(db.engine) as session:  # type: ignore[attr-defined]
+        ts = updated_at or datetime.now(UTC)
         session.add(
             NetworkEnvWindowRecord(
                 window_id=f"nenv-{to_ms}",
@@ -83,6 +85,8 @@ def _window(
                 wifi_anomaly=False,
                 coexistence_warning=False,
                 snapshots_json=snapshots,
+                created_at=ts,
+                updated_at=ts,
             )
         )
         session.commit()
@@ -159,6 +163,39 @@ def test_latest_window_wins(test_db: Database, tenant_context: TenantContext):
 
     extras = NetworkAssuranceService(test_db).get_kernel_snapshot_extras(tenant_context, ASSET)
     assert extras["process_top"][0]["comm"] == "newer"
+
+
+def test_quiet_period_live_window_beats_stale_fact_window(
+    test_db: Database, tenant_context: TenantContext
+):
+    """安静期（无新事实）时，实时窗口必须压过历史事实窗口。
+
+    板端把环境窗口的时间轴锚定在稀疏事实（事件/事故）上：没有新事实时
+    ``to_ms`` 恒为 0，当前内核快照每轮 UPSERT 进同一个 ``to_ms=0`` 行；
+    上一次有事件时留下的事实窗口则永远停在事件时刻。按 ``to_ms`` 排序会把
+    呈现层固定在历史事实窗口上（实测落后近 20 小时）——而这里的语义是
+    "最近一批上行"，新鲜度只能由最近一次 UPSERT（``updated_at``）回答。
+    """
+    stale_at = datetime(2026, 10, 2, 16, 32, 15, tzinfo=UTC)
+    live_at = datetime(2026, 10, 3, 12, 18, 21, tzinfo=UTC)
+
+    # 最后一次事件时刻的事实窗口（to_ms 大，内容停在昨天）
+    _window(
+        test_db,
+        [{"kind": "process_top", "top_processes": [{"pid": 1, "comm": "stale-ssh"}]}],
+        to_ms=1_790_958_735_553,
+        updated_at=stale_at,
+    )
+    # 安静期实时窗口（to_ms=0，每轮被最新快照刷新）
+    _window(
+        test_db,
+        [{"kind": "process_top", "top_processes": [{"pid": 2, "comm": "live-ssh"}]}],
+        to_ms=0,
+        updated_at=live_at,
+    )
+
+    extras = NetworkAssuranceService(test_db).get_kernel_snapshot_extras(tenant_context, ASSET)
+    assert extras["process_top"][0]["comm"] == "live-ssh"
 
 
 # ---------------------------------------------------------------------------

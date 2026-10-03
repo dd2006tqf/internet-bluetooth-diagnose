@@ -699,14 +699,18 @@ class NetworkAssuranceService:
     def get_kernel_snapshot_extras(
         self, context: TenantContext, asset_id: str
     ) -> dict[str, Any]:
-        """最新一条环境窗口里的深度内核快照（进程画像 / skb_drop 归因）。
+        """最近一批上行的深度内核快照（进程画像 / skb_drop 归因）。
 
         这是**呈现层证据**，不是判定输入：云端规则引擎与 W1~W6 因果护栏都不读
         它。Copilot 用它把"网络拥塞/丢包"解释到具体进程与内核 drop 原因，
         但结论仍只能来自边缘的 SLE 判定。
 
-        取最近一条 `to_ms` 最大的窗口；无窗口或无快照条目时返回空字典，
-        调用方据此静默省略该段（绝不伪造"内核观测正常"）。
+        按最近一次 UPSERT（``updated_at``）取窗口，``to_ms`` 作平手裁决。
+        不能按 ``to_ms`` 排序：板端把窗口时间轴锚定在稀疏事实上，安静期每轮
+        把当前快照刷进同一个 ``to_ms=0`` 行，而事实窗口停留在事件时刻——按
+        ``to_ms`` 排序会把展示固定在历史事实窗口（实测落后近 20 小时）。
+        无窗口或无快照条目时返回空字典，调用方据此静默省略该段
+        （绝不伪造"内核观测正常"）。
         """
 
         with self._database.transaction(context) as session:
@@ -716,7 +720,10 @@ class NetworkAssuranceService:
                     NetworkEnvWindowRecord.tenant_id == context.tenant_id,
                     NetworkEnvWindowRecord.asset_id == asset_id,
                 )
-                .order_by(NetworkEnvWindowRecord.to_ms.desc())
+                .order_by(
+                    NetworkEnvWindowRecord.updated_at.desc(),
+                    NetworkEnvWindowRecord.to_ms.desc(),
+                )
                 .limit(1)
             ).first()
             if record is None or not record.snapshots_json:
