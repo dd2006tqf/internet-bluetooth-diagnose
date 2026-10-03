@@ -387,6 +387,27 @@ class NetworkAssetSummary(_ClosedModel):
     network_epoch: int | None
 
 
+class SiteGatewayItem(_ClosedModel):
+    """One gateway observed reporting facts for a site (M2 site inventory).
+
+    Display fields are enriched from ``network_assets``; a gateway that has
+    never registered as an asset still appears (it reported facts — hiding it
+    would under-count the site) with ``None`` display fields.
+    """
+
+    gateway_id: str
+    display_name: str | None
+    connection_status: ConnectionStatusLiteral | None
+    last_heartbeat_at: datetime | None
+
+
+class SiteSummary(_ClosedModel):
+    """Operator-facing view of one field site and the gateways in it."""
+
+    site_id: str
+    gateways: list[SiteGatewayItem]
+
+
 class NetworkAssetDetail(_ClosedModel):
     """Full five-dimension view of one managed edge device."""
 

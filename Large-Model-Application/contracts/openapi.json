@@ -38377,6 +38377,63 @@
         "title": "SimulatedEnterpriseClosureReport",
         "type": "object"
       },
+      "SiteGatewayItem": {
+        "additionalProperties": false,
+        "description": "One gateway observed reporting facts for a site (M2 site inventory).\n\nDisplay fields are enriched from ``network_assets``; a gateway that has\nnever registered as an asset still appears (it reported facts — hiding it\nwould under-count the site) with ``None`` display fields.",
+        "properties": {
+          "connection_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ONLINE",
+                  "WEAK_NET",
+                  "OFFLINE"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Status"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "gateway_id": {
+            "title": "Gateway Id",
+            "type": "string"
+          },
+          "last_heartbeat_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Heartbeat At"
+          }
+        },
+        "required": [
+          "gateway_id",
+          "display_name",
+          "connection_status",
+          "last_heartbeat_at"
+        ],
+        "title": "SiteGatewayItem",
+        "type": "object"
+      },
       "SiteIncidentItem": {
         "properties": {
           "affected_devices": {
@@ -38454,6 +38511,29 @@
           "suspected_cause"
         ],
         "title": "SiteIncidentItem",
+        "type": "object"
+      },
+      "SiteSummary": {
+        "additionalProperties": false,
+        "description": "Operator-facing view of one field site and the gateways in it.",
+        "properties": {
+          "gateways": {
+            "items": {
+              "$ref": "#/components/schemas/SiteGatewayItem"
+            },
+            "title": "Gateways",
+            "type": "array"
+          },
+          "site_id": {
+            "title": "Site Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "site_id",
+          "gateways"
+        ],
+        "title": "SiteSummary",
         "type": "object"
       },
       "SloEvidence": {
@@ -69486,6 +69566,130 @@
           }
         },
         "summary": "Ingest a signed batch of edge wireless events/incidents/baselines",
+        "tags": [
+          "network-assurance"
+        ]
+      }
+    },
+    "/api/v1/network/sites": {
+      "get": {
+        "description": "M2 现场聚合查询出口：回答\"这个现场有哪几台网关\"。\n\n诊断侧的跨网关窗口聚合发生在 wireless_diagnosis 内部，运维此前没有\n任何入口看到现场级的网关清单。site/gateway 身份只随事实上行携带，\n所以清单由三张事实表取并集得出（见 ``service.list_sites``）。",
+        "operationId": "list_field_sites_api_v1_network_sites_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SiteSummary"
+                  },
+                  "title": "Response List Field Sites Api V1 Network Sites Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Invalid request precondition"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Action is not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Resource not found or not visible"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Idempotency or version conflict"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Media type mismatch"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Required dependency unavailable"
+          }
+        },
+        "summary": "List field sites and the gateways reporting facts for each",
         "tags": [
           "network-assurance"
         ]

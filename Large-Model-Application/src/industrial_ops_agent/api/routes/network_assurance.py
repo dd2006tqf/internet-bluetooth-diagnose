@@ -50,6 +50,7 @@ from industrial_ops_agent.network_assurance.contracts import (
     NetworkAssetSummary,
     NetworkTelemetryBatch,
     NetworkTimelinePoint,
+    SiteSummary,
 )
 from industrial_ops_agent.network_assurance.copilot import NetworkCopilotService
 from industrial_ops_agent.network_assurance.model_config import (
@@ -399,6 +400,34 @@ async def list_network_assets(
         request_id=getattr(request.state, "request_id", "unavailable"),
     )
     return service.list_assets(identity.tenant_context)
+
+
+@router.get(
+    "/sites",
+    response_model=list[SiteSummary],
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="List field sites and the gateways reporting facts for each",
+)
+async def list_field_sites(
+    request: Request,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+) -> list[SiteSummary]:
+    """M2 现场聚合查询出口：回答"这个现场有哪几台网关"。
+
+    诊断侧的跨网关窗口聚合发生在 wireless_diagnosis 内部，运维此前没有
+    任何入口看到现场级的网关清单。site/gateway 身份只随事实上行携带，
+    所以清单由三张事实表取并集得出（见 ``service.list_sites``）。
+    """
+
+    authorizer.require(
+        identity,
+        Action.READ_NETWORK_ASSURANCE,
+        ResourceContext(identity.tenant_id),
+        request_id=getattr(request.state, "request_id", "unavailable"),
+    )
+    return service.list_sites(identity.tenant_context)
 
 
 @router.get(

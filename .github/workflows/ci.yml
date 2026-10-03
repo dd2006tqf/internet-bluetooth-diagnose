@@ -84,6 +84,7 @@ jobs:
           tests/test_knowledge_bridge.py
           tests/test_knowledge_citation.py
           tests/test_kernel_snapshot_extras.py
+          tests/test_site_gateways.py
           tests/test_wireless_diagnosis_from_tables.py
           tests/test_asset_bridge.py
           tests/test_incident_draft_automation.py

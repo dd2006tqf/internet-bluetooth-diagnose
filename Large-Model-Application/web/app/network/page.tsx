@@ -1,6 +1,6 @@
 "use client";
 
-import { Badge, Card, Descriptions, Progress, Table, Tag, Typography } from "antd";
+import { Badge, Card, Descriptions, Progress, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -22,6 +22,19 @@ type NetworkAssetSummary = {
   last_heartbeat_at: string | null;
 };
 
+// 现场聚合查询出口（M2）：与 /sites 响应逐字段对应。
+type SiteGatewayItem = {
+  gateway_id: string;
+  display_name: string | null;
+  connection_status: "ONLINE" | "WEAK_NET" | "OFFLINE" | null;
+  last_heartbeat_at: string | null;
+};
+
+type SiteSummary = {
+  site_id: string;
+  gateways: SiteGatewayItem[];
+};
+
 function healthColor(state: string) {
   if (state === "GOOD") return "green";
   if (state === "DEGRADED") return "gold";
@@ -34,6 +47,52 @@ function connectionColor(status: string) {
   if (status === "WEAK_NET") return "gold";
   return "red";
 }
+
+function gatewayBadgeStatus(status: SiteGatewayItem["connection_status"]) {
+  if (status === "ONLINE") return "success" as const;
+  if (status === "WEAK_NET") return "warning" as const;
+  if (status === "OFFLINE") return "error" as const;
+  return "default" as const;
+}
+
+const siteColumns: ColumnsType<SiteSummary> = [
+  {
+    title: "现场",
+    dataIndex: "site_id",
+    render: (value: string) => <Typography.Text code>{value}</Typography.Text>,
+  },
+  {
+    title: "网关数",
+    key: "gateway_count",
+    render: (_: unknown, record: SiteSummary) => (
+      <Tag color="blue">{record.gateways.length} 台</Tag>
+    ),
+  },
+  {
+    title: "网关清单",
+    key: "gateways",
+    render: (_: unknown, record: SiteSummary) => (
+      <Space size={[0, 4]} wrap>
+        {record.gateways.map((g) => {
+          // connection_status 为 null ⇔ 未在网络资产注册（见 /sites 契约）
+          if (g.connection_status === null) {
+            return (
+              <Tag key={g.gateway_id}>{g.gateway_id}（未注册）</Tag>
+            );
+          }
+          return (
+            <Link key={g.gateway_id} href={`/network/${g.gateway_id}`}>
+              <Badge
+                status={gatewayBadgeStatus(g.connection_status)}
+                text={g.display_name ?? g.gateway_id}
+              />
+            </Link>
+          );
+        })}
+      </Space>
+    ),
+  },
+];
 
 const columns: ColumnsType<NetworkAssetSummary> = [
   {
@@ -92,6 +151,8 @@ const columns: ColumnsType<NetworkAssetSummary> = [
 export default function NetworkAssetsPage() {
   const [assets, setAssets] = useState<NetworkAssetSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [sites, setSites] = useState<SiteSummary[]>([]);
+  const [loadingSites, setLoadingSites] = useState(false);
 
   useEffect(() => {
     apiClient
@@ -99,6 +160,13 @@ export default function NetworkAssetsPage() {
       .then(setAssets)
       .catch(() => setAssets([]))
       .finally(() => setLoading(false));
+
+    setLoadingSites(true);
+    apiClient
+      .listSites()
+      .then(setSites)
+      .catch(() => setSites([]))
+      .finally(() => setLoadingSites(false));
   }, []);
 
   return (
@@ -110,6 +178,16 @@ export default function NetworkAssetsPage() {
             边缘设备上报的不可变网络评估快照（WeakNet 单一事实源）
           </Typography.Text>
         </div>
+        <Card title={`现场与网关 (${sites.length})`}>
+          <Table
+            rowKey="site_id"
+            loading={loadingSites}
+            columns={siteColumns}
+            dataSource={sites}
+            pagination={false}
+            locale={{ emptyText: "暂无现场（尚无任何网关上报现场事实）" }}
+          />
+        </Card>
         <Card>
           <Table
             rowKey="asset_id"

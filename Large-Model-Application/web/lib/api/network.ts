@@ -55,6 +55,20 @@ type NetworkAssetDetail = {
   latest_experience: Record<string, unknown> | null;
 };
 
+// 现场聚合查询出口（M2）：site/gateway 身份只随事实携带，展示字段从
+// network_assets 富化；未注册网关的富化字段为 null（如实出现，不隐藏）。
+type SiteGatewayItem = {
+  gateway_id: string;
+  display_name: string | null;
+  connection_status: "ONLINE" | "WEAK_NET" | "OFFLINE" | null;
+  last_heartbeat_at: string | null;
+};
+
+type SiteSummary = {
+  site_id: string;
+  gateways: SiteGatewayItem[];
+};
+
 type CopilotAnswer = {
   asset_id: string;
   overall_state: string;
@@ -206,6 +220,9 @@ export const apiClient = {
   listAssets(): Promise<NetworkAssetSummary[]> {
     return request<NetworkAssetSummary[]>("/api/v1/network/assets");
   },
+  listSites(): Promise<SiteSummary[]> {
+    return request<SiteSummary[]>("/api/v1/network/sites");
+  },
   getAsset(assetId: string): Promise<NetworkAssetDetail> {
     return request<NetworkAssetDetail>(
       `/api/v1/network/assets/${encodeURIComponent(assetId)}`,
@@ -310,6 +327,8 @@ export const apiClient = {
 export type {
   NetworkAssetSummary,
   NetworkAssetDetail,
+  SiteSummary,
+  SiteGatewayItem,
   TimelinePoint,
   CopilotAnswer,
   SiteIncidentItem,

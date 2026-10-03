@@ -61,6 +61,8 @@ from industrial_ops_agent.network_assurance.contracts import (
     NetworkDeviceTelemetry,
     NetworkTelemetryBatch,
     NetworkTimelinePoint,
+    SiteGatewayItem,
+    SiteSummary,
 )
 from industrial_ops_agent.network_assurance.wireless_contracts import (
     BaselineView,
@@ -675,6 +677,74 @@ class NetworkAssuranceService:
                 .order_by(NetworkAssetRecord.asset_id)
             ).scalars()
             return [self._to_summary(record, now=now) for record in records]
+
+    def list_sites(self, context: TenantContext) -> list[SiteSummary]:
+        """每个现场有哪几台网关（M2 现场聚合的查询出口）。
+
+        现场/网关身份只随事实携带——``network_assets`` 行没有现场列，所以三张
+        事实表（baselines / events / incidents）取并集：任何一张都可能是一台
+        网关的首次出现（例如基线尚未建立但已有事件）。``site_id`` 为空的历史
+        缺省行不是一个现场，不呈现为匿名分组。展示字段从 ``network_assets``
+        富化；未注册的网关如实出现（少报现场网关数比多报更危险），富化字段为
+        None。与诊断侧按事件时刻取窗口不同，这里回答的是"当前库存"。
+        """
+        now = datetime.now(UTC)
+        with self._database.transaction(context) as session:
+            pairs: set[tuple[str, str]] = set()
+            for model in (
+                NetworkDeviceBaselineRecord,
+                NetworkWirelessEventRecord,
+                NetworkSiteIncidentRecord,
+            ):
+                rows = session.execute(
+                    select(model.site_id, model.gateway_id)
+                    .where(
+                        model.tenant_id == context.tenant_id,
+                        model.site_id != "",
+                        model.gateway_id != "",
+                    )
+                    .distinct()
+                ).all()
+                pairs.update((site_id, gateway_id) for site_id, gateway_id in rows)
+
+            if not pairs:
+                return []
+
+            gateway_ids = {gateway_id for _, gateway_id in pairs}
+            assets = {
+                record.asset_id: record
+                for record in session.scalars(
+                    select(NetworkAssetRecord).where(
+                        NetworkAssetRecord.tenant_id == context.tenant_id,
+                        NetworkAssetRecord.asset_id.in_(gateway_ids),
+                    )
+                ).all()
+            }
+
+            by_site: dict[str, list[SiteGatewayItem]] = {}
+            for site_id, gateway_id in sorted(pairs):
+                asset = assets.get(gateway_id)
+                by_site.setdefault(site_id, []).append(
+                    SiteGatewayItem(
+                        gateway_id=gateway_id,
+                        display_name=asset.display_name if asset else None,
+                        connection_status=_connection_status(
+                            overall_state=asset.overall_state,
+                            last_heartbeat_at=asset.last_heartbeat_at,
+                            now=now,
+                            offline_after_seconds=self._offline_after_seconds,
+                        )
+                        if asset
+                        else None,
+                        last_heartbeat_at=as_utc(asset.last_heartbeat_at)
+                        if asset and asset.last_heartbeat_at
+                        else None,
+                    )
+                )
+            return [
+                SiteSummary(site_id=site_id, gateways=gateways)
+                for site_id, gateways in sorted(by_site.items())
+            ]
 
     def get_asset(self, context: TenantContext, asset_id: str) -> NetworkAssetDetail:
         now = datetime.now(UTC)

@@ -4235,6 +4235,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network/sites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List field sites and the gateways reporting facts for each
+         * @description M2 现场聚合查询出口：回答"这个现场有哪几台网关"。
+         *
+         *     诊断侧的跨网关窗口聚合发生在 wireless_diagnosis 内部，运维此前没有
+         *     任何入口看到现场级的网关清单。site/gateway 身份只随事实上行携带，
+         *     所以清单由三张事实表取并集得出（见 ``service.list_sites``）。
+         */
+        get: operations["list_field_sites_api_v1_network_sites_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations/cost": {
         parameters: {
             query?: never;
@@ -19149,6 +19173,24 @@ export interface components {
              */
             status: "SIMULATED_ENTERPRISE_DATA_MODEL_CLOSURE_PASSED";
         };
+        /**
+         * SiteGatewayItem
+         * @description One gateway observed reporting facts for a site (M2 site inventory).
+         *
+         *     Display fields are enriched from ``network_assets``; a gateway that has
+         *     never registered as an asset still appears (it reported facts — hiding it
+         *     would under-count the site) with ``None`` display fields.
+         */
+        SiteGatewayItem: {
+            /** Connection Status */
+            connection_status: ("ONLINE" | "WEAK_NET" | "OFFLINE") | null;
+            /** Display Name */
+            display_name: string | null;
+            /** Gateway Id */
+            gateway_id: string;
+            /** Last Heartbeat At */
+            last_heartbeat_at: string | null;
+        };
         /** SiteIncidentItem */
         SiteIncidentItem: {
             /** Affected Devices */
@@ -19173,6 +19215,16 @@ export interface components {
             state: string;
             /** Suspected Cause */
             suspected_cause: string | null;
+        };
+        /**
+         * SiteSummary
+         * @description Operator-facing view of one field site and the gateways in it.
+         */
+        SiteSummary: {
+            /** Gateways */
+            gateways: components["schemas"]["SiteGatewayItem"][];
+            /** Site Id */
+            site_id: string;
         };
         /** SloEvidence */
         SloEvidence: {
@@ -36053,6 +36105,100 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WirelessEventIngestResult"];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    list_field_sites_api_v1_network_sites_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SiteSummary"][];
                 };
             };
             /** @description Invalid request precondition */
