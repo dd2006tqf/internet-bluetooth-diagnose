@@ -215,6 +215,120 @@ class IncidentEvidenceBundle(_ClosedModel):
 
 
 # ---------------------------------------------------------------------------
+# L3 Prediction：PredictionResult 联合类型
+#
+# 三态语义（契约 C）：
+#   风险无法判断            → InsufficientPrediction（系统没有产生风险判断）
+#   风险可判断但时间不可估   → RiskWindow(window_estimation_status=UNAVAILABLE)
+#   风险与时间均可估         → RiskWindow(window_estimation_status=AVAILABLE)
+#
+# "证据不足"不是第四种风险等级——risk_level 只有 LOW/MEDIUM/HIGH。
+# ---------------------------------------------------------------------------
+
+
+class SubjectType(StrEnum):
+    """预测主体类型。v1 只实现 DEVICE；SITE 保留枚举但显式不支持。"""
+
+    DEVICE = "DEVICE"
+    SITE = "SITE"
+
+
+class RiskLevel(StrEnum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+
+
+class WindowEstimationStatus(StrEnum):
+    """窗口是否可估。UNAVAILABLE 时 earliest/latest 为 null，但风险判断仍成立。"""
+
+    AVAILABLE = "AVAILABLE"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class DataSufficiency(StrEnum):
+    INSUFFICIENT = "INSUFFICIENT"
+    PARTIAL = "PARTIAL"
+    SUFFICIENT = "SUFFICIENT"
+
+
+class TrendDirection(StrEnum):
+    DETERIORATING = "DETERIORATING"
+    STABLE = "STABLE"
+
+
+class RiskDriver(_ClosedModel):
+    """单个风险驱动因子。
+
+    ``contribution_pct`` 的产品文案一律是"风险驱动贡献度"，**不是"原因占比"**：
+    它只表示该指标对预测模型输出的贡献，不表示现实故障的因果配比。
+    """
+
+    metric: str
+    contribution_pct: float = Field(ge=0.0, le=100.0)
+    direction: TrendDirection
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class TrendEvidence(_ClosedModel):
+    """事实性趋势证据（如"基线在 72h 内自 -60 漂移到 -64"）。"""
+
+    metric: str
+    statement: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class RiskWindow(_ClosedModel):
+    """风险可判断时产出。窗口可估与否由 window_estimation_status 表达。"""
+
+    subject_type: SubjectType = SubjectType.DEVICE
+    subject_id: str
+
+    risk_level: RiskLevel
+
+    window_estimation_status: WindowEstimationStatus
+    window_earliest_hours: int | None = Field(default=None, ge=0)
+    window_latest_hours: int | None = Field(default=None, ge=0)
+    forecast_horizon_hours: int = Field(default=168, gt=0)
+
+    prediction_confidence: RiskLevel
+    data_sufficiency: DataSufficiency
+
+    drivers: list[RiskDriver] = Field(default_factory=list)
+    trend_evidence: list[TrendEvidence] = Field(default_factory=list)
+
+    failure_criterion_id: str
+    failure_criterion_version: str
+    model_version: str
+    generated_at: datetime
+
+
+class InsufficientPrediction(_ClosedModel):
+    """风险无法判断时产出——系统没有产生风险判断，而不是"风险未知"。"""
+
+    subject_type: SubjectType = SubjectType.DEVICE
+    subject_id: str
+
+    data_sufficiency: DataSufficiency = DataSufficiency.INSUFFICIENT
+    missing_requirements: list[str] = Field(default_factory=list)
+    available_evidence_ids: list[str] = Field(default_factory=list)
+
+    model_version: str
+    generated_at: datetime
+
+
+PredictionResult = RiskWindow | InsufficientPrediction
+
+
+class UnsupportedSubjectType(RuntimeError):
+    """v1 只支持 DEVICE 级预测；SITE 级需要独立的聚合与失效语义。"""
+
+    def __init__(self, subject_type: SubjectType) -> None:
+        self.subject_type = subject_type
+        super().__init__(f"prediction for subject_type={subject_type} is not supported in v1")
+
+
+# ---------------------------------------------------------------------------
 # Phase 4a：板端 → 云端无线事实上行契约（network.edge.wireless-events.v1）
 # ---------------------------------------------------------------------------
 

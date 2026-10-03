@@ -6150,6 +6150,44 @@ class NetworkEnvWindowRecord(TenantScopedMixin, Base):
     )
 
 
+class NetworkDeviceBaselineHistoryRecord(TenantScopedMixin, Base):
+    """network_device_baselines 的追加式变更历史（L3 baseline trajectory 唯一来源）。
+
+    当前态表 UPSERT 会把 Day1 -60 / Day3 -61 / Day5 -62 的轨迹压成最后一行，
+    慢性漂移信号随之丢失。本表只在 baseline 变化（或状态变化）时追加一行，
+    属于 L1 权威事实源的合法生命周期演进；下游 L2~L5 只读。
+    """
+
+    __tablename__ = "network_device_baseline_history"
+    __table_args__ = (
+        Index(
+            "ix_network_device_baseline_history_series",
+            "tenant_id",
+            "baseline_id",
+            "observed_at_ms",
+        ),
+        Index(
+            "ix_network_device_baseline_history_device",
+            "tenant_id",
+            "device_address",
+            "observed_at_ms",
+        ),
+    )
+
+    #: 内容寻址主键 = hash(tenant|baseline_id|observed_at_ms|value|state)，
+    #: 使重放天然幂等（同一变化重复入库命中主键即跳过）。
+    history_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    baseline_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    asset_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    device_address: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: 变化被云端观测到的时刻（ingest 时间；板端 baseline 上行不携带时间戳）。
+    observed_at_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: 变化后的取值快照（append-only：历史行永不更新）。
+    baseline_rssi_dbm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    baseline_sample_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="LEARNING")
+
+
 TENANT_TABLE_NAMES = frozenset(
     table_name for table_name in Base.metadata.tables if table_name != TenantRecord.__tablename__
 )

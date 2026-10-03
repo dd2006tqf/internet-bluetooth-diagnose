@@ -90,6 +90,9 @@ jobs:
           tests/test_incident_draft_automation.py
           tests/test_wireless_causal_rules.py
           tests/test_wireless_guardrail.py
+          tests/test_prediction_contracts.py
+          tests/test_risk_window.py
+          tests/test_metric_history.py
 
   build-and-test:
     name: x86 编译与全量单元测试

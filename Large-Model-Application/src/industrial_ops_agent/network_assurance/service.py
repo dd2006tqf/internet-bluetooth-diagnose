@@ -75,6 +75,7 @@ from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.models import (
     AssetRecord,
     NetworkAssetRecord,
+    NetworkDeviceBaselineHistoryRecord,
     NetworkDeviceBaselineRecord,
     NetworkEnvWindowRecord,
     NetworkPendingActionRecord,
@@ -306,7 +307,9 @@ class NetworkAssuranceService:
         telemetry path.
         """
 
-        _ = received_at  # 板端事件自带 ts_ms；此参数仅保持与遥测路径的接口对称
+        # 事件自带 ts_ms；received_at 现在服务 baseline 历史的观测时刻
+        # （append-on-change 的 observed_at 需要一个可测试、可审计的时间源）。
+        observed_at = as_utc(received_at or datetime.now(UTC))
         with self._database.transaction(context) as session:
             asset = self._ensure_uplink_asset(
                 session, context, device_id=batch.device_id, key_id=key_id
@@ -427,6 +430,10 @@ class NetworkAssuranceService:
                             state=view.state,
                         )
                     )
+                    # 首次观测即轨迹第 0 点（L1 合法演进：追加，不覆盖）
+                    self._append_baseline_history(
+                        session, context, baseline_id, asset.asset_id, view, observed_at
+                    )
                     accepted_baselines += 1
                     continue
                 self._require_same_tenant(context, existing.tenant_id, baseline_id)
@@ -438,6 +445,12 @@ class NetworkAssuranceService:
                     or existing.state != view.state
                 )
                 if changed:
+                    # 变化即追加（append-on-change）：UPSERT 当前态会把
+                    # -60 → -61 → -62 的漂移压成最后一行，慢性退化信号丢失；
+                    # 历史行让 L3 的 baseline_trajectory 可观测。
+                    self._append_baseline_history(
+                        session, context, baseline_id, asset.asset_id, view, observed_at
+                    )
                     existing.baseline_rssi_dbm = view.baseline_rssi_dbm
                     existing.min_seen_rssi_dbm = view.min_seen_rssi_dbm
                     existing.max_seen_rssi_dbm = view.max_seen_rssi_dbm
@@ -569,6 +582,44 @@ class NetworkAssuranceService:
             f"|{view.hci_index}|{view.protocol}|{view.address_type}|{view.device_address}"
         )
         return "nbli-" + hashlib.sha1(seed.encode()).hexdigest()[:32]
+
+    @staticmethod
+    def _append_baseline_history(
+        session: Any,
+        context: TenantContext,
+        baseline_id: str,
+        asset_id: str,
+        view: BaselineView,
+        observed_at: datetime,
+    ) -> None:
+        """append-on-change 记录 baseline 轨迹（L3 的 prediction_reference 来源）。
+
+        - 主键内容寻址 (tenant|baseline|观测毫秒|值|状态)：同一变化重放命中主键即跳过，
+          与 ingest 的 change-detect 双重幂等；
+        - 只在**首次观测**与**变化**时追加（由调用点保证），历史行永不更新；
+        - 观测时刻取 ingest 时间（板端 baseline 上行契约不携带时间戳）。
+        """
+        observed_at_ms = int(observed_at.timestamp() * 1000)
+        seed = (
+            f"{context.tenant_id}|{baseline_id}|{observed_at_ms}"
+            f"|{view.baseline_rssi_dbm}|{view.state}"
+        )
+        history_id = "nblh-" + hashlib.sha1(seed.encode()).hexdigest()[:32]
+        if session.get(NetworkDeviceBaselineHistoryRecord, history_id) is not None:
+            return
+        session.add(
+            NetworkDeviceBaselineHistoryRecord(
+                history_id=history_id,
+                tenant_id=context.tenant_id,
+                baseline_id=baseline_id,
+                asset_id=asset_id,
+                device_address=view.device_address,
+                observed_at_ms=observed_at_ms,
+                baseline_rssi_dbm=view.baseline_rssi_dbm,
+                baseline_sample_count=view.baseline_sample_count,
+                state=view.state,
+            )
+        )
 
     @staticmethod
     def _wireless_window_id(

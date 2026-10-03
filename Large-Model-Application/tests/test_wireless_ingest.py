@@ -35,6 +35,7 @@ from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.models import (
     Base,
     NetworkAssetRecord,
+    NetworkDeviceBaselineHistoryRecord,
     NetworkDeviceBaselineRecord,
     NetworkEnvWindowRecord,
     NetworkSiteIncidentRecord,
@@ -434,3 +435,58 @@ def test_two_gateways_on_one_site_coexist(test_db: Database, tenant_context: Ten
     assert {i.site_id for i in incidents} == {"shop-floor-A"}
     assert {i.gateway_id for i in incidents} == {"gw-1", "gw-2"}
     assert len(events) == 2
+
+
+def test_baseline_change_appends_history_and_replay_is_idempotent(
+    test_db: Database, tenant_context: TenantContext
+):
+    """append-on-change：L3 baseline trajectory 的唯一来源（B3a）。
+
+    - 首次观测与每次变化各追加一行（UPSERT 当前态会压掉漂移轨迹）；
+    - 内容寻址主键 + change-detect 双重幂等：重放不产生重复历史行。
+    """
+    from datetime import UTC, datetime
+
+    service = NetworkAssuranceService(database=test_db)
+    t1 = datetime(2026, 10, 4, 8, 0, tzinfo=UTC)
+
+    # 1) 首次观测 → 轨迹第 0 点
+    service.ingest_wireless_batch(tenant_context, _batch(), key_id=KEY_ID, received_at=t1)
+    # 2) 完全相同的重放 → 不追加
+    service.ingest_wireless_batch(tenant_context, _batch(), key_id=KEY_ID, received_at=t1)
+
+    with Session(test_db.engine) as session:  # type: ignore[attr-defined]
+        rows = session.query(NetworkDeviceBaselineHistoryRecord).all()
+        assert len(rows) == 1
+        first = rows[0]
+        assert first.baseline_rssi_dbm == -65
+        assert first.state == "STABLE"
+        assert first.device_address == "AA:01"
+
+    # 3) baseline 值变化 → 追加第 2 行（不覆盖历史）
+    t2 = datetime(2026, 10, 4, 9, 0, tzinfo=UTC)
+    drifted = _batch(
+        baselines=[_baseline(state="STABLE")], events=[], incidents=[], env_window=None
+    )
+    drifted.baselines[0] = drifted.baselines[0].model_copy(
+        update={"baseline_rssi_dbm": -67}
+    )
+    service.ingest_wireless_batch(tenant_context, drifted, key_id=KEY_ID, received_at=t2)
+    # 4) 变化批次的重放 → 内容寻址主键去重，仍只有 2 行
+    service.ingest_wireless_batch(tenant_context, drifted, key_id=KEY_ID, received_at=t2)
+
+    with Session(test_db.engine) as session:  # type: ignore[attr-defined]
+        rows = (
+            session.query(NetworkDeviceBaselineHistoryRecord)
+            .order_by(NetworkDeviceBaselineHistoryRecord.observed_at_ms)
+            .all()
+        )
+        assert len(rows) == 2
+        assert [r.baseline_rssi_dbm for r in rows] == [-65, -67]
+        assert rows[0].observed_at_ms == int(t1.timestamp() * 1000)
+        assert rows[1].observed_at_ms == int(t2.timestamp() * 1000)
+
+        # 当前态行仍是 UPSERT 语义：只有一行、值为最新
+        current = session.query(NetworkDeviceBaselineRecord).all()
+        assert len(current) == 1
+        assert current[0].baseline_rssi_dbm == -67
