@@ -99,6 +99,10 @@ jobs:
           tests/test_network_council.py
           tests/test_council_fingerprint.py
           tests/test_network_council_service.py
+          tests/test_action_policy.py
+          tests/test_network_action_approval.py
+          tests/test_e2e_trace.py
+          tests/test_e2e_http_smoke.py
 
   build-and-test:
     name: x86 编译与全量单元测试

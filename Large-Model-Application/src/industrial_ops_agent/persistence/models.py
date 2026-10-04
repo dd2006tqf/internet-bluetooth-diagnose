@@ -5973,11 +5973,64 @@ class NetworkPendingActionRecord(TenantScopedMixin, Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="QUEUED")
     issued_by: Mapped[str] = mapped_column(String(128), nullable=False)
     approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: L4 决策链 provenance（NULL = 手工/其他运维路径，非 Council 发起）。
+    #: 只表达"这次执行实例是从哪来的"这一事实，不含任何裁决语义。
+    proposal_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    approval_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_detail: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class NetworkActionOutcomeRecord(TenantScopedMixin, Base):
+    """【路线图 ⑥】append-only L1 权威事实投影：终态执行回执。
+
+    `network_pending_actions` 是 L5 执行域**队列状态**（QUEUED→DELIVERED→
+    APPLIED/REJECTED/ROLLBACK）；本表是同一事件在 **L1 事实域**的投影——
+    "某次经批准/手工的动作在网关上被报告执行，结果是什么"。
+
+    It records what the gateway reported happened; it does **not** evaluate
+    whether the action was correct, safe, or effective. ``APPLIED`` 只表示
+    "板端报告应用成功"，不表示故障被修复——后者要靠后续 L1 观测与
+    L2/L3 分析，不能从本表推断。
+
+    一条 ``pending_action_id`` 至多一行（执行实例唯一终态）；重复上报由
+    ``record_action_results`` 的终态保护短路，绝不产生第二行。
+    """
+
+    __tablename__ = "network_action_outcomes"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "pending_action_id",
+            name="uq_network_action_outcome_pending_action",
+        ),
+        Index("ix_network_action_outcomes_asset", "tenant_id", "asset_id", "completed_at"),
+        CheckConstraint(
+            "status IN ('APPLIED', 'REJECTED', 'ROLLBACK')",
+            name="ck_network_action_outcome_status",
+        ),
+    )
+
+    outcome_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    #: 哪一次 L5 执行实例产生了这条事实（不叫 action_id：避免与
+    #: Catalog 的 ACTION_ID 概念混淆）
+    pending_action_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: L4 决策链 provenance（手工路径为 NULL——事实，不是"不安全"的判断）
+    proposal_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    approval_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: 实际下发载荷的快照与哈希（执行实例的不可变记录）
+    action_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    action_payload_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    result_detail: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    #: 板端报告的执行完成时刻（与 pending_action.completed_at 同值）
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: 云端收到回执并落库的时刻
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class SiteIncidentDiagnosisRecord(TenantScopedMixin, Base):

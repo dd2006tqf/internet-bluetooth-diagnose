@@ -74,6 +74,7 @@ from industrial_ops_agent.network_assurance.wireless_contracts import (
 from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.models import (
     AssetRecord,
+    NetworkActionOutcomeRecord,
     NetworkAssetRecord,
     NetworkDeviceBaselineHistoryRecord,
     NetworkDeviceBaselineRecord,
@@ -712,6 +713,36 @@ class NetworkAssuranceService:
                 record.result_detail = outcome.detail[:1024]
                 record.completed_at = now
                 record.version += 1
+
+                # ⑥ L1 事实投影：终态回执 → append-only network_action_outcomes。
+                # 与 pending_action 状态迁移同事务——"L5 终态"和"L1 事实"
+                # 必须同生共死，不能出现 APPLIED 但无 outcome（或反之）。
+                session.add(
+                    NetworkActionOutcomeRecord(
+                        outcome_id=f"nout-{uuid4().hex}",
+                        tenant_id=context.tenant_id,
+                        pending_action_id=record.action_id,
+                        asset_id=record.asset_id,
+                        proposal_id=record.proposal_id,
+                        approval_id=record.approval_id,
+                        action_snapshot={
+                            "config_key": record.config_key,
+                            "config_value": record.config_value,
+                            "generation": record.generation,
+                        },
+                        action_payload_digest=(
+                            "sha256:"
+                            + hashlib.sha256(
+                                f"{record.config_key}\x00{record.config_value}"
+                                .encode()
+                            ).hexdigest()
+                        ),
+                        status=record.status,
+                        result_detail=record.result_detail,
+                        completed_at=now,
+                        recorded_at=now,
+                    )
+                )
                 updated += 1
         return updated
 
@@ -928,6 +959,8 @@ class NetworkAssuranceService:
         config_value: str,
         issued_by: str,
         approved_by: str | None = None,
+        proposal_id: str | None = None,
+        approval_id: str | None = None,
     ) -> str:
         """Queue a configuration change for delivery on the device's next upload.
 
@@ -965,6 +998,8 @@ class NetworkAssuranceService:
                     config_value=config_value,
                     status="QUEUED",
                     issued_by=issued_by[:128],
+                    proposal_id=proposal_id,
+                    approval_id=approval_id,
                     approved_by=approved_by[:128] if approved_by else None,
                     issued_at=now,
                     version=1,

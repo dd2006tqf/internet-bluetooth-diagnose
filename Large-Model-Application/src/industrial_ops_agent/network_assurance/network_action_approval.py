@@ -405,6 +405,8 @@ class NetworkActionApprovalService:
                 config_value=config_value,
                 issued_by=approval.initiated_by,
                 approved_by=approval.approved_by_subject_id,  # 只来自 decision 行
+                approval_id=approval.approval_id,
+                proposal_id=approval.proposal_id,
             )
             approval.execution_status = "QUEUED"
             approval.queued_action_id = queued_action_id

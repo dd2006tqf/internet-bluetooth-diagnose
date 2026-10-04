@@ -42,6 +42,7 @@ from industrial_ops_agent.persistence.models import (
     NetworkActionApprovalDecisionRecord,
     NetworkActionApprovalRecord,
     NetworkActionDecisionRecord,
+    NetworkActionOutcomeRecord,
     NetworkAssetRecord,
     NetworkCouncilProposalRecord,
     NetworkPendingActionRecord,
@@ -530,3 +531,164 @@ def test_expired_approval_transitions_and_refuses_decide_execute(
     with pytest.raises(ApprovalConflict):
         service.execute(context, approval.proposal_id, idempotency_key="k")
     assert _rows(test_db, NetworkPendingActionRecord) == []
+
+
+# ---------------------------------------------------------------------------
+# ⑥ T0b：L5 终态回执 → L1 network_action_outcomes 事实投影
+# ---------------------------------------------------------------------------
+
+
+def _deliver_and_report(
+    test_db: Database,
+    context: TenantContext,
+    asset_id: str,
+    action_id: str,
+    *,
+    status: str = "APPLIED",
+    detail: str = "applied",
+) -> None:
+    """走真实 claim → record_action_results（不抄 HTTP 验签层）。"""
+    from industrial_ops_agent.network_assurance.contracts import (
+        NetworkActionOutcome,
+        NetworkActionResults,
+    )
+    from industrial_ops_agent.network_assurance.service import (
+        NetworkAssuranceService,
+    )
+
+    service = NetworkAssuranceService(test_db)
+    with test_db.transaction(context) as session:
+        claimed = service._claim_pending_actions(
+            session, context, asset_id, now=datetime.now(UTC)
+        )
+    token = next(c["claim_token"] for c in claimed if c["action_id"] == action_id)
+    results = NetworkActionResults(
+        device_id=asset_id,
+        results=[
+            NetworkActionOutcome(
+                action_id=action_id,
+                status=status,
+                detail=detail,
+                claim_token=token,
+                generation=1,
+                reported_at=datetime.now(UTC),
+            )
+        ],
+    )
+    service.record_action_results(context, results)
+
+
+def test_terminal_receipt_projects_to_l1_outcome(
+    test_db: Database, context: TenantContext
+) -> None:
+    """⑥ 闭环最后一跳：execute → pending action → APPLIED → outcome fact。
+
+    断言 L5 状态与 L1 事实**字段级一致**（不语义漂移）：
+    pending_action_id / status / completed_at / payload digest。
+    """
+    _, view = _convene(test_db, context)
+    service = NetworkActionApprovalService(test_db)
+    remote = next(
+        a for a in _rows(test_db, NetworkActionApprovalRecord)
+        if not a.manual_execution_required
+    )
+    service.decide(
+        context,
+        remote.proposal_id,
+        approval_decision="APPROVED",
+        reason="批准下发",
+        expected_version=remote.version,
+        decider_subject_id="approver-2",
+    )
+    result = service.execute(context, remote.proposal_id, idempotency_key="k1")
+    action_id = result["queued_action_id"]
+
+    pending = _rows(test_db, NetworkPendingActionRecord)[0]
+    assert pending.status == "QUEUED"
+    # Council 来源的 provenance 已随 queue_action 落进 pending action
+    assert pending.proposal_id == remote.proposal_id
+    assert pending.approval_id == remote.approval_id
+
+    # 板端领取并回报
+    _deliver_and_report(test_db, context, "radxa-cubie-a7a", action_id)
+
+    pending = _rows(test_db, NetworkPendingActionRecord)[0]
+    outcomes = _rows(test_db, NetworkActionOutcomeRecord)
+    assert pending.status == "APPLIED"
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    # L5 ↔ L1 字段一致性（核心断言）
+    assert outcome.pending_action_id == pending.action_id
+    assert outcome.status == pending.status
+    assert outcome.completed_at == pending.completed_at
+    assert outcome.proposal_id == remote.proposal_id
+    assert outcome.approval_id == remote.approval_id
+    assert outcome.action_snapshot["config_key"] == pending.config_key
+    assert outcome.action_snapshot["config_value"] == pending.config_value
+
+    # 重复上报同终态 → 幂等，不产生第二条 outcome。
+    # 注意：动作已 APPLIED（终态），不再经过 claim——record_action_results
+    # 的终态保护（"APPLIED/REJECTED/ROLLBACK 不重复更新"）短路返回 0。
+    from industrial_ops_agent.network_assurance.contracts import (
+        NetworkActionOutcome,
+        NetworkActionResults,
+    )
+    from industrial_ops_agent.network_assurance.service import (
+        NetworkAssuranceService,
+    )
+
+    service = NetworkAssuranceService(test_db)
+    replay = NetworkActionResults(
+        device_id="radxa-cubie-a7a",
+        results=[
+            NetworkActionOutcome(
+                action_id=action_id,
+                status="APPLIED",
+                detail="replayed ack",
+                claim_token="",   # 重放报文不携带 token 也应被终态拦下
+                generation=1,
+                reported_at=datetime.now(UTC),
+            )
+        ],
+    )
+    assert service.record_action_results(context, replay) == 0
+    assert len(_rows(test_db, NetworkActionOutcomeRecord)) == 1
+
+
+def test_manual_queue_action_also_projects_outcome(
+    test_db: Database, context: TenantContext
+) -> None:
+    """手工 queue_action（无 Council）的终态回执同样进 L1 事实表——
+    provenance 为 NULL 表达"非 Council 发起"，不表示"不安全"。"""
+    from industrial_ops_agent.network_assurance.service import (
+        NetworkAssuranceService,
+    )
+
+    _provision_asset(test_db, context, "radxa-cubie-a7a")
+    service = NetworkAssuranceService(test_db)
+    action_id = service.queue_action(
+        context,
+        "radxa-cubie-a7a",
+        config_key="rtt.interval",
+        config_value="10s",
+        issued_by="ops-admin",
+    )
+    pending = _rows(test_db, NetworkPendingActionRecord)[0]
+    assert pending.proposal_id is None and pending.approval_id is None
+
+    _deliver_and_report(test_db, context, "radxa-cubie-a7a", action_id, status="REJECTED")
+    outcomes = _rows(test_db, NetworkActionOutcomeRecord)
+    assert len(outcomes) == 1
+    assert outcomes[0].status == "REJECTED"
+    assert outcomes[0].proposal_id is None
+    assert outcomes[0].approval_id is None
+
+
+def test_blocked_and_manual_paths_produce_no_outcome(
+    test_db: Database, context: TenantContext
+) -> None:
+    """不存在的边：BLOCKED 无 approval、MANUAL 无 pending action → 都无 outcome。"""
+    # catalog 漂移 → 全 BLOCKED
+    _convene(test_db, context, gateway_catalog_version="cat-old-firmware")
+    assert _rows(test_db, NetworkPendingActionRecord) == []
+    assert _rows(test_db, NetworkActionOutcomeRecord) == []
