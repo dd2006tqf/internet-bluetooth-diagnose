@@ -1,7 +1,14 @@
 # WeakNet 云端切片测试与静态检查的直接依赖（P0 起由 CI 与本地共用）
 # 安装：pip install -r requirements-test.txt && pip install -e . --no-deps
 # 说明：只覆盖 tests/ 所需的最小集合；平台全量依赖见 pyproject.toml / uv.lock。
-#       不含 pyspark/kafka/neo4j/opensearch 等重依赖——tests/ 目前不 import 它们。
+#       不含 pyspark/kafka/torch 等重依赖。
+#
+# ⚠️ create_app 的 import 图 = 整条路由 → 服务 → data_governance.dlp 链。
+#   `tests/test_e2e_http_smoke.py` 会真的构造 app（而非只跑纯函数），
+#   所以它的依赖必须是**完整的模块级链路**，不能只补到"能 collect"为止。
+#   2026-10-03 该测试引入时只装了清单里的旧集合，CI 在 collect 阶段
+#   直接 ModuleNotFoundError: fastapi 而失败（854f8df 绿是因为那时还没有
+#   这个测试文件）。下列标 [app-graph] 的即为补齐该链路所需。
 pytest
 pydantic
 pydantic-settings
@@ -16,5 +23,24 @@ prometheus-client
 opentelemetry-api>=1.44,<2
 opentelemetry-sdk>=1.44,<2
 opentelemetry-exporter-otlp-proto-http>=1.44,<2
+
+# [app-graph] create_app 链路
+fastapi>=0.116,<1
+a2a-sdk==1.1.2
+# a2a 的 jsonrpc adapter 在模块级 import sse_starlette，但 1.1.2 未把它列为
+# 运行时依赖——少了它，构造 app 时会在 a2a 上炸。uv.lock 里锁的是 3.4.8。
+sse-starlette>=3.4,<4
+langgraph>=0.6,<2
+minio>=7.2,<8
+neo4j==6.2.0
+opensearch-py==3.2.0
+pandas>=2.2,<3
+pandera[pandas]>=0.25,<1
+pyarrow>=19,<24
+PyJWT[crypto]>=2.10,<3
+pillow>=11,<13
+presidio-analyzer>=2.2.360,<3
+presidio-anonymizer>=2.2.360,<3
+
 # 静态检查（make static 的 check 部分；mypy 依赖全量 import 图，暂不入此清单）
 ruff

@@ -19,7 +19,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 
-from industrial_ops_agent.api.app import create_app
 from industrial_ops_agent.auth.identity import IdentityContext, Role
 from industrial_ops_agent.config import Environment, Settings
 from industrial_ops_agent.persistence.database import Database
@@ -68,6 +67,7 @@ def client(app_db: Database) -> TestClient:
                 expires_at=now + timedelta(hours=1),
             )
 
+    from industrial_ops_agent.api.app import create_app
     from industrial_ops_agent.auth.policy import Authorizer
     from industrial_ops_agent.security_audit import (
         InMemorySecurityAuditSink,
