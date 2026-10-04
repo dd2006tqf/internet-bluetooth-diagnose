@@ -78,6 +78,61 @@ _api_deps.get_wireless_diagnosis_service = _state_dep("wireless_diagnosis_servic
 _api_deps.get_network_copilot_service = _state_dep("network_copilot_service")
 _api_deps.get_identity = _state_dep("rehearsal_identity")
 _api_deps.get_authorizer = _state_dep("authorizer")
+
+
+# 路线图 ③④⑤ 新增的三个依赖：和上面一样，shim 必须补齐路由模块的全部导入名，
+# 否则 import router 会直接 ImportError（路由模块的 import 列表就是它的接口面）。
+# 这里照抄真实 accessor 的"按请求新建服务"语义（服务本身无跨请求状态），
+# 只用本地导入——真实 accessor 所在的 dependencies 模块会拉起整条平台链路。
+async def _risk_prediction_service(request: Request):
+    from industrial_ops_agent.network_assurance.risk_service import (
+        RiskPredictionService,
+    )
+
+    return RiskPredictionService(request.app.state.database)  # type: ignore[attr-defined]
+
+
+async def _network_action_approval_service(request: Request):
+    from industrial_ops_agent.network_assurance.network_action_approval import (
+        NetworkActionApprovalService,
+    )
+
+    return NetworkActionApprovalService(request.app.state.database)  # type: ignore[attr-defined]
+
+
+async def _network_council_service(request: Request):
+    from industrial_ops_agent.network_assurance.council_model import (
+        CouncilModelClient,
+        prompt_bundle_hash,
+    )
+    from industrial_ops_agent.network_assurance.network_council import (
+        NetworkCouncilRunner,
+    )
+    from industrial_ops_agent.network_assurance.network_council_service import (
+        NetworkCouncilService,
+    )
+
+    gateway = getattr(request.app.state, "network_model_gateway", None)
+    identity = getattr(request.app.state, "identity_context", None)
+
+    def _complete(role, payload):
+        # 与真实 accessor 同款 fail-closed：排练未装配模型网关时，
+        # 会商调用明确报错并记录为 FAILED，绝不编造建议。
+        if gateway is None or identity is None:
+            raise RuntimeError("model gateway is not configured for this deployment")
+        client = CouncilModelClient(gateway, identity)
+        return client(role, payload)
+
+    return NetworkCouncilService(
+        request.app.state.database,  # type: ignore[attr-defined]
+        NetworkCouncilRunner(complete=_complete),
+        prompt_bundle_hash=prompt_bundle_hash(),
+    )
+
+
+_api_deps.get_risk_prediction_service = _risk_prediction_service
+_api_deps.get_network_action_approval_service = _network_action_approval_service
+_api_deps.get_network_council_service = _network_council_service
 _api_deps.AccessTokenVerifier = object
 sys.modules.setdefault("industrial_ops_agent.api.dependencies", _api_deps)
 
@@ -202,6 +257,13 @@ def build_app() -> FastAPI:
     app.state.database = database
     app.state.authorizer = authorizer
     app.state.network_copilot_service = None
+    # 平台自己的错误边界。不注册的话，路由抛出的 AppError / 领域 NotFound
+    # 会一路冒到 ASGI，变成没有错误码的裸 500——2026-10-05 实机冒烟里
+    # `/incidents/x/council/proposals` 就这样把 404 答成了 500。
+    # 正式 create_app 同样调用这个函数，桩环境里它可导入（只依赖 fastapi）。
+    from industrial_ops_agent.api.errors import register_error_handlers  # noqa: PLC0415
+
+    register_error_handlers(app)
     # A real IdentityContext so the operator routes run their real authorization
     # path (the authorizer below is the platform's own policy engine) instead of
     # being stubbed out.
