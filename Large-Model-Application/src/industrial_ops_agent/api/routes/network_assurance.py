@@ -27,6 +27,7 @@ must happen against the bytes that actually arrived. See
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response
@@ -38,6 +39,7 @@ from industrial_ops_agent.api.dependencies import (
     get_identity,
     get_network_assurance_service,
     get_network_copilot_service,
+    get_network_council_service,
     get_risk_prediction_service,
     get_wireless_diagnosis_service,
 )
@@ -990,3 +992,171 @@ async def get_device_risk_prediction(
         device_address,
         horizon_hours=window_hours,
     )
+
+
+# ============================================================================
+# ④ Network Operations Council —— 会商（止于 E1 ActionProposal[]）
+#
+# 刻意**没有**任何审批/执行端点：批准与下发属于 ⑤。
+# ============================================================================
+
+
+class CouncilProposalResponse(BaseModel):
+    kind: str
+    action_id: str | None = None
+    action_params: dict[str, str] = Field(default_factory=dict)
+    config_key: str | None = None
+    config_value: str | None = None
+    rationale: str
+    proposed_preconditions: list[str] = Field(default_factory=list)
+    source_bindings: list[dict[str, str]] = Field(default_factory=list)
+
+
+class CouncilExpertOpinionResponse(BaseModel):
+    role: str
+    observations: list[str] = Field(default_factory=list)
+    referenced_fact_ids: list[str] = Field(default_factory=list)
+    recommendation_direction: str = ""
+
+
+class NetworkCouncilResponse(BaseModel):
+    council_id: str
+    incident_id: str
+    input_fingerprint: str
+    status: str
+    stage: str
+    proposals: list[CouncilProposalResponse] = Field(default_factory=list)
+    expert_opinions: list[CouncilExpertOpinionResponse] = Field(default_factory=list)
+    failure_code: str | None = None
+    requested_by_subject_id: str
+    created_at: datetime
+    updated_at: datetime
+    version: int
+
+
+def _council_payload(view: Any) -> NetworkCouncilResponse:
+    return NetworkCouncilResponse(
+        council_id=view.council_id,
+        incident_id=view.incident_id,
+        input_fingerprint=view.input_fingerprint,
+        status=str(view.status),
+        stage=view.stage,
+        proposals=[
+            CouncilProposalResponse(
+                kind=str(p.kind),
+                action_id=p.action_id,
+                action_params=dict(p.action_params),
+                config_key=p.config_key,
+                config_value=p.config_value,
+                rationale=p.rationale,
+                proposed_preconditions=list(p.proposed_preconditions),
+                source_bindings=[
+                    {"kind": str(b.kind), "ref_id": b.ref_id} for b in p.source_bindings
+                ],
+            )
+            for p in view.proposals
+        ],
+        expert_opinions=[
+            CouncilExpertOpinionResponse(
+                role=str(o.role),
+                observations=list(o.observations),
+                referenced_fact_ids=list(o.referenced_fact_ids),
+                recommendation_direction=o.recommendation_direction,
+            )
+            for o in view.expert_opinions
+        ],
+        failure_code=view.failure_code,
+        requested_by_subject_id=view.requested_by_subject_id,
+        created_at=view.created_at,
+        updated_at=view.updated_at,
+        version=view.version,
+    )
+
+
+def _council_not_found(incident_id: str) -> AppError:
+    return AppError(
+        status_code=404,
+        code="wireless_incident_not_found",
+        category="not_found",
+        message="Wireless site incident not found",
+        details={"incident_id": incident_id},
+    )
+
+
+@router.get(
+    "/assurance/incidents/{incident_id}/council",
+    response_model=NetworkCouncilResponse,
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Read the latest network operations council result (advisory only)",
+)
+async def get_network_council(
+    request: Request,
+    incident_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    council: Annotated[Any, Depends(get_network_council_service)],
+) -> NetworkCouncilResponse:
+    authorizer.require(
+        identity,
+        Action.READ_NETWORK_COUNCIL,
+        ResourceContext(identity.tenant_id, resource_id=incident_id),
+        request_id=getattr(request.state, "request_id", "unavailable"),
+    )
+    view = council.get_council(identity.tenant_context, incident_id)
+    if view is None:
+        raise _council_not_found(incident_id)
+    return _council_payload(view)
+
+
+@router.post(
+    "/assurance/incidents/{incident_id}/council",
+    response_model=NetworkCouncilResponse,
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Convene the network operations council for one incident (advisory proposals only)",
+)
+async def post_network_council(
+    request: Request,
+    incident_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    council: Annotated[Any, Depends(get_network_council_service)],
+    risk_service: Annotated[Any, Depends(get_risk_prediction_service)],
+    force: Annotated[bool, Query()] = False,
+) -> NetworkCouncilResponse:
+    """召集会商。
+
+    - 三专家并行 + 协调官收敛，产出 **ActionProposal[]（建议）**；
+    - 相同输入指纹复用既有结果；``force=true`` 另开 attempt；
+    - 任一环节失败（schema / catalog / 来源绑定 / 模型）→ 记录 FAILED 并返回 409，
+      **绝不返回"半合法"建议**；
+    - 本端点不产生任何审批或下发（那是 ⑤）。
+    """
+    authorizer.require(
+        identity,
+        Action.REQUEST_NETWORK_COUNCIL,
+        ResourceContext(identity.tenant_id, resource_id=incident_id),
+        request_id=getattr(request.state, "request_id", "unavailable"),
+    )
+    from industrial_ops_agent.network_assurance.council_contracts import CouncilFailure
+    from industrial_ops_agent.network_assurance.network_council_service import (
+        NetworkCouncilNotFound,
+    )
+
+    try:
+        request_input = council.build_request_from_tables(
+            identity.tenant_context, incident_id, risk_service=risk_service
+        )
+    except NetworkCouncilNotFound as exc:
+        raise _council_not_found(incident_id) from exc
+
+    try:
+        view = council.request_council(identity.tenant_context, request_input, force=force)
+    except CouncilFailure as exc:
+        raise AppError(
+            status_code=409,
+            code="network_council_failed",
+            category="conflict",
+            message="Network council did not produce a valid proposal set",
+            details={"failure_code": exc.failure_code},
+        ) from exc
+    return _council_payload(view)

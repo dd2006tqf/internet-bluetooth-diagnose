@@ -7,12 +7,15 @@ and unify json stripping, timeout handling, and reasoning token fallbacks.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
 import httpx
 
 from industrial_ops_agent.network_assurance.model_config import get_model_config_manager
+
+logger = logging.getLogger("industrial_ops_agent.network_assurance.upstream")
 
 _DEFAULT_INFERENCE_TIMEOUT_SECONDS = 90.0
 
@@ -74,8 +77,30 @@ def complete_json(
                 if clean_text.endswith("```"):
                     clean_text = clean_text[:-3]
                 clean_text = clean_text.strip()
-                return json.loads(clean_text)
-    except Exception:
+                try:
+                    return json.loads(clean_text)
+                except json.JSONDecodeError as exc:
+                    # 截断/半截 JSON 曾在此静默变成 None，让调用方无法区分
+                    # "上游不可用"与"返回内容不完整"。记下尾部片段便于诊断。
+                    logger.warning(
+                        "upstream returned non-JSON content (len=%d, finish=%s): %s | tail=%r",
+                        len(clean_text),
+                        choice.get("finish_reason"),
+                        exc,
+                        clean_text[-160:],
+                    )
+                    return None
+            logger.warning(
+                "upstream 200 but no textual content: finish=%s keys=%s",
+                choice.get("finish_reason"),
+                sorted(message.keys()),
+            )
+            return None
+        logger.warning(
+            "upstream HTTP %s: %s", resp.status_code, resp.text[:300]
+        )
+    except Exception as exc:  # noqa: BLE001 - 调用方以 None 表达失败，但需留下原因
+        logger.warning("upstream call failed: %s: %s", type(exc).__name__, exc)
         return None
 
     return None

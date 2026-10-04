@@ -4104,6 +4104,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network/assurance/incidents/{incident_id}/council": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the latest network operations council result (advisory only) */
+        get: operations["get_network_council_api_v1_network_assurance_incidents__incident_id__council_get"];
+        put?: never;
+        /**
+         * Convene the network operations council for one incident (advisory proposals only)
+         * @description 召集会商。
+         *
+         *     - 三专家并行 + 协调官收敛，产出 **ActionProposal[]（建议）**；
+         *     - 相同输入指纹复用既有结果；``force=true`` 另开 attempt；
+         *     - 任一环节失败（schema / catalog / 来源绑定 / 模型）→ 记录 FAILED 并返回 409，
+         *       **绝不返回"半合法"建议**；
+         *     - 本端点不产生任何审批或下发（那是 ⑤）。
+         */
+        post: operations["post_network_council_api_v1_network_assurance_incidents__incident_id__council_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/network/assurance/incidents/{incident_id}/diagnosis": {
         parameters: {
             query?: never;
@@ -7577,6 +7604,43 @@ export interface components {
             total_known_cost_usd: number;
             /** Training Known Cost Usd */
             training_known_cost_usd: number;
+        };
+        /** CouncilExpertOpinionResponse */
+        CouncilExpertOpinionResponse: {
+            /** Observations */
+            observations?: string[];
+            /**
+             * Recommendation Direction
+             * @default
+             */
+            recommendation_direction: string;
+            /** Referenced Fact Ids */
+            referenced_fact_ids?: string[];
+            /** Role */
+            role: string;
+        };
+        /** CouncilProposalResponse */
+        CouncilProposalResponse: {
+            /** Action Id */
+            action_id?: string | null;
+            /** Action Params */
+            action_params?: {
+                [key: string]: string;
+            };
+            /** Config Key */
+            config_key?: string | null;
+            /** Config Value */
+            config_value?: string | null;
+            /** Kind */
+            kind: string;
+            /** Proposed Preconditions */
+            proposed_preconditions?: string[];
+            /** Rationale */
+            rationale: string;
+            /** Source Bindings */
+            source_bindings?: {
+                [key: string]: string;
+            }[];
         };
         /** CreateAcceptanceBody */
         CreateAcceptanceBody: {
@@ -15038,6 +15102,39 @@ export interface components {
             primary_issue: string | null;
             /** Tenant Id */
             tenant_id: string;
+        };
+        /** NetworkCouncilResponse */
+        NetworkCouncilResponse: {
+            /** Council Id */
+            council_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Expert Opinions */
+            expert_opinions?: components["schemas"]["CouncilExpertOpinionResponse"][];
+            /** Failure Code */
+            failure_code?: string | null;
+            /** Incident Id */
+            incident_id: string;
+            /** Input Fingerprint */
+            input_fingerprint: string;
+            /** Proposals */
+            proposals?: components["schemas"]["CouncilProposalResponse"][];
+            /** Requested By Subject Id */
+            requested_by_subject_id: string;
+            /** Stage */
+            stage: string;
+            /** Status */
+            status: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Version */
+            version: number;
         };
         /**
          * NetworkTimelinePoint
@@ -35480,6 +35577,200 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WirelessDeviceEventItem"][];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    get_network_council_api_v1_network_assurance_incidents__incident_id__council_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                incident_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkCouncilResponse"];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    post_network_council_api_v1_network_assurance_incidents__incident_id__council_post: {
+        parameters: {
+            query?: {
+                force?: boolean;
+            };
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                incident_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetworkCouncilResponse"];
                 };
             };
             /** @description Invalid request precondition */

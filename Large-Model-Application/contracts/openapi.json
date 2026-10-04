@@ -5201,6 +5201,113 @@
         "title": "CostTotalsResponse",
         "type": "object"
       },
+      "CouncilExpertOpinionResponse": {
+        "properties": {
+          "observations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Observations",
+            "type": "array"
+          },
+          "recommendation_direction": {
+            "default": "",
+            "title": "Recommendation Direction",
+            "type": "string"
+          },
+          "referenced_fact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Referenced Fact Ids",
+            "type": "array"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "title": "CouncilExpertOpinionResponse",
+        "type": "object"
+      },
+      "CouncilProposalResponse": {
+        "properties": {
+          "action_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Id"
+          },
+          "action_params": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Action Params",
+            "type": "object"
+          },
+          "config_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Key"
+          },
+          "config_value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Value"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "proposed_preconditions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Proposed Preconditions",
+            "type": "array"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "source_bindings": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Source Bindings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "rationale"
+        ],
+        "title": "CouncilProposalResponse",
+        "type": "object"
+      },
       "CreateAcceptanceBody": {
         "properties": {
           "business_evidence_digest": {
@@ -26658,6 +26765,86 @@
           "network_epoch"
         ],
         "title": "NetworkAssetSummary",
+        "type": "object"
+      },
+      "NetworkCouncilResponse": {
+        "properties": {
+          "council_id": {
+            "title": "Council Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expert_opinions": {
+            "items": {
+              "$ref": "#/components/schemas/CouncilExpertOpinionResponse"
+            },
+            "title": "Expert Opinions",
+            "type": "array"
+          },
+          "failure_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Code"
+          },
+          "incident_id": {
+            "title": "Incident Id",
+            "type": "string"
+          },
+          "input_fingerprint": {
+            "title": "Input Fingerprint",
+            "type": "string"
+          },
+          "proposals": {
+            "items": {
+              "$ref": "#/components/schemas/CouncilProposalResponse"
+            },
+            "title": "Proposals",
+            "type": "array"
+          },
+          "requested_by_subject_id": {
+            "title": "Requested By Subject Id",
+            "type": "string"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "council_id",
+          "incident_id",
+          "input_fingerprint",
+          "status",
+          "stage",
+          "requested_by_subject_id",
+          "created_at",
+          "updated_at",
+          "version"
+        ],
+        "title": "NetworkCouncilResponse",
         "type": "object"
       },
       "NetworkTimelinePoint": {
@@ -68874,6 +69061,271 @@
           }
         },
         "summary": "List normalized wireless device events recorded by this gateway asset",
+        "tags": [
+          "network-assurance"
+        ]
+      }
+    },
+    "/api/v1/network/assurance/incidents/{incident_id}/council": {
+      "get": {
+        "operationId": "get_network_council_api_v1_network_assurance_incidents__incident_id__council_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkCouncilResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Invalid request precondition"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Action is not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Resource not found or not visible"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Idempotency or version conflict"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Media type mismatch"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Required dependency unavailable"
+          }
+        },
+        "summary": "Read the latest network operations council result (advisory only)",
+        "tags": [
+          "network-assurance"
+        ]
+      },
+      "post": {
+        "description": "召集会商。\n\n- 三专家并行 + 协调官收敛，产出 **ActionProposal[]（建议）**；\n- 相同输入指纹复用既有结果；``force=true`` 另开 attempt；\n- 任一环节失败（schema / catalog / 来源绑定 / 模型）→ 记录 FAILED 并返回 409，\n  **绝不返回\"半合法\"建议**；\n- 本端点不产生任何审批或下发（那是 ⑤）。",
+        "operationId": "post_network_council_api_v1_network_assurance_incidents__incident_id__council_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "incident_id",
+            "required": true,
+            "schema": {
+              "title": "Incident Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "force",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Force",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NetworkCouncilResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Invalid request precondition"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Action is not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Resource not found or not visible"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Idempotency or version conflict"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Media type mismatch"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Required dependency unavailable"
+          }
+        },
+        "summary": "Convene the network operations council for one incident (advisory proposals only)",
         "tags": [
           "network-assurance"
         ]

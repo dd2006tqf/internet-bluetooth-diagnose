@@ -94,6 +94,11 @@ jobs:
           tests/test_risk_window.py
           tests/test_metric_history.py
           tests/test_risk_prediction_service.py
+          tests/test_council_contracts.py
+          tests/test_edge_action_catalog.py
+          tests/test_network_council.py
+          tests/test_council_fingerprint.py
+          tests/test_network_council_service.py
 
   build-and-test:
     name: x86 编译与全量单元测试

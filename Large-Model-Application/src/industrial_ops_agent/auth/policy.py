@@ -177,6 +177,8 @@ class Action(StrEnum):
     PROPOSE_DEVICE_FAMILY = "device_family.propose"
     REVIEW_DEVICE_FAMILY = "device_family.review"
     READ_NETWORK_ASSURANCE = "network_assurance.read"
+    READ_NETWORK_COUNCIL = "network_council.read"
+    REQUEST_NETWORK_COUNCIL = "network_council.request"
     MANAGE_NETWORK_DEVICE = "network_device.manage"
 
 
@@ -247,6 +249,8 @@ ROLE_ACTIONS: dict[Role, frozenset[Action]] = {
             Action.READ_MAINTENANCE_COUNCIL,
             Action.READ_DEVICE_FAMILY,
             Action.READ_NETWORK_ASSURANCE,
+            Action.READ_NETWORK_COUNCIL,
+            Action.REQUEST_NETWORK_COUNCIL,
             Action.CREATE_KNOWLEDGE_DRAFT,
         }
     ),
@@ -310,6 +314,8 @@ ROLE_ACTIONS: dict[Role, frozenset[Action]] = {
             Action.REQUEST_MAINTENANCE_COUNCIL,
             Action.READ_DEVICE_FAMILY,
             Action.READ_NETWORK_ASSURANCE,
+            Action.READ_NETWORK_COUNCIL,
+            Action.REQUEST_NETWORK_COUNCIL,
         }
     ),
     Role.DOMAIN_EXPERT: frozenset(
@@ -384,6 +390,8 @@ ROLE_ACTIONS: dict[Role, frozenset[Action]] = {
             Action.REVIEW_MAINTENANCE_COUNCIL,
             Action.READ_DEVICE_FAMILY,
             Action.READ_NETWORK_ASSURANCE,
+            Action.READ_NETWORK_COUNCIL,
+            Action.REQUEST_NETWORK_COUNCIL,
             Action.PROPOSE_DEVICE_FAMILY,
         }
     ),
@@ -437,6 +445,8 @@ ROLE_ACTIONS: dict[Role, frozenset[Action]] = {
             Action.READ_MAINTENANCE_COUNCIL,
             Action.READ_DEVICE_FAMILY,
             Action.READ_NETWORK_ASSURANCE,
+            Action.READ_NETWORK_COUNCIL,
+            Action.REQUEST_NETWORK_COUNCIL,
             Action.MANAGE_NETWORK_DEVICE,
             Action.REVIEW_DEVICE_FAMILY,
         }

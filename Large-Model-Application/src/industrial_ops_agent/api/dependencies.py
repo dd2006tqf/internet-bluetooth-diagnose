@@ -700,6 +700,38 @@ async def get_risk_prediction_service(request: Request) -> Any:
     return RiskPredictionService(request.app.state.database)
 
 
+async def get_network_council_service(request: Request) -> Any:
+    """【路线图 ④】Build the Network Operations Council service per request.
+
+    模型通道：优先用 app.state 上的 ModelGateway（治理路径）；未配置时 Runner 的
+    `complete` 会在调用时抛错 → Council 记录为 FAILED（fail closed，绝不编造建议）。
+    """
+    from industrial_ops_agent.network_assurance.council_model import (
+        CouncilModelClient,
+        prompt_bundle_hash,
+    )
+    from industrial_ops_agent.network_assurance.network_council import (
+        NetworkCouncilRunner,
+    )
+    from industrial_ops_agent.network_assurance.network_council_service import (
+        NetworkCouncilService,
+    )
+
+    gateway = getattr(request.app.state, "network_model_gateway", None)
+
+    def _complete(role: Any, payload: dict[str, Any]) -> dict[str, Any]:
+        if gateway is None:
+            raise RuntimeError("model gateway is not configured for this deployment")
+        client = CouncilModelClient(gateway, request.app.state.identity_context)
+        return client(role, payload)
+
+    return NetworkCouncilService(
+        request.app.state.database,
+        NetworkCouncilRunner(complete=_complete),
+        prompt_bundle_hash=prompt_bundle_hash(),
+    )
+
+
 async def get_edge_telemetry_verifier(request: Request) -> EdgeTelemetryVerifier:
     """Return the provisioned edge trust anchor.
 

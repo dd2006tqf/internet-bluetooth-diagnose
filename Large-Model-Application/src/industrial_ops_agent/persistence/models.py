@@ -6188,6 +6188,88 @@ class NetworkDeviceBaselineHistoryRecord(TenantScopedMixin, Base):
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="LEARNING")
 
 
+class NetworkCouncilRecord(TenantScopedMixin, Base):
+    """网络运维会商（路线图 ④）：L4 决策层的**建议**记录。
+
+    本表只承载 E1 边界内的事实：输入指纹、会商状态、ActionProposal[]。
+    刻意**没有** approved_by / approved_at / execution 相关列——批准与执行属于 ⑤，
+    在结构上就不该出现在 Council 记录里。
+    """
+
+    __tablename__ = "network_councils"
+    __table_args__ = (
+        # 幂等键：同一输入指纹只有一条会商（force=true 时另开 attempt）
+        UniqueConstraint(
+            "tenant_id",
+            "incident_id",
+            "input_fingerprint",
+            name="uq_network_council_input",
+        ),
+        Index("ix_network_councils_incident", "tenant_id", "incident_id", "updated_at"),
+        CheckConstraint(
+            "status IN ('QUEUED', 'RUNNING', 'REVIEW_PENDING', 'FAILED')",
+            name="ck_network_council_status",
+        ),
+        CheckConstraint("attempt_count >= 0 AND version >= 1", name="ck_network_council_versions"),
+    )
+
+    council_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    incident_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: council_input_fingerprint（含 knowledge_context 与 catalog/prompt/contract 版本）
+    input_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="QUEUED")
+    stage: Mapped[str] = mapped_column(String(64), nullable=False, default="QUEUED")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: E1 建议清单（ActionProposal[] 的 JSON）；失败时为 NULL，绝不落"半合法"结果
+    proposals_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    expert_opinions_json: Mapped[list[dict[str, Any]] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    failure_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    requested_by_subject_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class NetworkCouncilContributionRecord(TenantScopedMixin, Base):
+    """单个角色的一轮会商贡献（append-only，供审计与复盘）。"""
+
+    __tablename__ = "network_council_contributions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "council_id",
+            "attempt_number",
+            "agent_role",
+            name="uq_network_council_contribution_role_attempt",
+        ),
+        Index(
+            "ix_network_council_contribution_council",
+            "tenant_id",
+            "council_id",
+            "attempt_number",
+        ),
+        CheckConstraint(
+            "agent_role IN ('RF_SPECTRUM', 'KERNEL_STACK', 'OPS_SAFETY', 'COORDINATOR')",
+            name="ck_network_council_contribution_role",
+        ),
+        CheckConstraint("attempt_number >= 1", name="ck_network_council_contribution_attempt"),
+    )
+
+    contribution_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    council_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    agent_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    output_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    output_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    model_release_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_bundle_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 TENANT_TABLE_NAMES = frozenset(
     table_name for table_name in Base.metadata.tables if table_name != TenantRecord.__tablename__
 )
