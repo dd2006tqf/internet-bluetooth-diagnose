@@ -274,7 +274,13 @@ def build_app() -> FastAPI:
         subject_id="rehearsal-operator",
         oidc_subject="rehearsal-operator",
         tenant_id=TENANT_ID,
-        roles=frozenset({Role.AFTER_SALES_ENGINEER}),
+        # 排练身份要能走完整条边云闭环：AFTER_SALES 覆盖 approve/execute，
+        # 但 direct queue（/assets/{id}/actions）要求 MANAGE_NETWORK_DEVICE，
+        # 而该权限只在 TENANT_ADMIN 名单上（policy.py ROLE_ACTIONS）。
+        # 只给 TENANT_ADMIN 会反过来丢掉 execute（两权刻意分离），所以两个都给——
+        # 这是排练操作员，不是生产角色模型；分离本身由
+        # tests/test_e2e_http_smoke.py 的策略层断言守护。
+        roles=frozenset({Role.AFTER_SALES_ENGINEER, Role.TENANT_ADMIN}),
         asset_ids=frozenset(),
         site_ids=frozenset(),
         issued_at=now,
