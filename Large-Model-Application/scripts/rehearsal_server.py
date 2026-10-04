@@ -113,15 +113,24 @@ async def _network_council_service(request: Request):
     )
 
     gateway = getattr(request.app.state, "network_model_gateway", None)
-    identity = getattr(request.app.state, "identity_context", None)
+    identity = getattr(request.app.state, "identity_context", None) or getattr(
+        request.app.state, "rehearsal_identity", None
+    )
 
     def _complete(role, payload):
-        # 与真实 accessor 同款 fail-closed：排练未装配模型网关时，
-        # 会商调用明确报错并记录为 FAILED，绝不编造建议。
-        if gateway is None or identity is None:
-            raise RuntimeError("model gateway is not configured for this deployment")
-        client = CouncilModelClient(gateway, identity)
-        return client(role, payload)
+        # 与平台自身 live 冒烟（tests/test_network_council_live.py::_live_complete）
+        # 同款选择顺序：装配了治理网关就走治理路径（alias→release→deployment）；
+        # 否则回落 UpstreamCouncilClient——直连 .env/热配置的中转站通道，
+        # 与 copilot、wireless_diagnosis 同一通道。key 缺失/401/截断等任何
+        # 异常都会以 CouncilModelResponseError → FAILURE_MODEL fail-closed
+        # 记录，绝不产出半合法建议。
+        if gateway is not None and identity is not None:
+            return CouncilModelClient(gateway, identity)(role, payload)
+        from industrial_ops_agent.network_assurance.council_model import (
+            UpstreamCouncilClient,
+        )
+
+        return UpstreamCouncilClient()(role, payload)
 
     return NetworkCouncilService(
         request.app.state.database,  # type: ignore[attr-defined]
