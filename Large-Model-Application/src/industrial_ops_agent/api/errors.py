@@ -148,7 +148,33 @@ async def handle_unexpected_error(request: Request, exc: Exception) -> JSONRespo
 def register_error_handlers(app: FastAPI) -> None:
     """Install the stable error boundary on an application."""
 
+    from industrial_ops_agent.auth.errors import AuthorizationDenied
     from industrial_ops_agent.maintenance_planning.review_isolation import ReviewIsolationConflict
+
+    async def handle_authorization_denied(
+        request: Request, exc: AuthorizationDenied
+    ) -> JSONResponse:
+        """拒绝是 403，不是一个裸 500。
+
+        不是所有路由都像 ``api.authorization.authorize_tenant_resource``
+        那样把 ``AuthorizationDenied`` 就地转成 AppError——
+        ``network_assurance.py`` 的 15 处 ``authorizer.require(...)`` 全部直调
+        不捕获。少这一条映射，一次正确的拒绝会以 ``internal_error`` 500 返回，
+        HTTP 契约与审计语义同时失真（2026-10-05 生产冒烟实测）。
+
+        响应体刻意不携带 reason_code：``AuthorizationDenied`` 的语义就是
+        不向调用方透露资源是否存在。
+        """
+        structlog.get_logger().info(
+            "authorization_denied", reason_code=exc.reason_code
+        )
+        return error_response(
+            request,
+            status_code=403,
+            code="authorization_denied",
+            category="authorization",
+            message="Action is not allowed",
+        )
 
     async def handle_review_conflict(
         request: Request, exc: ReviewIsolationConflict
@@ -163,6 +189,7 @@ def register_error_handlers(app: FastAPI) -> None:
 
     app.add_exception_handler(ReviewIsolationConflict, handle_review_conflict)  # type: ignore[arg-type]
     app.add_exception_handler(AppError, handle_app_error)  # type: ignore[arg-type]
+    app.add_exception_handler(AuthorizationDenied, handle_authorization_denied)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, handle_validation_error)  # type: ignore[arg-type]
     app.add_exception_handler(StarletteHTTPException, handle_http_error)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, handle_unexpected_error)

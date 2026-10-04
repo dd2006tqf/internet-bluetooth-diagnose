@@ -182,6 +182,43 @@ def test_decision_invalid_enum_is_422(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_queue_action_denied_returns_403_not_500(
+    app_db: Database, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """拒绝必须是 403，不是裸 500。
+
+    ``app.state.network_assurance_service`` 在这里是唯一的"未装配"依赖，
+    真实部署（rehearsal_server）会装配它。若用 monkeypatch 强行注入就会
+    变成"实际测试不存在的行为"——那样即使生产 500，测试也会通过。
+    这里改为从 **真实装配路径**（平台自己的 service + accessor）取，只把
+    "从 app.state 读"这一段改成直供：
+
+    背景：``network_assurance.py`` 有 15 处直调 ``authorizer.require(...)``
+    且从不捕获 ``AuthorizationDenied``（其它 routes 模块全都捕获）。
+    2026-10-05 生产冒烟里，用 after_sales 身份排队动作被正确拒绝、却以
+    ``internal_error`` 500 回来。DOMAIN_EXPERT 没有
+    ``MANAGE_NETWORK_DEVICE``（仅 TENANT_ADMIN 有），是最小复现。
+    """
+    from industrial_ops_agent.api.dependencies import (
+        get_network_assurance_service as _real_accessor,
+    )
+    from industrial_ops_agent.network_assurance.service import NetworkAssuranceService
+
+    monkeypatch.setitem(
+        client.app.dependency_overrides,
+        _real_accessor,
+        lambda: NetworkAssuranceService(database=app_db),
+    )
+
+    r = client.post(
+        "/api/v1/network/assets/radxa-cubie-a7a/actions",
+        headers=_h("op-1", "expert"),
+        json={"config_key": "rtt.interval", "config_value": "10s"},
+    )
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "authorization_denied"
+
+
 def test_approve_and_execute_permissions_are_separate() -> None:
     """权限分离（纯策略层断言，避免 HTTP 路径上 resource 可见性干扰）：
 
