@@ -19,6 +19,7 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { AppShell } from "@/components/AppShell";
+import { CouncilPanel } from "@/components/network/CouncilPanel";
 import { RiskPredictionPanel } from "@/components/network/RiskPredictionPanel";
 import { apiClient } from "@/lib/api/network";
 import type {
@@ -309,24 +310,25 @@ export default function IncidentDetailPage() {
           )}
         </Card>
 
-        {/* 5. WHAT NEXT —— 建议动作 */}
-        <Card title="⑤ 建议动作" size="small">
-          {presentation && presentation.recommendations.length > 0 ? (
-            <Alert
-              type="info"
-              showIcon
-              message="建议（未执行，仅提议）"
-              description={
-                <ul style={{ margin: "4px 0 0 16px", padding: 0 }}>
-                  {presentation.recommendations.map((r) => (
-                    <li key={r}>{r}</li>
-                  ))}
-                </ul>
-              }
-            />
-          ) : (
-            <Text type="secondary">暂无建议动作</Text>
-          )}
+        {/* 5. WHAT NEXT —— 建议动作（L4 会商提案 + 审批 + 执行入口） */}
+        <Card title="⑤ 建议动作（运维会商）" size="small">
+          <Space orientation="vertical" size={12} style={{ width: "100%" }}>
+            {presentation && presentation.recommendations.length > 0 && (
+              <Alert
+                type="info"
+                showIcon
+                message="诊断建议（未执行，仅提议）"
+                description={
+                  <ul style={{ margin: "4px 0 0 16px", padding: 0 }}>
+                    {presentation.recommendations.map((r) => (
+                      <li key={r}>{r}</li>
+                    ))}
+                  </ul>
+                }
+              />
+            )}
+            <CouncilPanel incidentId={incident.incident_id} />
+          </Space>
         </Card>
 
         {/* 6. FUTURE RISK —— L3 预测（按受影响设备） */}

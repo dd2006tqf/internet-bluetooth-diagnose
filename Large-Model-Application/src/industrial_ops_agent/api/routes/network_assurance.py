@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError
@@ -37,6 +37,7 @@ from industrial_ops_agent.api.dependencies import (
     get_authorizer,
     get_edge_telemetry_verifier,
     get_identity,
+    get_network_action_approval_service,
     get_network_assurance_service,
     get_network_copilot_service,
     get_network_council_service,
@@ -44,6 +45,7 @@ from industrial_ops_agent.api.dependencies import (
     get_wireless_diagnosis_service,
 )
 from industrial_ops_agent.api.errors import STANDARD_ERROR_RESPONSES, AppError
+from industrial_ops_agent.api.versions import numeric_precondition as _version
 from industrial_ops_agent.auth.identity import IdentityContext
 from industrial_ops_agent.auth.policy import Action, Authorizer, ResourceContext
 from industrial_ops_agent.network_assurance.contracts import (
@@ -1160,3 +1162,208 @@ async def post_network_council(
             details={"failure_code": exc.failure_code},
         ) from exc
     return _council_payload(view)
+
+
+# ============================================================================
+# ⑤ 提案审批与执行（proposal_id 寻址；policy_decision / approval_decision 分离）
+# ============================================================================
+
+
+class CouncilProposalStateResponse(BaseModel):
+    proposal_id: str
+    proposal_index: int
+    proposal_snapshot: dict[str, Any]
+    decision: dict[str, Any] | None
+    approval: dict[str, Any] | None
+
+
+class ProposalDecisionBody(BaseModel):
+    decision: Literal["APPROVED", "REJECTED"]
+    reason: str = Field(min_length=8, max_length=500)
+
+
+@router.get(
+    "/assurance/incidents/{incident_id}/council/proposals",
+    response_model=list[CouncilProposalStateResponse],
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="List council proposals with policy decisions and approval states",
+)
+async def list_council_proposals(
+    request: Request,
+    incident_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    council: Annotated[Any, Depends(get_network_council_service)],
+    approvals: Annotated[Any, Depends(get_network_action_approval_service)],
+) -> list[CouncilProposalStateResponse]:
+    authorizer.require(
+        identity,
+        Action.READ_NETWORK_COUNCIL,
+        ResourceContext(identity.tenant_id, resource_id=incident_id),
+        request_id=getattr(request.state, "request_id", "unavailable"),
+    )
+    view = council.get_council(identity.tenant_context, incident_id)
+    if view is None:
+        raise _council_not_found(incident_id)
+    states = approvals.list_proposals(identity.tenant_context, view.council_id)
+    return [
+        CouncilProposalStateResponse(
+            proposal_id=s.proposal_id,
+            proposal_index=s.proposal_index,
+            proposal_snapshot=s.proposal_snapshot,
+            decision=s.decision,
+            approval=s.approval,
+        )
+        for s in states
+    ]
+
+
+def _approval_error(exc: Exception) -> AppError:
+    """审批域异常 → HTTP 映射（与平台 approvals 路由同一错误分类）。"""
+    from industrial_ops_agent.approval.models import (
+        ApprovalConflict,
+        SeparationOfDutiesViolation,
+    )
+    from industrial_ops_agent.network_assurance.network_action_approval import (
+        ApprovalNotFound,
+        IdempotencyConflict,
+        ManualExecutionNotAllowed,
+    )
+
+    if isinstance(exc, ApprovalNotFound):
+        return AppError(
+            status_code=404,
+            code="proposal_not_found",
+            category="not_found",
+            message="Council proposal not found",
+            details={"proposal_id": str(exc)},
+        )
+    if isinstance(exc, SeparationOfDutiesViolation):
+        return AppError(
+            status_code=403,
+            code="separation_of_duties",
+            category="forbidden",
+            message="The proposer cannot approve their own proposal",
+        )
+    if isinstance(exc, ManualExecutionNotAllowed):
+        return AppError(
+            status_code=409,
+            code="manual_execution_not_allowed",
+            category="conflict",
+            message="This proposal requires manual runbook execution, not /execute",
+        )
+    if isinstance(exc, IdempotencyConflict):
+        return AppError(
+            status_code=409,
+            code="idempotency_conflict",
+            category="conflict",
+            message="Idempotency-Key does not match the key used for the first execution",
+        )
+    if isinstance(exc, ApprovalConflict):
+        return AppError(
+            status_code=409,
+            code="approval_conflict",
+            category="conflict",
+            message="Approval state or version precondition failed",
+            details={"reason": str(exc)},
+        )
+    raise exc
+
+
+@router.post(
+    "/assurance/proposals/{proposal_id}/decision",
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Record a human approval decision on one council proposal",
+)
+async def decide_council_proposal(
+    request: Request,
+    proposal_id: str,
+    body: Annotated[ProposalDecisionBody, Body()],
+    if_match: Annotated[str, Header(alias="If-Match")],
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    approvals: Annotated[Any, Depends(get_network_action_approval_service)],
+) -> dict[str, Any]:
+    """批准的是**Policy 裁决后的确定动作**（decision），不是 LLM 原文。
+
+    - `If-Match` 为乐观并发（审批 version）；
+    - SoD：发起人不能批准自己发起的会商提案（复用平台 guard）。
+    """
+    authorizer.require(
+        identity,
+        Action.APPROVE_NETWORK_ACTION,
+        ResourceContext(identity.tenant_id, resource_id=proposal_id),
+        request_id=getattr(request.state, "request_id", "unavailable"),
+    )
+    try:
+        return approvals.decide(
+            identity.tenant_context,
+            proposal_id,
+            approval_decision=body.decision,
+            reason=body.reason,
+            expected_version=_version(if_match),
+            decider_subject_id=identity.subject_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - 统一映射为 HTTP 语义
+        raise _approval_error(exc) from exc
+
+
+@router.post(
+    "/assurance/proposals/{proposal_id}/execute",
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Execute an approved REMOTE proposal (payload comes from the approved snapshot)",
+)
+async def execute_council_proposal(
+    request: Request,
+    proposal_id: str,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    approvals: Annotated[Any, Depends(get_network_action_approval_service)],
+) -> dict[str, Any]:
+    """只收 ``proposal_id + idempotency_key``——执行载荷从批准快照读取
+    （P1-1，消 TOCTOU）；MANUAL 提案返回 409（P0-3，运行手册走 /runbook）。
+    """
+    authorizer.require(
+        identity,
+        Action.EXECUTE_NETWORK_ACTION,
+        ResourceContext(identity.tenant_id, resource_id=proposal_id),
+        request_id=getattr(request.state, "request_id", "unavailable"),
+    )
+    try:
+        return approvals.execute(
+            identity.tenant_context,
+            proposal_id,
+            idempotency_key=idempotency_key,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _approval_error(exc) from exc
+
+
+@router.get(
+    "/assurance/proposals/{proposal_id}/runbook",
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Controlled runbook for an approved ACTION_ID proposal (never executed remotely)",
+)
+async def council_proposal_runbook(
+    request: Request,
+    proposal_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    approvals: Annotated[Any, Depends(get_network_action_approval_service)],
+) -> dict[str, Any]:
+    """从**批准快照**生成受控运行手册（不按当前 Catalog 重解释）。
+
+    返回体含 ``execution_status=NOT_EXECUTED`` 与 ``manual_execution_required=true``：
+    UI 永远不能把"已批准手工执行"渲染成"已执行"。
+    """
+    authorizer.require(
+        identity,
+        Action.READ_NETWORK_COUNCIL,
+        ResourceContext(identity.tenant_id, resource_id=proposal_id),
+        request_id=getattr(request.state, "request_id", "unavailable"),
+    )
+    try:
+        return approvals.runbook(identity.tenant_context, proposal_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _approval_error(exc) from exc

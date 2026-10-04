@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -301,6 +302,11 @@ class NetworkCouncilService:
             context, council_id, attempt, council_input, result.expert_opinions
         )
         record = self._require_record(context, council_id)
+        # ⑤：Policy 裁决 + 提案身份 + 审批落库（所有提案先有 id，allowed 才有审批）
+        self._record_policy_outcomes(
+            context, record=record, council_input=council_input, proposals=result.proposals
+        )
+        record = self._require_record(context, council_id)
         return self._to_view(record)
 
     # ------------------------------------------------------------------
@@ -411,6 +417,51 @@ class NetworkCouncilService:
                 record.completed_at = now if status is not CouncilStatus.QUEUED else None
                 record.version += 1
             session.flush()
+
+    def _record_policy_outcomes(
+        self,
+        context: TenantContext,
+        *,
+        record: Any,
+        council_input: CouncilInput,
+        proposals: Sequence[ActionProposal],
+    ) -> None:
+        """Policy 裁决 + 提案/审批持久化（⑤ 的准入与审批链入口）。
+
+        - 每条 E1 提案先铸造稳定 ``proposal_id``（含 BLOCKED——审计要能查到
+          "建议了什么、为什么被拦"）；
+        - ``decide_proposal`` 计算 policy_decision（risk / approval_required /
+          execution_mode / block_reason 全部是机器规则，不是模型输出）；
+        - 仅 ``allowed`` 的提案创建 ApprovalRequest（P0-2：BLOCKED 零审批行）。
+        """
+        from industrial_ops_agent.network_assurance.action_policy import decide_proposal
+        from industrial_ops_agent.network_assurance.network_action_approval import (
+            NetworkActionApprovalService,
+            proposal_digest,
+        )
+
+        constraints = council_input.operational_constraints
+        # v1 invariant: one gateway per site——affected_assets[0] 即目标网关。
+        # 不要在此泛化为跨网关 targeting；multi-gateway 时升级 Council target model。
+        target_gateway = constraints.affected_assets[0] if constraints.affected_assets else ""
+        decisions = [
+            decide_proposal(
+                proposal,
+                proposal_digest=proposal_digest(proposal),
+                target_gateway=target_gateway,
+                production_critical=constraints.production_critical,
+                cloud_catalog_version=constraints.action_catalog_version,
+                gateway_catalog_version=constraints.gateway_catalog_version,
+            )
+            for proposal in proposals
+        ]
+        NetworkActionApprovalService(self._database).record_council_outcomes(
+            context,
+            council=record,
+            proposals=proposals,
+            decisions=decisions,
+            initiated_by=record.requested_by_subject_id,
+        )
 
     def _persist_contributions(
         self,

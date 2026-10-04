@@ -244,6 +244,96 @@ type WirelessDiagnosisResponse = {
   guardrail_findings: Array<Record<string, unknown>>;
 };
 
+// ---------------------------------------------------------------------------
+// ⑤ Network Operations Council —— 会商 / Policy 裁决 / 审批 / 执行
+// ---------------------------------------------------------------------------
+
+type CouncilExpertOpinion = {
+  role: string;
+  observations?: string[];
+  referenced_fact_ids?: string[];
+  recommendation_direction?: string;
+};
+
+type CouncilProposal = {
+  kind: "ACTION_ID" | "CONFIG_CHANGE";
+  action_id?: string | null;
+  action_params?: Record<string, string>;
+  config_key?: string | null;
+  config_value?: string | null;
+  rationale: string;
+  proposed_preconditions?: string[];
+  source_bindings?: Record<string, string>[];
+};
+
+type NetworkCouncilView = {
+  council_id: string;
+  incident_id: string;
+  status: "QUEUED" | "RUNNING" | "REVIEW_PENDING" | "FAILED";
+  stage: string;
+  input_fingerprint: string;
+  failure_code?: string | null;
+  proposals?: CouncilProposal[];
+  expert_opinions?: CouncilExpertOpinion[];
+  requested_by_subject_id: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+};
+
+// Policy 裁决（机器规则）与人工审批（人）是两个域——前端字段永不混用。
+type ProposalPolicyDecision = {
+  decision_id: string;
+  allowed: boolean;
+  risk: RiskLevel;
+  required_preconditions: string[];
+  approval_required: boolean;
+  block_reason: string | null;
+  execution_mode: "REMOTE_PENDING_ACTION" | "MANUAL_RUNBOOK";
+  catalog_version: string;
+  risk_policy_version: string;
+  normalized_action: Record<string, unknown>;
+};
+
+type ProposalApprovalState = {
+  approval_id: string;
+  status: "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED" | "SUPERSEDED";
+  expires_at: string;
+  version: number;
+  execution_status: "NOT_EXECUTED" | "QUEUED";
+  manual_execution_required: boolean;
+  queued_action_id: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  decision_id: string;
+};
+
+type CouncilProposalState = {
+  proposal_id: string;
+  proposal_index: number;
+  proposal_snapshot: CouncilProposal;
+  decision: ProposalPolicyDecision | null;
+  approval: ProposalApprovalState | null;
+};
+
+type ManualRunbook = {
+  proposal_id: string;
+  approval_id: string;
+  command: string;
+  catalog_version: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  runbook_renderer_version: string;
+  manual_execution_required: true;
+  execution_status: "NOT_EXECUTED";
+};
+
+type ExecuteResult = {
+  execution_status: string;
+  queued_action_id: string | null;
+  idempotent_replay: boolean;
+};
+
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE_URL}${path}`, {
@@ -378,6 +468,53 @@ export const apiClient = {
         `/risk-prediction?window_hours=${windowHours}`,
     );
   },
+
+  // ---- ⑤ Network Operations Council ----
+  getIncidentCouncil(incidentId: string): Promise<NetworkCouncilView> {
+    return request<NetworkCouncilView>(
+      `/api/v1/network/assurance/incidents/${encodeURIComponent(incidentId)}/council`,
+    );
+  },
+  conveneCouncil(incidentId: string, force = false): Promise<NetworkCouncilView> {
+    return request<NetworkCouncilView>(
+      `/api/v1/network/assurance/incidents/${encodeURIComponent(incidentId)}/council?force=${force}`,
+      { method: "POST" },
+    );
+  },
+  listCouncilProposals(incidentId: string): Promise<CouncilProposalState[]> {
+    return request<CouncilProposalState[]>(
+      `/api/v1/network/assurance/incidents/${encodeURIComponent(incidentId)}/council/proposals`,
+    );
+  },
+  decideProposal(
+    proposalId: string,
+    decision: "APPROVED" | "REJECTED",
+    reason: string,
+    ifMatch: number,
+  ): Promise<ProposalApprovalState> {
+    return request<ProposalApprovalState>(
+      `/api/v1/network/assurance/proposals/${encodeURIComponent(proposalId)}/decision`,
+      {
+        method: "POST",
+        headers: { "If-Match": String(ifMatch) },
+        body: JSON.stringify({ decision, reason }),
+      },
+    );
+  },
+  executeProposal(proposalId: string, idempotencyKey: string): Promise<ExecuteResult> {
+    return request<ExecuteResult>(
+      `/api/v1/network/assurance/proposals/${encodeURIComponent(proposalId)}/execute`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+      },
+    );
+  },
+  getProposalRunbook(proposalId: string): Promise<ManualRunbook> {
+    return request<ManualRunbook>(
+      `/api/v1/network/assurance/proposals/${encodeURIComponent(proposalId)}/runbook`,
+    );
+  },
 };
 
 export type {
@@ -402,5 +539,13 @@ export type {
   RiskWindow,
   InsufficientPrediction,
   PredictionResult,
+  CouncilExpertOpinion,
+  CouncilProposal,
+  NetworkCouncilView,
+  ProposalPolicyDecision,
+  ProposalApprovalState,
+  CouncilProposalState,
+  ManualRunbook,
+  ExecuteResult,
 };
 

@@ -700,6 +700,15 @@ async def get_risk_prediction_service(request: Request) -> Any:
     return RiskPredictionService(request.app.state.database)
 
 
+async def get_network_action_approval_service(request: Request) -> Any:
+    """【路线图 ⑤】Build the network action approval service per request."""
+    from industrial_ops_agent.network_assurance.network_action_approval import (
+        NetworkActionApprovalService,
+    )
+
+    return NetworkActionApprovalService(request.app.state.database)
+
+
 async def get_network_council_service(request: Request) -> Any:
     """【路线图 ④】Build the Network Operations Council service per request.
 

@@ -6270,6 +6270,151 @@ class NetworkCouncilContributionRecord(TenantScopedMixin, Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class NetworkCouncilProposalRecord(TenantScopedMixin, Base):
+    """⑤ 提案身份（P0-1 + 终审结构修正）：**所有 E1 提案——包括最终被 BLOCKED
+    的——都先获得稳定 proposal_id 并保存不可变原文快照**。
+
+    为什么不在 ActionProposal（LLM 输出）里带 id：id 必须由服务端铸造，
+    模型无权决定安全对象的身份。Policy 升版重裁时也不改写本表——
+    "Council 当时建议了什么"永远可按 proposal_id 回溯。
+    """
+
+    __tablename__ = "network_council_proposals"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "council_id",
+            "attempt",
+            "proposal_index",
+            name="uq_network_council_proposal_position",
+        ),
+        Index("ix_network_council_proposals_council", "tenant_id", "council_id", "attempt"),
+    )
+
+    #: 服务端铸造：ncprop-<council 后缀>-a<attempt>-<digest8>
+    proposal_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    council_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 仅用于 Web 展示排序——审批/审计一律按 proposal_id 寻址
+    proposal_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: ActionProposal 的不可变 JSON 快照
+    proposal_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    proposal_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
+class NetworkActionDecisionRecord(TenantScopedMixin, Base):
+    """⑤ Policy 裁决（policy_decision）：Policy 如何裁决这条建议。
+
+    与人的 ``approval_decision`` 严格区分。**append-only**：RiskPolicy 升版后
+    可对同一 proposal 重新裁决（新行），不覆写历史裁决，也不改写建议原文。
+    BLOCKED（allowed=false）同样落行——审计必须能回答"为什么被拦"。
+    """
+
+    __tablename__ = "network_action_decisions"
+    __table_args__ = (
+        Index("ix_network_action_decisions_proposal", "tenant_id", "proposal_id"),
+        Index("ix_network_action_decisions_council", "tenant_id", "council_id"),
+    )
+
+    decision_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    council_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    proposal_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: P1-1：审批与执行绑定的规范化载荷（不是 LLM 原文）
+    normalized_action: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    normalized_action_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    allowed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    risk: Mapped[str] = mapped_column(String(8), nullable=False)
+    required_preconditions: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    approval_required: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    block_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    catalog_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    risk_policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
+class NetworkActionApprovalRecord(TenantScopedMixin, Base):
+    """⑤ 人工审批（approval）：批准的是**裁决后的确定动作**，不是 LLM 原文。
+
+    - 绑定 ``decision_id + decision_digest + normalized_action`` 快照；
+    - ``runbook_renderer_version`` 与批准快照一同固化（工程细节③）：
+      未来渲染器升级不影响旧批准的语义；
+    - ``executed_idempotency_key`` 唯一约束：同一批准 + 同一幂等键绝不产生
+      第二个 pending action（工程细节①，queue_action 本身不去重）。
+    """
+
+    __tablename__ = "network_action_approvals"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "proposal_id", name="uq_network_action_approval_proposal"),
+        UniqueConstraint(
+            "tenant_id",
+            "executed_idempotency_key",
+            name="uq_network_action_approval_idempotency",
+        ),
+        Index("ix_network_action_approvals_council", "tenant_id", "council_id", "status"),
+        CheckConstraint(
+            "status IN ('PENDING', 'APPROVED', 'REJECTED', 'EXPIRED', 'SUPERSEDED')",
+            name="ck_network_action_approval_status",
+        ),
+        CheckConstraint(
+            "execution_status IN ('NOT_EXECUTED', 'QUEUED')",
+            name="ck_network_action_approval_execution_status",
+        ),
+        CheckConstraint("version >= 1", name="ck_network_action_approval_version"),
+    )
+
+    approval_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    council_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 批准对象 = Policy 裁决（decision 绑定，P1 语义①）
+    decision_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    decision_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    normalized_action: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    approval_payload_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    runbook_renderer_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    initiated_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    #: 执行回填
+    execution_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="NOT_EXECUTED"
+    )
+    manual_execution_required: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    queued_action_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    executed_idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: MANUAL runbook 的批准上下文（回放展示，不参与执行校验）
+    approved_by_subject_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NetworkActionApprovalDecisionRecord(TenantScopedMixin, Base):
+    """人的批准留痕（approval_decision，append-only）。
+
+    与 ``network_action_decisions``（policy_decision）永不混名——审计里
+    "decision changed" 必须能一眼区分是 Policy 改判还是人改主意。
+    """
+
+    __tablename__ = "network_action_approval_decisions"
+    __table_args__ = (
+        Index("ix_network_action_approval_decisions", "tenant_id", "approval_id", "decided_at"),
+    )
+
+    approval_decision_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    approval_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    #: APPROVED | REJECTED
+    approval_decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    decider_subject_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: 批准时的载荷哈希快照（execute 侧 execution_rejection 用它比对参数）
+    approval_payload_digest: Mapped[str] = mapped_column(String(128), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 TENANT_TABLE_NAMES = frozenset(
     table_name for table_name in Base.metadata.tables if table_name != TenantRecord.__tablename__
 )
