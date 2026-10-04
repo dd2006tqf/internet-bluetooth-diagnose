@@ -209,7 +209,10 @@ def test_approve_and_execute_permissions_are_separate() -> None:
 @pytest.fixture
 def seeded(app_db: Database) -> dict[str, str]:
     """用确定性 Council 产出真实 proposal/approval 行，供 HTTP 层断言。"""
-    from tests.test_e2e_trace import _convene, _find_proposal, _rows
+    # pytest 以 prepend 模式把 tests/ 本身放进 sys.path（tests/ 不是包），
+    # 因此这里按模块名导入，而不是 tests.test_e2e_trace —— 后者在裸
+    # `pytest` 入口（CI）下会 ModuleNotFoundError。
+    from test_e2e_trace import _convene, _find_proposal, _rows
 
     from industrial_ops_agent.persistence.models import (
         NetworkActionApprovalRecord,
