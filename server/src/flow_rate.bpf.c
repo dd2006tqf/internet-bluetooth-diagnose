@@ -91,7 +91,8 @@ struct {
 /*
  * Map: process_stats
  * 类型: BPF_MAP_TYPE_LRU_HASH
- * Key:  __u32 = PID（来自 bpf_get_current_pid_tgid() 低 32 位清零后的值）
+ * Key:  __u32 = 进程 TGID（bpf_get_current_pid_tgid() 高 32 位，即进程 PID；
+ *       低 32 位是线程 TID——按 TID 分桶会把多线程进程拆成多行）
  * Value: struct process_net_stats（进程级画像）
  * 最大条目数: 65536
  * 用途: 按进程聚合所有网络流量。account_flow() 每次调用时同时更新
@@ -186,20 +187,23 @@ static __always_inline void account_flow(struct conn_key *k, __u64 add_bytes)
         struct flow_data init = {0};
         init.bytes = add_bytes;
         init.packets = 1;
-        // bpf_get_current_pid_tgid() 高 32 位=PID，低 32 位=TID
-        // 低 32 位清零的方式：& 0xffffffff 后取高 32 位移位其实等价
-        // 这里直接 & 0xffffffff 是取整个 64 位的低 32 位，作为 PID
-        init.pid = (__u32)(bpf_get_current_pid_tgid() & 0xffffffff);
+        // bpf_get_current_pid_tgid() 返回 (TGID << 32) | TID：
+        //   高 32 位 = 进程 TGID（即 PID，用户态期望的进程标识）
+        //   低 32 位 = 线程 TID（按它分桶会把多线程进程拆成多行，
+        //               云端 top_processes 会拿到线程号冒充进程号）
+        // 取进程标识必须 >> 32（对照 tcp_retransmit.bpf.c 同一 helper 的用法）
+        init.pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
         bpf_map_update_elem(&current_sec, k, &init, 0);  // BPF_NOEXIST：只创建不覆盖
     } else {
         // 已存在：原子累加
         __sync_fetch_and_add(&v->bytes, add_bytes);
         __sync_fetch_and_add(&v->packets, 1);
-        v->pid = (__u32)(bpf_get_current_pid_tgid() & 0xffffffff);
+        v->pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
     }
 
     // === 进程级统计 ===
-    __u32 pid = (__u32)(bpf_get_current_pid_tgid() & 0xffffffff);
+    // Key 取 TGID（进程 PID），多线程进程聚合为一行
+    __u32 pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
     struct process_net_stats *ps = bpf_map_lookup_elem(&process_stats, &pid);
     if (!ps) {
         struct process_net_stats init = {};
@@ -232,8 +236,9 @@ static __always_inline void account_flow(struct conn_key *k, __u64 add_bytes)
 SEC("kprobe/tcp_retransmit_skb")
 int trace_tcp_retransmit(struct pt_regs *ctx)
 {
-    // 取 PID（& 0xffffffff 保留低 32 位）
-    __u32 pid = (__u32)(bpf_get_current_pid_tgid() & 0xffffffff);
+    // 取进程 PID（>> 32 取 TGID；& 0xffffffff 取到的是线程 TID，与
+    // account_flow 的 key 语义必须一致，否则重传记到别的 key 上）
+    __u32 pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
     struct process_net_stats *ps = bpf_map_lookup_elem(&process_stats, &pid);
     if (!ps) {
         struct process_net_stats init = {};

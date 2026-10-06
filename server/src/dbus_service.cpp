@@ -3,8 +3,9 @@
  * @brief DBus 服务层实现：方法分发、信号发送、载荷持久化
  *
  * 本文件实现 DbusService 类，作为 WeakNet 服务与外部世界交互的唯一入口。
- * 上层通过它暴露约 12 个 DBus 方法（Get、ListInterfaces、HealthCheck、Ping、
- * GetBluetoothDevices、GetEbpfMonitorHealth、GetHistory 等），同时向外发送
+ * 上层通过它暴露 29 个 DBus 方法（Get、ListInterfaces、HealthCheck、Ping、
+ * GetBluetoothDevices、GetEbpfMonitorHealth、GetHistory、SetMonitorParam、
+ * EnableMonitor 等），同时向外发送
  * Changed / NetworkQualityChanged 等 DBus 信号。
  *
  * 设计思路：

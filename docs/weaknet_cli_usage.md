@@ -133,6 +133,10 @@ http_latency
 process_profiler
 tcp_retrans
 tcp_conn
+skb_drop
+tcp_connect
+active_probe
+edge
 server
 all
 ```
@@ -257,7 +261,7 @@ $ weaknet-cli get all
 }
 ```
 
-**支持的监控器名**：`rtt` `rssi` `tcp_loss` `traffic` `quality` `bluetooth` `dns` `wifi_loss` `http_latency` `process_profiler` `tcp_retrans` `tcp_conn` `server` `all`
+**支持的监控器名**：`rtt` `rssi` `tcp_loss` `traffic` `quality` `bluetooth` `dns` `wifi_loss` `http_latency` `process_profiler` `tcp_retrans` `tcp_conn` `skb_drop` `tcp_connect` `active_probe` `edge` `server` `all`
 
 **输出字段说明**（以 `rtt` 为例）：
 
@@ -305,15 +309,42 @@ ok
 | `rtt` | `interval_ms` | duration | `100ms` ~ `600000ms` | 采样周期，支持 `ms`/`s`/`m` 后缀 |
 | `rtt` | `timeout_ms` | duration | `100ms` ~ `60000ms` | 单次超时 |
 | `rtt` | `window_size` | uint | `2` ~ `1000` | RTT 滑动窗口大小（jitter 计算窗口） |
-| `rssi`/`tcp_loss`/... | `interval_ms` | duration | `1000ms` ~ `600000ms` | 采样周期 |
+| `rssi`/`tcp_loss`/`traffic`/`quality`/`wifi_loss`/`http_latency`/`process_profiler`/`tcp_retrans`/`tcp_conn`/`skb_drop`/`tcp_connect` | `enabled` | bool | `true` / `false` | 启用开关 |
+| `rssi`/`tcp_loss`/`traffic`/`quality`/`wifi_loss`/`http_latency`/`process_profiler`/`tcp_retrans`/`tcp_conn`/`skb_drop`/`tcp_connect` | `interval_ms` | duration | `1000ms` ~ `600000ms` | 采样周期 |
+| `bluetooth` | `enabled` | bool | `true` / `false` | 启用开关（同时控制 `bt_events`） |
 | `bluetooth` | `interval_ms` | duration | `1000ms` ~ `60000ms` | 采样周期 |
 | `bluetooth` | `bpf_obj` | string | 路径 | Phase2 eBPF 对象路径 |
+| `bluetooth` | `events_bpf_obj` | string | 路径 | bt_events eBPF 对象路径 |
 | `bluetooth` | `incident_min_devices` | uint | `2` ~ `1000` | 区域事故绝对门槛（受影响设备最少台数） |
 | `bluetooth` | `incident_min_ratio_bp` | uint | `1` ~ `10000` | 区域事故比例门槛，万分比（`3000` = 30%） |
 | `bluetooth` | `incident_window` | duration | `1s` ~ `10m` | 关联窗口（读回键为 `incident_window_ms`） |
 | `bluetooth` | `incident_quiet_window` | duration | `1s` ~ `24h` | 静默窗口：安静这么久 → `RESOLVED` |
 | `bluetooth` | `incident_active_window` | duration | `1s` ~ `10m` | 活跃设备记忆（动态分母的记忆时长） |
-| `dns`/`wifi_loss`/... | `bpf_obj` | string | 路径 | eBPF 对象路径 |
+| `dns` | `enabled` | bool | `true` / `false` | 启用开关 |
+| `dns` | `interval_ms` | duration | `1000ms` ~ `600000ms` | 采样周期 |
+| `dns` | `bpf_obj` | string | 路径 | eBPF 对象路径 |
+| `dns` | `capture_pages` | uint | `1` ~ `256` | perf buffer 页数 |
+| `dns` | `assessment_profile` | string | `NETWORK_ONLY` / `INTERNET_ACCESS` | DNS 评估模式 |
+| `tcp_connect` | `capture_pages` | uint | `1` ~ `256` | perf buffer 页数 |
+| `active_probe` | `enabled` | bool | `true` / `false` | 启用开关（默认关闭） |
+| `active_probe` | `interval`/`interval_ms` | duration | `1000ms` ~ `600000ms` | 探测周期 |
+| `active_probe` | `timeout`/`timeout_ms` | duration | `100ms` ~ `120000ms` | 单次探测超时 |
+| `active_probe` | `targets` | string | URL 列表 | TCP/HTTP 探测目标 |
+| `active_probe` | `https_enabled` | bool | `true` / `false` | 是否启用 HTTPS 探测 |
+| `active_probe` | `portal_check_enabled` | bool | `true` / `false` | 是否检测 captive portal |
+| `active_probe` | `portal_targets` | string | URL 列表 | portal 探测目标 |
+| `active_probe` | `portal_path` | string | 路径 | portal 探测路径 |
+| `active_probe` | `portal_expect_body` | string | 字符串 | portal 期望响应体 |
+| `edge` | `enabled` | bool | `true` / `false` | 启用开关 |
+| `edge` | `url` | string | URL | 上行端点（如 `http://<cloud>:8000/api/v1/network/edge/telemetry`） |
+| `edge` | `tenant` | string | 租户 ID | 租户标识 |
+| `edge` | `device_id` | string | 设备 ID | 设备标识 |
+| `edge` | `site_id` | string | 站点 ID | 站点标识 |
+| `edge` | `token` | string | 密钥 | 认证 token |
+| `edge` | `private_key_path` | string | 路径 | Ed25519 私钥路径 |
+| `edge` | `key_id` | string | 密钥 ID | 签名密钥标识 |
+| `edge` | `interval`/`interval_ms` | duration | `1000ms` ~ `3600000ms` | 上行周期 |
+| `edge` | `timeout`/`timeout_ms` | duration | `100ms` ~ `120000ms` | 上行超时 |
 | `server` | `data_dir` | string | 路径 | 数据目录 |
 | `server` | `log_level` | string | `info`/`warning`/`error`/`fatal` | 日志级别 |
 

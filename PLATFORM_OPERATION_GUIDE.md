@@ -2,7 +2,7 @@
 
 本项目由“tanqf”开发。
 
-本项目实现了从**硬件底层内核探针 (eBPF + C++)** 到**中心云工业大模型智能诊断平台 (FastAPI + Next.js + 大模型推理网关)** 的端到端完整闭环。本文档汇总之启动命令、边云网络连通方案与全流程演示操作指南。
+本项目实现了从**硬件底层内核探针 (eBPF + C++)** 到**中心云工业大模型智能诊断平台 (FastAPI + PostgreSQL + 大模型推理网关)** 的端到端完整闭环。本文档汇总当前真实的部署拓扑、启动命令与全流程演示操作指南。
 
 ---
 
@@ -10,151 +10,232 @@
 
 ```
 +-----------------------------------------------------------------------------------+
-|                           【中心云 / 宿主机】                                      |
+|                    【中心云 / 云端服务器】(Ubuntu 24.04, 81.71.76.133)              |
 |                                                                                   |
-|   1. 工业大模型与运维管理服务 (Docker Compose / industrial-ops-m1)                 |
-|      - FastAPI 业务后端: http://localhost:8000                                    |
-|      - PostgreSQL (时序快照/网络资产/控制动作)                                       |
-|      - Keycloak / Vault / OPA (身份认证、密码与细粒度 RBAC 策略)                   |
-|      - Next.js 可视化前端: http://localhost:3000                                  |
-|        * /network          (设备资产池大盘)                                       |
-|        * /network/[id]     (五维属性、SLE 矩阵、15分钟时间线、远程下发控制)          |
-|        * /network/copilot  (因果护栏大模型排障助手、中转网关免重启热配置)           |
+|   1. 网络保障云端服务 (systemd: weaknet-cloud-api)                                 |
+|      - 入口: Large-Model-Application/scripts/rehearsal_server.py                  |
+|      - 监听: 0.0.0.0:8000，前缀 /api/v1                                          |
+|      - PostgreSQL (weaknet-postgres 容器, 127.0.0.1:5432/industrial_ops)          |
+|      - .env 提供 IOAP_MODEL_GATEWAY_*（UpstreamCouncilClient 直连中转站）          |
+|                                                                                   |
+|   2. 构建容器 (常驻)                                                              |
+|      - weaknet-arm64-dev：ARM64 QEMU 模拟编译环境                                 |
+|      - 绑定挂载仓库 → /src                                                       |
+|                                                                                   |
+|   3. 反向隧道落点                                                                 |
+|      - 127.0.0.1:2222  ← 板端 cloud-tunnel.service 主动拨入                        |
+|      - ssh board 即可登板（~/.ssh/config 已配别名）                                |
 +-----------------------------------------------------------------------------------+
                                       ▲
-                                      │ (HTTP POST 经 Windows portproxy 转发)
+                                      │ 上行遥测/事件 (Ed25519 签名)
+                                      │ 下行控制回执 (Pull-on-Upload 随路拉取)
                                       ▼
 +-----------------------------------------------------------------------------------+
 |                        【边缘端 / Radxa Cubie A7A 开发板】                         |
 |                                                                                   |
-|   2. WeakNet 内核网络监测服务 (systemd: weaknet-server)                            |
-|      - 8 类 eBPF 内核级探针 (TCP/DNS/丢包/抖动/流量/蓝牙等)                          |
-|      - C++ 弱网多维评估引擎 (SLE 评估矩阵，每 15 秒发布不可变评估快照)               |
-|      - 本地 SQLite 历史持久化 (history.db，受 CAP_DAC_OVERRIDE 保护)               |
+|   4. WeakNet 内核网络监测服务 (systemd: weaknet-server)                            |
+|      - 10 个 eBPF 内核级探针（详见 docs/架构设计.md）                                |
+|      - C++ 弱网多维评估引擎（SLE 评估矩阵，每 15 秒发布不可变评估快照）               |
+|      - 本地 SQLite 历史持久化 (/home/radxa/weaknet/data/history.db)                |
 |      - 遥测上报器 (EdgeTelemetryExporter: libcurl + Ed25519 签名)                  |
 |      - 网络代次持久化 (NetworkEpochStore: 消除重启后上行遥测静默丢弃)                |
 |      - 下行控制回执 (Pull-on-Upload 随路拉取 + 白名单热更新 + 签名回执)              |
+|                                                                                   |
+|   5. 反向隧道服务 (systemd: cloud-tunnel.service)                                |
+|      - ssh -R 2222:localhost:22 → 云端，Restart=always 自动重连                    |
 +-----------------------------------------------------------------------------------+
 ```
 
+### 关键路径前缀
+
+云端 API 所有路由挂载在 `/api/v1` 前缀下（`rehearsal_server.py` / `api/app.py` 均以此 prefix 挂载）。板端上行地址为 `http://<云端>:8000/api/v1/network/edge/*`。
+
 ---
 
-## 二、 边云网络连通方案（关键前置条件）
+## 二、 网络连通方案（关键前置条件）
 
 ### 拓扑背景
-- **开发板** 通过 Wi-Fi 连接电脑热点，获取 IP：`192.168.137.x`（网关为 `192.168.137.1`）。
-- **中心云/宿主机** 运行在宿主机内部有线网卡，IP：`192.168.3.100`。
-- **问题**：Windows 热点默认阻止热点客户端向宿主机所在局域网（192.168.3.x）发起反向连接，且 mDNS 无法跨广播域组播。
+- **开发板** 位于家庭局域网（NAT 后），无公网地址，云端无法主动连入。
+- **云端服务器** 是公网可达的轻量云主机（`81.71.76.133`），板子有正常出网能力。
+- **方案**：板端 `cloud-tunnel.service` 主动建立 `ssh -R 2222:localhost:22` 反向隧道，云端通过 `127.0.0.1:2222` 访问板端 SSH。隧道只绑定回环地址，不对公网暴露。
 
-### 永久稳定方案（Windows portproxy 一键转发）
-在 Windows 宿主机打开 **PowerShell（以管理员身份运行）**，执行以下两条命令：
+### 隧道服务（板端）
 
-```powershell
-# 1. 设置端口转发：将热点网关的 8000 端口映射到宿主机 Linux 的 8000 端口
-netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=8000 connectaddress=192.168.3.100 connectport=8000
+```ini
+# /etc/systemd/system/cloud-tunnel.service
+[Unit]
+Description=Reverse SSH tunnel to cloud dev server (cloud-dev:2222 -> board:22)
+After=network-online.target
+Wants=network-online.target
 
-# 2. Windows 防火墙放行入站 TCP 8000 端口
-New-NetFirewallRule -DisplayName "WeakNet-Edge-API-8000" -Direction Inbound -LocalPort 8000 -Protocol TCP -Action Allow
+[Service]
+Type=simple
+User=radxa
+ExecStart=/usr/bin/ssh -o BatchMode=yes -o StrictHostKeyChecking=no \
+    -i /home/radxa/.ssh/id_cloud_tunnel \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -o ExitOnForwardFailure=yes -o TCPKeepAlive=yes \
+    -N -R 2222:localhost:22 ubuntu@81.71.76.133
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
 ```
-> **生效效果**：开发板访问 `http://192.168.137.1:8000` 将无感直达中心云后端，无需挂起任何临时终端隧道，开机自动生效。
+
+### 云端访问板端
+
+```bash
+ssh board                          # ~/.ssh/config 已配 Host board → 127.0.0.1:2222
+ssh board 'systemctl status cloud-tunnel.service'   # 检查隧道服务状态
+ssh board 'sudo systemctl restart cloud-tunnel.service'  # 重启隧道
+```
 
 ---
 
 ## 三、 一键启动与运行
 
-### 1. 启动中心云平台（宿主机）
-
-方式一：在项目根目录运行一键拉起脚本（推荐）：
+### 1. 云端服务（systemd 管理）
 
 ```bash
-./start_platform.sh               # 仅拉起并检查中心云全套服务
-./start_platform.sh --deploy-edge # 拉起中心云 + 增量编译部署开发板
+# 查看状态
+sudo systemctl status weaknet-cloud-api.service
+
+# 重启（如配置/代码变更后）
+sudo systemctl restart weaknet-cloud-api.service
+
+# 查看日志
+sudo journalctl -u weaknet-cloud-api.service -f
 ```
 
-方式二：进入 `Large-Model-Application` 目录手动分步启动：
-
-```bash
-cd Large-Model-Application
-
-# 首次启动：生成随机凭证与本地运行时环境
-./scripts/dev_lite.sh init
-
-# 启动全套微服务（PostgreSQL, Keycloak, Vault, Redis, OPA, Temporal, API, Web）
-M1_RUNTIME_ENV_FILE=.env.m1.local docker compose --env-file .env.m1.local -f compose.lite.yaml up -d
-
-# 检查服务健康状态（返回 {"status":"ready",...} 即为全绿）
-curl -s http://localhost:8000/health/ready
-```
+服务单元位于 `/etc/systemd/system/weaknet-cloud-api.service`，以 `User=ubuntu` 运行，工作目录为 `Large-Model-Application/`，通过 `EnvironmentFile=Large-Model-Application/.env` 注入模型网关配置。
 
 ### 2. 编译并部署开发板边缘端
-
-在项目根目录下，使用项目标准 CI 脚本完成 ARM64 交叉编译、打包、同步与重启：
 
 ```bash
 # 一键完成：ARM64 容器内增量编译 + 打包产物 + rsync 到板端 + systemd 重启
 ./tools/ci.sh --skip-test
 ```
+
 *注：板端服务启动后，若需手工查验板端状态：*
 ```bash
-ssh radxa@radxa-cubie-a7a.local 'sudo systemctl status weaknet-server'
+ssh board 'sudo systemctl status weaknet-server'
+```
+
+### 3. 验证云端服务
+
+```bash
+# API 文档（路由清单）
+curl -s http://localhost:8000/openapi.json | python3 -c "import json,sys; d=json.load(sys.stdin); print('routes=',len(d['paths']))"
+
+# Swagger UI
+open http://localhost:8000/docs
 ```
 
 ---
 
 ## 四、 平台演示全流程指南（建议演示步骤）
 
-### 演示一：边云遥测不可变上报与资产监控大盘
-1. 浏览器打开 Web 控制台：`http://localhost:3000/network`。
-2. 观察设备卡片：`radxa-cubie-a7a` 显示为 **ONLINE**（或根据网络评级显示绿色/黄色），最后心跳在几秒内持续刷新。
-3. 点击进入设备详情页 `http://localhost:3000/network/radxa-cubie-a7a`：
-   - **当前健康**：仪表盘展示综合得分与根因诊断（如 `primary_issue`）。
-   - **五维属性**：展示 aarch64 硬件架构、Linux 5.15 内核版本、活动网卡 `wlan0`、IP 与 MAC。
-   - **多维 SLE 矩阵**：展示物理层（RTT、抖动、信号强度）与服务层（DNS、TCP、HTTP）健康度。
-   - **评估时间线**：展示每 15 秒一条由边缘推送的不可变快照，包含 `seq` 序号、`epoch` 代次与分值。
+### 演示一：边云遥测不可变上报
+
+板端每 10 秒采集一次遥测数据，通过 Ed25519 签名后上行到云端 `/api/v1/network/edge/telemetry`。
+
+```bash
+# 查看板端遥测上行日志
+ssh board 'sudo journalctl -u weaknet-server -n 20 --no-pager | grep -i "telemetry\|edge"'
+
+# 查看云端接收日志
+sudo journalctl -u weaknet-cloud-api.service -n 20 --no-pager | grep -i "telemetry\|edge"
+```
 
 ### 演示二：因果护栏大模型排障助手 (Copilot)
-1. 进入 `http://localhost:3000/network/copilot`。
-2. 点击右上角 **【大模型热配置】**：
-   - 支持动态修改中转站地址（如 `https://vectide.cn/v1`）与 Model Name（如 `deepseek-v4-pro-0813`）。
-   - 点击 **【测试连通性】**，即刻展示真实往返时延及模型连通验证结果。
-3. 在提问框中提问：
-   > *“分析当前 radxa-cubie-a7a 的网络状态，为什么之前评分为 DEGRADED？瓶颈在哪？”*
-4. 观察回答：
-   - 包含蓝色徽标 **`大模型解释（已过因果护栏）`**。
-   - 系统采用“确定性因果链先行”机制，严格依据快照事实生成解释，绝不产生虚构幻觉。
+
+1. 云端服务已配置 `IOAP_MODEL_GATEWAY_*` 环境变量（`.env`），`UpstreamCouncilClient` 直连中转站（`https://vectide.cn/v1`）。
+2. 调用 Council 接口（需真实 incident_id）：
+
+```bash
+# 列出可用 incident
+# （需先有真实 incident 数据，见演示三）
+curl -s http://localhost:8000/api/v1/assurance/incidents/{incident_id}/council \
+  -H "Authorization: Bearer <token>"
+```
+
+3. Council Runner 会调用真实模型（当前 `deepseek-v4-pro-0813`），产出 3 位专家意见（RF/Kernel/Ops）+ closed-schema ActionProposal 列表。
+4. fail-closed 语义：key 缺失、401、截断 JSON 等异常 → `CouncilFailure(FAILURE_MODEL)`，绝不产出半合法建议。
 
 ### 演示三：边云下行控制通道（参数热调优与回执闭环）
-1. 在设备详情页 `http://localhost:3000/network/radxa-cubie-a7a` 点击右上角 **【远程调参 / 下发控制】** 按钮。
-2. 在弹出窗口中选择：
-   - **参数键名**：`RTT 采样周期 (rtt.interval)`
-   - **参数值**：输入 `5s`
-3. 点击 **【排队下发】**，页面弹出排队成功通知。
-4. **终端实时查验（双屏见证）**：
-   - 边缘端会在下一次遥测响应中随路拉取指令，经过 C++ 内核白名单校验后直接生效：
+
+1. 在设备详情页或 API 中对 `radxa-cubie-a7a` 下发控制：
+
+```bash
+# 通过 API 下发（需 TENANT_ADMIN 权限）
+curl -X POST http://localhost:8000/api/v1/assets/radxa-cubie-a7a/actions \
+  -H "Content-Type: application/json" \
+  -d '{"action": "set_config", "params": {"rtt.interval": "5s"}}'
+```
+
+2. **终端实时查验（双屏见证）**：
+   - 边缘端在下一次遥测响应中随路拉取指令，经白名单校验后生效：
      ```bash
-     ssh radxa@radxa-cubie-a7a.local 'sudo /home/radxa/weaknet/client/bin/weaknet-cli get rtt'
+     ssh board 'sudo /home/radxa/weaknet/client/bin/weaknet-cli get rtt'
      ```
-     查验输出中的 `interval_ms` 已就地热变更为 `5000`！
-   - 查看板端系统日志：
+   - 查看板端日志：
      ```bash
-     ssh radxa@radxa-cubie-a7a.local 'sudo journalctl -u weaknet-server -n 10 --no-pager | grep "已应用"'
+     ssh board 'sudo journalctl -u weaknet-server -n 10 --no-pager | grep "已应用"'
      ```
-     打印日志：`已应用服务端下发的配置: rtt.interval=5s`。
-   - 边缘端完成 Ed25519 签名后异步调用 `/network/edge/action-results`，中心云数据库内该指令状态自动变为 **`APPLIED`**。
-5. 回到页面点击 **【刷新】** 按钮，五维属性中的“RTT 采样间隔”已自动更新为 `5s`。
+   - 边缘端签名后异步回执 `/api/v1/network/edge/action-results`，云端 `network_pending_actions` 状态变为 `APPLIED`，同时落 `network_action_outcomes` 投影行。
+
+3. 完整审计链可通过 `test_e2e_trace.py` 验证（需板端上行有真实 incident 数据）。
 
 ---
 
 ## 五、 常见问题与故障排查
 
-### 1. 设备详情页提示“设备不存在或不可见”
-- **原因**：权限隔离策略拦截。云端 API `_require_read_scope` 过去绑定了工业生产工单资产（`asset-m1-pump`），若当前登录用户未分配该资产的权限范围，会被 `device_scope_denied` 拦截。
-- **状态**：**已彻底修复**。网络设备已被正确确认为网络基础设施资源，租户运维角色持有 `network_assurance.read` 权限即可自由查看。
+### 1. `ssh board` 连不上（Connection refused）
+
+**原因**：板端 `cloud-tunnel.service` 反向隧道未建立或已断开。
+
+**排查**：
+```bash
+# 在板子上检查隧道服务
+systemctl status cloud-tunnel.service
+journalctl -u cloud-tunnel.service -n 30
+
+# 检查板子出网是否正常
+curl -s -o /dev/null -w "%{http_code}" http://81.71.76.133
+```
+
+**恢复**：
+```bash
+sudo systemctl restart cloud-tunnel.service
+```
 
 ### 2. 开发板重启后云端数据库没有新数据
+
 - **原因**：开发板 `sequence_id` 进程计数器从 1 重启，若 `network_epoch` 也是 1，云端会将 `(epoch=1, seq=1..N)` 误判为历史重复项而静默丢弃。
 - **状态**：**已彻底修复**。开发板引入了 `NetworkEpochStore`，重启时代次严格持久化递增（1 -> 2 -> 3...），彻底杜绝静默去重问题。
 
 ### 3. 开发板本地 history.db 打不开
+
 - **原因**：`weaknet-server.service` 以 root 运行但 `data/` 目录属于 `radxa:radxa`，缺少 `CAP_DAC_OVERRIDE` 导致 root 被当成 other 用户拒绝写入。
 - **状态**：**已彻底修复**。服务单元已固化添加 `CAP_DAC_OVERRIDE` 权能。
+
+### 4. 云端服务起不来（ImportError: cannot import name ...）
+
+- **原因**：`rehearsal_server.py` 是云端当前入口，其依赖 shim 需手动补齐新增的 service accessor。路线图③④⑤ 的新路由依赖 `get_risk_prediction_service` / `get_network_action_approval_service` / `get_network_council_service` 三个 accessor。
+- **状态**：**已彻底修复**（commit `0975e42`）。同时已注册平台统一错误边界 `register_error_handlers`，404/403 不再退化为裸 500。
+
+### 5. Council 接口报 `CouncilModelResponseError` / `FAILURE_MODEL`
+
+- **原因**：模型网关未配置或上游返回非法响应。
+- **排查**：检查 `.env` 中 `IOAP_MODEL_GATEWAY_API_KEY` 是否有效；检查 `sudo journalctl -u weaknet-cloud-api.service` 中是否有 401/超时/JSON 截断日志。
+- **语义**：fail-closed 是**设计行为**——宁可无建议，也不产出半合法输出。
+
+---
+
+## 六、 遗留事项与已知边界
+
+- **演示二/三的完整 e2e 链**（incident → diagnosis → council → proposal → approval → pending_action → outcome）目前还差**真实蓝牙断连事件**触发上游 incident。当前生产库中 `network_wireless_events`/`network_site_incidents`/`site_incident_diagnoses` 均为 0 行。
+- **模型网关**已配置完成（`test_network_council_live.py` PASSED），但 Council 链路尚未跑过真实 incident。
+- **排练身份**当前持有 `{AFTER_SALES_ENGINEER, TENANT_ADMIN}` 双角色（为打通 direct queue 下行闭环）。最终验收后应收回 `TENANT_ADMIN`，恢复最小权限。
+- **`start_platform.sh`** 是遗留的一键拉起脚本，拉起的是 `compose.lite.yaml` 全套微服务栈（PostgreSQL/Keycloak/Vault/Temporal/Web 等）。当前实际生产入口是 `rehearsal_server.py`，两者不冲突但用途不同：前者是完整开发环境，后者是生产/排练切片。

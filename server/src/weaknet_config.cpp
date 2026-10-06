@@ -1124,7 +1124,7 @@ bool ConfigTransaction::loadPriorValues(std::map<std::string, std::string>* out)
 
 std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& monitor,
                                  std::string* error) {
-    // 未知 monitor 直接报错（支持 "all" + 13 个监控器 + "server" + "edge"）
+    // 未知 monitor 直接报错（支持 "all" + 15 个监控器 + "server" + "edge"）
     static const std::set<std::string> valid = {
         "all", "server", "rtt", "rssi", "tcp_loss", "traffic", "quality",
         "bluetooth", "dns", "wifi_loss", "http_latency", "process_profiler",

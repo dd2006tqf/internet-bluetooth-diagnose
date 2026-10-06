@@ -1,15 +1,15 @@
 # 修复 a2dp_media.bpf.c 的 l2cap_chan.dst 偏移错误
 
 > **严重性**：🔴 高（legacy 能力的数据正确性缺陷）
-> **状态**：已登记，待排期（不阻塞工业无线主线）
+> **状态**：已修复（commit `c6791cb`：`L2CAP_CHAN_DST_OFFSET = 33`，并补全 `dst_type`/`src` 字段核对与 BTF 依据注释）
 > **发现日期**：2026-09-29（Phase 1 蓝牙事件采集的板端 BTF 实测过程中顺带发现）
 > **依据**：`docs/蓝牙监控优化实现方案.md` 第 11.6 节
 
 ## 一句话摘要
 
-`server/src/bpf/a2dp_media.bpf.c` 把内核 `l2cap_chan` 结构的 `dst`（目标
-BDADDR）字段偏移硬编码为 `+24`，而板端 BTF 实测真实偏移是 `33`——现有可能
-正在运行的 A2DP 地址提取读的是错误内存。
+`server/src/bpf/a2dp_media.bpf.c` 曾把内核 `l2cap_chan` 结构的 `dst`（目标
+BDADDR）字段偏移硬编码为 `+24`，而板端 BTF 实测真实偏移是 `33`——曾经运行的
+A2DP 地址提取读的是错误内存（已修复，见状态栏）。
 
 ## 动机 / 痛点
 

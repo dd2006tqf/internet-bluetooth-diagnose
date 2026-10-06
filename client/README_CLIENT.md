@@ -13,7 +13,7 @@
 ## 编译
 
 ```bash
-cd /WEAK_NET
+cd <仓库根目录>
 cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
 cmake --build build-x86 -j$(nproc)
 ```

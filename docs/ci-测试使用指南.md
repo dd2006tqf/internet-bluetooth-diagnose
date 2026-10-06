@@ -39,7 +39,7 @@
 只在本地容器内编译并打包 `dist-arm64/`，不部署到开发板。
 
 > 注意：`ci.sh` **不在本地跑单元测试**。本地跑单测请直接用
-> `ctest --test-dir build-x86/server`（x86，46 个套件）或容器内
+> `ctest --test-dir build-x86/server`（x86，47 个套件）或容器内
 > `ctest --test-dir build-arm64/server`。
 
 ### 完整参数列表
@@ -72,7 +72,7 @@ ssh -t radxa@radxa-cubie-a7a.local 'sudo /home/radxa/weaknet/weaknet-test-full.s
 
 示例：
 ```bash
-BOARD=radxa@192.168.1.100 ./tools/ci.sh
+BOARD=radxa@radxa-cubie-a7a.local ./tools/ci.sh
 ```
 
 ## 测试报告
@@ -91,7 +91,7 @@ ci-reports/
 
 ## 测试覆盖
 
-### 单元测试（46 个套件，543 个用例）
+### 单元测试（47 个套件）
 
 跑法：`ctest --test-dir build-x86/server --output-on-failure`
 

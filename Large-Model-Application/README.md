@@ -38,6 +38,7 @@
 | 企业资产与记忆 | 模型和评测证据导入、人工确认的业务记忆 | `/ai/enterprise-assets`、`/ai/memories` |
 | 预测维护 | 遥测接入、趋势/异常候选、时序 Transformer、剩余寿命 RUL | `/predictive-maintenance` |
 | 维护规划 | 单 Agent / 多 Agent 方案、人工复核、匿名 A/B 评审 | `/maintenance-planning`、`/maintenance-planning/reviews` |
+| 网络保障 | 边云遥测上行、无线事件、SiteIncident、Council 会商、提案审批、下行控制 | `/api/v1/network/edge/*`、`/api/v1/assurance/*` |
 | 治理与运维 | 租户权限、安全审计、紧急只读访问、恢复、供应链、成本、追踪、GPU 运维 | `/tenant`、`/security`、`/ops` 及其子页面 |
 
 这些能力不是一次启动全部加载的要求。数据平台、训练、语音、图检索和生产基础设施有各自依赖；小模型图片诊断链路不代表所有专项模型均已部署。
@@ -411,6 +412,45 @@ make m1-status
 首次 Realm 导入的本地密码取运行文件中的 `M1_DEMO_USER_PASSWORD`，请在本机编辑器中查看该项。已在 Keycloak 修改过密码时，以身份服务为准；改环境文件不会重置已导入用户。Keycloak 管理账号、MinIO 管理账号、Label Studio 的 `m3-data-steward@local.invalid` 均为独立账号体系；Label Studio 密码取 `M3_LABEL_STUDIO_PASSWORD`，Airflow 认证以部署配置为准。
 
 多角色账号不能绕过“申请人与审批人不同”“维修人与验收人不同”。共享环境应分配独立身份，不传播完整环境文件或密码截图。
+
+<a id="network-assurance"></a>
+## 网络保障（WeakNet 边云协同）
+
+当前云端生产入口为 [scripts/rehearsal_server.py](scripts/rehearsal_server.py)（systemd 单元 `weaknet-cloud-api.service`），是 `create_app` 的精简切片——只装配网络保障所需的路由与服务，资源占用远低于完整微服务栈。
+
+### 环境变量（`.env`，systemd `EnvironmentFile` 注入）
+
+| 变量 | 用途 |
+|---|---|
+| `ALEMBIC_DB_URL` / `REHEARSAL_DB_URL` | PostgreSQL 连接串（`postgresql+psycopg://.../industrial_ops`） |
+| `REHEARSAL_EDGE_PUBLIC_KEY` | Ed25519 验签公钥路径（`/etc/weaknet-cloud/edge_pub.pem`） |
+| `REHEARSAL_EDGE_TOKEN` | 板端上行认证 token |
+| `REHEARSAL_PORT` | 监听端口（默认 `8000`） |
+| `IOAP_MODEL_GATEWAY_UPSTREAM_URL` | 模型中转站地址（如 `https://vectide.cn/v1`） |
+| `IOAP_MODEL_GATEWAY_API_KEY` | 中转站 API key |
+| `IOAP_MODEL_GATEWAY_MODEL_NAME` | 模型名（如 `deepseek-v4-pro-0813`） |
+| `IOAP_MODEL_GATEWAY_TIMEOUT_SECONDS` | 模型调用超时（默认 `90.0`） |
+
+`UpstreamCouncilClient` 直连中转站通道（与 copilot / wireless_diagnosis 同一通道）；治理网关装配时优先走 `CouncilModelClient`，否则回落直连。fail-closed 语义：key 缺失、401、截断 JSON → `CouncilFailure(FAILURE_MODEL)`，零半合法输出。
+
+### 网络保障路由（`/api/v1` 前缀）
+
+| 路由 | 说明 |
+|---|---|
+| `POST /api/v1/network/edge/telemetry` | 板端遥测上行（Ed25519 签名）+ 下行 pending_actions 随路拉取 |
+| `POST /api/v1/network/edge/wireless-events` | 无线事实上行（device_events / site_incidents / baselines，分域幂等） |
+| `POST /api/v1/network/edge/action-results` | 板端控制执行回执（APPLIED / REJECTED） |
+| `POST /api/v1/assets/{asset_id}/actions` | 下行控制动作入队（direct queue，需 `MANAGE_NETWORK_DEVICE`） |
+| `GET /api/v1/assets/{asset_id}/wireless-devices/{device_address}/risk-prediction` | 设备风险预测 |
+| `POST /api/v1/assurance/incidents/{incident_id}/council` | 创建 Council 会商（真实模型，3 位专家意见 + closed-schema ActionProposal） |
+| `GET /api/v1/assurance/incidents/{incident_id}/council/proposals` | 列出提案 |
+| `POST /api/v1/assurance/proposals/{proposal_id}/decision` | 策略决策（批准/拒绝/需审批） |
+| `POST /api/v1/assurance/proposals/{proposal_id}/execute` | 执行（转入 pending_actions） |
+| `POST /api/v1/assurance/proposals/{proposal_id}/runbook` | 生成操作手册 |
+
+### 排练身份
+
+`rehearsal_server.py` 使用 `IdentityContext` 持有 `{AFTER_SALES_ENGINEER, TENANT_ADMIN}` 双角色——`TENANT_ADMIN` 为打通 direct queue 下行闭环的临时授权（`MANAGE_NETWORK_DEVICE` 权限仅在该角色名单上）。**最终验收后应收回 `TENANT_ADMIN`，恢复最小权限**。两权分离（direct queue vs 审批链）由正式角色边界维持。
 
 <a id="business"></a>
 ## 走通一次业务流程

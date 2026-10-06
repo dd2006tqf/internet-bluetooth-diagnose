@@ -14,7 +14,8 @@ WeakNet客户端动态库 (`libweaknet.so`) 提供了一个C接口，供其他�
 ### 1. 编译动态库
 
 ```bash
-cd /WEAK_NET
+cd <仓库根目录>
+cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
 cmake --build build-x86 --target weaknet test_client_bin
 ```
 

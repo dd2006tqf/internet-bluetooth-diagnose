@@ -14,7 +14,7 @@
 
 | # | 决策点 | 选择 |
 |---|---|---|
-| D1 | 事件/事故上行通道 | **独立端点** `POST /network/edge/wireless-events`，沿用现有 Ed25519 验签器；幂等键用 `event_id`/`incident_id`，与遥测的 `(epoch, sequence)` 分域 |
+| D1 | 事件/事故上行通道 | **独立端点** `POST /api/v1/network/edge/wireless-events`，沿用现有 Ed25519 验签器；幂等键用 `event_id`/`incident_id`，与遥测的 `(epoch, sequence)` 分域 |
 | D2 | 资产对齐范围 | **只桥网关**：`network_assets` ↔ `AssetRecord`（`source_system="weaknet"`）；现场无线设备保持诊断域实体，不入资产池 |
 | D3 | incident→工单触发 | 原定「自动开单、默认开」；**P5 实测后修正为「自动开工单草稿、默认开」**——见 §5 的治理边界说明与修正理由 |
 
@@ -56,7 +56,7 @@ SiteIncident(板端事实)
 ### 3.1 板端 → 云端契约
 
 ```jsonc
-// POST /network/edge/wireless-events
+// POST /api/v1/network/edge/wireless-events
 // Headers: X-Edge-Key-Id / X-Edge-Token / X-Edge-Tenant / X-Edge-Signature（复用 EdgeTelemetryVerifier）
 // 签名覆盖发送字节（与遥测同一不变式）
 {

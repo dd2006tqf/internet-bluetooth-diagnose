@@ -13,7 +13,7 @@
 ### 1. 内核级单源可观测底座（eBPF CO-RE）
 - **TCP 连接状态机跟踪** (`tcp_connect`, `tcp_conn`): 挂载 `sock:inet_sock_set_state` 等跟踪点，微秒级捕获握手耗时、三次握手丢包与连接生命周期。
 - **TCP 协议栈异常诊断** (`tcp_retrans`, `skb_drop`): 精准监控内核快速重传、超时重传（RTO），并在 `kfree_skb` 处捕获丢包 drop reason 代码。
-- **应用层协议延迟分析** (`http_latency`, `dns_monitor`): 基于 `sys_enter_write/sendto` 等系统调用与套接字探针，无侵入重组 HTTP 请求往返时延（RTT）及 DNS 解析耗时。
+- **应用层协议延迟分析** (`http_latency`, `dns_monitor`): HTTP 走 `tcp_sendmsg`/`tcp_recvmsg_locked` 套接字探针无侵入测请求首字节时延（TTFB），DNS 由单源 `ip_finish_output2`（query）/ `udp_queue_rcv_skb`（response）配对计算解析耗时。
 - **单一事实源与跨探针安全**：严格遵循单源捕获原则，严禁跨探针 join 与脆弱内存跨域推断；支持针对本地自采样流量的智能回环抑制与协议过滤。
 
 ### 2. 丰富的主被动多源指标监控（Metrics Registry）
@@ -34,7 +34,7 @@
 ### 4. 边缘遥测与 AI 智能诊断平台闭环
 - **边缘安全上报**：板端内置轻量签名与导出管道，通过 Ed25519/HMAC 签名与 TLS 双向加密，向云端安全上送不可变评估快照。
 - **无线事实上行**（Phase 4a）：设备断连事件、区域级 `SiteIncident`、链路基线画像经独立端点
-  `POST /network/edge/wireless-events` 签名上报（按 `event_id`/`incident_id` 分域幂等），
+  `POST /api/v1/network/edge/wireless-events` 签名上报（按 `event_id`/`incident_id` 分域幂等），
   云端落四张租户事实表，供因果诊断装配证据包。
 - **云端因果诊断**（Phase 4b）：确定性规则引擎先给出 Canonical 结论（物理模式 + 受约束假说），
   大模型仅做解释润色，W1~W6 因果护栏强制事实断言绑定证据 ID；结果独立落 `site_incident_diagnoses`，绝不回写事实表。
@@ -96,7 +96,7 @@ cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
 # 编译全部组件
 cmake --build build-x86 -j$(nproc)
 
-# 运行本地全量单元测试（46 个套件 / 543 个用例，实测 46/46 通过，约 4.6 秒）
+# 运行本地全量单元测试（47 个套件，实测 47/47 通过，约 3.8 秒）
 ctest --test-dir build-x86/server --output-on-failure
 ```
 
@@ -120,7 +120,7 @@ docker exec weaknet-arm64-dev uname -m   # 应输出: aarch64
 BOARD=radxa@radxa-cubie-a7a.local ./tools/ci.sh
 
 # 若处于跨网段环境，直接指定开发板实际 IP：
-BOARD=radxa@192.168.2.77 ./tools/ci.sh
+BOARD=radxa@radxa-cubie-a7a.local ./tools/ci.sh
 ```
 
 流水线会自动完成：
@@ -159,11 +159,11 @@ sudo weaknet-cli set rtt.interval 5s
 sudo weaknet-cli set rtt.target 8.8.8.8
 
 # 动态启停指定监控器
-sudo weaknet-cli disable bluetooth
-sudo weaknet-cli enable bluetooth
+sudo weaknet-cli monitor disable bluetooth
+sudo weaknet-cli monitor enable bluetooth
 
 # 保存当前运行时参数到持久化覆盖配置
-sudo weaknet-cli save
+sudo weaknet-cli monitor save
 ```
 
 ### 历史数据查询工具

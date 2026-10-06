@@ -532,7 +532,7 @@ Skills 是来自 [superpowers](https://github.com/obra/superpowers) 框架的技
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
 | "跑测试" / "test" | `build-x86/server/test/test_database_manager_gtest` | 运行指定测试 |
-| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure` | x86 全量单元测试（46 套件，无需 D-Bus/真机环境） |
+| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure` | x86 全量单元测试（47 套件，无需 D-Bus/真机环境） |
 
 ### 4.3 部署
 
