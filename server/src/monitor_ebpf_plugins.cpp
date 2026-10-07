@@ -58,7 +58,10 @@ public:
             monitor_.reset();
             return false;
         }
-        ctx->dns_monitor = monitor_.get();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+            ctx->dns_monitor = monitor_.get();
+        }
         ctx->dns_stop.store(false);
         start_dns_monitor_thread(ctx, &worker_, monitor_.get());
         return true;
@@ -67,8 +70,11 @@ public:
         if (!ctx_) return;
         ctx_->dns_stop.store(true);
         if (worker_.joinable()) worker_.join();
-        if (ctx_->dns_monitor == monitor_.get()) ctx_->dns_monitor = nullptr;
-        monitor_.reset();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+            if (ctx_->dns_monitor == monitor_.get()) ctx_->dns_monitor = nullptr;
+            monitor_.reset();
+        }
     }
 };
 
@@ -93,7 +99,10 @@ public:
             monitor_.reset();
             return false;
         }
-        ctx->wifi_loss_monitor = monitor_.get();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+            ctx->wifi_loss_monitor = monitor_.get();
+        }
         ctx->wifi_loss_stop.store(false);
         start_wifi_loss_monitor_thread(ctx, &worker_, monitor_.get());
         return true;
@@ -102,8 +111,11 @@ public:
         if (!ctx_) return;
         ctx_->wifi_loss_stop.store(true);
         if (worker_.joinable()) worker_.join();
-        if (ctx_->wifi_loss_monitor == monitor_.get()) ctx_->wifi_loss_monitor = nullptr;
-        monitor_.reset();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+            if (ctx_->wifi_loss_monitor == monitor_.get()) ctx_->wifi_loss_monitor = nullptr;
+            monitor_.reset();
+        }
     }
 };
 
@@ -131,7 +143,10 @@ public:
             monitor_.reset();
             return false;
         }
-        ctx->http_latency_monitor = monitor_.get();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+            ctx->http_latency_monitor = monitor_.get();
+        }
         ctx->http_latency_stop.store(false);
         start_http_latency_monitor_thread(ctx, &worker_, monitor_.get());
         return true;
@@ -140,8 +155,11 @@ public:
         if (!ctx_) return;
         ctx_->http_latency_stop.store(true);
         if (worker_.joinable()) worker_.join();
-        if (ctx_->http_latency_monitor == monitor_.get()) ctx_->http_latency_monitor = nullptr;
-        monitor_.reset();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+            if (ctx_->http_latency_monitor == monitor_.get()) ctx_->http_latency_monitor = nullptr;
+            monitor_.reset();
+        }
     }
 };
 
@@ -170,7 +188,10 @@ public:
             monitor_.reset();
             return false;
         }
-        ctx->process_net_profiler = monitor_.get();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+            ctx->process_net_profiler = monitor_.get();
+        }
         ctx->process_profiler_stop.store(false);
         start_process_net_profiler_thread(ctx, &worker_, monitor_.get());
         return true;
@@ -179,8 +200,11 @@ public:
         if (!ctx_) return;
         ctx_->process_profiler_stop.store(true);
         if (worker_.joinable()) worker_.join();
-        if (ctx_->process_net_profiler == monitor_.get()) ctx_->process_net_profiler = nullptr;
-        monitor_.reset();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+            if (ctx_->process_net_profiler == monitor_.get()) ctx_->process_net_profiler = nullptr;
+            monitor_.reset();
+        }
     }
 };
 
@@ -208,7 +232,10 @@ public:
             monitor_.reset();
             return false;
         }
-        ctx->tcp_retrans_monitor = monitor_.get();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+            ctx->tcp_retrans_monitor = monitor_.get();
+        }
         ctx->tcp_retrans_stop.store(false);
         start_tcp_retrans_monitor_thread(ctx, &worker_, monitor_.get());
         return true;
@@ -217,8 +244,11 @@ public:
         if (!ctx_) return;
         ctx_->tcp_retrans_stop.store(true);
         if (worker_.joinable()) worker_.join();
-        if (ctx_->tcp_retrans_monitor == monitor_.get()) ctx_->tcp_retrans_monitor = nullptr;
-        monitor_.reset();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+            if (ctx_->tcp_retrans_monitor == monitor_.get()) ctx_->tcp_retrans_monitor = nullptr;
+            monitor_.reset();
+        }
     }
 };
 
@@ -246,7 +276,10 @@ public:
             monitor_.reset();
             return false;
         }
-        ctx->tcp_conn_monitor = monitor_.get();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+            ctx->tcp_conn_monitor = monitor_.get();
+        }
         ctx->tcp_conn_stop.store(false);
         start_tcp_conn_monitor_thread(ctx, &worker_, monitor_.get());
         return true;
@@ -255,8 +288,11 @@ public:
         if (!ctx_) return;
         ctx_->tcp_conn_stop.store(true);
         if (worker_.joinable()) worker_.join();
-        if (ctx_->tcp_conn_monitor == monitor_.get()) ctx_->tcp_conn_monitor = nullptr;
-        monitor_.reset();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+            if (ctx_->tcp_conn_monitor == monitor_.get()) ctx_->tcp_conn_monitor = nullptr;
+            monitor_.reset();
+        }
     }
 };
 
@@ -295,12 +331,14 @@ public:
             return false;
         }
         if (ctx) {
+            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
             ctx->skb_drop_monitor = monitor_.get();
         }
         return true;
     }
     void stop() override {
         if (ctx_) {
+            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
             ctx_->skb_drop_monitor = nullptr;
         }
         if (monitor_) {
@@ -338,7 +376,10 @@ public:
             monitor_.reset();
             return false;
         }
-        ctx->tcp_connect_monitor = monitor_.get();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+            ctx->tcp_connect_monitor = monitor_.get();
+        }
         ctx->tcp_connect_stop.store(false);
         start_tcp_connect_monitor_thread(ctx, &worker_, monitor_.get());
         return true;
@@ -347,8 +388,11 @@ public:
         if (!ctx_) return;
         ctx_->tcp_connect_stop.store(true);
         if (worker_.joinable()) worker_.join();
-        if (ctx_->tcp_connect_monitor == monitor_.get()) ctx_->tcp_connect_monitor = nullptr;
-        monitor_.reset();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+            if (ctx_->tcp_connect_monitor == monitor_.get()) ctx_->tcp_connect_monitor = nullptr;
+            monitor_.reset();
+        }
     }
 };
 

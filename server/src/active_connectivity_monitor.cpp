@@ -19,6 +19,7 @@
 #include "active_connectivity_monitor.hpp"
 #include "logger.hpp"
 #include "tls_probe_client.hpp"
+#include "server.hpp"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -566,6 +567,89 @@ bool ActiveConnectivityMonitor::tlsAvailable() {
 std::vector<weaknet::ProbeTargetResult> ActiveConnectivityMonitor::results() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return last_results_;
+}
+
+void applyActiveProbeConfig(ServerContext* ctx) {
+    if (!ctx || !ctx->active_probe) return;
+
+    ActiveProbeConfig ap;
+    ap.enabled = ctx->cfg.active_probe.enabled.load();
+    const uint32_t interval_ms = std::max(5000u, ctx->cfg.active_probe.interval_ms.load());
+    const uint32_t timeout_ms = std::max(500u, ctx->cfg.active_probe.timeout_ms.load());
+    ap.interval_sec = interval_ms / 1000u;
+    ap.timeout_sec = std::max(1u, timeout_ms / 1000u);
+
+    const auto parseTargets = [](const std::string& raw) {
+        std::vector<ActiveProbeTargetConfig> out;
+        size_t pos = 0;
+        while (pos <= raw.size()) {
+            const size_t comma = raw.find(',', pos);
+            const std::string item = raw.substr(
+                pos, comma == std::string::npos ? std::string::npos : comma - pos);
+            pos = (comma == std::string::npos) ? raw.size() + 1 : comma + 1;
+            if (item.empty()) continue;
+
+            std::vector<std::string> f;
+            size_t fp = 0;
+            for (;;) {
+                const size_t bar = item.find('|', fp);
+                if (bar == std::string::npos) { f.push_back(item.substr(fp)); break; }
+                f.push_back(item.substr(fp, bar - fp));
+                fp = bar + 1;
+            }
+
+            ActiveProbeTargetConfig t;
+            t.id = f.size() > 0 ? f[0] : "";
+            t.hostname = f.size() > 1 ? f[1] : "";
+            const std::string port = f.size() > 2 ? f[2] : "";
+            const std::string domain = f.size() > 3 ? f[3] : "";
+            t.tcp_port = port.empty() ? 443 : static_cast<uint16_t>(std::atoi(port.c_str()));
+            t.failure_domain = domain.empty() ? t.hostname : domain;
+            t.http_path = f.size() > 4 ? f[4] : "";
+            if (f.size() > 5) {
+                t.expect_body = f[5];
+                t.expect_body_specified = true;
+            }
+            if (t.hostname.empty()) continue;
+            out.push_back(t);
+        }
+        return out;
+    };
+
+    ap.targets = parseTargets(ctx->cfg.active_probe.targets.get());
+    ap.https_enabled = ctx->cfg.active_probe.https_enabled.load();
+    if (ap.https_enabled && !ActiveConnectivityMonitor::tlsAvailable()) {
+        LOG_WARNING(LogModule::NETWORK,
+            "active_probe.https_enabled=true but this build has no TLS "
+            "(WEAKNET_HAVE_TLS undefined); HTTPS capability will report "
+            "NO_CAPABILITY (no_tls_probe_capability).");
+    }
+
+    ap.portal.enabled = ctx->cfg.active_probe.portal_check_enabled.load();
+    ap.portal.path = ctx->cfg.active_probe.portal_path.get();
+    ap.portal.expect_body = ctx->cfg.active_probe.portal_expect_body.get();
+    ap.portal.targets = parseTargets(ctx->cfg.active_probe.portal_targets.get());
+    if (ap.portal.enabled) {
+        if (ap.portal.targets.empty()) {
+            LOG_WARNING(LogModule::NETWORK,
+                "active_probe.portal_check_enabled=true but portal_targets is empty; "
+                "Portal will report NO_CAPABILITY. Portal verdict requires "
+                "controlled oracle endpoints with known responses.");
+            ap.portal.enabled = false;
+        } else if (ap.portal.expect_body.empty()) {
+            LOG_WARNING(LogModule::NETWORK,
+                "Portal oracle configured without portal_expect_body; only "
+                "redirect-away signals will be considered (content "
+                "fingerprint comparison disabled).");
+        }
+    }
+
+    ctx->active_probe->configure(ap);
+    LOG_INFO(LogModule::NETWORK,
+             "Active probe config updated: targets=" << ap.targets.size()
+             << " enabled=" << (ap.enabled ? "true" : "false")
+             << " https=" << (ap.https_enabled ? "true" : "false")
+             << " portal=" << (ap.portal.enabled ? "true" : "false"));
 }
 
 }  // namespace weaknet_dbus

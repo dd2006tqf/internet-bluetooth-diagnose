@@ -651,18 +651,13 @@ std::string DnsMonitor::getCaptureDiagnostics() {
     // emit failure and perf-stage delivery loss are different failure points, and
     // whether they describe the same congestion episode is unverified.
     //
-    // 分子分母必须来自**同一次** read_capture_counters 快照。此前 capture_attempts
-    // 读的是 impl_->last_counters（只在 feedTransportDelta 里每秒更新一次），而
-    // emit_fail 读的是本次新读的 counters——两者不是同一时刻的量。后果：
-    // 首轮 last_counters 全零 → 比值恒报 0.0（"无失败"），之后又变成
-    // "新绝对计数 / 旧子集"，真实的 emit 失败激增会被报成错误的量级。
-    // 这个诊断正是用来回答"DNS 证据为什么缺失"的，错值会直接污染 RCA。
-    const uint64_t capture_attempts = counters.values[DNS_STAT_SENDTO_ENTER]
-        + counters.values[DNS_STAT_SENDMSG_ENTER]
-        + counters.values[DNS_STAT_SENDMMSG_ENTER]
-        + counters.values[DNS_STAT_RECVFROM_ENTER]
-        + counters.values[DNS_STAT_RECVMSG_ENTER]
-        + counters.values[DNS_STAT_RECVMMSG_EXIT];
+    // 分子分母必须来自**同一次** read_capture_counters 快照。
+    // 分母必须是真正经过 DNS 端口过滤的捕获尝试数（send_dns_port + queue_dns_port）。
+    // 此前将系统级 syscall enter 计数器全量累加（未做端口过滤），导致分母被系统无关
+    // 流量稀释数万倍，emit_fail_ratio 恒近于 0，导致 observer_unreliable_capture_emit_failure
+    // 质量门禁完全失效。
+    const uint64_t capture_attempts = counters.values[DNS_STAT_SEND_DNS_PORT]
+        + counters.values[DNS_STAT_QUEUE_DNS_PORT];
     const uint64_t emit_fail = counters.values[DNS_STAT_EMIT_FAIL];
     const uint64_t delivered = counters.values[DNS_STAT_EMITTED];
     const uint64_t perf_lost = s.lost_events;
@@ -737,9 +732,8 @@ void DnsMonitor::feedTransportDelta(weaknet::DnsTransactionTracker* tracker) {
     auto counters = read_capture_counters(impl_->dns_capture_fd);
 
     auto sum_entries = [](const DnsCaptureCounters& c) {
-        return c.values[DNS_STAT_SENDTO_ENTER] + c.values[DNS_STAT_SENDMSG_ENTER]
-             + c.values[DNS_STAT_SENDMMSG_ENTER] + c.values[DNS_STAT_RECVFROM_ENTER]
-             + c.values[DNS_STAT_RECVMSG_ENTER] + c.values[DNS_STAT_RECVMMSG_EXIT];
+        // 分母采用经过 DNS 端口过滤的真实捕获尝试总和，避免全系统无关流量稀释失败率
+        return c.values[DNS_STAT_SEND_DNS_PORT] + c.values[DNS_STAT_QUEUE_DNS_PORT];
     };
 
     if (!impl_->has_last_counters) {

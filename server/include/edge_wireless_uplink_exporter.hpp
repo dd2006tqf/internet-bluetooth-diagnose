@@ -104,24 +104,22 @@ struct WirelessUplinkPayload {
  */
 class EdgeWirelessUplinkExporter {
 public:
+    using ProfilerSampler = std::function<void(std::vector<weaknet_dbus::ProcessNetInfo>*)>;
+    using DropSampler = std::function<void(weaknet_dbus::DropStatsSummary*)>;
+
     /**
      * @param config     运行时配置（读 edge.* 字段）
      * @param db         数据库管理器（事实的唯一来源）
      * @param state_path 游标文件路径（通常位于 data_dir 下）
      *
-     * `profiler_provider` / `drop_provider` 是**每次采集时才求值**的回调，
-     * 而不是构造期缓存的裸指针。原因是这两个监控器由插件持有 unique_ptr，
-     * `monitor disable` / `restart` 会在运行时 delete 它们——缓存指针会变成
-     * 悬垂；回调让每次采集都从 ServerContext 重新取当前有效对象，禁用期间
-     * 自然返回 nullptr 并诚实跳过该维度。
+     * `profiler_sampler` / `drop_sampler` 是每次采集时才求值的回调，
+     * 内部加锁保护，杜绝跨线程 UAF。
      */
     EdgeWirelessUplinkExporter(const weaknet_dbus::WeakNetConfig& config,
                                weaknet_dbus::DatabaseManager& db,
                                std::string state_path,
-                               std::function<weaknet_dbus::ProcessNetProfiler*()>
-                                   profiler_provider = {},
-                               std::function<weaknet_dbus::SkbDropMonitor*()>
-                                   drop_provider = {});
+                               ProfilerSampler profiler_sampler = {},
+                               DropSampler drop_sampler = {});
     ~EdgeWirelessUplinkExporter();
 
     EdgeWirelessUplinkExporter(const EdgeWirelessUplinkExporter&) = delete;
@@ -182,8 +180,8 @@ private:
     const weaknet_dbus::WeakNetConfig& config_;
     weaknet_dbus::DatabaseManager& db_;
     std::string state_path_;
-    std::function<weaknet_dbus::ProcessNetProfiler*()> profiler_provider_;
-    std::function<weaknet_dbus::SkbDropMonitor*()> drop_provider_;
+    ProfilerSampler profiler_sampler_;
+    DropSampler drop_sampler_;
 
     std::thread thread_;
     std::atomic<bool> running_{false};

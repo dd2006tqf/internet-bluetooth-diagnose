@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstring>
 #include <utility>
+#include <shared_mutex>
 
 #include "wireless_event_store.hpp"
 #include "logger.hpp"
@@ -841,37 +842,40 @@ bool DbusService::handlePing(DBusConnection* conn, DBusMessage* msg) {
 bool DbusService::handleGetBluetoothDevices(DBusConnection* conn, DBusMessage* msg) {
     LOG_INFO(LogModule::DBUS, "handleGetBluetoothDevices called");
 
-    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
-    if (!monitor) {
-        // 无蓝牙监测器 → 返回空数组。必须构造合法的空 DBus 数组容器，不能跳过 open_container
-        DBusMessage* reply = dbus_message_new_method_return(msg);
-        if (reply) {
-            DBusMessageIter iter;
-            dbus_message_iter_init_append(reply, &iter);
-            DBusMessageIter arr;
-            dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &arr);
-            dbus_message_iter_close_container(&iter, &arr);
-            dbus_connection_send(conn, reply, nullptr);
-            dbus_connection_flush(conn);
-            dbus_message_unref(reply);
-        }
-        return true;
-    }
-
-    // 获取设备列表，格式化为 "MAC|Name|RSSI|Connected|Type|Level" 字符串
-    auto devices = monitor->getDevices();
     std::vector<std::string> lines;
-    lines.reserve(devices.size());
-    for (const auto& dev : devices) {
-        // 字段顺序固定：MAC → 显示名（优先 alias，无则 name）→ RSSI dBm → 连接标记 → 类型 → RSSI 等级
-        std::string line = dev.macAddress + "|"
-            + (dev.name.empty() ? dev.alias : dev.name) + "|"
-            + std::to_string(dev.rssiDbm) + "|"
-            + (dev.connected ? "1" : "0") + "|"
-            + (dev.deviceType == BtDeviceType::BLE ? "BLE" :
-               dev.deviceType == BtDeviceType::Classic ? "Classic" : "Dual") + "|"
-            + dev.rssiLevel();
-        lines.push_back(line);
+    {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
+        if (!monitor) {
+            // 无蓝牙监测器 → 返回空数组。必须构造合法的空 DBus 数组容器，不能跳过 open_container
+            DBusMessage* reply = dbus_message_new_method_return(msg);
+            if (reply) {
+                DBusMessageIter iter;
+                dbus_message_iter_init_append(reply, &iter);
+                DBusMessageIter arr;
+                dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, DBUS_TYPE_STRING_AS_STRING, &arr);
+                dbus_message_iter_close_container(&iter, &arr);
+                dbus_connection_send(conn, reply, nullptr);
+                dbus_connection_flush(conn);
+                dbus_message_unref(reply);
+            }
+            return true;
+        }
+
+        // 获取设备列表，格式化为 "MAC|Name|RSSI|Connected|Type|Level" 字符串
+        auto devices = monitor->getDevices();
+        lines.reserve(devices.size());
+        for (const auto& dev : devices) {
+            // 字段顺序固定：MAC → 显示名（优先 alias，无则 name）→ RSSI dBm → 连接标记 → 类型 → RSSI 等级
+            std::string line = dev.macAddress + "|"
+                + (dev.name.empty() ? dev.alias : dev.name) + "|"
+                + std::to_string(dev.rssiDbm) + "|"
+                + (dev.connected ? "1" : "0") + "|"
+                + (dev.deviceType == BtDeviceType::BLE ? "BLE" :
+                   dev.deviceType == BtDeviceType::Classic ? "Classic" : "Dual") + "|"
+                + dev.rssiLevel();
+            lines.push_back(line);
+        }
     }
     return replyStringArray(conn, msg, lines);
 }
@@ -892,17 +896,20 @@ bool DbusService::handleGetBluetoothAdapter(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
-    if (monitor && monitor->isInitialized()) {
-        auto state = monitor->getAdapterState();
-        result = std::string("Powered:") + (state.powered ? "1" : "0")
-            + "|Name:" + state.name
-            + "|Address:" + state.macAddress
-            + "|Discovering:" + (state.discovering ? "1" : "0")
-            + "|Discoverable:" + (state.discoverable ? "1" : "0")
-            + "|Pairable:" + (state.pairable ? "1" : "0");
-    } else {
-        result = "No Bluetooth adapter available";
+    {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
+        if (monitor && monitor->isInitialized()) {
+            auto state = monitor->getAdapterState();
+            result = std::string("Powered:") + (state.powered ? "1" : "0")
+                + "|Name:" + state.name
+                + "|Address:" + state.macAddress
+                + "|Discovering:" + (state.discovering ? "1" : "0")
+                + "|Discoverable:" + (state.discoverable ? "1" : "0")
+                + "|Pairable:" + (state.pairable ? "1" : "0");
+        } else {
+            result = "No Bluetooth adapter available";
+        }
     }
 
     DBusMessageIter args;
@@ -935,58 +942,61 @@ bool DbusService::handleGetBluetoothAudioQuality(DBusConnection* conn, DBusMessa
         dbus_error_free(&err);
     }
 
-    BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
     std::string jsonResult;
+    {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        BtMonitor* monitor = ctx_ ? ctx_->bt_monitor : nullptr;
 
-    if (!monitor || !monitor->isInitialized()) {
-        jsonResult = "{\"error\":\"Bluetooth monitor not available or uninitialized\",\"mac\":\"" + targetMac + "\"}";
-    } else {
-        // 如果未指定 targetMac，则尝试寻找第一个已连接设备或已有的 transport 设备
-        if (targetMac.empty()) {
-            auto transports = monitor->getAudioTransports();
-            if (!transports.empty()) {
-                targetMac = transports.front().deviceMac;
-            } else {
-                auto connected = monitor->getConnectedDevices();
-                if (!connected.empty()) {
-                    targetMac = connected.front().macAddress;
+        if (!monitor || !monitor->isInitialized()) {
+            jsonResult = "{\"error\":\"Bluetooth monitor not available or uninitialized\",\"mac\":\"" + targetMac + "\"}";
+        } else {
+            // 如果未指定 targetMac，则尝试寻找第一个已连接设备或已有的 transport 设备
+            if (targetMac.empty()) {
+                auto transports = monitor->getAudioTransports();
+                if (!transports.empty()) {
+                    targetMac = transports.front().deviceMac;
+                } else {
+                    auto connected = monitor->getConnectedDevices();
+                    if (!connected.empty()) {
+                        targetMac = connected.front().macAddress;
+                    }
                 }
             }
-        }
 
-        if (targetMac.empty()) {
-            jsonResult = "{\"error\":\"No active Bluetooth device specified or found\",\"mac\":\"\"}";
-        } else {
-            BtAudioFusionResult fusion;
-            bool found = monitor->getAudioFusionResult(targetMac, &fusion);
-            if (!found) {
-                // 如果无 transport，仍尝试获取设备基本信息
-                BtDeviceInfo devInfo;
-                bool devFound = monitor->getDevice(targetMac, &devInfo);
-                jsonResult = "{\"mac\":\"" + targetMac + "\","
-                             "\"name\":\"" + (devFound ? (devInfo.name.empty() ? devInfo.alias : devInfo.name) : "unknown") + "\","
-                             "\"connected\":" + (devFound && devInfo.connected ? "true" : "false") + ","
-                             "\"audio_transport_active\":false,"
-                             "\"quality_score\":0.0,"
-                             "\"quality_level\":\"unknown\","
-                             "\"diagnostic\":\"No A2DP media transport detected for this device\"}";
+            if (targetMac.empty()) {
+                jsonResult = "{\"error\":\"No active Bluetooth device specified or found\",\"mac\":\"\"}";
             } else {
-                std::ostringstream oss;
-                oss << "{"
-                    << "\"mac\":\"" << fusion.deviceMac << "\","
-                    << "\"active\":" << (fusion.isActive ? "true" : "false") << ","
-                    << "\"effective_active\":" << (fusion.effectiveActive ? "true" : "false") << ","
-                    << "\"suspected_stall\":" << (fusion.suspectedStall ? "true" : "false") << ","
-                    << "\"quality_score\":" << fusion.qualityScore << ","
-                    << "\"quality_level\":\"" << fusion.level << "\","
-                    << "\"active_ratio\":" << fusion.activeRatio << ","
-                    << "\"ebpf_correction\":" << fusion.ebpfCorrection << ","
-                    << "\"bytes_per_sec\":" << fusion.bytesPerSec << ","
-                    << "\"max_gap_ms\":" << fusion.maxGapMs << ","
-                    << "\"ebpf_available\":" << (fusion.ebpfAvailable ? "true" : "false") << ","
-                    << "\"diagnostic\":\"" << fusion.diagnostic << "\""
-                    << "}";
-                jsonResult = oss.str();
+                BtAudioFusionResult fusion;
+                bool found = monitor->getAudioFusionResult(targetMac, &fusion);
+                if (!found) {
+                    // 如果无 transport，仍尝试获取设备基本信息
+                    BtDeviceInfo devInfo;
+                    bool devFound = monitor->getDevice(targetMac, &devInfo);
+                    jsonResult = "{\"mac\":\"" + targetMac + "\","
+                                 "\"name\":\"" + (devFound ? (devInfo.name.empty() ? devInfo.alias : devInfo.name) : "unknown") + "\","
+                                 "\"connected\":" + (devFound && devInfo.connected ? "true" : "false") + ","
+                                 "\"audio_transport_active\":false,"
+                                 "\"quality_score\":0.0,"
+                                 "\"quality_level\":\"unknown\","
+                                 "\"diagnostic\":\"No A2DP media transport detected for this device\"}";
+                } else {
+                    std::ostringstream oss;
+                    oss << "{"
+                        << "\"mac\":\"" << fusion.deviceMac << "\","
+                        << "\"active\":" << (fusion.isActive ? "true" : "false") << ","
+                        << "\"effective_active\":" << (fusion.effectiveActive ? "true" : "false") << ","
+                        << "\"suspected_stall\":" << (fusion.suspectedStall ? "true" : "false") << ","
+                        << "\"quality_score\":" << fusion.qualityScore << ","
+                        << "\"quality_level\":\"" << fusion.level << "\","
+                        << "\"active_ratio\":" << fusion.activeRatio << ","
+                        << "\"ebpf_correction\":" << fusion.ebpfCorrection << ","
+                        << "\"bytes_per_sec\":" << fusion.bytesPerSec << ","
+                        << "\"max_gap_ms\":" << fusion.maxGapMs << ","
+                        << "\"ebpf_available\":" << (fusion.ebpfAvailable ? "true" : "false") << ","
+                        << "\"diagnostic\":\"" << fusion.diagnostic << "\""
+                        << "}";
+                    jsonResult = oss.str();
+                }
             }
         }
     }
@@ -1100,18 +1110,21 @@ bool DbusService::handleGetDnsStats(DBusConnection* conn, DBusMessage* msg) {
     if (!reply) return false;
 
     std::string result;
-    DnsMonitor* monitor = ctx_ ? ctx_->dns_monitor : nullptr;
-    if (monitor && monitor->isAvailable()) {
-        auto stats = monitor->getStats();
-        result = "totalQueries:" + std::to_string(stats.totalQueries)
-            + "|totalResponses:" + std::to_string(stats.totalResponses)
-            + "|totalTimeouts:" + std::to_string(stats.totalTimeouts)
-            + "|totalErrors:" + std::to_string(stats.totalErrors)
-            + "|avgLatencyMs:" + std::to_string(stats.avgLatencyMs)
-            + "|maxLatencyMs:" + std::to_string(stats.maxLatencyMs)
-            + "|timeoutRate:" + std::to_string(stats.timeoutRate());
-    } else {
-        result = "DNS monitor not available";
+    {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        DnsMonitor* monitor = ctx_ ? ctx_->dns_monitor : nullptr;
+        if (monitor && monitor->isAvailable()) {
+            auto stats = monitor->getStats();
+            result = "totalQueries:" + std::to_string(stats.totalQueries)
+                + "|totalResponses:" + std::to_string(stats.totalResponses)
+                + "|totalTimeouts:" + std::to_string(stats.totalTimeouts)
+                + "|totalErrors:" + std::to_string(stats.totalErrors)
+                + "|avgLatencyMs:" + std::to_string(stats.avgLatencyMs)
+                + "|maxLatencyMs:" + std::to_string(stats.maxLatencyMs)
+                + "|timeoutRate:" + std::to_string(stats.timeoutRate());
+        } else {
+            result = "DNS monitor not available";
+        }
     }
 
     DBusMessageIter args;
@@ -1135,20 +1148,23 @@ bool DbusService::handleGetWifiLossStats(DBusConnection* conn, DBusMessage* msg)
     if (!reply) return false;
 
     std::string result;
-    WifiPacketLossMonitor* monitor = ctx_ ? ctx_->wifi_loss_monitor : nullptr;
-    if (monitor && monitor->isAvailable()) {
-        auto stats = monitor->getStats();
-        for (auto& [ifindex, s] : stats) {
-            result += "ifindex:" + std::to_string(ifindex)
-                + " rxPkts:" + std::to_string(s.rxPkts)
-                + " txPkts:" + std::to_string(s.txPkts)
-                + " txDrops:" + std::to_string(s.txDrops)
-                + " txLossRate:" + std::to_string(s.txLossRate()) + "%"
-                + "|";
+    {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        WifiPacketLossMonitor* monitor = ctx_ ? ctx_->wifi_loss_monitor : nullptr;
+        if (monitor && monitor->isAvailable()) {
+            auto stats = monitor->getStats();
+            for (auto& [ifindex, s] : stats) {
+                result += "ifindex:" + std::to_string(ifindex)
+                    + " rxPkts:" + std::to_string(s.rxPkts)
+                    + " txPkts:" + std::to_string(s.txPkts)
+                    + " txDrops:" + std::to_string(s.txDrops)
+                    + " txLossRate:" + std::to_string(s.txLossRate()) + "%"
+                    + "|";
+            }
+            if (result.empty()) result = "No interface stats available";
+        } else {
+            result = "Wi-Fi loss monitor not available";
         }
-        if (result.empty()) result = "No interface stats available";
-    } else {
-        result = "Wi-Fi loss monitor not available";
     }
 
     DBusMessageIter args;
@@ -1171,17 +1187,20 @@ bool DbusService::handleGetHttpLatencyStats(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    HttpLatencyMonitor* monitor = ctx_ ? ctx_->http_latency_monitor : nullptr;
-    if (monitor && monitor->isAvailable()) {
-        auto stats = monitor->getGlobalStats();
-        result = "totalTxns:" + std::to_string(stats.totalTxns)
-            + "|p50Ms:" + std::to_string(stats.p50Ns / 1000000)
-            + "|p95Ms:" + std::to_string(stats.p95Ns / 1000000)
-            + "|p99Ms:" + std::to_string(stats.p99Ns / 1000000)
-            + "|maxMs:" + std::to_string(stats.maxNs / 1000000)
-            + "|analysis:" + stats.analysis;
-    } else {
-        result = "HTTP latency monitor not available";
+    {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        HttpLatencyMonitor* monitor = ctx_ ? ctx_->http_latency_monitor : nullptr;
+        if (monitor && monitor->isAvailable()) {
+            auto stats = monitor->getGlobalStats();
+            result = "totalTxns:" + std::to_string(stats.totalTxns)
+                + "|p50Ms:" + std::to_string(stats.p50Ns / 1000000)
+                + "|p95Ms:" + std::to_string(stats.p95Ns / 1000000)
+                + "|p99Ms:" + std::to_string(stats.p99Ns / 1000000)
+                + "|maxMs:" + std::to_string(stats.maxNs / 1000000)
+                + "|analysis:" + stats.analysis;
+        } else {
+            result = "HTTP latency monitor not available";
+        }
     }
 
     DBusMessageIter args;
@@ -1206,29 +1225,32 @@ bool DbusService::handleGetProcessProfiling(DBusConnection* conn, DBusMessage* m
     if (!reply) return false;
 
     std::string result;
-    ProcessNetProfiler* monitor = ctx_ ? ctx_->process_net_profiler : nullptr;
-    if (monitor && monitor->isAvailable()) {
-        result += "=== Top Bandwidth ===|";
-        auto topBw = monitor->getTopBandwidth(5);
-        for (auto& p : topBw) {
-            result += "pid:" + std::to_string(p.pid)
-                + " comm:" + p.comm
-                + " txBytes:" + std::to_string(p.txBytes)
-                + " txPackets:" + std::to_string(p.txPackets)
-                + " retrans:" + std::to_string(p.retransCount)
-                + "|";
+    {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        ProcessNetProfiler* monitor = ctx_ ? ctx_->process_net_profiler : nullptr;
+        if (monitor && monitor->isAvailable()) {
+            result += "=== Top Bandwidth ===|";
+            auto topBw = monitor->getTopBandwidth(5);
+            for (auto& p : topBw) {
+                result += "pid:" + std::to_string(p.pid)
+                    + " comm:" + p.comm
+                    + " txBytes:" + std::to_string(p.txBytes)
+                    + " txPackets:" + std::to_string(p.txPackets)
+                    + " retrans:" + std::to_string(p.retransCount)
+                    + "|";
+            }
+            result += "=== Top Retransmit ===|";
+            auto topRetrans = monitor->getTopRetransmit(5);
+            for (auto& p : topRetrans) {
+                result += "pid:" + std::to_string(p.pid)
+                    + " comm:" + p.comm
+                    + " txBytes:" + std::to_string(p.txBytes)
+                    + " retrans:" + std::to_string(p.retransCount)
+                    + "|";
+            }
+        } else {
+            result = "Process net profiler not available";
         }
-        result += "=== Top Retransmit ===|";
-        auto topRetrans = monitor->getTopRetransmit(5);
-        for (auto& p : topRetrans) {
-            result += "pid:" + std::to_string(p.pid)
-                + " comm:" + p.comm
-                + " txBytes:" + std::to_string(p.txBytes)
-                + " retrans:" + std::to_string(p.retransCount)
-                + "|";
-        }
-    } else {
-        result = "Process net profiler not available";
     }
 
     DBusMessageIter args;
@@ -1253,8 +1275,17 @@ bool DbusService::handleGetSkbDropStats(DBusConnection* conn, DBusMessage* msg) 
     }
 
     std::ostringstream json;
-    if (ctx_ && ctx_->skb_drop_monitor) {
-        auto summary = ctx_->skb_drop_monitor->getDropStats();
+    bool has_stats = false;
+    DropStatsSummary summary;
+    if (ctx_) {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        if (ctx_->skb_drop_monitor) {
+            summary = ctx_->skb_drop_monitor->getDropStats();
+            has_stats = true;
+        }
+    }
+
+    if (has_stats) {
         json << "{\"total_drops\":" << summary.totalDrops
              << ",\"top_reasons\":[";
         for (size_t i = 0; i < summary.topReasons.size(); ++i) {
@@ -1306,68 +1337,72 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
         return ctx_->monitor_manager && ctx_->monitor_manager->status(name, &status)
             ? std::string(monitorStateName(status.state)) : std::string("unavailable");
     };
-    const IEbpfMonitor* bt_audio = nullptr;
-    if (ctx_->bt_monitor) {
-        bt_audio = ctx_->bt_monitor->audioAnalyzer();
-    }
 
-    const std::vector<std::pair<const char*, const IEbpfMonitor*>> monitors = {
-        {"DnsMonitor", static_cast<const IEbpfMonitor*>(ctx_->dns_monitor)},
-        {"WifiPacketLossMonitor", static_cast<const IEbpfMonitor*>(ctx_->wifi_loss_monitor)},
-        {"HttpLatencyMonitor", static_cast<const IEbpfMonitor*>(ctx_->http_latency_monitor)},
-        {"ProcessNetProfiler", static_cast<const IEbpfMonitor*>(ctx_->process_net_profiler)},
-        {"TcpRetransMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_retrans_monitor)},
-        {"TcpConnMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_conn_monitor)},
-        {"SkbDropMonitor", static_cast<const IEbpfMonitor*>(ctx_->skb_drop_monitor)},
-        {"BtAudioAnalyzer", bt_audio}
-    };
-
-    // 手工拼接 JSON：项目不依赖 JSON 库，字段名和字符串值都要做 JSON 转义
     std::ostringstream json;
     json << "{\"monitors\":[";
-    for (size_t i = 0; i < monitors.size(); ++i) {
-        if (i > 0) json << ",";
-        if (!monitors[i].second) {
-            json << "{\"name\":\"" << weaknet_utils::escapeJsonString(monitors[i].first)
-                 << "\",\"state\":\"" << monitorState(monitors[i].first)
-                 << "\",\"available\":false,\"healthy\":false,\"last_successful_sample_ns\":0,\"consecutive_errors\":0"
-                 << ",\"total_errors\":0,\"attached_probes\":0,\"map_reads\":0,\"map_read_errors\":0"
-                 << ",\"samples\":0,\"total_read_time_us\":0,\"average_read_time_us\":0"
-                 << ",\"last_error\":\"monitor not running\",\"status\":\"unavailable\"}";
-            continue;
+    {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        const IEbpfMonitor* bt_audio = nullptr;
+        if (ctx_->bt_monitor) {
+            bt_audio = ctx_->bt_monitor->audioAnalyzer();
         }
-        const auto health = monitors[i].second->health();
-        const auto metrics = monitors[i].second->metrics();
-        const auto key_stats = monitors[i].second->keyStatsSnapshot();
-        json << "{\"name\":\"" << weaknet_utils::escapeJsonString(health.name)
-             << "\",\"state\":\"" << ebpfMonitorStateName(health.state)
-             << "\",\"available\":" << (health.available ? "true" : "false")
-             << ",\"healthy\":" << (health.healthy ? "true" : "false")
-             << ",\"last_successful_sample_ns\":" << health.lastSuccessfulSampleNs
-             << ",\"consecutive_errors\":" << health.consecutiveErrors
-             << ",\"total_errors\":" << health.totalErrors
-             << ",\"attached_probes\":" << metrics.attachedProbes
-             << ",\"map_reads\":" << metrics.mapReads
-             << ",\"map_read_errors\":" << metrics.mapReadErrors
-             << ",\"samples\":" << metrics.samples
-             << ",\"total_read_time_us\":" << metrics.totalReadTimeUs
-             << ",\"average_read_time_us\":" << metrics.averageReadTimeUs
-             << ",\"last_error\":\"" << weaknet_utils::escapeJsonString(metrics.lastError)
-             << "\",\"status\":\"" << weaknet_utils::escapeJsonString(health.status)
-             << "\"";
-        // 驱逐可见性：只有启用了 PerKeyCounterTracker 的监控器会产出非零数据。
-        // 字段存在与否比 always-zero 更能区分"未启用"与"本轮无变化"。
-        if (key_stats.max_entries > 0 || key_stats.entries > 0) {
-            json << ",\"eviction\":{\"new_keys\":" << key_stats.new_keys
-                 << ",\"disappeared_keys\":" << key_stats.disappeared_keys
-                 << ",\"reset_keys\":" << key_stats.reset_keys
-                 << ",\"entries\":" << key_stats.entries
-                 << ",\"max_entries\":" << key_stats.max_entries
-                 << ",\"watermark_pct\":" << key_stats.watermark_pct
-                 << ",\"eviction_limited\":" << (key_stats.eviction_limited ? "true" : "false")
-                 << "}";
+
+        const std::vector<std::pair<const char*, const IEbpfMonitor*>> monitors = {
+            {"DnsMonitor", static_cast<const IEbpfMonitor*>(ctx_->dns_monitor)},
+            {"WifiPacketLossMonitor", static_cast<const IEbpfMonitor*>(ctx_->wifi_loss_monitor)},
+            {"HttpLatencyMonitor", static_cast<const IEbpfMonitor*>(ctx_->http_latency_monitor)},
+            {"ProcessNetProfiler", static_cast<const IEbpfMonitor*>(ctx_->process_net_profiler)},
+            {"TcpRetransMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_retrans_monitor)},
+            {"TcpConnMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_conn_monitor)},
+            {"SkbDropMonitor", static_cast<const IEbpfMonitor*>(ctx_->skb_drop_monitor)},
+            {"BtAudioAnalyzer", bt_audio}
+        };
+
+        // 手工拼接 JSON：项目不依赖 JSON 库，字段名和字符串值都要做 JSON 转义
+        for (size_t i = 0; i < monitors.size(); ++i) {
+            if (i > 0) json << ",";
+            if (!monitors[i].second) {
+                json << "{\"name\":\"" << weaknet_utils::escapeJsonString(monitors[i].first)
+                     << "\",\"state\":\"" << monitorState(monitors[i].first)
+                     << "\",\"available\":false,\"healthy\":false,\"last_successful_sample_ns\":0,\"consecutive_errors\":0"
+                     << ",\"total_errors\":0,\"attached_probes\":0,\"map_reads\":0,\"map_read_errors\":0"
+                     << ",\"samples\":0,\"total_read_time_us\":0,\"average_read_time_us\":0"
+                     << ",\"last_error\":\"monitor not running\",\"status\":\"unavailable\"}";
+                continue;
+            }
+            const auto health = monitors[i].second->health();
+            const auto metrics = monitors[i].second->metrics();
+            const auto key_stats = monitors[i].second->keyStatsSnapshot();
+            json << "{\"name\":\"" << weaknet_utils::escapeJsonString(health.name)
+                 << "\",\"state\":\"" << ebpfMonitorStateName(health.state)
+                 << "\",\"available\":" << (health.available ? "true" : "false")
+                 << ",\"healthy\":" << (health.healthy ? "true" : "false")
+                 << ",\"last_successful_sample_ns\":" << health.lastSuccessfulSampleNs
+                 << ",\"consecutive_errors\":" << health.consecutiveErrors
+                 << ",\"total_errors\":" << health.totalErrors
+                 << ",\"attached_probes\":" << metrics.attachedProbes
+                 << ",\"map_reads\":" << metrics.mapReads
+                 << ",\"map_read_errors\":" << metrics.mapReadErrors
+                 << ",\"samples\":" << metrics.samples
+                 << ",\"total_read_time_us\":" << metrics.totalReadTimeUs
+                 << ",\"average_read_time_us\":" << metrics.averageReadTimeUs
+                 << ",\"last_error\":\"" << weaknet_utils::escapeJsonString(metrics.lastError)
+                 << "\",\"status\":\"" << weaknet_utils::escapeJsonString(health.status)
+                 << "\"";
+            // 驱逐可见性：只有启用了 PerKeyCounterTracker 的监控器会产出非零数据。
+            // 字段存在与否比 always-zero 更能区分"未启用"与"本轮无变化"。
+            if (key_stats.max_entries > 0 || key_stats.entries > 0) {
+                json << ",\"eviction\":{\"new_keys\":" << key_stats.new_keys
+                     << ",\"disappeared_keys\":" << key_stats.disappeared_keys
+                     << ",\"reset_keys\":" << key_stats.reset_keys
+                     << ",\"entries\":" << key_stats.entries
+                     << ",\"max_entries\":" << key_stats.max_entries
+                     << ",\"watermark_pct\":" << key_stats.watermark_pct
+                     << ",\"eviction_limited\":" << (key_stats.eviction_limited ? "true" : "false")
+                     << "}";
+            }
+            json << "}";
         }
-        json << "}";
     }
     json << "]}";
 
@@ -1682,6 +1717,11 @@ bool DbusService::handleSetMonitorParam(DBusConnection* conn, DBusMessage* msg) 
         dbus_connection_send(conn, reply, nullptr);
         dbus_message_unref(reply);
         return false;
+    }
+
+    // 若修改的是 active_probe 参数，立即重载配置并下发至运行中的探测实例，使改动实时生效
+    if (std::string(key).rfind("active_probe.", 0) == 0) {
+        applyActiveProbeConfig(ctx_);
     }
 
     LOG_INFO(LogModule::DBUS, "SetMonitorParam applied: " << key << " = " << value);

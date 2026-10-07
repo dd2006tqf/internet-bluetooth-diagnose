@@ -310,12 +310,14 @@ std::vector<HttpTxnInfo> HttpLatencyMonitor::getRecentTxns(size_t limit) {
     }
 
     auto started = std::chrono::steady_clock::now();
-    static constexpr int MAX_ITER = 32;  // 最多遍历 32 个条目，防止阻塞
+    // 动态限制最大扫描轮数：以 limit 为基准，至少 128 次，上限 1024，兼顾性能与全量观测
+    const int max_iter = std::clamp(static_cast<int>(limit * 2), 128, 1024);
     int count = 0;
     // 逐 key 差分快照：key 为连接，累计值取 recv_ns（同连接上的新事务会推进）
     std::vector<std::pair<std::string, uint64_t>> key_snapshot;
+    std::vector<tcp_conn_key> completed_keys_to_delete;
     tcp_conn_key cur_key = {}, next_key = {};
-    while (count < MAX_ITER && bpf_map_get_next_key(impl_->http_txn_stats_fd, &cur_key, &next_key) == 0) {
+    while (count < max_iter && bpf_map_get_next_key(impl_->http_txn_stats_fd, &cur_key, &next_key) == 0) {
         http_txn_record record = {};
         if (bpf_map_lookup_elem(impl_->http_txn_stats_fd, &next_key, &record) == 0) {
             // 快照取全部可见条目（含未完成事务），与下方只取已完成事务的过滤无关
@@ -346,10 +348,18 @@ std::vector<HttpTxnInfo> HttpLatencyMonitor::getRecentTxns(size_t limit) {
                 info.respBytes = record.resp_bytes;
                 info.statusCode = record.status_code;
                 result.push_back(info);
+
+                // 记录已消费的完整事务 key，遍历结束后从 map 移除，避免重复注入历史样本违反 HR-6
+                completed_keys_to_delete.push_back(next_key);
             }
         }
         cur_key = next_key;
         count++;
+    }
+
+    // 从 BPF map 中安全清理已读取并归档的完成事务，防止旧条目被当成新证据重放
+    for (const auto& k : completed_keys_to_delete) {
+        bpf_map_delete_elem(impl_->http_txn_stats_fd, &k);
     }
     // 更新驱逐可见性差分基线。
     // 注意：本扫描受 MAX_ITER 上限约束（见上），非全表遍历，故容量按"未知"处理

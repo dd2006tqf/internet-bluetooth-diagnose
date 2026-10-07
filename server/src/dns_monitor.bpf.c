@@ -623,6 +623,7 @@ SEC("tracepoint/raw_syscalls/sys_enter")
 int trace_dns_enter_recvfrom(struct trace_event_raw_sys_enter *ctx)
 {
     if (ctx->id != DNS_NR_RECVFROM) return 0;
+    dns_stat_inc(DNS_STAT_RECVFROM_ENTER);
     int fd = (int)ctx->args[0];
     const void *buf = (const void *)ctx->args[1];
     __u64 len = ctx->args[2];
@@ -649,17 +650,6 @@ int trace_dns_exit_recvfrom(struct trace_event_raw_sys_exit *ctx)
     bpf_map_delete_elem(&pending_recv, &pid);
     return 0;
 }
-
-/*
- * Periodically dump per-CPU capture counters into the perf channel so
- * userspace can log the exact boundary where DNS evidence stops.
- */
-SEC("tracepoint/syscalls/sys_enter_getpid")
-int trace_dns_counter_probe(struct trace_event_raw_sys_enter *ctx)
-{
-    return 0;
-}
-
 
 /*
  * DNS 查询标识（作为 Map Key）

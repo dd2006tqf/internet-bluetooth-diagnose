@@ -16,6 +16,7 @@
 #include <vector>
 #include <string>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 #include <atomic>
 #include <memory>
@@ -92,7 +93,15 @@ struct ServerContext {
     // 读取统一走 currentAssessmentProfile()。
 
     // 监控器对象由对应插件拥有；这些裸指针仅为现有查询/聚合调用提供
-    // non-owning 兼容视图，插件 stop 完成后必须清空。
+    // non-owning 兼容视图。
+    //
+    // 线程安全约束（UAF 防护）：
+    //   插件生命周期（start/stop/restart）对这些指针与底层 unique_ptr 进行
+    //   写操作时持有独占写锁（std::unique_lock<std::shared_mutex>）；
+    //   历史持久化、网络评估、边缘上行和 D-Bus 派发线程在解引用这些指针时
+    //   持有共享读锁（std::shared_lock<std::shared_mutex>），杜绝插件销毁时的
+    //   use-after-free 竞态窗口。
+    mutable std::shared_mutex monitor_pointers_mutex;
     BtMonitor* bt_monitor = nullptr;
     DnsMonitor* dns_monitor = nullptr;
     WifiPacketLossMonitor* wifi_loss_monitor = nullptr;
@@ -236,6 +245,7 @@ void start_tcp_retrans_monitor_thread(ServerContext* ctx, std::thread* worker, T
 void start_tcp_conn_monitor_thread(ServerContext* ctx, std::thread* worker, TcpConnMonitor* monitor);        ///< TCP 连接生命周期（tcp_conn_stats.bpf.o）
 void start_tcp_connect_monitor_thread(ServerContext* ctx, std::thread* worker, TcpConnectMonitor* monitor);   ///< TCP 建连（tcp_connect.bpf.o）
 void start_active_probe_thread(ServerContext* ctx, std::thread* worker);   ///< 受控主动连通性探测
+void applyActiveProbeConfig(ServerContext* ctx);                           ///< 根据当前配置更新并下发主动探测参数
 
 void start_history_persistence_thread(ServerContext* ctx);     ///< 历史数据持久化（非监控器，server.cpp 单独启动）
 

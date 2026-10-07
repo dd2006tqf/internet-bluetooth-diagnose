@@ -439,22 +439,25 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     // TCP Connect SLE：回答"DNS 解析出地址后，能否真的建立连接"。
                     // 与 DNS 同源纪律：证据不足 → UNKNOWN，观测不可靠 → UNKNOWN。
                     weaknet::SleResult tcp_sle;
-                    if (ctx->tcp_connect_monitor) {
-                        weaknet::TcpConnectEvaluator::Input tcp_in;
-                        for (const auto& o : ctx->tcp_connect_monitor->recentObservations()) {
-                            tcp_in.samples.push_back({o.success, o.latency_ms});
+                    {
+                        std::shared_lock<std::shared_mutex> mon_lock(ctx->monitor_pointers_mutex);
+                        if (ctx->tcp_connect_monitor) {
+                            weaknet::TcpConnectEvaluator::Input tcp_in;
+                            for (const auto& o : ctx->tcp_connect_monitor->recentObservations()) {
+                                tcp_in.samples.push_back({o.success, o.latency_ms});
+                            }
+                            const auto tcp_stats = ctx->tcp_connect_monitor->stats();
+                            tcp_in.unmatched_terminal = tcp_stats.unmatched_terminal;
+                            // 捕获事件量以窗口内样本为准（内核计数器为累计值，不直接用于比率）
+                            tcp_in.capture_events = tcp_in.samples.size() + tcp_stats.unmatched_terminal;
+                            tcp_sle = weaknet::TcpConnectEvaluator::evaluate(tcp_in);
+                            LOG_INFO(LogModule::NETWORK, "TCP SLE: state="
+                                << weaknet::healthStateToString(tcp_sle.state)
+                                << " coverage=" << weaknet::coverageToString(tcp_sle.coverage)
+                                << " reason=" << tcp_sle.reason
+                                << " ok=" << tcp_stats.successes << " fail=" << tcp_stats.failures
+                                << " unmatched=" << tcp_stats.unmatched_terminal);
                         }
-                        const auto tcp_stats = ctx->tcp_connect_monitor->stats();
-                        tcp_in.unmatched_terminal = tcp_stats.unmatched_terminal;
-                        // 捕获事件量以窗口内样本为准（内核计数器为累计值，不直接用于比率）
-                        tcp_in.capture_events = tcp_in.samples.size() + tcp_stats.unmatched_terminal;
-                        tcp_sle = weaknet::TcpConnectEvaluator::evaluate(tcp_in);
-                        LOG_INFO(LogModule::NETWORK, "TCP SLE: state="
-                            << weaknet::healthStateToString(tcp_sle.state)
-                            << " coverage=" << weaknet::coverageToString(tcp_sle.coverage)
-                            << " reason=" << tcp_sle.reason
-                            << " ok=" << tcp_stats.successes << " fail=" << tcp_stats.failures
-                            << " unmatched=" << tcp_stats.unmatched_terminal);
                     }
 
                     // HTTP/HTTPS Access SLE：TCP 通了不代表应用层可用。
@@ -462,37 +465,40 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     // 无响应/TLS 失败才算传输层故障。
                     weaknet::SleResult http_sle;
                     weaknet::SleResult portal_sle;
-                    if (ctx->http_latency_monitor) {
-                        weaknet::HttpAccessEvaluator::Input http_in;
-                        const auto txns = ctx->http_latency_monitor->getRecentTxns(200);
-                        for (const auto& t : txns) {
-                            http_in.samples.push_back({t.statusCode, static_cast<double>(t.ttfbNs) / 1e6, false});
+                    {
+                        std::shared_lock<std::shared_mutex> mon_lock(ctx->monitor_pointers_mutex);
+                        if (ctx->http_latency_monitor) {
+                            weaknet::HttpAccessEvaluator::Input http_in;
+                            const auto txns = ctx->http_latency_monitor->getRecentTxns(200);
+                            for (const auto& t : txns) {
+                                http_in.samples.push_back({t.statusCode, static_cast<double>(t.ttfbNs) / 1e6, false});
+                            }
+                            http_in.capture_events = http_in.samples.size();
+                            http_sle = weaknet::HttpAccessEvaluator::evaluate(http_in);
+
+                            // Captive Portal：**当前不具备可靠判定能力**。
+                            //
+                            // 可靠的 portal 判定需要受控探测（向已知 connectivity-check
+                            // 端点请求，看是否被重定向/内容替换）。当前 capture 不提取
+                            // Location 头，也没有主动探测。
+                            // 普通 301/302 是网站常见正常行为，绝不能等价于门户。
+                            // 因此这里不喂入任何被动重定向作为判定依据，
+                            // evaluator 会如实返回 UNKNOWN / NO_CAPABILITY。
+                            weaknet::CaptivePortalEvaluator::Input portal_in;
+                            portal_in.has_controlled_probe = false;
+                            portal_in.ip_reachable = (reach_sle.state == weaknet::HealthState::GOOD);
+                            portal_in.dns_resolvable = (dns_sle.state == weaknet::HealthState::GOOD);
+                            portal_in.tcp_connectable = (tcp_sle.state == weaknet::HealthState::GOOD);
+                            portal_sle = weaknet::CaptivePortalEvaluator::evaluate(portal_in);
+
+                            LOG_INFO(LogModule::NETWORK, "HTTP SLE: state="
+                                << weaknet::healthStateToString(http_sle.state)
+                                << " coverage=" << weaknet::coverageToString(http_sle.coverage)
+                                << " reason=" << http_sle.reason
+                                << " samples=" << txns.size()
+                                << " | Portal: " << weaknet::healthStateToString(portal_sle.state)
+                                << " reason=" << portal_sle.reason);
                         }
-                        http_in.capture_events = http_in.samples.size();
-                        http_sle = weaknet::HttpAccessEvaluator::evaluate(http_in);
-
-                        // Captive Portal：**当前不具备可靠判定能力**。
-                        //
-                        // 可靠的 portal 判定需要受控探测（向已知 connectivity-check
-                        // 端点请求，看是否被重定向/内容替换）。当前 capture 不提取
-                        // Location 头，也没有主动探测。
-                        // 普通 301/302 是网站常见正常行为，绝不能等价于门户。
-                        // 因此这里不喂入任何被动重定向作为判定依据，
-                        // evaluator 会如实返回 UNKNOWN / NO_CAPABILITY。
-                        weaknet::CaptivePortalEvaluator::Input portal_in;
-                        portal_in.has_controlled_probe = false;
-                        portal_in.ip_reachable = (reach_sle.state == weaknet::HealthState::GOOD);
-                        portal_in.dns_resolvable = (dns_sle.state == weaknet::HealthState::GOOD);
-                        portal_in.tcp_connectable = (tcp_sle.state == weaknet::HealthState::GOOD);
-                        portal_sle = weaknet::CaptivePortalEvaluator::evaluate(portal_in);
-
-                        LOG_INFO(LogModule::NETWORK, "HTTP SLE: state="
-                            << weaknet::healthStateToString(http_sle.state)
-                            << " coverage=" << weaknet::coverageToString(http_sle.coverage)
-                            << " reason=" << http_sle.reason
-                            << " samples=" << txns.size()
-                            << " | Portal: " << weaknet::healthStateToString(portal_sle.state)
-                            << " reason=" << portal_sle.reason);
                     }
 
                     // 受控主动探测：host-level Internet 能力的唯一证据来源。
@@ -666,17 +672,20 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
 
                 // 获取蓝牙 RSSI（取所有已连接设备的平均 RSSI）
                 int btRssi = -1000;
-                if (auto* mon = ctx->bt_monitor; mon && mon->isInitialized()) {
-                    auto rssiSnapshot = mon->getRssiSnapshot();
-                    int sum = 0, count = 0;
-                    for (const auto& [mac, rssi] : rssiSnapshot) {
-                        if (rssi != 0 && rssi > -1000) {
-                            sum += rssi;
-                            ++count;
+                {
+                    std::shared_lock<std::shared_mutex> bt_lock(ctx->monitor_pointers_mutex);
+                    if (auto* mon = ctx->bt_monitor; mon && mon->isInitialized()) {
+                        auto rssiSnapshot = mon->getRssiSnapshot();
+                        int sum = 0, count = 0;
+                        for (const auto& [mac, rssi] : rssiSnapshot) {
+                            if (rssi != 0 && rssi > -1000) {
+                                sum += rssi;
+                                ++count;
+                            }
                         }
-                    }
-                    if (count > 0) {
-                        btRssi = sum / count;
+                        if (count > 0) {
+                            btRssi = sum / count;
+                        }
                     }
                 }
 
@@ -730,6 +739,7 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
             // 可检测 "active 但卡顿" 状态，eBPF 不可用时自动降级
             // ================================================================
             try {
+                std::shared_lock<std::shared_mutex> bt_lock(ctx->monitor_pointers_mutex);
                 BtMonitor* mon = ctx->bt_monitor;
                 if (mon && mon->isInitialized()) {
                     auto connected = mon->getConnectedDevices();
@@ -1174,33 +1184,36 @@ void start_history_persistence_thread(ServerContext* ctx) {
             }
 
             // 持久化蓝牙设备与音频质量快照
-            if (ctx->bt_monitor && ctx->bt_monitor->isInitialized()) {
-                auto adapter = ctx->bt_monitor->getAdapterState();
-                auto devices = ctx->bt_monitor->getDevices();
-                int bt_written = 0;
-                for (const auto& dev : devices) {
-                    // 仅记录已连接设备，或信号较强/活跃设备，避免周围瞬态广播垃圾数据占满 DB
-                    if (dev.connected || dev.rssiDbm > -75) {
-                        BtAudioFusionResult fusion;
-                        bool hasAudio = ctx->bt_monitor->getAudioFusionResult(dev.macAddress, &fusion);
-                        if (ctx->db_mgr->insertBtSnapshot(
-                                adapter.macAddress,
-                                dev.macAddress,
-                                dev.name.empty() ? dev.alias : dev.name,
-                                dev.connected,
-                                dev.rssiDbm,
-                                dev.estimatedDistance,
-                                hasAudio && fusion.isActive,
-                                hasAudio ? fusion.qualityScore : 0.0,
-                                hasAudio && fusion.suspectedStall,
-                                hasAudio ? fusion.bytesPerSec : 0,
-                                hasAudio ? fusion.maxGapMs : 0)) {
-                            bt_written++;
+            {
+                std::shared_lock<std::shared_mutex> bt_lock(ctx->monitor_pointers_mutex);
+                if (ctx->bt_monitor && ctx->bt_monitor->isInitialized()) {
+                    auto adapter = ctx->bt_monitor->getAdapterState();
+                    auto devices = ctx->bt_monitor->getDevices();
+                    int bt_written = 0;
+                    for (const auto& dev : devices) {
+                        // 仅记录已连接设备，或信号较强/活跃设备，避免周围瞬态广播垃圾数据占满 DB
+                        if (dev.connected || dev.rssiDbm > -75) {
+                            BtAudioFusionResult fusion;
+                            bool hasAudio = ctx->bt_monitor->getAudioFusionResult(dev.macAddress, &fusion);
+                            if (ctx->db_mgr->insertBtSnapshot(
+                                    adapter.macAddress,
+                                    dev.macAddress,
+                                    dev.name.empty() ? dev.alias : dev.name,
+                                    dev.connected,
+                                    dev.rssiDbm,
+                                    dev.estimatedDistance,
+                                    hasAudio && fusion.isActive,
+                                    hasAudio ? fusion.qualityScore : 0.0,
+                                    hasAudio && fusion.suspectedStall,
+                                    hasAudio ? fusion.bytesPerSec : 0,
+                                    hasAudio ? fusion.maxGapMs : 0)) {
+                                bt_written++;
+                            }
                         }
                     }
-                }
-                if (bt_written > 0) {
-                    LOG_INFO(LogModule::SYSTEM, "History persistence: wrote " << bt_written << " Bluetooth records");
+                    if (bt_written > 0) {
+                        LOG_INFO(LogModule::SYSTEM, "History persistence: wrote " << bt_written << " Bluetooth records");
+                    }
                 }
             }
 
@@ -1353,122 +1366,7 @@ int start_server(int argc, char** argv) {
     // ================================================================
     {
         ctx.active_probe = std::make_unique<ActiveConnectivityMonitor>();
-        ActiveProbeConfig ap;
-        ap.enabled = ctx.cfg.active_probe.enabled.load();
-        const uint32_t interval_ms = std::max(5000u, ctx.cfg.active_probe.interval_ms.load());
-        const uint32_t timeout_ms = std::max(500u, ctx.cfg.active_probe.timeout_ms.load());
-        ap.interval_sec = interval_ms / 1000u;
-        ap.timeout_sec = std::max(1u, timeout_ms / 1000u);
-
-        // 解析 targets："id|hostname|port|domain|path|expect_body"
-        // 后三段可选：
-        //   domain      —— 故障域标识（缺省取 hostname）
-        //   path        —— 该目标的 HTTP 路径（仅 Portal oracle 用）
-        //   expect_body —— 该目标的预期正文（仅 Portal oracle 用）
-        // 真实 connectivity-check 端点的路径与预期正文互不相同，
-        // 必须能按目标声明（见 ActiveProbeTargetConfig 的说明）。
-        //
-        // 必须**手动按 '|' 切分**而不是反复 std::getline：getline 在读到
-        // 末尾空字段（"x|" 的最后一个字段）时提取 0 字符 → 置 failbit →
-        // 返回 false，于是"显式留空"与"字段不存在"无法区分。
-        // 真机实测后果：generate_204 的 `...|/generate_204|` 被判成"未声明
-        // 预期"，回落全局文本预期 → 空正文永远 CONTENT_MISMATCH。
-        const auto parseTargets = [](const std::string& raw) {
-            std::vector<ActiveProbeTargetConfig> out;
-            size_t pos = 0;
-            while (pos <= raw.size()) {
-                const size_t comma = raw.find(',', pos);
-                const std::string item = raw.substr(
-                    pos, comma == std::string::npos ? std::string::npos : comma - pos);
-                pos = (comma == std::string::npos) ? raw.size() + 1 : comma + 1;
-                if (item.empty()) continue;
-
-                // 按 '|' 切分，保留末尾空字段
-                std::vector<std::string> f;
-                size_t fp = 0;
-                for (;;) {
-                    const size_t bar = item.find('|', fp);
-                    if (bar == std::string::npos) { f.push_back(item.substr(fp)); break; }
-                    f.push_back(item.substr(fp, bar - fp));
-                    fp = bar + 1;
-                }
-
-                ActiveProbeTargetConfig t;
-                t.id = f.size() > 0 ? f[0] : "";
-                t.hostname = f.size() > 1 ? f[1] : "";
-                const std::string port = f.size() > 2 ? f[2] : "";
-                const std::string domain = f.size() > 3 ? f[3] : "";
-                t.tcp_port = port.empty() ? 443 : static_cast<uint16_t>(std::atoi(port.c_str()));
-                t.failure_domain = domain.empty() ? t.hostname : domain;
-                t.http_path = f.size() > 4 ? f[4] : "";
-                if (f.size() > 5) {
-                    t.expect_body = f[5];
-                    // 字段存在即为"已声明"，即使为空串（generate_204 场景）
-                    t.expect_body_specified = true;
-                }
-                if (t.hostname.empty()) continue;
-                out.push_back(t);
-            }
-            return out;
-        };
-
-        ap.targets = parseTargets(ctx.cfg.active_probe.targets.get());
-
-        // HTTPS capability：编译期无 TLS 依赖时如实降级，不伪装
-        ap.https_enabled = ctx.cfg.active_probe.https_enabled.load();
-        if (ap.https_enabled && !ActiveConnectivityMonitor::tlsAvailable()) {
-            LOG_WARNING(LogModule::NETWORK,
-                "active_probe.https_enabled=true but this build has no TLS "
-                "(WEAKNET_HAVE_TLS undefined); HTTPS capability will report "
-                "NO_CAPABILITY (no_tls_probe_capability).");
-        }
-
-        // Captive Portal 受控 oracle
-        ap.portal.enabled = ctx.cfg.active_probe.portal_check_enabled.load();
-        ap.portal.path = ctx.cfg.active_probe.portal_path.get();
-        ap.portal.expect_body = ctx.cfg.active_probe.portal_expect_body.get();
-        ap.portal.targets = parseTargets(ctx.cfg.active_probe.portal_targets.get());
-        if (ap.portal.enabled) {
-            if (ap.portal.targets.empty()) {
-                LOG_WARNING(LogModule::NETWORK,
-                    "active_probe.portal_check_enabled=true but portal_targets is empty; "
-                    "Portal will report NO_CAPABILITY. Portal verdict requires "
-                    "controlled oracle endpoints with known responses.");
-                ap.portal.enabled = false;
-            } else if (ap.portal.expect_body.empty()) {
-                LOG_WARNING(LogModule::NETWORK,
-                    "Portal oracle configured without portal_expect_body; only "
-                    "redirect-away signals will be considered (content "
-                    "fingerprint comparison disabled).");
-            }
-        }
-
-        ctx.active_probe->configure(ap);
-        LOG_INFO(LogModule::NETWORK,
-                 "Active probe detail: capability_targets=" << ap.targets.size()
-                 << " https_enabled=" << (ap.https_enabled ? "true" : "false")
-                 << " tls_available=" << (ActiveConnectivityMonitor::tlsAvailable() ? "true" : "false")
-                 << " portal_enabled=" << (ap.portal.enabled ? "true" : "false")
-                 << " portal_targets=" << ap.portal.targets.size()
-                 << " portal_path=" << ap.portal.path
-                 << " portal_expect_body=" << (ap.portal.expect_body.empty() ? "(empty)" : ap.portal.expect_body));
-        for (const auto& t : ap.portal.targets) {
-            LOG_INFO(LogModule::NETWORK, "Portal oracle target: id=" << t.id
-                     << " host=" << t.hostname
-                     << " port=" << t.tcp_port
-                     << " domain=" << t.failure_domain
-                     << " path=" << (t.http_path.empty() ? ap.portal.path : t.http_path)
-                     << " expect_body=" << (t.expect_body.empty() ? ap.portal.expect_body : t.expect_body));
-        }
-
-        if (ap.enabled && ap.targets.size() < 2) {
-            LOG_WARNING(LogModule::NETWORK,
-                "Active probe enabled but fewer than 2 targets configured; "
-                "capability verdict requires >=2 independent targets. "
-                "Active capability will report UNKNOWN.");
-        }
-        LOG_INFO(LogModule::NETWORK, "Active connectivity probe: "
-                 << ctx.active_probe->describeConfig());
+        applyActiveProbeConfig(&ctx);
         start_active_probe_thread(&ctx, &ctx.active_probe_thread);
     }
 
@@ -1549,12 +1447,24 @@ int start_server(int argc, char** argv) {
                                 std::string("history.db").size()) +
             "wireless-uplink-state";
         if (ctx.db_mgr) {
-            // 传 provider 而非缓存指针：插件可被运行期 disable/restart，
-            // 那时 unique_ptr 已 delete，缓存指针会悬垂。
+            // 传 sampler 并在读侧持有共享锁：插件可被运行期 disable/restart，
+            // 必须在读锁保护下安全采样，避免访问正被析构的监控器。
             ctx.wireless_uplink = std::make_unique<weaknet::EdgeWirelessUplinkExporter>(
                 ctx.cfg, *ctx.db_mgr, uplink_state_path,
-                [&ctx]() { return ctx.process_net_profiler; },
-                [&ctx]() { return ctx.skb_drop_monitor; });
+                [&ctx](std::vector<weaknet_dbus::ProcessNetInfo>* out) {
+                    if (!out) return;
+                    std::shared_lock<std::shared_mutex> lock(ctx.monitor_pointers_mutex);
+                    if (ctx.process_net_profiler && ctx.process_net_profiler->isAvailable()) {
+                        *out = ctx.process_net_profiler->getTopBandwidth(5);
+                    }
+                },
+                [&ctx](weaknet_dbus::DropStatsSummary* out) {
+                    if (!out) return;
+                    std::shared_lock<std::shared_mutex> lock(ctx.monitor_pointers_mutex);
+                    if (ctx.skb_drop_monitor && ctx.skb_drop_monitor->isAvailable()) {
+                        *out = ctx.skb_drop_monitor->getDropStats();
+                    }
+                });
             if (ctx.wireless_uplink->start()) {
                 LOG_INFO(LogModule::SYSTEM, "edge wireless uplink started");
             }

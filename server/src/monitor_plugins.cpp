@@ -233,7 +233,10 @@ public:
         }
         // 蓝牙监测器实例由插件创建并拥有；ServerContext 只保留查询用裸指针。
         monitor_ = std::make_unique<BtMonitor>();
-        ctx->bt_monitor = monitor_.get();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+            ctx->bt_monitor = monitor_.get();
+        }
         ctx->bluetooth_stop.store(false);
         start_bt_monitor_thread(ctx, &worker_, nullptr);
         return true;
@@ -242,8 +245,11 @@ public:
         if (!ctx_) return;
         ctx_->bluetooth_stop.store(true);
         if (worker_.joinable()) worker_.join();
-        if (ctx_->bt_monitor == monitor_.get()) ctx_->bt_monitor = nullptr;
-        monitor_.reset();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+            if (ctx_->bt_monitor == monitor_.get()) ctx_->bt_monitor = nullptr;
+            monitor_.reset();
+        }
     }
 };
 

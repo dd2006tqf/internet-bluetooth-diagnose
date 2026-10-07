@@ -257,13 +257,13 @@ EdgeWirelessUplinkExporter::EdgeWirelessUplinkExporter(
     const weaknet_dbus::WeakNetConfig& config,
     weaknet_dbus::DatabaseManager& db,
     std::string state_path,
-    std::function<weaknet_dbus::ProcessNetProfiler*()> profiler_provider,
-    std::function<weaknet_dbus::SkbDropMonitor*()> drop_provider)
+    ProfilerSampler profiler_sampler,
+    DropSampler drop_sampler)
     : config_(config),
       db_(db),
       state_path_(std::move(state_path)),
-      profiler_provider_(std::move(profiler_provider)),
-      drop_provider_(std::move(drop_provider)) {}
+      profiler_sampler_(std::move(profiler_sampler)),
+      drop_sampler_(std::move(drop_sampler)) {}
 
 EdgeWirelessUplinkExporter::~EdgeWirelessUplinkExporter() { stop(); }
 
@@ -405,23 +405,18 @@ bool EdgeWirelessUplinkExporter::collect(WirelessUplinkPayload* out, std::string
     out->baselines = std::move(baselines);
 
     // 深度内核快照：进程画像 Top N 与协议栈丢包归因。
-    // provider 为空 / 返回 nullptr（未启用、加载失败或运行期被 disable）时
-    // 诚实跳过该维度，绝不伪造空观测。
-    if (profiler_provider_) {
-        if (auto* profiler = profiler_provider_(); profiler && profiler->isAvailable()) {
-            out->top_processes = profiler->getTopBandwidth(5);
-        }
+    // sampler 为空或未抓取到有效数据时诚实跳过该维度，绝不伪造空观测。
+    if (profiler_sampler_) {
+        profiler_sampler_(&out->top_processes);
     }
-    if (drop_provider_) {
-        if (auto* drop_mon = drop_provider_(); drop_mon && drop_mon->isAvailable()) {
-            auto drop_stats = drop_mon->getDropStats();
-            // 只为有效数据上报：全 0 且无原因项视为"无观测"，不发送空壳
-            if (drop_stats.totalDrops > 0 || !drop_stats.topReasons.empty()) {
-                if (drop_stats.topReasons.size() > 5) {
-                    drop_stats.topReasons.resize(5);
-                }
-                out->drop_stats = std::move(drop_stats);
+    if (drop_sampler_) {
+        weaknet_dbus::DropStatsSummary drop_stats;
+        drop_sampler_(&drop_stats);
+        if (drop_stats.totalDrops > 0 || !drop_stats.topReasons.empty()) {
+            if (drop_stats.topReasons.size() > 5) {
+                drop_stats.topReasons.resize(5);
             }
+            out->drop_stats = std::move(drop_stats);
         }
     }
 
