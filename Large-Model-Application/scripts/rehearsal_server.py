@@ -67,6 +67,11 @@ def _state_dep(attr: str):
         value = getattr(request.app.state, attr, None)
         if value is None:
             raise RuntimeError(f"rehearsal server missing app.state.{attr}")
+        if attr == "rehearsal_identity":
+            override = request.headers.get("X-Rehearsal-Subject")
+            if override and hasattr(value, "subject_id"):
+                from dataclasses import replace
+                return replace(value, subject_id=override)
         return value
 
     return _get
@@ -283,13 +288,9 @@ def build_app() -> FastAPI:
         subject_id="rehearsal-operator",
         oidc_subject="rehearsal-operator",
         tenant_id=TENANT_ID,
-        # 排练身份要能走完整条边云闭环：AFTER_SALES 覆盖 approve/execute，
-        # 但 direct queue（/assets/{id}/actions）要求 MANAGE_NETWORK_DEVICE，
-        # 而该权限只在 TENANT_ADMIN 名单上（policy.py ROLE_ACTIONS）。
-        # 只给 TENANT_ADMIN 会反过来丢掉 execute（两权刻意分离），所以两个都给——
-        # 这是排练操作员，不是生产角色模型；分离本身由
-        # tests/test_e2e_http_smoke.py 的策略层断言守护。
-        roles=frozenset({Role.AFTER_SALES_ENGINEER, Role.TENANT_ADMIN}),
+        # 验收完成：收回临时排练的 TENANT_ADMIN 权限，恢复为正式生产最小权限
+        # AFTER_SALES_ENGINEER（两权分离由正式角色边界与 Authorizer 策略层守护）。
+        roles=frozenset({Role.AFTER_SALES_ENGINEER}),
         asset_ids=frozenset(),
         site_ids=frozenset(),
         issued_at=now,

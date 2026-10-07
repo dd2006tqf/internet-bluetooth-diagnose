@@ -543,9 +543,12 @@ def _predict_device(
                 else TrendDirection.STABLE
             )
             evidence_ids: list[str] = []
-            for sample in analysis.samples:
+            for sample in reversed(analysis.samples):
                 if sample.evidence_id and sample.evidence_id not in evidence_ids:
                     evidence_ids.append(sample.evidence_id)
+                    if len(evidence_ids) >= 32:
+                        break
+            evidence_ids.reverse()
             drivers.append(
                 RiskDriver(
                     metric=name,
@@ -563,9 +566,12 @@ def _predict_device(
             continue
         name = analysis.contract.name
         evidence_ids: list[str] = []
-        for sample in analysis.samples:
+        for sample in reversed(analysis.samples):
             if sample.evidence_id and sample.evidence_id not in evidence_ids:
                 evidence_ids.append(sample.evidence_id)
+                if len(evidence_ids) >= 32:
+                    break
+        evidence_ids.reverse()
         if analysis.contract.baseline_domain == "prediction_reference":
             statement = (
                 f"baseline 自锚点 {analysis.anchor_value:.0f}dBm 漂移 "

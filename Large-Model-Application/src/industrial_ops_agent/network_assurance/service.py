@@ -51,6 +51,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from industrial_ops_agent.domain import as_utc
@@ -523,6 +524,10 @@ class NetworkAssuranceService:
                 version=1,
             )
             session.add(record)
+            try:
+                session.flush()
+            except IntegrityError as exc:
+                raise NetworkAssuranceConflict("device is registered to another tenant") from exc
         record.signing_key_id = key_id
         return record
 
@@ -1045,6 +1050,10 @@ class NetworkAssuranceService:
                 version=1,
             )
             session.add(record)
+            try:
+                session.flush()
+            except IntegrityError as exc:
+                raise NetworkAssuranceConflict("device is registered to another tenant") from exc
 
         snapshot = first.snapshot
         record.display_name = first.display_name or record.display_name
