@@ -38,7 +38,7 @@
 | 企业资产与记忆 | 模型和评测证据导入、人工确认的业务记忆 | `/ai/enterprise-assets`、`/ai/memories` |
 | 预测维护 | 遥测接入、趋势/异常候选、时序 Transformer、剩余寿命 RUL | `/predictive-maintenance` |
 | 维护规划 | 单 Agent / 多 Agent 方案、人工复核、匿名 A/B 评审 | `/maintenance-planning`、`/maintenance-planning/reviews` |
-| 网络保障 | 边云遥测上行、无线事件、SiteIncident、Council 会商、提案审批、下行控制 | `/api/v1/network/edge/*`、`/api/v1/assurance/*` |
+| 网络保障 | 边云遥测上行、无线事件、SiteIncident、Council 会商、提案审批、下行控制 | `/api/v1/network/*` |
 | 治理与运维 | 租户权限、安全审计、紧急只读访问、恢复、供应链、成本、追踪、GPU 运维 | `/tenant`、`/security`、`/ops` 及其子页面 |
 
 这些能力不是一次启动全部加载的要求。数据平台、训练、语音、图检索和生产基础设施有各自依赖；小模型图片诊断链路不代表所有专项模型均已部署。
@@ -439,18 +439,19 @@ make m1-status
 |---|---|
 | `POST /api/v1/network/edge/telemetry` | 板端遥测上行（Ed25519 签名）+ 下行 pending_actions 随路拉取 |
 | `POST /api/v1/network/edge/wireless-events` | 无线事实上行（device_events / site_incidents / baselines，分域幂等） |
-| `POST /api/v1/network/edge/action-results` | 板端控制执行回执（APPLIED / REJECTED） |
-| `POST /api/v1/assets/{asset_id}/actions` | 下行控制动作入队（direct queue，需 `MANAGE_NETWORK_DEVICE`） |
-| `GET /api/v1/assets/{asset_id}/wireless-devices/{device_address}/risk-prediction` | 设备风险预测 |
-| `POST /api/v1/assurance/incidents/{incident_id}/council` | 创建 Council 会商（真实模型，3 位专家意见 + closed-schema ActionProposal） |
-| `GET /api/v1/assurance/incidents/{incident_id}/council/proposals` | 列出提案 |
-| `POST /api/v1/assurance/proposals/{proposal_id}/decision` | 策略决策（批准/拒绝/需审批） |
-| `POST /api/v1/assurance/proposals/{proposal_id}/execute` | 执行（转入 pending_actions） |
-| `POST /api/v1/assurance/proposals/{proposal_id}/runbook` | 生成操作手册 |
+| `POST /api/v1/network/edge/action-results` | 板端控制执行回执（APPLIED / REJECTED），同事务投影 L1 `network_action_outcomes` |
+| `POST /api/v1/network/assets/{asset_id}/actions` | 下行控制动作入队（direct queue，需 `MANAGE_NETWORK_DEVICE`；body 为 `{"config_key","config_value"}`） |
+| `GET /api/v1/network/assets/{asset_id}/wireless-devices/{device_address}/risk-prediction` | 设备风险预测（L3，运行时产出，不落库） |
+| `GET /api/v1/network/assurance/incidents/{incident_id}/council` | 读取既有会商 |
+| `POST /api/v1/network/assurance/incidents/{incident_id}/council` | 创建 Council 会商（真实模型，3 位专家意见 + closed-schema ActionProposal）；`?force=true` 另开 attempt |
+| `GET /api/v1/network/assurance/incidents/{incident_id}/council/proposals` | 列出提案（含 Policy 裁决与审批状态） |
+| `POST /api/v1/network/assurance/proposals/{proposal_id}/decision` | 人工审批裁决（批准/拒绝）；需 `If-Match` 版本头，发起人不能自批（SoD） |
+| `POST /api/v1/network/assurance/proposals/{proposal_id}/execute` | 执行已批准的 REMOTE 提案（载荷取批准快照）；需 `Idempotency-Key`，MANUAL 提案返回 409 |
+| `GET /api/v1/network/assurance/proposals/{proposal_id}/runbook` | 生成受控操作手册（恒 `execution_status=NOT_EXECUTED`，绝不冒充已执行） |
 
 ### 排练身份
 
-`rehearsal_server.py` 使用 `IdentityContext` 持有 `{AFTER_SALES_ENGINEER, TENANT_ADMIN}` 双角色——`TENANT_ADMIN` 为打通 direct queue 下行闭环的临时授权（`MANAGE_NETWORK_DEVICE` 权限仅在该角色名单上）。**最终验收后应收回 `TENANT_ADMIN`，恢复最小权限**。两权分离（direct queue vs 审批链）由正式角色边界维持。
+`rehearsal_server.py` 使用 `IdentityContext`，当前为正式生产最小权限 `{AFTER_SALES_ENGINEER}`（网络四权：`READ_NETWORK_ASSURANCE` / `READ_NETWORK_COUNCIL` / `REQUEST_NETWORK_COUNCIL` / `APPROVE_NETWORK_ACTION` / `EXECUTE_NETWORK_ACTION`）。临时的 `TENANT_ADMIN` 已按验收结论收回，因此 direct queue（`/network/assets/{id}/actions`）与 `POST /network/copilot/config` 现在返回 403 `authorization_denied`——这是预期结果，不是缺陷。审批链的批准人与发起人由 `X-Rehearsal-Subject` 头切换身份以满足 SoD。
 
 <a id="business"></a>
 ## 走通一次业务流程

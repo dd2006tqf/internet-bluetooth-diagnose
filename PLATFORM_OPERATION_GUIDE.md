@@ -156,7 +156,7 @@ sudo journalctl -u weaknet-cloud-api.service -n 20 --no-pager | grep -i "telemet
 ```bash
 # 列出可用 incident
 # （需先有真实 incident 数据，见演示三）
-curl -s http://localhost:8000/api/v1/assurance/incidents/{incident_id}/council \
+curl -s http://localhost:8000/api/v1/network/assurance/incidents/{incident_id}/council \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -168,10 +168,12 @@ curl -s http://localhost:8000/api/v1/assurance/incidents/{incident_id}/council \
 1. 在设备详情页或 API 中对 `radxa-cubie-a7a` 下发控制：
 
 ```bash
-# 通过 API 下发（需 TENANT_ADMIN 权限）
-curl -X POST http://localhost:8000/api/v1/assets/radxa-cubie-a7a/actions \
+# 通过 API 直接入队（direct queue，需 MANAGE_NETWORK_DEVICE，该权限仅在 TENANT_ADMIN 名单上）
+# 注意：排练身份已收回 TENANT_ADMIN，此路由当前返回 403 authorization_denied；
+#      审批链改用 POST /api/v1/network/assurance/proposals/{proposal_id}/execute
+curl -X POST http://localhost:8000/api/v1/network/assets/radxa-cubie-a7a/actions \
   -H "Content-Type: application/json" \
-  -d '{"action": "set_config", "params": {"rtt.interval": "5s"}}'
+  -d '{"config_key": "rtt.interval", "config_value": "5s"}'
 ```
 
 2. **终端实时查验（双屏见证）**：
@@ -235,7 +237,9 @@ sudo systemctl restart cloud-tunnel.service
 
 ## 六、 遗留事项与已知边界
 
-- **演示二/三的完整 e2e 链**（incident → diagnosis → council → proposal → approval → pending_action → outcome）目前还差**真实蓝牙断连事件**触发上游 incident。当前生产库中 `network_wireless_events`/`network_site_incidents`/`site_incident_diagnoses` 均为 0 行。
-- **模型网关**已配置完成（`test_network_council_live.py` PASSED），但 Council 链路尚未跑过真实 incident。
-- **排练身份**当前持有 `{AFTER_SALES_ENGINEER, TENANT_ADMIN}` 双角色（为打通 direct queue 下行闭环）。最终验收后应收回 `TENANT_ADMIN`，恢复最小权限。
+- **演示二/三的完整 e2e 链**（incident → diagnosis → council → proposal → approval → pending_action → outcome）已用**真实蓝牙断连事件**跑通上游：`network_wireless_events`/`network_site_incidents`/`site_incident_diagnoses` 均有真实行（2 台 BLE 设备亚秒级同步断开 → `COEXISTENCE_RF_INTERFERENCE` 诊断）。
+- **远端腿（CONFIG_CHANGE → REMOTE_PENDING_ACTION）需可控 fixture**：真实模型在超时类 incident 上只产出 `ACTION_ID`（写死映射 `ACTION_ID → MANUAL_RUNBOOK`），2026-10-08 三次真实会商（attempt 1 失败 / attempt 2、3 成功）均未产出 `CONFIG_CHANGE`。当前库中唯一的 REMOTE 链是**人工注入的 fixture**：`proposal_id='ncouncil-10d3ed70cf6749b1-remote-config'`（`proposal_index=10`、`proposal_digest` 为占位串 `sha256:remote-config-digest`、不在 council 落库的 `proposals_json` 内）。**不要把该链当作真实 Council 闭环证据**。
+- **真实 Council 会商脆弱性**：`recommendation_direction` 契约上限 1000 字符（schema 已写入 system prompt），模型仍会偶发超长 → `COUNCIL_SCHEMA_PARSE_FAILED` → fail-closed 409（10-07 五次会商中四次失败）。重跑 `?force=true` 通常可成功。
+- **模型网关**已配置完成（`test_network_council_live.py` PASSED），Council 链路已跑过真实 incident（见上）。
+- **排练身份**当前为正式生产最小权限 `{AFTER_SALES_ENGINEER}`；临时的 `TENANT_ADMIN` 已收回（`MANAGE_NETWORK_DEVICE` 仅在该角色名单上，故 direct queue `/network/assets/{id}/actions` 与 `POST /network/copilot/config` 现在返回 403，属预期）。
 - **`start_platform.sh`** 是遗留的一键拉起脚本，拉起的是 `compose.lite.yaml` 全套微服务栈（PostgreSQL/Keycloak/Vault/Temporal/Web 等）。当前实际生产入口是 `rehearsal_server.py`，两者不冲突但用途不同：前者是完整开发环境，后者是生产/排练切片。

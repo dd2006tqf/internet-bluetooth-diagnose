@@ -84,6 +84,8 @@ SiteIncident(板端事实)
 - 租户绑定：服务端绑定优先（`network_edge_telemetry_tenant_id` 配置存在时以
   配置租户为准，`X-Edge-Tenant` 仅作一致性校验，不一致 403 `edge_tenant_mismatch`；
   未配置时回退旧表头语义）+ 设备归属冲突检查（409 语义与遥测一致）。
+  该配置只在完整 `create_app` 装配路径读取（`runtime.py` 注入 `EdgeTelemetryVerifier`）；
+  排练切片 `scripts/rehearsal_server.py` **不读**它，因此排练环境始终走表头语义。
 - 重试：失败保留在板端游标之后重发；云端幂等使其安全。
 
 ### 3.2 云端四张表（alembic `0090_weaknet_wireless_ingestion`）
