@@ -106,6 +106,12 @@ def _response_schema(role: CouncilRole) -> dict[str, Any]:
         "maxItems": 20,
         "items": {"type": "string", "minLength": 1, "maxLength": 500},
     }
+    string_array_nonempty = {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 20,
+        "items": {"type": "string", "minLength": 1, "maxLength": 500},
+    }
     if role is not CouncilRole.COORDINATOR:
         return {
             "type": "object",
@@ -116,8 +122,8 @@ def _response_schema(role: CouncilRole) -> dict[str, Any]:
                 "recommendation_direction",
             ],
             "properties": {
-                "observations": string_array,
-                "referenced_fact_ids": string_array,
+                "observations": string_array_nonempty,
+                "referenced_fact_ids": string_array_nonempty,
                 "recommendation_direction": {"type": "string", "minLength": 1, "maxLength": 1000},
             },
         }
@@ -200,11 +206,12 @@ class UpstreamCouncilClient:
     ``FAILURE_MODEL``（fail closed，不编造建议）。
     """
 
-    def __init__(self, *, max_tokens: int = 8192) -> None:
+    def __init__(self, *, max_tokens: int = 8192, timeout_seconds: float = 180.0) -> None:
         # 4096 仍可能不够：协调官 payload 携带动作目录 + 3 份专家意见，
         # 中文 rationale 展开在多设备场景下实测到达 2500+ 字符触发截断。
         # 8192 彻底消除 finish=length 截断风险。
         self._max_tokens = max_tokens
+        self._timeout_seconds = timeout_seconds
 
     def __call__(self, role: CouncilRole, payload: dict[str, Any]) -> dict[str, Any]:
         from industrial_ops_agent.network_assurance.upstream import complete_json
@@ -222,7 +229,10 @@ class UpstreamCouncilClient:
             + schema
         )
         parsed = complete_json(
-            system, dumps_council_payload(payload), max_tokens=self._max_tokens
+            system,
+            dumps_council_payload(payload),
+            max_tokens=self._max_tokens,
+            timeout_seconds=self._timeout_seconds,
         )
         if parsed is None:
             raise CouncilModelResponseError(

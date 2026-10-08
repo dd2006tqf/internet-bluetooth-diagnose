@@ -1,0 +1,225 @@
+{
+  "completed_at": "2026-10-08T16:24:48.231047+00:00",
+  "edge_checks": [
+    {
+      "actual": "PRESENT",
+      "expectation": "PRESENT",
+      "from_kind": "INCIDENT",
+      "reason": "",
+      "to_kind": "DIAGNOSIS"
+    },
+    {
+      "actual": "PRESENT",
+      "expectation": "PRESENT",
+      "from_kind": "DIAGNOSIS",
+      "reason": "",
+      "to_kind": "COUNCIL"
+    },
+    {
+      "actual": "PRESENT",
+      "expectation": "PRESENT",
+      "from_kind": "COUNCIL",
+      "reason": "",
+      "to_kind": "PROPOSAL"
+    },
+    {
+      "actual": "PRESENT",
+      "expectation": "PRESENT",
+      "from_kind": "PROPOSAL",
+      "reason": "",
+      "to_kind": "ACTION_DECISION"
+    },
+    {
+      "actual": "PRESENT",
+      "expectation": "PRESENT",
+      "from_kind": "ACTION_DECISION",
+      "reason": "",
+      "to_kind": "APPROVAL"
+    },
+    {
+      "actual": "PRESENT",
+      "expectation": "PRESENT",
+      "from_kind": "APPROVAL",
+      "reason": "",
+      "to_kind": "PENDING_ACTION"
+    },
+    {
+      "actual": "PRESENT",
+      "expectation": "PRESENT",
+      "from_kind": "PENDING_ACTION",
+      "reason": "terminal_pending_must_have_outcome",
+      "to_kind": "ACTION_OUTCOME"
+    },
+    {
+      "actual": "PRESENT",
+      "expectation": "PRESENT",
+      "from_kind": "PENDING_ACTION",
+      "reason": "l5_terminal_fields_match_l1_projection",
+      "to_kind": "ACTION_OUTCOME"
+    },
+    {
+      "actual": "PRESENT",
+      "expectation": "PRESENT",
+      "from_kind": "PROPOSAL",
+      "reason": "council_provenance_reaches_l1_fact",
+      "to_kind": "ACTION_OUTCOME"
+    }
+  ],
+  "incident_id": "sitinc_radxa-cubie-a7a_1791472968",
+  "nodes": [
+    {
+      "extra": {
+        "affected_devices": 2,
+        "site_id": "radxa-cubie-a7a"
+      },
+      "id": "sitinc_radxa-cubie-a7a_1791472968",
+      "kind": "INCIDENT",
+      "status": "OPEN"
+    },
+    {
+      "digest_or_version": "c5bde1ae0f22cb88",
+      "extra": {
+        "hypothesis": "LOCAL_ADAPTER_OR_HOST_STALL",
+        "llm_used": true,
+        "observed_pattern": "SUB_SECOND_SIMULTANEOUS_DISCONNECT"
+      },
+      "id": "wdiag_sitinc_radxa-cubie-a7a_1791472968_26c224ed84c6",
+      "kind": "DIAGNOSIS",
+      "status": "MEDIUM"
+    },
+    {
+      "digest_or_version": "a2bc746eb12a6ad4fb343fea",
+      "extra": {
+        "attempt_count": 3,
+        "stage": "COORDINATOR_DONE"
+      },
+      "id": "ncouncil-5f5180a7598a48f0",
+      "kind": "COUNCIL",
+      "status": "REVIEW_PENDING"
+    },
+    {
+      "digest_or_version": "sha256:c810edaab723a4fc7",
+      "extra": {
+        "config": "rssi.interval=1000",
+        "kind": "CONFIG_CHANGE"
+      },
+      "id": "ncprop-5f5180a7598a48f0-a3-2",
+      "kind": "PROPOSAL",
+      "status": "attempt3"
+    },
+    {
+      "digest_or_version": "sha256:b02eb06796748cf49",
+      "extra": {
+        "catalog_version": "bdb093ac5310",
+        "execution_mode": "REMOTE_PENDING_ACTION",
+        "risk": "LOW",
+        "risk_policy_version": "risk-policy-v1"
+      },
+      "id": "ncdec-29446c303418f82db83b9ed0",
+      "kind": "ACTION_DECISION",
+      "status": "ALLOWED"
+    },
+    {
+      "digest_or_version": "sha256:b02eb06796748cf49",
+      "extra": {
+        "approved_by": "second-engineer-approver",
+        "execution_status": "QUEUED"
+      },
+      "id": "ncapp-4df6b44e3ed926f45d0a9a68",
+      "kind": "APPROVAL",
+      "status": "APPROVED"
+    },
+    {
+      "digest_or_version": "gen3",
+      "extra": {
+        "approved_by": "second-engineer-approver",
+        "claimed_by_device_id": "radxa-cubie-a7a",
+        "config": "rssi.interval=1000"
+      },
+      "id": "nact-3642ed5382964233ba301d58664a1e18",
+      "kind": "PENDING_ACTION",
+      "status": "APPLIED"
+    },
+    {
+      "digest_or_version": "sha256:29612004a83241c71",
+      "id": "nout-e850c9d725fd4eeda6be9b2c8080769d",
+      "kind": "ACTION_OUTCOME",
+      "status": "APPLIED",
+      "ts": "2026-10-08T16:13:22.139410+00:00"
+    }
+  ],
+  "operation_checks": [
+    {
+      "actual": "ACCEPTED",
+      "expectation": "ACCEPTED",
+      "operation": "decide",
+      "subject_id": "ncprop-5f5180a7598a48f0-a3-2"
+    },
+    {
+      "actual": "ACCEPTED",
+      "expectation": "ACCEPTED",
+      "operation": "execute",
+      "subject_id": "ncprop-5f5180a7598a48f0-a3-2"
+    },
+    {
+      "actual": "ACCEPTED",
+      "expectation": "ACCEPTED",
+      "operation": "edge_ack",
+      "subject_id": "nact-3642ed5382964233ba301d58664a1e18"
+    },
+    {
+      "actual": "REJECTED",
+      "detail": "proposer cannot approve its own proposal",
+      "error_code": "separation_of_duties",
+      "expectation": "REJECTED",
+      "operation": "decide_sod_self_approval",
+      "subject_id": "ncprop-5f5180a7598a48f0-a3-0"
+    },
+    {
+      "actual": "REJECTED",
+      "error_code": "manual_execution_not_allowed",
+      "expectation": "REJECTED",
+      "operation": "execute_manual_runbook",
+      "subject_id": "ncprop-5f5180a7598a48f0-a3-0"
+    },
+    {
+      "actual": "REJECTED",
+      "error_code": "idempotency_conflict",
+      "expectation": "REJECTED",
+      "operation": "execute_idempotency_conflict",
+      "subject_id": "ncprop-5f5180a7598a48f0-a3-2"
+    },
+    {
+      "actual": "REJECTED",
+      "error_code": "proposal_not_found",
+      "expectation": "REJECTED",
+      "operation": "decide_unknown_proposal",
+      "subject_id": "ncprop-does-not-exist"
+    },
+    {
+      "actual": "REJECTED",
+      "error_code": "approval_conflict",
+      "expectation": "REJECTED",
+      "operation": "decide_stale_if_match",
+      "subject_id": "ncprop-5f5180a7598a48f0-a3-2"
+    }
+  ],
+  "prediction_snapshots": [
+    {
+      "persisted": true,
+      "snapshot_id": "nsnap-1d0de415a37742cc92868faf8ee7a8a5"
+    },
+    {
+      "persisted": true,
+      "snapshot_id": "nsnap-9c641ecf06f74b97a0beadf0ba0e5bdc"
+    },
+    {
+      "baseline_history_id": "nblh-b273ae4a440007e35826d9528ee2908d",
+      "persisted": true
+    }
+  ],
+  "scenario": "REMOTE_HAPPY",
+  "started_at": "2026-10-08T16:24:48.231084+00:00",
+  "trace_contract_version": "e2e-trace.v1",
+  "trace_run_id": "trace-8a9422586bc04160"
+}

@@ -237,8 +237,30 @@ sudo systemctl restart cloud-tunnel.service
 
 ## 六、 遗留事项与已知边界
 
-- **演示二/三的完整 e2e 链**（incident → diagnosis → council → proposal → approval → pending_action → outcome）已用**真实蓝牙断连事件**跑通上游：`network_wireless_events`/`network_site_incidents`/`site_incident_diagnoses` 均有真实行（2 台 BLE 设备亚秒级同步断开 → `COEXISTENCE_RF_INTERFERENCE` 诊断）。
-- **远端腿（CONFIG_CHANGE → REMOTE_PENDING_ACTION）需可控 fixture**：真实模型在超时类 incident 上只产出 `ACTION_ID`（写死映射 `ACTION_ID → MANUAL_RUNBOOK`），2026-10-08 三次真实会商（attempt 1 失败 / attempt 2、3 成功）均未产出 `CONFIG_CHANGE`。当前库中唯一的 REMOTE 链是**人工注入的 fixture**：`proposal_id='ncouncil-10d3ed70cf6749b1-remote-config'`（`proposal_index=10`、`proposal_digest` 为占位串 `sha256:remote-config-digest`、不在 council 落库的 `proposals_json` 内）。**不要把该链当作真实 Council 闭环证据**。
+- **完整 e2e 链已真实跑通**（2026-10-09）：incident `sitinc_radxa-cubie-a7a_1791472968`
+  → diagnosis `wdiag_sitinc_..._26c224ed84c6` → council `ncouncil-5f5180a7598a48f0`
+  （真实模型，attempt 3）→ proposal `ncprop-5f5180a7598a48f0-a3-2`（真实模型产出的
+  `CONFIG_CHANGE rssi.interval=1000`）→ decision `ncdec-29446c303418f82db83b9ed0`
+  （ALLOWED/LOW/REMOTE_PENDING_ACTION）→ approval `ncapp-4df6b44e3ed926f45d0a9a68`
+  （APPROVED，`approved_by=second-engineer-approver`）→ pending
+  `nact-3642ed5382964233ba301d58664a1e18`（APPLIED）→ outcome
+  `nout-e850c9d725fd4eeda6be9b2c8080769d`（APPLIED）。
+  板端 `weaknet-cli get rssi` 实测 `{"rssi":{"enabled":true,"interval_ms":1000}}`，
+  参数现场生效。报告器判定 **`TRACE OK`**（含 L5 终态↔L1 投影字段一致、
+  council provenance 直达 outcome 两条核心断言）。
+- **两处旧结论已作废**：① 库中原先唯一的 REMOTE 链是人工注入 fixture
+  （`proposal_id='ncouncil-10d3ed70cf6749b1-remote-config'`），**它已被真实链取代**，
+  不再是远程腿的证据来源；② 2026-10-08 记录的"远端腿需可控 fixture"结论不再成立。
+- **探测目标自证约束**：上述 incident 的**事件载荷是排练构造物**——物理蓝牙断连会被
+  `QualifyingAnomalyPolicy::qualify` 判为计划内断开而排除，且 `site_incident_correlator`
+  要求 `min_affected_devices >= 2`，故该批事件由一个**用板端真实私钥 `edge_priv.pem`
+  签名**的上行批次注入。入口是真实签名链路（Ed25519 验签 + 真实 ingestion 路由 + 真实
+  持久化），但**不含一次现场物理断连**。从设备地址 `D0:62:2C:5F:BC:4D` /
+  `D0:96:EA:52:30:AC` 与 `btev_demo_*` 事件 ID 同理；其引用的 `nsnap-*`、`nblh-*` 行确实
+  真实存在于库中（会商 source_bindings 未悬空），但**不要**把它们当作现场实测设备。
+  真实 BLE 设备诊断见 incident
+  `sitinc_radxa-cubie-a7a_radxa-cubie-a7a_1791368937007`（`HIGH` /
+  `COEXISTENCE_RF_INTERFERENCE`）。
 - **真实 Council 会商脆弱性**：`recommendation_direction` 契约上限 1000 字符（schema 已写入 system prompt），模型仍会偶发超长 → `COUNCIL_SCHEMA_PARSE_FAILED` → fail-closed 409（10-07 五次会商中四次失败）；另有 `COUNCIL_MODEL_FAILED`（上游网关/网络抖动）。重跑 `?force=true` 通常可成功（10-08 实测 3 次中 1 次失败）。
 - **网关目录版本漂移防线已接通**：板端自述动作目录指纹（当前 `bdb093ac5310`）随无线事件上行；云端落库并进会商输入，不一致则 Policy 对**所有**提案 fail-closed（`catalog_version_mismatch`）、零审批行。缺失=不阻断。契约与真机演示记录见 `docs/网关动作目录版本契约.md`。注意：**上线新白名单/动作而网关未同步更新时会立刻全线拦截**——这正是设计意图，但发布顺序需先网网关、后云端。
 - **模型网关**已配置完成（`test_network_council_live.py` PASSED），Council 链路已跑过真实 incident（见上）。
