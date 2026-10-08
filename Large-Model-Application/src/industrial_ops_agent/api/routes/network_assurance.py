@@ -27,6 +27,7 @@ must happen against the bytes that actually arrived. See
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -1187,8 +1188,9 @@ async def post_network_council(
     try:
         view = council.request_council(identity.tenant_context, request_input, force=force)
     except CouncilFailure as exc:
-        import logging
-        logging.getLogger('industrial_ops_agent.network_assurance').error('COUNCIL_FAILURE: %s: %s', exc.failure_code, exc)
+        logging.getLogger("industrial_ops_agent.network_assurance").error(
+            "COUNCIL_FAILURE: %s: %s", exc.failure_code, exc
+        )
         raise AppError(
             status_code=409,
             code="network_council_failed",
