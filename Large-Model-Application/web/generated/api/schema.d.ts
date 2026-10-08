@@ -36941,9 +36941,7 @@ export interface operations {
     report_edge_action_results_api_v1_network_edge_action_results_post: {
         parameters: {
             query?: never;
-            header: {
-                "X-Edge-Tenant": string;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -37033,9 +37031,7 @@ export interface operations {
     ingest_edge_telemetry_api_v1_network_edge_telemetry_post: {
         parameters: {
             query?: never;
-            header: {
-                "X-Edge-Tenant": string;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };
@@ -37127,9 +37123,7 @@ export interface operations {
     ingest_edge_wireless_events_api_v1_network_edge_wireless_events_post: {
         parameters: {
             query?: never;
-            header: {
-                "X-Edge-Tenant": string;
-            };
+            header?: never;
             path?: never;
             cookie?: never;
         };

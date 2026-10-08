@@ -468,6 +468,13 @@ private:
 /// 无回滚语义），禁止把 identity / 凭据 / eBPF 路径放进事务。
 bool isTrialableKey(const std::string& key);
 
+/// TRIAL 白名单全量（字典序升序）。
+///
+/// 网关动作目录指纹要用到它：指纹必须覆盖"网关声称自己能执行什么、能改哪些键"，
+/// 所以白名单必须**整体可枚举**而不是只能逐个判定（见
+/// docs/网关动作目录版本契约.md）。顺序已排序，与云端 sorted(CONFIG_KEYS) 对应。
+const std::vector<std::string>& trialableKeyNames();
+
 /// 把某个 key 的当前值序列化成字符串（用于 prior_values 快照）。
 /// 不支持的 key 返回 false。
 bool snapshotMonitorParam(const WeakNetConfig& cfg, const std::string& key,

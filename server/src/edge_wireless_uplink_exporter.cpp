@@ -25,6 +25,7 @@
 #include <curl/curl.h>
 #endif
 
+#include "assurance/action_registry.hpp"
 #include "database_manager.hpp"
 #include "logger.hpp"
 #include "utils/json_escape.hpp"
@@ -115,6 +116,12 @@ std::string EdgeWirelessUplinkExporter::buildBody(const WirelessUplinkPayload& p
     std::ostringstream body;
     body << "{\"schema_version\":\"network.edge.wireless-events.v1\",";
     body << "\"device_id\":" << jsonStr(payload.device_id) << ",";
+    // 网关自述的动作目录指纹（见 docs/网关动作目录版本契约.md）。
+    // 目录内容在编译期由 ActionRegistry 构造函数固定，故只算一次；
+    // 两端不一致即部署版本漂移，Policy 会 fail-closed 拒绝该网关的一切动作。
+    static const std::string catalog_version =
+        weaknet::actionCatalogVersion(weaknet::ActionRegistry::defaultInstance());
+    body << "\"catalog_version\":" << jsonStr(catalog_version) << ",";
     body << "\"watermark_ms\":" << payload.watermark_ms << ",";
 
     body << "\"events\":[";

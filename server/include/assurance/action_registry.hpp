@@ -72,6 +72,21 @@ public:
         return (it != actions_.end()) ? &it->second : nullptr;
     }
 
+    /// 只读暴露整个目录（已按 action_id 升序排列）。
+    ///
+    /// 指纹必须覆盖"目录里到底有什么"，逐个查不足以表达"没有任何多余动作"，
+    /// 所以需要整体视图。容器本身有序，调用方可直接顺序序列化。
+    const std::map<std::string, ActionDef>& actions() const { return actions_; }
+
+    /// 默认目录的共享实例（内容由 registerDefaultActions 在构造时固定）。
+    ///
+    /// 供"只需要目录内容、不需要执行"的调用方使用（如上行指纹计算），
+    /// 免去每次构造一份。目录只在编译期注册，实例间内容恒等。
+    static const ActionRegistry& defaultInstance() {
+        static const ActionRegistry instance;
+        return instance;
+    }
+
     ActionValidationResult validate(const std::string& action_id,
                                     const std::map<std::string, std::string>& params) const {
         const auto* def = getAction(action_id);
@@ -342,5 +357,20 @@ private:
 
     std::map<std::string, ActionDef> actions_;
 };
+
+/// 动作目录内容指纹（SHA-256 前 12 位十六进制）。
+///
+/// 覆盖两部分：动作目录（action_id + 参数规范）与 TRIAL 配置键白名单——
+/// 即"网关声称自己能执行什么"。云端持有同算法、同规范 JSON 的实现
+/// （`edge_action_catalog.catalog_version()`），两侧指纹不等即部署版本漂移，
+/// 由 Policy fail-closed 拒绝执行（见 docs/网关动作目录版本契约.md）。
+///
+/// 实现在 action_registry.cpp，OpenSSL 类型不出现在本头文件。
+std::string actionCatalogVersion(const ActionRegistry& registry);
+
+/// 规范载荷（指纹的输入）。单独暴露是给跨端一致性测试用：
+/// 两端比对的是"逐字节相同的载荷"，而不只是"恰好相等的哈希"——
+/// 哈希相等而载荷不同的情况一旦出现，说明算法已经分叉。
+std::string actionCatalogCanonicalPayload(const ActionRegistry& registry);
 
 } // namespace weaknet

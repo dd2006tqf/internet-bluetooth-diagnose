@@ -48,6 +48,7 @@ from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.models import (
     NetworkCouncilContributionRecord,
     NetworkCouncilRecord,
+    NetworkGatewayCatalogVersionRecord,
     NetworkSiteIncidentRecord,
     NetworkWirelessEventRecord,
     SiteIncidentDiagnosisRecord,
@@ -147,7 +148,7 @@ class NetworkCouncilService:
         incident_id: str,
         *,
         risk_service: Any = None,
-        gateway_catalog_version: str = TOP_LEVEL_CATALOG_VERSION,
+        gateway_catalog_version: str | None = None,
         knowledge_cases: list[tuple[str, str]] | None = None,
         retrieval_strategy_version: str = "rag-v1",
     ) -> CouncilRequestInput:
@@ -159,6 +160,9 @@ class NetworkCouncilService:
           不影响可否会商）
         - 逐设备预测：受影响设备各取一次 L3 预测（``risk_service`` 注入时）；
           未注入或预测不可得时留空——预测是增强输入，不是召集前置
+        - 网关目录版本：``gateway_catalog_version`` 显式传入时以其为准（测试注入
+          漂移用）；未传时读网关**自述**版本（``network_gateway_catalog_versions``）。
+          两者皆无 → 回落 ``TOP_LEVEL_CATALOG_VERSION``（缺失不等于漂移）。
         """
         with self._database.transaction(context) as session:
             incident = session.scalars(
@@ -192,6 +196,18 @@ class NetworkCouncilService:
                 for row in rows:
                     if row.device_address and row.device_address not in device_addresses:
                         device_addresses.append(row.device_address)
+
+            # 网关自述的目录版本（漂移检测输入源）。缺失即"无漂移事实"，
+            # 不是"漂移"——把缺失当漂移会让旧固件全线阻断。
+            reported_catalog: str | None = None
+            gateway_key = incident.gateway_id or incident.asset_id
+            if gateway_key:
+                gateway_row = session.get(
+                    NetworkGatewayCatalogVersionRecord,
+                    (context.tenant_id, gateway_key),
+                )
+                if gateway_row is not None:
+                    reported_catalog = gateway_row.catalog_version
 
         # L3 预测：逐设备（DEVICE 级），可为空
         predictions: list[Any] = []
@@ -228,7 +244,10 @@ class NetworkCouncilService:
             prediction_evidence_ids=sorted(set(prediction_evidence_ids)),
             affected_assets=[incident.gateway_id or incident.asset_id],
             production_critical=False,
-            gateway_catalog_version=gateway_catalog_version,
+            # 显式传入（测试注入漂移）> 网关自述 > 云端目录（缺失不阻断）
+            gateway_catalog_version=(
+                gateway_catalog_version or reported_catalog or TOP_LEVEL_CATALOG_VERSION
+            ),
             knowledge_cases=knowledge_cases,
             retrieval_strategy_version=retrieval_strategy_version,
         )

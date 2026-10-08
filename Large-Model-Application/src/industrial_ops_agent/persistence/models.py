@@ -6033,6 +6033,28 @@ class NetworkActionOutcomeRecord(TenantScopedMixin, Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class NetworkGatewayCatalogVersionRecord(TenantScopedMixin, Base):
+    """网关自述的动作目录版本——Policy 漂移检测的输入源。
+
+    `action_policy` 的「云端审阅目录 != 网关宣称目录 → allowed=False」在
+    本表出现前**永不触发**：`build_request_from_tables()` 从不设置该值，
+    板端也从不上报。本表只记录"设备声称自己的 L5 可执行目录指纹是什么"
+    这一事实；是否拒绝仍由 Policy 按既有语义裁决。
+
+    每设备一行（覆盖式更新，保留最新认识）：``(tenant_id, device_id)`` 主键。
+    """
+
+    __tablename__ = "network_gateway_catalog_versions"
+
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id"), primary_key=True, nullable=False
+    )
+    device_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    catalog_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: 云端最近一次收到该设备自述版本的时刻（≠ created_at：重复上报只推进它）
+    reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class SiteIncidentDiagnosisRecord(TenantScopedMixin, Base):
     """【Phase 4b】区域无线事故诊断记录（独立于物理事实，支持版本演进与审计）。
 

@@ -14,12 +14,15 @@ the identical-replay behaviour the board's exporter depends on:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from industrial_ops_agent.domain import as_utc
 from industrial_ops_agent.network_assurance.service import (
     NetworkAssuranceConflict,
     NetworkAssuranceService,
@@ -38,6 +41,7 @@ from industrial_ops_agent.persistence.models import (
     NetworkDeviceBaselineHistoryRecord,
     NetworkDeviceBaselineRecord,
     NetworkEnvWindowRecord,
+    NetworkGatewayCatalogVersionRecord,
     NetworkSiteIncidentRecord,
     NetworkWirelessEventRecord,
 )
@@ -490,3 +494,89 @@ def test_baseline_change_appends_history_and_replay_is_idempotent(
         current = session.query(NetworkDeviceBaselineRecord).all()
         assert len(current) == 1
         assert current[0].baseline_rssi_dbm == -67
+
+
+# ---------------------------------------------------------------------------
+# 网关自述动作目录版本（漂移检测输入源，docs/网关动作目录版本契约.md）
+# ---------------------------------------------------------------------------
+
+
+def _catalog_rows(db: Database) -> list:
+    with Session(db.engine) as session:  # type: ignore[attr-defined]
+        return list(session.query(NetworkGatewayCatalogVersionRecord).all())
+
+
+def test_catalog_version_is_recorded_when_reported(
+    test_db: Database, tenant_context: TenantContext
+) -> None:
+    """设备自述版本 → 落库为事实（每设备一行）。"""
+
+    service = NetworkAssuranceService(test_db)
+    service.ingest_wireless_batch(
+        tenant_context, _batch(catalog_version="bdb093ac5310"), key_id=KEY_ID
+    )
+
+    rows = _catalog_rows(test_db)
+    assert len(rows) == 1
+    assert rows[0].device_id == DEVICE
+    assert rows[0].tenant_id == tenant_context.tenant_id
+    assert rows[0].catalog_version == "bdb093ac5310"
+    assert rows[0].reported_at is not None
+
+
+def test_catalog_version_absent_records_nothing(
+    test_db: Database, tenant_context: TenantContext
+) -> None:
+    """未上报 → 不写任何行。缺失不等于漂移，不得被记成一条漂移事实。"""
+
+    service = NetworkAssuranceService(test_db)
+    assert _batch().catalog_version is None
+    service.ingest_wireless_batch(tenant_context, _batch(), key_id=KEY_ID)
+
+    assert _catalog_rows(test_db) == []
+
+
+def test_catalog_version_replay_keeps_single_row(
+    test_db: Database, tenant_context: TenantContext
+) -> None:
+    """同值重放只推进 reported_at，不产生第二行（幂等重放不是新事实）。"""
+
+    service = NetworkAssuranceService(test_db)
+    batch = _batch(catalog_version="bdb093ac5310")
+    t1 = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
+    t2 = datetime(2026, 10, 8, 9, 5, tzinfo=UTC)
+    service.ingest_wireless_batch(tenant_context, batch, key_id=KEY_ID, received_at=t1)
+    service.ingest_wireless_batch(tenant_context, batch, key_id=KEY_ID, received_at=t2)
+
+    rows = _catalog_rows(test_db)
+    assert len(rows) == 1
+    assert rows[0].catalog_version == "bdb093ac5310"
+    # SQLite 剥离时区；用仓库既有 as_utc 归一后再比（PG 上是 tz-aware）
+    assert as_utc(rows[0].reported_at) == t2
+
+
+def test_catalog_version_change_updates_in_place(
+    test_db: Database, tenant_context: TenantContext
+) -> None:
+    """设备换目录（升级/降级）→ 覆盖式更新为最新事实，仍是一行。"""
+
+    service = NetworkAssuranceService(test_db)
+    service.ingest_wireless_batch(
+        tenant_context, _batch(catalog_version="bdb093ac5310"), key_id=KEY_ID
+    )
+    service.ingest_wireless_batch(
+        tenant_context, _batch(catalog_version="deadbeef0000"), key_id=KEY_ID
+    )
+
+    rows = _catalog_rows(test_db)
+    assert len(rows) == 1
+    assert rows[0].catalog_version == "deadbeef0000"
+
+
+def test_catalog_version_rejects_oversized_value() -> None:
+    """契约边界：1–64 字符；超长由 closed model 直接拒收。"""
+
+    with pytest.raises(ValidationError):
+        _batch(catalog_version="x" * 65)
+    with pytest.raises(ValidationError):
+        _batch(catalog_version="")

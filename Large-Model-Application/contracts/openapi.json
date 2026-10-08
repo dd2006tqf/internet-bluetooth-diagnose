@@ -70732,17 +70732,6 @@
     "/api/v1/network/edge/action-results": {
       "post": {
         "operationId": "report_edge_action_results_api_v1_network_edge_action_results_post",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "X-Edge-Tenant",
-            "required": true,
-            "schema": {
-              "title": "X-Edge-Tenant",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "204": {
             "description": "Successful Response"
@@ -70838,17 +70827,6 @@
       "post": {
         "description": "Accept a batch, tolerating replay after a lost acknowledgement.",
         "operationId": "ingest_edge_telemetry_api_v1_network_edge_telemetry_post",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "X-Edge-Tenant",
-            "required": true,
-            "schema": {
-              "title": "X-Edge-Tenant",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -70951,17 +70929,6 @@
       "post": {
         "description": "接受板端无线事实上行（Phase 4a 独立端点，决策 D1）。\n\n与遥测端点共享验签前置（`_read_verified_body`：先验签后解析，拒绝\n原因不回显），但幂等键分域：这里按 event_id / incident_id 计数，\n不看 network_epoch/sequence。重放是常态路径（板端游标在确认前不前移）。",
         "operationId": "ingest_edge_wireless_events_api_v1_network_edge_wireless_events_post",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "X-Edge-Tenant",
-            "required": true,
-            "schema": {
-              "title": "X-Edge-Tenant",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {

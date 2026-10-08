@@ -80,6 +80,7 @@ from industrial_ops_agent.persistence.models import (
     NetworkDeviceBaselineHistoryRecord,
     NetworkDeviceBaselineRecord,
     NetworkEnvWindowRecord,
+    NetworkGatewayCatalogVersionRecord,
     NetworkPendingActionRecord,
     NetworkSiteIncidentRecord,
     NetworkSnapshotRecord,
@@ -316,6 +317,10 @@ class NetworkAssuranceService:
             asset = self._ensure_uplink_asset(
                 session, context, device_id=batch.device_id, key_id=key_id
             )
+            self._record_gateway_catalog_version(
+                session, context, device_id=batch.device_id,
+                catalog_version=batch.catalog_version, observed_at=observed_at,
+            )
 
             accepted_events = 0
             duplicate_events = 0
@@ -530,6 +535,43 @@ class NetworkAssuranceService:
                 raise NetworkAssuranceConflict("device is registered to another tenant") from exc
         record.signing_key_id = key_id
         return record
+
+    def _record_gateway_catalog_version(
+        self,
+        session: Any,
+        context: TenantContext,
+        *,
+        device_id: str,
+        catalog_version: str | None,
+        observed_at: datetime,
+    ) -> None:
+        """记录网关自述的动作目录指纹（Policy 漂移检测的输入源）。
+
+        未上报（``None``）→ 不做任何写入，也**不视为漂移**：缺数据不等于漂移，
+        把缺失当漂移会让所有旧固件与排练环境被全线阻断。覆盖式更新保留最新事实；
+        同值的重复上报只推进 ``reported_at``（幂等重放不该产生新事实行）。
+        """
+
+        if not catalog_version:
+            return
+        existing = session.get(
+            NetworkGatewayCatalogVersionRecord, (context.tenant_id, device_id)
+        )
+        if existing is None:
+            session.add(
+                NetworkGatewayCatalogVersionRecord(
+                    tenant_id=context.tenant_id,
+                    device_id=device_id,
+                    catalog_version=catalog_version,
+                    reported_at=observed_at,
+                )
+            )
+            return
+        if existing.catalog_version != catalog_version:
+            # 设备换了目录（升级/降级）——事实演化，保留旧值不构成审计损失，
+            # 历史漂移判定由 Policy 裁决当时那一版，不需要额外历史表。
+            existing.catalog_version = catalog_version
+        existing.reported_at = observed_at
 
     def _open_incident_draft(
         self,

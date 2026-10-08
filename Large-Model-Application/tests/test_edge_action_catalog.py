@@ -24,6 +24,7 @@ import pytest
 from industrial_ops_agent.network_assurance.edge_action_catalog import (
     ACTION_CATALOG,
     CONFIG_KEYS,
+    TOP_LEVEL_CATALOG_VERSION,
     EdgeActionSpec,
     catalog_version,
     find_action,
@@ -169,6 +170,20 @@ def test_resolver_and_interface_allowed_values_are_the_reviewed_four_and_two() -
     assert iface is not None
     param = next(p for p in iface.params if p.name == "interface")
     assert sorted(param.allowed_values) == ["eth0", "wlan0"]
+
+
+def test_catalog_version_matches_cross_end_golden_vector() -> None:
+    """跨端金标：C++ 侧必须产出同一个值。
+
+    这里钉住具体值而非仅断言长度，是因为该指纹被**跨端比较**：网关自述的值
+    与云端不等即判定部署版本漂移，Policy 会 fail-closed 拒绝该网关上的一切
+    动作。C++ 侧由 server/test/unit/test_action_catalog_version_gtest.cpp
+    钉同一金标。任何一端改了目录、白名单或序列化规则而另一端没跟上，
+    两个测试中必有一个失败——而不是等到真机上才发现全线 403。
+    """
+
+    assert catalog_version() == "bdb093ac5310"
+    assert TOP_LEVEL_CATALOG_VERSION == "bdb093ac5310"
 
 
 def test_catalog_version_changes_when_content_changes() -> None:

@@ -15,13 +15,14 @@
 
 #include "weaknet_config.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <vector>
-#include <set>
 
 #include "utils/json_escape.hpp"
 
@@ -822,13 +823,24 @@ namespace {
 /// 我们序列化时已经保证（serializeMonitorParam 不产生这两字符）。
 const char kTxnStateFieldSep = '\t';
 
-bool isTrialableKeyImpl(const std::string& key) {
+}  // namespace
+
+/// TRIAL 白名单的**单一来源**：既可成员判定，也可整体枚举。
+///
+/// 必须整体可枚举，是因为网关要把它与动作目录一起算成内容指纹上报云端
+/// （见 docs/网关动作目录版本契约.md）——两处各写一份白名单必然漂移。
+///
+/// 返回的序列**已按字节序升序**，与云端 `sorted(CONFIG_KEYS)` 逐位对应。
+/// 原始声明刻意保留花括号初始化形态：跨端契约测试
+/// （tests/test_edge_action_catalog.py）按源码解析这段列表，改形态会让
+/// 那条防线静默失效——曾经改过一次并真的打断了它。
+const std::vector<std::string>& trialableKeyNames() {
     // 白名单只放"采样/超时/目标 IP"这类调参键。
     // 不放 identity（edge.url/token/device_id/key_id/tenant/private_key_path）
     // 不放 enabled（开关型参数可能直接关闭监控回路）
     // 不放 bpf_obj（eBPF 程序路径变化需要重启加载，不属于运行时事务）
     // 不放 active_probe.*（探测目标变更可能让探针失联）
-    static const std::set<std::string> trialable = {
+    static const std::vector<std::string> trialable = {
         "rtt.interval_ms", "rtt.interval", "rtt.timeout_ms", "rtt.timeout", "rtt.target",
         "rtt.window_size", "rtt.window",
         "rssi.interval_ms", "rssi.interval",
@@ -846,7 +858,20 @@ bool isTrialableKeyImpl(const std::string& key) {
         "skb_drop.interval_ms", "skb_drop.interval",
         "edge.interval_ms", "edge.interval", "edge.timeout_ms", "edge.timeout",
     };
-    return trialable.find(key) != trialable.end();
+    // 指纹与二分查找都要求有序：排序只作用于副本，原始声明保持可解析形态。
+    static const std::vector<std::string> sorted = [] {
+        std::vector<std::string> copy = trialable;
+        std::sort(copy.begin(), copy.end());
+        return copy;
+    }();
+    return sorted;
+}
+
+namespace {
+
+bool isTrialableKeyImpl(const std::string& key) {
+    const auto& trialable = trialableKeyNames();
+    return std::binary_search(trialable.begin(), trialable.end(), key);
 }
 
 /// 序列化某个 trialable key 的当前值（用于 prior_values 快照）。

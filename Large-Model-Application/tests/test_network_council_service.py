@@ -270,3 +270,142 @@ def test_council_tables_have_no_approval_or_execution_columns(test_db: Database)
         col["name"] for col in inspector.get_columns("network_council_contributions")
     }
     assert "approved_by" not in contributions
+
+
+# ---------------------------------------------------------------------------
+# 网关自述目录版本 → 会商输入（接通 Policy 漂移检测的输入源）
+# ---------------------------------------------------------------------------
+
+
+def _seed_incident(
+    db: Database, ctx: TenantContext, *, gateway_id: str = "radxa-cubie-a7a"
+) -> str:
+    """写一条最小 incident（builder 只读它与其证据回链）。"""
+
+    from industrial_ops_agent.persistence.models import NetworkSiteIncidentRecord
+
+    incident_id = "sitinc_catalog_probe_1"
+    with db.transaction(ctx) as session:
+        session.add(
+            NetworkSiteIncidentRecord(
+                incident_id=incident_id,
+                tenant_id=ctx.tenant_id,
+                asset_id=gateway_id,
+                site_id=gateway_id,
+                gateway_id=gateway_id,
+                started_at_ms=1_700_000_000_000,
+                last_event_ms=1_700_000_001_000,
+                affected_devices=0,
+                state="OPEN",
+                evidence_event_ids_json=[],
+            )
+        )
+    return incident_id
+
+
+def _seed_catalog_version(
+    db: Database, ctx: TenantContext, version: str, *, device_id: str = "radxa-cubie-a7a"
+) -> None:
+    """写网关自述版本（等价于板端上行携带 catalog_version 后的落库结果）。"""
+
+    from datetime import UTC, datetime
+
+    from industrial_ops_agent.persistence.models import (
+        NetworkGatewayCatalogVersionRecord,
+    )
+
+    with db.transaction(ctx) as session:
+        session.add(
+            NetworkGatewayCatalogVersionRecord(
+                tenant_id=ctx.tenant_id,
+                device_id=device_id,
+                catalog_version=version,
+                reported_at=datetime.now(UTC),
+            )
+        )
+
+
+def test_builder_uses_gateway_reported_catalog_version(
+    test_db: Database, context: TenantContext
+) -> None:
+    """核心接通：网关自述版本必须流入会商输入（此前恒为默认值）。"""
+
+    service = NetworkCouncilService(test_db, NetworkCouncilRunner(complete=CountingComplete()))
+    incident_id = _seed_incident(test_db, context)
+    _seed_catalog_version(test_db, context, "deadbeef0000")
+
+    built = service.build_request_from_tables(context, incident_id)
+
+    assert built.gateway_catalog_version == "deadbeef0000"
+
+
+def test_builder_falls_back_to_cloud_catalog_when_gateway_silent(
+    test_db: Database, context: TenantContext
+) -> None:
+    """未上报 → 回落云端目录。缺失不等于漂移，绝不阻断。"""
+
+    service = NetworkCouncilService(test_db, NetworkCouncilRunner(complete=CountingComplete()))
+    incident_id = _seed_incident(test_db, context)
+
+    built = service.build_request_from_tables(context, incident_id)
+
+    assert built.gateway_catalog_version == TOP_LEVEL_CATALOG_VERSION
+
+
+def test_builder_explicit_argument_wins_over_reported(
+    test_db: Database, context: TenantContext
+) -> None:
+    """显式传入（测试注入漂移）优先于自述值，保持既有测试契约。"""
+
+    service = NetworkCouncilService(test_db, NetworkCouncilRunner(complete=CountingComplete()))
+    incident_id = _seed_incident(test_db, context)
+    _seed_catalog_version(test_db, context, "deadbeef0000")
+
+    built = service.build_request_from_tables(
+        context, incident_id, gateway_catalog_version="cat-injected"
+    )
+
+    assert built.gateway_catalog_version == "cat-injected"
+
+
+def test_reported_drift_blocks_policy_end_to_end(
+    test_db: Database, context: TenantContext
+) -> None:
+    """端到端：网关自述漂移版本 → Policy fail-closed（allowed=False、零审批）。"""
+
+    from industrial_ops_agent.network_assurance.action_policy import decide_proposal
+    from industrial_ops_agent.network_assurance.council_contracts import (
+        ActionProposal,
+        ActionProposalKind,
+    )
+    from industrial_ops_agent.network_assurance.network_action_approval import (
+        proposal_digest as _digest,
+    )
+
+    service = NetworkCouncilService(test_db, NetworkCouncilRunner(complete=CountingComplete()))
+    incident_id = _seed_incident(test_db, context)
+    _seed_catalog_version(test_db, context, "deadbeef0000")
+
+    built = service.build_request_from_tables(context, incident_id)
+    proposal = ActionProposal(
+        kind=ActionProposalKind.ACTION_ID,
+        action_id="CHECK_RESOLVER_CONFIG",
+        rationale="漂移场景下的提案",
+        proposed_preconditions=[],
+        # 契约要求提案必须带来源绑定（≥1）——漂移拒收发生在目录比对，
+        # 与来源绑定无关，所以这里给一条最小合法绑定即可。
+        source_bindings=[
+            {"kind": "CANONICAL_DIAGNOSIS", "ref_id": "sha256:drift-probe"}
+        ],
+    )
+    decision = decide_proposal(
+        proposal,
+        proposal_digest=_digest(proposal),
+        target_gateway="radxa-cubie-a7a",
+        production_critical=False,
+        gateway_catalog_version=built.gateway_catalog_version,
+    )
+
+    assert decision.allowed is False
+    assert decision.block_reason is not None
+    assert "catalog_version_mismatch" in decision.block_reason

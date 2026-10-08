@@ -360,6 +360,10 @@ class WirelessEventUplinkBatch(_ClosedModel):
     incidents: list[IncidentView] = Field(default_factory=list)
     baselines: list[BaselineView] = Field(default_factory=list)
     env_window: EnvironmentWindowView | None = None
+    #: 网关自述的动作目录指纹（见 docs/网关动作目录版本契约.md）。可选：
+    #: 未上报保持 ``None``，Policy 回落既有"无漂移事实"语义——缺数据不等于漂移，
+    #: 若把缺失当漂移会让所有旧固件与排练环境被全线阻断。
+    catalog_version: str | None = Field(default=None, min_length=1, max_length=64)
 
     @model_validator(mode="after")
     def _enforce_batch_limits(self) -> Self:
