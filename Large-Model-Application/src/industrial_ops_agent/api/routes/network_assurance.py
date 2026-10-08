@@ -225,6 +225,39 @@ def _bad_request(code: str) -> AppError:
     )
 
 
+def _edge_tenant_id(request: Request, verifier: EdgeTelemetryVerifier) -> str:
+    """Resolve the tenant for one device submission, server side first.
+
+    The ``X-Edge-Tenant`` header is fully device-controlled: trusting it
+    outright lets any provisioned device write into any tenant by editing
+    one header. When the deployment binds the trust anchor to a tenant
+    (``network_edge_telemetry_tenant_id``), that configured value is the
+    authority — a disagreeing header is rejected as a provisioning bug or a
+    spoof attempt, and an absent header is fine. The header only keeps
+    deciding when no binding is configured (multi-tenant anchors and
+    rehearsals), preserving existing deployments.
+
+    Called *after* signature verification so the header comparison happens
+    on authenticated requests only.
+    """
+
+    bound = verifier.tenant_id
+    if bound is not None:
+        claimed = request.headers.get("X-Edge-Tenant")
+        if claimed is not None and claimed != bound:
+            raise AppError(
+                status_code=403,
+                code="edge_tenant_mismatch",
+                category="authorization",
+                message="Edge device tenant does not match the configured trust anchor",
+            )
+        return bound
+    claimed = request.headers.get("X-Edge-Tenant")
+    if claimed is None:
+        raise _bad_request("edge_tenant_invalid")
+    return claimed
+
+
 # ----------------------------------------------------------------------
 # Device-facing endpoints
 # ----------------------------------------------------------------------
@@ -240,7 +273,6 @@ async def ingest_edge_telemetry(
     request: Request,
     verifier: Annotated[EdgeTelemetryVerifier, Depends(get_edge_telemetry_verifier)],
     service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
-    tenant_id: Annotated[str, Header(alias="X-Edge-Tenant")],
 ) -> EdgeTelemetryAcceptedResponse:
     """Accept a batch, tolerating replay after a lost acknowledgement."""
 
@@ -269,7 +301,7 @@ async def ingest_edge_telemetry(
 
     try:
         context = TenantContext(
-            tenant_id=tenant_id,
+            tenant_id=_edge_tenant_id(request, verifier),
             subject_id=edge_subject_id(batch.snapshots[0].device_id),
         )
     except ValueError as exc:
@@ -302,7 +334,6 @@ async def ingest_edge_wireless_events(
     request: Request,
     verifier: Annotated[EdgeTelemetryVerifier, Depends(get_edge_telemetry_verifier)],
     service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
-    tenant_id: Annotated[str, Header(alias="X-Edge-Tenant")],
 ) -> WirelessEventIngestResult:
     """接受板端无线事实上行（Phase 4a 独立端点，决策 D1）。
 
@@ -333,7 +364,7 @@ async def ingest_edge_wireless_events(
 
     try:
         context = TenantContext(
-            tenant_id=tenant_id,
+            tenant_id=_edge_tenant_id(request, verifier),
             subject_id=edge_subject_id(batch.device_id),
         )
     except ValueError as exc:
@@ -360,7 +391,6 @@ async def report_edge_action_results(
     request: Request,
     verifier: Annotated[EdgeTelemetryVerifier, Depends(get_edge_telemetry_verifier)],
     service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
-    tenant_id: Annotated[str, Header(alias="X-Edge-Tenant")],
 ) -> Response:
     raw = await _read_verified_body(request, verifier)
     try:
@@ -374,10 +404,13 @@ async def report_edge_action_results(
             details={"errors": exc.error_count()},
         ) from exc
 
-    context = TenantContext(
-        tenant_id=tenant_id,
-        subject_id=edge_subject_id(results.device_id),
-    )
+    try:
+        context = TenantContext(
+            tenant_id=_edge_tenant_id(request, verifier),
+            subject_id=edge_subject_id(results.device_id),
+        )
+    except ValueError as exc:
+        raise _bad_request("edge_tenant_invalid") from exc
     service.record_action_results(context, results)
     return Response(status_code=204)
 

@@ -195,6 +195,18 @@ class Settings(BaseSettings):
     network_edge_telemetry_public_key_pem: str | None = None
     network_edge_telemetry_public_key_b64: str | None = None
     network_edge_telemetry_device_token: str | None = None
+    #: Server-side tenant binding for the edge trust anchor. When set, every
+    #: ``/edge/...`` endpoint derives its tenant from this setting instead of
+    #: the ``X-Edge-Tenant`` header, and rejects a disagreeing header: the
+    #: tenant stops being a value the device can edit at will. When unset,
+    #: the header still decides (multi-tenant anchor / rehearsal setups), so
+    #: this stays backward compatible with existing deployments.
+    network_edge_telemetry_tenant_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+    )
     #: A device is reported OFFLINE after this long with no accepted upload.
     #: Must comfortably exceed the edge reporting interval (default 10s) so
     #: ordinary transient loss does not read as a device outage.

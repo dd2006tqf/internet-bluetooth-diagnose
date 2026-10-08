@@ -182,6 +182,7 @@ def create_runtime_app(settings: Settings | None = None) -> FastAPI:
             public_key_pem=public_key_pem,
             key_id=resolved.network_edge_telemetry_key_id,
             device_token=device_token,
+            tenant_id=resolved.network_edge_telemetry_tenant_id,
         )
     database = Database(database_url.reveal())
     cache = RedisTenantCache.from_url(resolved.redis_url)

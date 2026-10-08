@@ -227,6 +227,7 @@ struct DnsMonitor::Impl {
     bool has_last_counters = false;
     uint64_t last_lost_events = 0;
     weaknet::DnsTransactionTracker* drain_tracker = nullptr;
+    weaknet::DnsTransactionTracker* last_tracker = nullptr;
 };
 
 static void on_dns_event(void* ctx, int /*cpu*/, void* data, __u32 size) {
@@ -547,7 +548,7 @@ DnsAggStats DnsMonitor::getStats() {
     auto started = std::chrono::steady_clock::now();
     __u32 key = 0;
     dns_stats_record stats = {};
-    if (bpf_map_lookup_elem(impl_->dns_stats_fd, &key, &stats) == 0) {
+    if (bpf_map_lookup_elem(impl_->dns_stats_fd, &key, &stats) == 0 && stats.total_queries > 0) {
         auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - started).count();
         stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed));
@@ -560,6 +561,41 @@ DnsAggStats DnsMonitor::getStats() {
             ? (stats.total_latency_ns / stats.total_responses / 1000000)
             : 0;
         result.maxLatencyMs = stats.max_latency_ns / 1000000;
+    } else if (impl_->last_tracker) {
+        // 单源重构后 BPF 侧 dns_queries/dns_stats 已无写入者；权威数据由 Tracker 维护。
+        // 用 getRecentTerminals 获取最近终态事务做指标聚合，只读不推进窗口基线，
+        // 避免消耗主线评估的 Observer 质量统计。
+        auto terminals = impl_->last_tracker->getRecentTerminals(200);
+        auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        stateSupport_.recordReadSuccess(static_cast<uint64_t>(elapsed));
+        result.totalQueries = terminals.size();
+        double sum = 0.0;
+        double max_val = 0.0;
+        uint64_t lat_count = 0;
+        for (const auto& rec : terminals) {
+            if (rec.state == weaknet::DnsTransactionState::NOERROR ||
+                rec.state == weaknet::DnsTransactionState::NXDOMAIN) {
+                result.totalResponses++;
+                if (rec.state == weaknet::DnsTransactionState::NOERROR) {
+                    sum += rec.latency_ms;
+                    if (rec.latency_ms > max_val) max_val = rec.latency_ms;
+                    lat_count++;
+                }
+            } else if (rec.state == weaknet::DnsTransactionState::TIMEOUT_EXPIRED) {
+                result.totalTimeouts++;
+            } else if (rec.state == weaknet::DnsTransactionState::SERVFAIL ||
+                       rec.state == weaknet::DnsTransactionState::REFUSED) {
+                result.totalResponses++;
+                result.totalErrors++;
+            } else {
+                result.totalResponses++;
+            }
+        }
+        if (lat_count > 0) {
+            result.avgLatencyMs = static_cast<uint64_t>(sum / lat_count);
+            result.maxLatencyMs = static_cast<uint64_t>(max_val);
+        }
     } else if (errno == ENOENT) {
         // 条目尚未创建（窗口期内无 DNS 流量）——“暂无数据”不是监控故障，
         // 记为一次成功读取并返回零值，避免把空闲期误报成持续读取错误。
@@ -617,6 +653,7 @@ double DnsMonitor::getTimeoutRate() {
 size_t DnsMonitor::drainEvents(weaknet::DnsTransactionTracker* tracker) {
     if (!tracker || !impl_->events) return 0;
     impl_->drain_tracker = tracker;
+    impl_->last_tracker = tracker;
     impl_->drain_stats.poll_calls++;
 
     // Drain the whole backlog, not just one poll pass. A burst of syscalls can

@@ -58,6 +58,8 @@ SiteIncident(板端事实)
 ```jsonc
 // POST /api/v1/network/edge/wireless-events
 // Headers: X-Edge-Key-Id / X-Edge-Token / X-Edge-Tenant / X-Edge-Signature（复用 EdgeTelemetryVerifier）
+// X-Edge-Tenant 为设备申报值；若部署配置了 IOAP_NETWORK_EDGE_TELEMETRY_TENANT_ID，
+// 服务端以配置租户为准，申报不一致直接 403 edge_tenant_mismatch（详见 3.1 租户绑定条目）
 // 签名覆盖发送字节（与遥测同一不变式）
 {
   "schema_version": "network.edge.wireless-events.v1",
@@ -79,7 +81,9 @@ SiteIncident(板端事实)
 - 幂等：`events` 按 `event_id` **ON CONFLICT DO NOTHING**（不可变事实）；
   `incidents` 按 `incident_id` **UPSERT**（state/last_event/resolved_at 会演化）；
   `baselines` 按复合键 UPSERT（与板端同策略）。
-- 租户绑定：复用 `X-Edge-Tenant` + 设备归属冲突检查（409 语义与遥测一致）。
+- 租户绑定：服务端绑定优先（`network_edge_telemetry_tenant_id` 配置存在时以
+  配置租户为准，`X-Edge-Tenant` 仅作一致性校验，不一致 403 `edge_tenant_mismatch`；
+  未配置时回退旧表头语义）+ 设备归属冲突检查（409 语义与遥测一致）。
 - 重试：失败保留在板端游标之后重发；云端幂等使其安全。
 
 ### 3.2 云端四张表（alembic `0090_weaknet_wireless_ingestion`）

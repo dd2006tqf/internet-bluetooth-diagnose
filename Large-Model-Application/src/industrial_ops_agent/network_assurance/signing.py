@@ -99,6 +99,7 @@ class EdgeTelemetryVerifier:
         *,
         key_id: str,
         device_token: str,
+        tenant_id: str | None = None,
     ) -> None:
         if not key_id or len(key_id) > MAX_KEY_ID_LENGTH:
             raise ValueError("network_edge_key_id_invalid")
@@ -108,6 +109,12 @@ class EdgeTelemetryVerifier:
             raise ValueError("network_edge_device_token_too_long")
         self._public_key = public_key
         self.key_id = key_id
+        #: Server-side tenant binding for this trust anchor. ``None`` leaves
+        #: the tenant decision to the request (see the routes); a set value
+        #: is authoritative and overrides any ``X-Edge-Tenant`` header, so a
+        #: provisioned device cannot write into a tenant it does not belong
+        #: to by editing a header.
+        self.tenant_id = tenant_id
         # Stored as bytes: comparison happens against the raw header value so
         # that a token with trailing whitespace is a mismatch rather than a
         # silently trimmed success.
@@ -120,11 +127,13 @@ class EdgeTelemetryVerifier:
         public_key_pem: str,
         key_id: str,
         device_token: str,
+        tenant_id: str | None = None,
     ) -> EdgeTelemetryVerifier:
         return cls(
             load_ed25519_public_key(public_key_pem),
             key_id=key_id,
             device_token=device_token,
+            tenant_id=tenant_id,
         )
 
     def token_fingerprint(self, presented: bytes) -> str:
