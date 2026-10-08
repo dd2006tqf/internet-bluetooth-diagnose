@@ -239,7 +239,8 @@ sudo systemctl restart cloud-tunnel.service
 
 - **演示二/三的完整 e2e 链**（incident → diagnosis → council → proposal → approval → pending_action → outcome）已用**真实蓝牙断连事件**跑通上游：`network_wireless_events`/`network_site_incidents`/`site_incident_diagnoses` 均有真实行（2 台 BLE 设备亚秒级同步断开 → `COEXISTENCE_RF_INTERFERENCE` 诊断）。
 - **远端腿（CONFIG_CHANGE → REMOTE_PENDING_ACTION）需可控 fixture**：真实模型在超时类 incident 上只产出 `ACTION_ID`（写死映射 `ACTION_ID → MANUAL_RUNBOOK`），2026-10-08 三次真实会商（attempt 1 失败 / attempt 2、3 成功）均未产出 `CONFIG_CHANGE`。当前库中唯一的 REMOTE 链是**人工注入的 fixture**：`proposal_id='ncouncil-10d3ed70cf6749b1-remote-config'`（`proposal_index=10`、`proposal_digest` 为占位串 `sha256:remote-config-digest`、不在 council 落库的 `proposals_json` 内）。**不要把该链当作真实 Council 闭环证据**。
-- **真实 Council 会商脆弱性**：`recommendation_direction` 契约上限 1000 字符（schema 已写入 system prompt），模型仍会偶发超长 → `COUNCIL_SCHEMA_PARSE_FAILED` → fail-closed 409（10-07 五次会商中四次失败）。重跑 `?force=true` 通常可成功。
+- **真实 Council 会商脆弱性**：`recommendation_direction` 契约上限 1000 字符（schema 已写入 system prompt），模型仍会偶发超长 → `COUNCIL_SCHEMA_PARSE_FAILED` → fail-closed 409（10-07 五次会商中四次失败）；另有 `COUNCIL_MODEL_FAILED`（上游网关/网络抖动）。重跑 `?force=true` 通常可成功（10-08 实测 3 次中 1 次失败）。
+- **网关目录版本漂移防线已接通**：板端自述动作目录指纹（当前 `bdb093ac5310`）随无线事件上行；云端落库并进会商输入，不一致则 Policy 对**所有**提案 fail-closed（`catalog_version_mismatch`）、零审批行。缺失=不阻断。契约与真机演示记录见 `docs/网关动作目录版本契约.md`。注意：**上线新白名单/动作而网关未同步更新时会立刻全线拦截**——这正是设计意图，但发布顺序需先网网关、后云端。
 - **模型网关**已配置完成（`test_network_council_live.py` PASSED），Council 链路已跑过真实 incident（见上）。
 - **排练身份**当前为正式生产最小权限 `{AFTER_SALES_ENGINEER}`；临时的 `TENANT_ADMIN` 已收回（`MANAGE_NETWORK_DEVICE` 仅在该角色名单上，故 direct queue `/network/assets/{id}/actions` 与 `POST /network/copilot/config` 现在返回 403，属预期）。
 - **`start_platform.sh`** 是遗留的一键拉起脚本，拉起的是 `compose.lite.yaml` 全套微服务栈（PostgreSQL/Keycloak/Vault/Temporal/Web 等）。当前实际生产入口是 `rehearsal_server.py`，两者不冲突但用途不同：前者是完整开发环境，后者是生产/排练切片。
