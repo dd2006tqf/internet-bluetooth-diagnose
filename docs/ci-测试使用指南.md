@@ -21,7 +21,7 @@
 4. 远程运行功能测试（health/get/eBPF/指标/历史）
 5. 生成报告到 `ci-reports/`
 
-> **单元测试不在开发板上跑**。39 个 gtest 套件的归属是 x86：
+> **单元测试不在开发板上跑**。48 个 gtest 套件的归属是 x86：
 > `ctest --test-dir build-x86/server`（本地，也是 `.ai-harness/project-profile.json`
 > 的 `test-all` 命令）与 GitHub Actions。板端只部署 `test_ebpf`
 > （需要 root + 内核 eBPF，只能真机跑），由 `weaknet-test-full.sh` 的 Phase 11 执行。
@@ -39,7 +39,7 @@
 只在本地容器内编译并打包 `dist-arm64/`，不部署到开发板。
 
 > 注意：`ci.sh` **不在本地跑单元测试**。本地跑单测请直接用
-> `ctest --test-dir build-x86/server`（x86，47 个套件）或容器内
+> `ctest --test-dir build-x86/server`（x86，48 个套件）或容器内
 > `ctest --test-dir build-arm64/server`。
 
 ### 完整参数列表
@@ -91,7 +91,7 @@ ci-reports/
 
 ## 测试覆盖
 
-### 单元测试（47 个套件）
+### 单元测试（48 个套件）
 
 跑法：`ctest --test-dir build-x86/server --output-on-failure`
 
@@ -143,6 +143,7 @@ ci-reports/
 | test_bpf_map_sizing_gtest | BPF map 容量测算（fixed/auto 模式与钳制） |
 | test_map_sizing_spec_sync_gtest | map sizing 规格表与 BPF 源码常量同步校验 |
 | test_per_key_counter_tracker_gtest | 按键计数器追踪（新增/增长/重置差分） |
+| test_action_catalog_version_gtest | 动作目录指纹跨端金标与白名单有序性（漂移检测输入源） |
 
 ### 功能测试
 
@@ -173,6 +174,47 @@ tools/
 ci-reports/
 └── ci_<时间戳>.txt          # 测试报告（不入 git）
 ```
+
+## GitHub Actions 作业结构
+
+**只有仓库根 `.github/workflows/` 会被 GitHub 注册执行。** 实测查询
+`/actions/workflows` 确认当前生效的只有两个：
+
+| workflow | 文件 | 触发 |
+|---|---|---|
+| CI | `.github/workflows/ci.yml` | push / PR |
+| ARM64 Build & Deploy | `.github/workflows/build-and-deploy.yml` | 手动 `workflow_dispatch` + release |
+
+`CI` 含三个作业：
+
+| 作业 | 内容 |
+|---|---|
+| 静态规范检查 | CRLF/非法字符、受限二进制、`tools/verify_telemetry_contract.py --strict` |
+| 云端 Python 测试与连接路径静态检查 | `pytest tests/ -q -m "not live"` + `ruff 连接路径门禁` |
+| x86 编译与全量单元测试 | `cmake -B build-x86 -DBUILD_EBPF=OFF` + `ctest` |
+
+### ⚠️ `Large-Model-Application/.github/workflows/` 是不生效的
+
+`Large-Model-Application/` 下另有一份 `ci.yml`（name `M1 CI`），含
+`generate_openapi.sh --check` 与 `generate_openapi_client.sh --check`
+两道契约漂移门禁。但 GitHub Actions **只扫描仓库根目录**的
+`.github/workflows/`，嵌套目录里的 workflow 文件会被直接忽略——即使它
+`on: pull_request` 也不会运行。
+
+**后果与注意事项：**
+
+- 该文件里声明的门禁（OpenAPI 契约漂移、client 生成漂移、`secret-scan` 等）
+  **在 CI 中从未执行**；push/PR 都不会因为契约漂移而变红。
+- 这不代表可以不管契约：本地仍应主动跑
+  `bash Large-Model-Application/scripts/generate_openapi.sh --check`
+  与 `generate_openapi_client.sh --check`，否则 web 端类型、OpenAPI 文档
+  会与后端静默脱节。
+- 若要让这些门禁真正生效，需把作业提升到仓库根 workflow（属独立改动，
+  需先评估执行成本与密钥/目录约定）。
+
+> 参考：2026-10-08 一次实际踩坑——排查 CI 变红时曾误以为上述契约门禁在跑，
+> 实际红的是根 `CI` 的 `ruff 连接路径门禁`（`network_assurance.py` 一行超长
+> E501）。两条线索都在同一个 push 上，容易混淆。
 
 ## 常见问题
 
