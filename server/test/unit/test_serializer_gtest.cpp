@@ -86,21 +86,6 @@ TEST_F(SerializerTest, Int32RoundTrip) {
     }
 }
 
-// Test 4: File serialization round-trip (Get reply)
-TEST_F(SerializerTest, GetReplyFileRoundTrip) {
-    std::string path = tmpFile("getreply.bin");
-    std::string err;
-
-    ASSERT_TRUE(serializeGetReplyToFile("test reply 123", path, &err))
-        << "Error: " << err;
-
-    std::string reply;
-    ASSERT_TRUE(deserializeGetReplyFromFile(path, &reply, &err))
-        << "Error: " << err;
-
-    EXPECT_EQ(reply, "test reply 123");
-}
-
 // Test 5: Changed signal payload file serialization round-trip
 TEST_F(SerializerTest, ChangedPayloadFileRoundTrip) {
     std::string path = tmpFile("changed.bin");
@@ -137,8 +122,8 @@ TEST_F(SerializerTest, OffsetOverflow) {
 // Test 8: Non-existent file read should fail
 TEST_F(SerializerTest, NonexistentFile) {
     std::string err;
-    std::string reply;
-    EXPECT_FALSE(deserializeGetReplyFromFile("/tmp/weaknet_nonexistent_file.bin", &reply, &err));
+    ChangedPayload payload;
+    EXPECT_FALSE(deserializeChangedPayloadFromFile("/tmp/weaknet_nonexistent_file.bin", &payload, &err));
 }
 
 // Test 9: Sequential serialization of multiple values

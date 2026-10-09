@@ -365,23 +365,6 @@ public:
     }
 
     /**
-     * @brief 读取服务端通过序列化文件留下的最新网络接口状态（离线模式）
-     *
-     * 不发起 D-Bus 调用，直接反序列化本地文件。
-     * @param result   输出：序列化文件内容
-     * @param errorMsg 输出：错误描述
-     */
-    bool getLatestFromFile(std::string& result, std::string& errorMsg) {
-        std::string file_err;
-        if (deserializeGetReplyFromFile(kGetReplySerializedFile, &result, &file_err)) {
-            return true;
-        } else {
-            errorMsg = std::string("读取序列化文件失败: ") + file_err;
-            return false;
-        }
-    }
-
-    /**
      * @brief 调用 Ping 方法，让服务端对指定主机执行 ICMP Ping
      *
      * D-Bus 调用：
@@ -1378,24 +1361,6 @@ extern "C" bool weaknet_health_check(char* result_buffer, size_t result_size, ch
         return true;
     } else {
         LOG_ERROR(LogModule::CLIENT, "weaknet_health_check: failed: " << errorMsg);
-        snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
-        return false;
-    }
-}
-
-/** @brief C 接口包装：从序列化文件读取最新状态（离线模式，不发起 D-Bus 调用） */
-extern "C" bool weaknet_get_from_file(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
-    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-    if (!g_client) {
-        snprintf(error_buffer, error_size, "客户端未初始化");
-        return false;
-    }
-
-    std::string result, errorMsg;
-    if (g_client->getLatestFromFile(result, errorMsg)) {
-        snprintf(buffer, buffer_size, "%s", result.c_str());
-        return true;
-    } else {
         snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
         return false;
     }

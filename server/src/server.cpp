@@ -179,7 +179,7 @@ DBusConnection* init_dbus(ServerContext* ctx) {
     // 指针已保存至 ctx
 
     ctx->connection = conn;
-    LOG_INFO(LogModule::DBUS, "DBus 服务端已启动，接口 " << kInterface << "，方法 " << kMethodGet << "，信号 " << kSignalChanged);
+    LOG_INFO(LogModule::DBUS, "DBus 服务端已启动，接口 " << kInterface << "，方法 " << kMethodListInterfaces << "，信号 " << kSignalChanged);
     return conn;
 }
 

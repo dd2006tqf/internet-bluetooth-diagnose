@@ -3,7 +3,7 @@
  * @brief DBus 服务层实现：方法分发、信号发送、载荷持久化
  *
  * 本文件实现 DbusService 类，作为 WeakNet 服务与外部世界交互的唯一入口。
- * 上层通过它暴露 29 个 DBus 方法（Get、ListInterfaces、HealthCheck、Ping、
+ * 上层通过它暴露 28 个 DBus 方法（ListInterfaces、HealthCheck、Ping、
  * GetBluetoothDevices、GetEbpfMonitorHealth、GetHistory、SetMonitorParam、
  * EnableMonitor 等），同时向外发送
  * Changed / NetworkQualityChanged 等 DBus 信号。
@@ -89,10 +89,6 @@ DbusService::DbusService(ServerContext* ctx) : ctx_(ctx) {}
 static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage* msg, void* user_data) {
     auto* self = reinterpret_cast<DbusService*>(user_data);
     if (!self) return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
-    if (dbus_message_is_method_call(msg, kInterface, kMethodGet)) {
-        self->handleGet(conn, msg);
-        return DBUS_HANDLER_RESULT_HANDLED;
-    }
     if (dbus_message_is_method_call(msg, kInterface, kMethodListInterfaces)) {
         self->handleListInterfaces(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
@@ -313,52 +309,6 @@ bool DbusService::emitChanged(const std::string& message, int32_t counter) {
 }
 
 // MessageHandler 实现已移动到静态自由函数（见文件顶部 MessageHandlerStatic）
-
-/**
- * @brief DBus 方法实现：Get —— 健康检查接口，返回固定字符串
- * @param conn DBus 连接
- * @param msg 接收到的方法调用消息
- * @return true 回复发送成功
- *
- * 同时将回复内容序列化到 kGetReplySerializedFile，便于非 DBus 客户端读取。
- */
-bool DbusService::handleGet(DBusConnection* conn, DBusMessage* msg) {
-    LOG_INFO(LogModule::DBUS, "handleGet called");
-    const char* reply_text = "Hello from WeakNet Server";
-    DBusMessage* reply = dbus_message_new_method_return(msg);
-    if (!reply) {
-        LOG_ERROR(LogModule::DBUS, "handleGet: failed to create reply");
-        return false;
-    }
-    DBusMessageIter args;
-    dbus_message_iter_init_append(reply, &args);
-    const char* s = reply_text;
-    if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s)) {
-        LOG_ERROR(LogModule::DBUS, "handleGet: failed to append message");
-        dbus_message_unref(reply);
-        // 参数追加失败时，主动发送一个错误回复，让客户端收到明确的失败原因
-        DBusMessage* error_reply = dbus_message_new_error(msg, "com.example.WeakNet.Error", "Failed to append message");
-        if (error_reply) {
-            dbus_connection_send(conn, error_reply, nullptr);
-            dbus_connection_flush(conn);
-            dbus_message_unref(error_reply);
-        }
-        return false;
-    }
-    if (!dbus_connection_send(conn, reply, nullptr)) {
-        LOG_ERROR(LogModule::DBUS, "handleGet: failed to send reply");
-        dbus_message_unref(reply);
-        return false;
-    }
-    dbus_connection_flush(conn);
-    dbus_message_unref(reply);
-
-    // 契约保证：将回复持久化到离线序列化文件，供 weaknet_get_from_file 读取
-    std::string err;
-    serializeGetReplyToFile(reply_text, kGetReplySerializedFile, &err);
-
-    return true;
-}
 
 /**
  * @brief 内部辅助：向调用方返回 string 数组

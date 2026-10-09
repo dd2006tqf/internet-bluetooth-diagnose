@@ -78,14 +78,6 @@ bool deserializeInt32(const std::vector<uint8_t>& buffer, size_t& offset, int32_
 
 // ==================== 高层封装 ====================
 
-/**
- * @brief 将 Get 方法回复序列化到文件
- *
- * 文件格式: [magic 'WNDS'][u32 version=1][u32 len][string bytes]
- */
-bool serializeGetReplyToFile(const std::string& reply, const std::string& filepath, std::string* error_message);
-bool deserializeGetReplyFromFile(const std::string& filepath, std::string* out_reply, std::string* error_message);
-
 /// Changed 信号的文件持久化版本（同 magic + version 头）
 bool serializeChangedPayloadToFile(const ChangedPayload& payload, const std::string& filepath, std::string* error_message);
 bool deserializeChangedPayloadFromFile(const std::string& filepath, ChangedPayload* out_payload, std::string* error_message);

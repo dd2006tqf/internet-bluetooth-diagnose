@@ -108,7 +108,6 @@ public:
     // ---------- 方法实现（供静态分发函数调用） ----------
 
     // 基础查询方法
-    bool handleGet(DBusConnection* conn, DBusMessage* msg);                  ///< Get: 返回服务标识字符串
     bool handleListInterfaces(DBusConnection* conn, DBusMessage* msg);       ///< ListInterfaces: 返回网卡名数组
     bool handleHealthCheck(DBusConnection* conn, DBusMessage* msg);          ///< HealthCheck: 执行完整健康检查
     bool handleGetDiagnosis(DBusConnection* conn, DBusMessage* msg);         ///< GetDiagnosis: 返回端侧确定性机器诊断事实 JSON

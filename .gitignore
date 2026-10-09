@@ -31,7 +31,6 @@ logs/
 # 运行时序列化文件
 *.bin
 signal_changed.bin
-get_reply.bin
 
 # Python
 __pycache__/

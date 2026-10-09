@@ -2,8 +2,7 @@
  * @file serializer.cpp
  * @brief 简单的二进制序列化/反序列化 + 安全文件持久化
  *
- * 本文件提供一组手写的序列化原语（string、int32）以及两个便捷封装：
- *   - serializeGetReplyToFile / deserializeGetReplyFromFile       : 持久化 Get 方法回复
+ * 本文件提供一组手写的序列化原语（string、int32）以及便捷封装：
  *   - serializeChangedPayloadToFile / deserializeChangedPayloadFromFile : 持久化 Changed 信号载荷
  *
  * 设计思路：
@@ -283,33 +282,6 @@ bool deserializeInt32(const std::vector<uint8_t>& buffer, size_t& offset, int32_
     std::memcpy(&out_value, buffer.data() + offset, sizeof(int32_t));
     offset += sizeof(int32_t);
     return true;
-}
-
-/**
- * @brief 便捷封装：将 Get 方法回复序列化为文件
- * @param reply         回复字符串
- * @param filepath      目标文件路径
- * @param error_message [out] 错误描述
- * @return true 写入成功
- */
-bool serializeGetReplyToFile(const std::string& reply, const std::string& filepath, std::string* error_message) {
-    std::vector<uint8_t> buf;
-    serializeString(reply, buf);
-    return writeBufferToFile(buf, filepath, error_message);
-}
-
-/**
- * @brief 便捷封装：从文件反序列化 Get 方法回复
- * @param filepath      源文件路径
- * @param out_reply     [out] 解析出的回复字符串
- * @param error_message [out] 错误描述
- * @return true 读取成功
- */
-bool deserializeGetReplyFromFile(const std::string& filepath, std::string* out_reply, std::string* error_message) {
-    std::vector<uint8_t> buf;
-    if (!readFileToBuffer(filepath, &buf, error_message)) return false;
-    size_t off = 0;
-    return deserializeString(buf, off, *out_reply);
 }
 
 /**

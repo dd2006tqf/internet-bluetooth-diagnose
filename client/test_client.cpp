@@ -148,8 +148,7 @@ bool testBasicFunctions() {
 /**
  * @brief 网络接口信息获取测试
  *
- * 测试 GetInterfaces、HealthCheck 两个 D-Bus Method，
- * 以及从序列化文件读取的离线路径。
+ * 测试 GetInterfaces、HealthCheck 两个 D-Bus Method 等查询能力。
  */
 bool testNetworkInfo() {
     TEST_CASE("网络接口信息获取");
@@ -177,13 +176,6 @@ bool testNetworkInfo() {
     TEST_API_CALL(weaknet_execute_action, "CHECK_RESOLVER_CONFIG", "", "", buffer, sizeof(buffer), error, sizeof(error));
     printf("   ⚡ 动作执行: %s\n", buffer);
 
-    // weaknet_get_from_file —— 离线模式，不发起 D-Bus 调用，直接读取服务端序列化文件
-    if (weaknet_get_from_file(buffer, sizeof(buffer), error, sizeof(error))) {
-        printf("   📄 文件内容: %s\n", buffer);
-    } else {
-        printf("   ℹ️  文件读取: %s\n", error);
-    }
-    
     return true;
 }
 
@@ -731,16 +723,6 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
             return false;
         }
     }
-    // ===== file =====
-    // 离线模式，不发起 D-Bus 调用，直接读取服务端序列化文件
-    else if (command == "file") {
-        if (weaknet_get_from_file(buffer, sizeof(buffer), error, sizeof(error))) {
-            printf("✅ 文件中的状态: %s\n", buffer);
-        } else {
-            printf("❌ 读取文件失败: %s\n", error);
-            return false;
-        }
-    }
     // ===== ping HOSTNAME =====
     // D-Bus Method: Ping(STRING hostname) → STRING
     // 需要 argc >= 3，argv[2] 为目标主机名
@@ -988,7 +970,6 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
  *   get                      - 获取当前网络接口列表（GetInterfaces）
  *   health                   - 网络健康检查（HealthCheck）
  *   ebpf-health              - eBPF 监控器健康快照（GetEbpfMonitorHealth）
- *   file                     - 从序列化文件读取最新状态（离线模式）
  *   ping HOSTNAME            - Ping 指定主机（Ping 方法，需要第二个参数）
  *   check                    - 单次非阻塞检查 Changed 信号
  *   subscribe                - 持续监听 Changed 信号（最多 5 分钟）
@@ -1030,7 +1011,6 @@ int main(int argc, char* argv[]) {
         printf("  %s http-latency           - 获取 HTTP 事务延迟统计 (TTFB)\n", argv[0]);
         printf("  %s profiling              - 获取进程网络流量画像\n", argv[0]);
         printf("  %s history [IFACE]        - 查询网络历史监控记录\n", argv[0]);
-        printf("  %s file                   - 从文件读取最新状态\n", argv[0]);
         printf("  %s ping HOSTNAME          - Ping指定主机\n", argv[0]);
         printf("  %s check                  - 单次检查变化\n", argv[0]);
         printf("  %s subscribe              - 持续监听网络变化\n", argv[0]);

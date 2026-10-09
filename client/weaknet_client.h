@@ -140,21 +140,6 @@ bool weaknet_get_interfaces(char* buffer, size_t buffer_size, char* error_buffer
 bool weaknet_health_check(char* result_buffer, size_t result_size, char* error_buffer, size_t error_size);
 
 /**
- * @brief 从序列化文件读取最新状态（离线模式）
- *
- * 不发起 D-Bus 调用，直接读取服务端写入的序列化文件。
- * 适用于服务端未运行但文件仍在的离线场景。
- *
- * @param buffer      结果缓冲区，将存储文件中的内容
- * @param buffer_size 缓冲区大小
- * @param error_buffer 错误信息缓冲区（调用失败时写入）
- * @param error_size   错误缓冲区大小
- * @return true  - 读取成功
- * @return false - 文件不存在或读取失败
- */
-bool weaknet_get_from_file(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
-
-/**
  * @brief Ping 指定主机（通过当前上网网卡）
  *
  * 通过 D-Bus 调用 Ping 方法，让服务端执行 ICMP Ping 并返回

@@ -28,7 +28,6 @@ static constexpr const char kInterface[]    = "com.example.WeakNet"; ///< 接口
 // 每个方法对应 DbusService 中一个 handleXxx 成员函数实现
 // 客户端通过 dbus_message_new_method_call(..., kMethodXxx) 发起调用
 
-static constexpr const char kMethodGet[]                    = "Get";                ///< 示例方法：返回服务标识字符串（调试用）
 static constexpr const char kMethodListInterfaces[]          = "ListInterfaces";      ///< 返回所有可用接口名的字符串数组
 static constexpr const char kMethodGetInterfaces[]           = "GetInterfaces";      ///< ListInterfaces 的同义名（向后兼容）
 static constexpr const char kMethodHealthCheck[]            = "HealthCheck";        ///< 执行网络健康检查，返回 JSON 格式诊断结果
@@ -106,12 +105,6 @@ inline const std::string kDefaultTrafficInterface = []() {
 inline const std::string kSignalSerializedFile = []() {
     const char* xdg = std::getenv("XDG_RUNTIME_DIR");
     return std::string(xdg ? xdg : "/tmp") + "/weaknet/signal_changed.bin";
-}();
-
-/// Get 方法回复序列化输出文件路径（同安全策略）
-inline const std::string kGetReplySerializedFile = []() {
-    const char* xdg = std::getenv("XDG_RUNTIME_DIR");
-    return std::string(xdg ? xdg : "/tmp") + "/weaknet/get_reply.bin";
 }();
 
 }  // namespace weaknet_dbus
