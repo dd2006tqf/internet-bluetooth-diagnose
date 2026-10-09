@@ -56,6 +56,7 @@ from sqlalchemy.orm import Session
 
 from industrial_ops_agent.domain import as_utc
 from industrial_ops_agent.network_assurance.contracts import (
+    NetworkActionOutcome,
     NetworkActionResults,
     NetworkAssetDetail,
     NetworkAssetSummary,
@@ -738,6 +739,14 @@ class NetworkAssuranceService:
             also has none (v1 compatibility window).
           - Terminal states: once APPLIED, REJECTED, or ROLLBACK, a record is
             never re-updated.
+          - Unknown ``action_id`` carrying ``config_key`` is a **locally
+            initiated** change (no queue row exists): it is recorded as a
+            separate ``LOCAL_OPERATION`` fact rather than dropped. Unknown ids
+            *without* ``config_key`` stay dropped, as before — they cannot be
+            described (watchdog sentinels, ids from a purged queue).
+
+        Returns the number of L1 facts written (queued actions' terminal
+        transitions plus locally initiated ones).
         """
 
         now = as_utc(received_at or datetime.now(UTC))
@@ -745,7 +754,13 @@ class NetworkAssuranceService:
         with self._database.transaction(context) as session:
             for outcome in results.results:
                 record = session.get(NetworkPendingActionRecord, outcome.action_id)
-                if record is None or record.asset_id != results.device_id:
+                if record is None:
+                    if self._record_local_outcome(
+                        session, context, results.device_id, outcome, now
+                    ):
+                        updated += 1
+                    continue
+                if record.asset_id != results.device_id:
                     continue
                 if record.status in ("APPLIED", "REJECTED", "ROLLBACK"):
                     continue
@@ -799,6 +814,78 @@ class NetworkAssuranceService:
                 )
                 updated += 1
         return updated
+
+    def _record_local_outcome(
+        self,
+        session: Session,
+        context: TenantContext,
+        device_id: str,
+        outcome: NetworkActionOutcome,
+        now: datetime,
+    ) -> bool:
+        """把一次**板端本机发起**的配置变更落成 L1 事实（LOCAL_OPERATION）。
+
+        与队列路径的差别是根本性的：本机调参从不进 ``network_pending_actions``，
+        所以既没有 pending 行可更新，也没有 proposal/approval 可填。载荷只能由
+        回执自带（``config_key``/``config_value``），没有它们就无从描述这次变更——
+        此时按历史语义丢弃（``watchdog-*`` 之类的 sentinel 回执也落在这条分支）。
+
+        丢与不丢的判据是"能不能被描述"，不是"有没有审批"：本地改动是真实发生的
+        人工作业，云端此前只能看见 ``config_generation`` 跳一次，改了什么完全失明，
+        于是同一份事实在运维视角里既不在 L4 也不在 L1——这才是要补的洞。
+
+        幂等：``(tenant_id, pending_action_id)`` 唯一约束是最终保证，此处先查一次，
+        让"响应丢失→重发"这一常态路径走 0 行而不是撞约束抛 IntegrityError（后者
+        会把整批回执连同同批的队列结果一起回滚）。
+        """
+
+        # 载荷缺失 = 无法描述 → 维持"未知 action_id 丢弃"的既有语义。
+        if not outcome.config_key:
+            return False
+
+        existing = session.execute(
+            select(NetworkActionOutcomeRecord.outcome_id).where(
+                NetworkActionOutcomeRecord.tenant_id == context.tenant_id,
+                NetworkActionOutcomeRecord.pending_action_id == outcome.action_id,
+            )
+        ).first()
+        if existing is not None:
+            return False
+
+        session.add(
+            NetworkActionOutcomeRecord(
+                outcome_id=f"nout-{uuid4().hex}",
+                tenant_id=context.tenant_id,
+                # 没有 pending 行，本机生成的 id 就是执行实例身份（nlocal-*）。
+                pending_action_id=outcome.action_id,
+                asset_id=device_id,
+                proposal_id=None,
+                approval_id=None,
+                execution_origin="LOCAL_OPERATION",
+                action_snapshot={
+                    "config_key": outcome.config_key,
+                    "config_value": outcome.config_value,
+                    "generation": outcome.generation,
+                },
+                # 与队列路径同一算法，两个来源的 digest 可直接比较。
+                action_payload_digest=(
+                    "sha256:"
+                    + hashlib.sha256(
+                        f"{outcome.config_key}\x00{outcome.config_value or ''}".encode()
+                    ).hexdigest()
+                ),
+                status=outcome.status,
+                result_detail=outcome.detail[:1024],
+                completed_at=now,
+                recorded_at=now,
+            )
+        )
+        LOGGER.debug(
+            "recorded local config change as L1 fact: asset=%s key=%s origin=LOCAL_OPERATION",
+            device_id,
+            outcome.config_key,
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Queries

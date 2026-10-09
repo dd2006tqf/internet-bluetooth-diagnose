@@ -1726,6 +1726,17 @@ bool DbusService::handleSetMonitorParam(DBusConnection* conn, DBusMessage* msg) 
 
     LOG_INFO(LogModule::DBUS, "SetMonitorParam applied: " << key << " = " << value);
 
+    // 本地调参同样是一条 L1 事实，且是唯一一条"未经云端队列"的写入路径：
+    // 云端没有 network_pending_actions 记录可关联，只能由回执自带
+    // key/value/generation，才能落成一行 execution_origin=LOCAL_OPERATION 的
+    // outcome，与云端下发动作同表可查（否则本地改动在云端只表现为
+    // config_generation 跳变，无从判断改了什么）。
+    // 放在成功分支之后——上面失败处均已 return，能走到这里状态确实已变更。
+    if (ctx_ && ctx_->edge_exporter) {
+        ctx_->edge_exporter->emitLocalConfigChange(
+            key, value, "local_dbus_set", ctx_->cfg.config_generation.load());
+    }
+
     // 返回成功
     DBusMessage* reply = dbus_message_new_method_return(msg);
     if (!reply) return false;

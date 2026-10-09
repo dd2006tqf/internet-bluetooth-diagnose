@@ -23,6 +23,8 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
+#include <random>
 #include <sstream>
 #include <utility>
 
@@ -126,6 +128,18 @@ std::string formatRfc3339Utc(int64_t epoch_ms) {
         return "1970-01-01T00:00:00.000Z";
     }
     return std::string(buf, static_cast<size_t>(written));
+}
+
+/// 生成 16 位小写 hex 随机串（本地变更回执的 action_id 后缀）。
+///
+/// 每次调用都是**新事件**：同一 key 后续再改要落成另一行 L1 事实，因此
+/// 不能用 (key,value) 派生——否则服务端的 (tenant, pending_action_id)
+/// 唯一约束会把"改两次同值"当成重发吞掉。
+std::string randomHex16() {
+    static thread_local std::mt19937_64 gen{std::random_device{}()};
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0') << std::setw(16) << gen();
+    return oss.str();
 }
 
 /// 极简 JSON 字段提取：取 `"key":` 之后的字符串字面量值。
@@ -701,7 +715,9 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
 void EdgeTelemetryExporter::queueActionResult(const std::string& action_id, const char* status,
                                                const std::string& detail,
                                                const std::string& claim_token,
-                                               uint64_t generation) {
+                                               uint64_t generation,
+                                               const std::string& config_key,
+                                               const std::string& config_value) {
     EdgeActionResultRecord rec;
     rec.action_id = action_id;
     rec.status = status;
@@ -719,6 +735,12 @@ void EdgeTelemetryExporter::queueActionResult(const std::string& action_id, cons
     body << "\"detail\":\"" << weaknet_utils::escapeJsonString(detail) << "\",";
     body << "\"claim_token\":\"" << weaknet_utils::escapeJsonString(claim_token) << "\",";
     body << "\"generation\":" << generation << ",";
+    // 仅本地变更携带：云端下发的动作由服务端从 network_pending_actions 回读
+    // key/value，两处来源同时写会互相打架。空串 = 不写该字段。
+    if (!config_key.empty()) {
+        body << "\"config_key\":\"" << weaknet_utils::escapeJsonString(config_key) << "\",";
+        body << "\"config_value\":\"" << weaknet_utils::escapeJsonString(config_value) << "\",";
+    }
     body << "\"reported_at\":\"" << formatRfc3339Utc(now_ms) << "\"}]}";
     rec.body = body.str();
 
@@ -735,6 +757,27 @@ void EdgeTelemetryExporter::queueActionResult(const std::string& action_id, cons
         pending_action_results_.push_back(std::move(rec));
     }
     cv_.notify_one();
+}
+
+void EdgeTelemetryExporter::emitLocalConfigChange(const std::string& key,
+                                                  const std::string& value,
+                                                  const std::string& detail,
+                                                  uint32_t config_generation) {
+    // 契约上限（与 service 端 NetworkPendingActionRecord 的 String(128)/
+    // String(512) 对齐）。超限的**整批** action-results 会被 422 拒掉，把
+    // 同批其它回执一起拖下水，所以宁可本端截断也不能让上游拒收。
+    static constexpr size_t kMaxKey = 128;
+    static constexpr size_t kMaxValue = 512;
+    std::string key_c = key.substr(0, kMaxKey);
+    std::string value_c = value.substr(0, kMaxValue);
+    if (key.size() > kMaxKey || value.size() > kMaxValue) {
+        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                    "本地调参回执超契约长度已截断: key=" << key_c
+                    << " (key_len=" << key.size() << " value_len=" << value.size() << ")");
+    }
+
+    queueActionResult("nlocal-" + randomHex16(), "APPLIED", detail, "",
+                      config_generation, key_c, value_c);
 }
 
 bool EdgeTelemetryExporter::tickWatchdog(std::chrono::steady_clock::time_point now) const {

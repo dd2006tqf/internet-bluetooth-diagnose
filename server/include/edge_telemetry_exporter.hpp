@@ -177,6 +177,26 @@ public:
     void emitRollbackReceipt(const std::string& reason);
 
     /**
+     * @brief 把一次**本地**配置变更作为 L1 事实回执入队。
+     *
+     * 与 applyPendingActions 的区别：那些动作由云端下发、云端持有
+     * network_pending_actions 记录，回执只需带 action_id/claim_token；本地
+     * 调参（D-Bus SetMonitorParam，即 weaknet-cli set）完全不经云端队列，
+     * 云端没有任何记录可关联，因此回执必须自带 config_key/config_value
+     * 才能被描述成一行 L1 outcome（execution_origin=LOCAL_OPERATION）。
+     *
+     * action_id 取 `nlocal-` 前缀，与云端队列的 id 空间显式分开。
+     * 每次调用生成全新 id：同一 key 后续再改是**另一次**变更，不是重发。
+     *
+     * 仅在变更**已成功写入**后调用——未生效的本地写不改变设备状态，不构成事实。
+     *
+     * @param config_generation 变更后的 config_generation（弱网下云端只能从
+     *        快照读到代次，本字段让它能与具体 key/value 对齐）。
+     */
+    void emitLocalConfigChange(const std::string& key, const std::string& value,
+                               const std::string& detail, uint32_t config_generation);
+
+    /**
      * @brief 在 TRIAL 到期时根据最新快照决定 commit 或 rollback。
      *
      * 由 exporter 的 run() 主循环调用；传入的 latest_snapshot 是当前
@@ -199,6 +219,13 @@ public:
     /// 返回 true 表示需要调用方处理（deadline 已过且仍在 TRIAL）。
     bool tickWatchdog(std::chrono::steady_clock::time_point now) const;
 
+    /// 当前等待回传的动作结果条数。测试用来确认一条本机回执确实被序列化
+    /// 并入队；生产路径不做观察性消费（统计请走 stats()）。
+    size_t pendingActionResultCount() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return pending_action_results_.size();
+    }
+
 private:
     void run();
 
@@ -218,10 +245,15 @@ private:
     /// 序列化并签名一条动作结果，暂存到待回传队列。
     /// status 为服务端契约终态："APPLIED" | "REJECTED" | "ROLLBACK"。
     /// claim_token/generation 是 v2 契约字段，v1 设备可填空。
+    /// config_key/config_value 仅在**本地**变更（云端无 pending_action 记录）
+    /// 时传入并写进报文；云端下发的动作由服务端从队列表回读，此处保持空串
+    /// 以免两处来源打架。
     void queueActionResult(const std::string& action_id, const char* status,
                            const std::string& detail,
                            const std::string& claim_token = "",
-                           uint64_t generation = 0);
+                           uint64_t generation = 0,
+                           const std::string& config_key = "",
+                           const std::string& config_value = "");
 
     /// 把待回传的动作结果上报到 /edge/action-results；返回是否全部送达。
     bool transmitActionResults(std::string* error);

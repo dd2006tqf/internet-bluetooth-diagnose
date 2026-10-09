@@ -13,11 +13,9 @@ Verifies Evolution 2 invariant guarantees:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
 
 import pytest
 
-from industrial_ops_agent.domain import as_utc
 from industrial_ops_agent.network_assurance.contracts import (
     NetworkActionOutcome,
     NetworkActionResults,
@@ -36,6 +34,7 @@ from industrial_ops_agent.persistence.tenant import TenantContext
 def test_db() -> Database:
     from sqlalchemy import create_engine
     from sqlalchemy.pool import StaticPool
+
     from industrial_ops_agent.persistence.models import Base
 
     # StaticPool keeps the same in-memory DB connection open across transactions
@@ -399,3 +398,111 @@ class TestExecutionOrigin:
         assert outcome.execution_origin == "COUNCIL_APPROVED"
         assert outcome.proposal_id == "ncprop-x-a1-0"
         assert outcome.approval_id == "ncapp-x"
+
+
+class TestLocalOperationOutcomes:
+    """板端本机调参（weaknet-cli set → D-Bus SetMonitorParam）→ LOCAL_OPERATION。
+
+    与队列路径的根本差别：本机改动从不进 network_pending_actions——云端既无
+    pending 行可更新，也没有 proposal/approval 可填。它**是真实发生的事实**，
+    此前云端只能看到 config_generation 跳变，改了什么完全失明。本类固化那条
+    回执通道的判据与语义（迁移 0097）。
+    """
+
+    def _send(self, service, tenant, device, outcome: NetworkActionOutcome) -> int:
+        results = NetworkActionResults(
+            schema_version="network.edge.action-results.v2",
+            device_id=device,
+            results=[outcome],
+        )
+        return service.record_action_results(tenant, results)
+
+    def _outcome(self, test_db, tenant, act_id) -> NetworkActionOutcomeRecord:
+        with test_db.transaction(tenant) as session:
+            rows = session.query(NetworkActionOutcomeRecord).all()
+        return next(r for r in rows if r.pending_action_id == act_id)
+
+    def test_local_change_recorded_as_local_operation(
+        self, test_db: Database, service: NetworkAssuranceService, tenant: TenantContext
+    ) -> None:
+        _provision_asset(test_db, tenant, "edge-1")
+
+        n = self._send(
+            service, tenant, "edge-1",
+            NetworkActionOutcome(
+                action_id="nlocal-0123456789abcdef",
+                status="APPLIED",
+                detail="local_dbus_set",
+                claim_token="",
+                generation=3,
+                config_key="rssi.interval",
+                config_value="5000",
+                reported_at=datetime.now(UTC),
+            ),
+        )
+        assert n == 1
+
+        outcome = self._outcome(test_db, tenant, "nlocal-0123456789abcdef")
+        assert outcome.execution_origin == "LOCAL_OPERATION"
+        assert outcome.proposal_id is None
+        assert outcome.approval_id is None
+        assert outcome.asset_id == "edge-1"
+        assert outcome.action_snapshot == {
+            "config_key": "rssi.interval",
+            "config_value": "5000",
+            "generation": 3,
+        }
+        # 与队列路径同一 digest 算法，跨来源可比较
+        import hashlib
+
+        expected = "sha256:" + hashlib.sha256(b"rssi.interval\x005000").hexdigest()
+        assert outcome.action_payload_digest == expected
+
+    def test_unknown_id_without_key_still_dropped(
+        self, test_db: Database, service: NetworkAssuranceService, tenant: TenantContext
+    ) -> None:
+        """未知 action_id 且回执无 key/value → 维持"丢弃"的既有语义。
+
+        `watchdog-*` 这类 sentinel 回执就落在这一支（看 emitRollbackReceipt），
+        不能被本特性改变行为。
+        """
+        _provision_asset(test_db, tenant, "edge-1")
+
+        n = self._send(
+            service, tenant, "edge-1",
+            NetworkActionOutcome(
+                action_id="watchdog-1728510060000",
+                status="ROLLBACK",
+                detail="watchdog_timeout_no_snapshot",
+                claim_token="",
+                generation=0,
+                reported_at=datetime.now(UTC),
+            ),
+        )
+        assert n == 0
+        with test_db.transaction(tenant) as session:
+            assert session.query(NetworkActionOutcomeRecord).count() == 0
+
+    def test_duplicate_local_report_idempotent(
+        self, test_db: Database, service: NetworkAssuranceService, tenant: TenantContext
+    ) -> None:
+        """弱网下响应丢失→重发是常态：同一 action_id 重复回执只留一行。"""
+        _provision_asset(test_db, tenant, "edge-1")
+        outcome = NetworkActionOutcome(
+            action_id="nlocal-deadbeefcafe0001",
+            status="APPLIED",
+            detail="local_dbus_set",
+            claim_token="",
+            generation=4,
+            config_key="rtt.interval",
+            config_value="10s",
+            reported_at=datetime.now(UTC),
+        )
+
+        assert self._send(service, tenant, "edge-1", outcome) == 1
+        assert self._send(service, tenant, "edge-1", outcome) == 0
+
+        with test_db.transaction(tenant) as session:
+            rows = session.query(NetworkActionOutcomeRecord).all()
+        assert len(rows) == 1
+        assert rows[0].pending_action_id == "nlocal-deadbeefcafe0001"

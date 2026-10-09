@@ -343,6 +343,12 @@ class NetworkActionOutcome(_ClosedModel):
       - ``status`` now accepts ``ROLLBACK`` (watchdog timeout or health failure)
       - ``claim_token`` binds the ack to the specific claim that produced it
       - ``generation`` is the per-device monotonic sequence assigned at issue
+      - ``config_key`` / ``config_value`` describe a **locally initiated**
+        change (``action_id`` prefixed ``nlocal-``): the gateway changed its
+        own config over D-Bus without ever entering the cloud queue, so there
+        is no ``network_pending_actions`` row to read the payload back from
+        and the ack has to carry it. Omitted for cloud-issued actions, where
+        the queue row remains the authoritative source.
     """
 
     action_id: str = Field(min_length=1, max_length=128)
@@ -350,6 +356,8 @@ class NetworkActionOutcome(_ClosedModel):
     detail: str = Field(default="", max_length=1024)
     claim_token: str = Field(default="", max_length=128)
     generation: int = Field(default=0, ge=0)
+    config_key: str | None = Field(default=None, max_length=128)
+    config_value: str | None = Field(default=None, max_length=512)
     reported_at: datetime
 
     @field_validator("reported_at")

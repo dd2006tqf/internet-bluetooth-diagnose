@@ -6012,6 +6012,11 @@ class NetworkActionOutcomeRecord(TenantScopedMixin, Base):
             "status IN ('APPLIED', 'REJECTED', 'ROLLBACK')",
             name="ck_network_action_outcome_status",
         ),
+        CheckConstraint(
+            "execution_origin IN "
+            "('COUNCIL_APPROVED', 'MANUAL_OPERATION', 'LOCAL_OPERATION')",
+            name="ck_network_action_outcome_origin",
+        ),
     )
 
     outcome_id: Mapped[str] = mapped_column(String(128), primary_key=True)
@@ -6022,9 +6027,11 @@ class NetworkActionOutcomeRecord(TenantScopedMixin, Base):
     #: L4 决策链 provenance（手工路径为 NULL——事实，不是"不安全"的判断）
     proposal_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     approval_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    #: 执行来源事实（迁移 0096）。COUNCIL_APPROVED = 经 Council→Policy→Approval
-    #: 链；MANUAL_OPERATION = 运维经 direct queue 直发。**只是来源，不是 Policy
-    #: 判断**——COUNCIL_APPROVED 不表示动作安全，MANUAL_OPERATION 不表示不安全。
+    #: 执行来源事实（迁移 0096，闭集在 0097 放开）。COUNCIL_APPROVED = 经
+    #: Council→Policy→Approval 链；MANUAL_OPERATION = 运维经 direct queue 直发；
+    #: LOCAL_OPERATION = 板端本机 D-Bus 调参，从未进过云端队列（回执自带
+    #: config_key/config_value）。**只是来源，不是 Policy 判断**——COUNCIL_APPROVED
+    #: 不表示动作安全，LOCAL_OPERATION 也不表示不安全，只表示"没走审批链"。
     #: 显式物化是为了让查询不必靠 proposal_id 的 NULL 反推来源。
     execution_origin: Mapped[str] = mapped_column(String(32), nullable=False)
     #: 实际下发载荷的快照与哈希（执行实例的不可变记录）

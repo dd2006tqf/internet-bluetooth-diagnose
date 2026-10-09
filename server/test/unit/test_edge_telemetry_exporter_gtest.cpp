@@ -17,7 +17,16 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <string>
+#include <vector>
+
+#ifdef WEAKNET_HAVE_TLS
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #include "assurance/edge_telemetry_serializer.hpp"
 #include "assessment_snapshot.hpp"
@@ -416,6 +425,104 @@ TEST(EdgeTelemetryPendingActions, MissingGenerationFailsClosed) {
     EXPECT_EQ(cfg.rtt.interval_ms.load(), 10000u);
     EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::STABLE);
     EXPECT_EQ(exporter.stats().actions_rejected, 1u);
+}
+
+// ---------------------------------------------------------------------------
+// 本地调参 → L1 事实回执（execution_origin=LOCAL_OPERATION 的板端半侧）
+//
+// 判据：本机调参不进云端队列，云端没有 pending_action 可关联，于是回执必须
+// 自带 config_key/config_value。此处固化一点：**emitLocalConfigChange 真的
+// 产生了一条**入队回执（而不是被前置校验丢掉，或被 signBody 丢回）。
+//
+// 密钥处理：以真实 Ed25519 私钥（由 EVP_PKEY_keygen 在测试内生成）走通
+// 签名+入队的完整路径——而不是把"签名失败→丢弃"当成可观察产出。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// 生成临时 Ed25519 密钥 PEM，返回路径；失败返回空串。
+/// 用 mkstemp 避免对全局 /tmp 中同名文件的假设；调用方负责 unlink。
+/// 用 EVP_PKEY_keygen 生成**真实**密钥——测试不验证签名算法本身，但要求
+/// 签名确实跑通（让"丢弃"路径可见）。
+std::string makeScopedTempKeyPath() {
+#ifdef WEAKNET_HAVE_TLS
+    std::string tmpl = "/tmp/gtest_edge_priv_XXXXXX";
+    std::vector<char> buf(tmpl.begin(), tmpl.end());
+    buf.push_back('\0');
+    int fd = mkstemp(buf.data());
+    if (fd < 0) return {};
+    std::string path = buf.data();
+
+    EVP_PKEY* key = nullptr;
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr);
+    if (ctx && EVP_PKEY_keygen_init(ctx) > 0 && EVP_PKEY_keygen(ctx, &key) > 0) {
+        FILE* fp = fdopen(fd, "w");
+        if (fp) {
+            PEM_write_PrivateKey(fp, key, nullptr, nullptr, 0, nullptr, nullptr);
+            fclose(fp);
+            fd = -1;
+        }
+    }
+    if (ctx) EVP_PKEY_CTX_free(ctx);
+    if (key) EVP_PKEY_free(key);
+    if (fd >= 0) { close(fd); unlink(path.c_str()); return {}; }
+    return path;
+#else
+    return {};
+#endif  // WEAKNET_HAVE_TLS
+}
+
+}  // namespace
+
+TEST(EdgeTelemetryPendingActions, LocalConfigChangeEnqueuesResult) {
+    // 取一个有效密钥路径：若有 OpenSSL 就现场生成一个临时密钥；
+    // 否则跳过本测试（签名路径在逻辑上不可验证）。
+    const std::string key_path = makeScopedTempKeyPath();
+    if (key_path.empty()) {
+        GTEST_SKIP() << "无法生成临时 Ed25519 密钥（测试环境缺 OpenSSL）";
+    }
+    struct Cleanup { ~Cleanup() { unlink(path_.c_str()); } std::string path_; } cleanup{key_path};
+
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.edge.enabled.store(true);
+    cfg.edge.url.set("http://example.invalid/api/v1/network/edge/telemetry");
+    cfg.edge.device_id.set("test-device");
+    cfg.edge.tenant.set("test-tenant");
+    cfg.edge.token.set("test-token");
+    cfg.edge.private_key_path.set(key_path);
+    cfg.edge.key_id.set("test-key");
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node");
+
+    EXPECT_EQ(exporter.pendingActionResultCount(), 0u);
+
+    exporter.emitLocalConfigChange("rssi.interval", "5000", "local_dbus_set", 3);
+
+    EXPECT_EQ(exporter.pendingActionResultCount(), 1u);
+}
+
+TEST(EdgeTelemetryPendingActions, LocalConfigChangeReissueCreatesDistinctReceipts) {
+    const std::string key_path = makeScopedTempKeyPath();
+    if (key_path.empty()) {
+        GTEST_SKIP() << "无法生成临时 Ed25519 密钥（测试环境缺 OpenSSL）";
+    }
+    struct Cleanup { ~Cleanup() { unlink(path_.c_str()); } std::string path_; } cleanup{key_path};
+
+    // 幂等的语义边界：同一 key 后续再改是**另一次**变更，不能因为值相同就
+    // 被本端或服务端误认为重发。本端用随机 id 保证，固化这一区别。
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.edge.enabled.store(true);
+    cfg.edge.url.set("http://example.invalid/api/v1/network/edge/telemetry");
+    cfg.edge.device_id.set("test-device");
+    cfg.edge.tenant.set("test-tenant");
+    cfg.edge.token.set("test-token");
+    cfg.edge.private_key_path.set(key_path);
+    cfg.edge.key_id.set("test-key");
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node");
+
+    exporter.emitLocalConfigChange("rssi.interval", "5000", "local_dbus_set", 4);
+    exporter.emitLocalConfigChange("rssi.interval", "5000", "local_dbus_set", 4);
+
+    EXPECT_EQ(exporter.pendingActionResultCount(), 2u);
 }
 
 

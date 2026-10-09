@@ -187,6 +187,8 @@ curl -X POST http://localhost:8000/api/v1/network/assets/radxa-cubie-a7a/actions
      ```
    - 边缘端签名后异步回执 `/api/v1/network/edge/action-results`，云端 `network_pending_actions` 状态变为 `APPLIED`，同时落 `network_action_outcomes` 投影行。
 
+   **本地调参同样落 L1**：`weaknet-cli set`（D-Bus `SetMonitorParam`）写入成功后，板端立即以 `action_id=nlocal-*` 回执 + 自带 `config_key/config_value/generation`，云端落成 `execution_origin=LOCAL_OPERATION` 的 `network_action_outcomes` 行——与云端下发动作同表可查。此前该路径只表现为 `config_generation` 跳变，改了什么在云端不可见。
+
 3. 完整审计链可通过 `test_e2e_trace.py` 验证（需板端上行有真实 incident 数据）。
 
 ---

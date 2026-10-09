@@ -179,6 +179,14 @@ target_link_libraries(test_w4_snapshot_lifecycle_gtest PRIVATE ${TEST_COMMON_LIB
 add_executable(test_edge_telemetry_exporter_gtest
     unit/test_edge_telemetry_exporter_gtest.cpp)
 target_link_libraries(test_edge_telemetry_exporter_gtest PRIVATE ${TEST_COMMON_LIBS})
+# WEAKNET_HAVE_TLS：测试通过 EVP_PKEY_keygen 现场生成真实密钥走通签名路径，
+# 需要与 server_lib 同步该宏以暴露 OpenSSL 声明；仅对测试目标私有。
+if(WEAKNET_TLS_FOUND)
+    target_compile_definitions(test_edge_telemetry_exporter_gtest PRIVATE
+        WEAKNET_HAVE_TLS=1)
+    target_include_directories(test_edge_telemetry_exporter_gtest PRIVATE
+        ${WEAKNET_TLS_INCLUDE_DIRS})
+endif()
 
 add_executable(test_edge_wireless_uplink_gtest
     unit/test_edge_wireless_uplink_gtest.cpp)
