@@ -28,6 +28,7 @@ from industrial_ops_agent.network_assurance.council_contracts import (
     COUNCIL_CONTRACT_VERSION,
     SPECIALIST_ROLES,
     ActionProposal,
+    CouncilContributionView,
     CouncilFailure,
     CouncilInput,
     CouncilStatus,
@@ -269,7 +270,7 @@ class NetworkCouncilService:
         existing = self._find_by_fingerprint(context, request.incident_id, fingerprint)
         if existing is not None and not force:
             # 幂等复用：同一输入不重复花模型调用、不产生第二份决议
-            return self._to_view(existing)
+            return self._to_view(context, existing)
 
         attempt = (existing.attempt_count + 1) if existing is not None else 1
         council_id = existing.council_id if existing is not None else self._new_council_id()
@@ -326,7 +327,7 @@ class NetworkCouncilService:
             context, record=record, council_input=council_input, proposals=result.proposals
         )
         record = self._require_record(context, council_id)
-        return self._to_view(record)
+        return self._to_view(context, record)
 
     # ------------------------------------------------------------------
     # 查询
@@ -345,7 +346,7 @@ class NetworkCouncilService:
                 .order_by(NetworkCouncilRecord.updated_at.desc())
                 .limit(1)
             ).first()
-        return self._to_view(record) if record is not None else None
+        return self._to_view(context, record) if record is not None else None
 
     # ------------------------------------------------------------------
     # 内部
@@ -520,13 +521,42 @@ class NetworkCouncilService:
             session.flush()
         assert roles <= set(SPECIALIST_ROLES)  # 专家贡献只含三位专家
 
-    @staticmethod
-    def _to_view(record: NetworkCouncilRecord) -> CouncilView:
+    def _to_view(
+        self, context: TenantContext, record: NetworkCouncilRecord
+    ) -> CouncilView:
         proposals = [
             ActionProposal.model_validate(item) for item in (record.proposals_json or [])
         ]
         opinions = [
             ExpertOpinion.model_validate(item) for item in (record.expert_opinions_json or [])
+        ]
+        # 专家原始贡献（逐 attempt 审计留痕）——消解 contributions 表只写不读
+        with self._database.transaction(context) as session:
+            contribution_rows = session.scalars(
+                select(NetworkCouncilContributionRecord)
+                .where(
+                    NetworkCouncilContributionRecord.tenant_id == context.tenant_id,
+                    NetworkCouncilContributionRecord.council_id == record.council_id,
+                )
+                .order_by(
+                    NetworkCouncilContributionRecord.attempt_number,
+                    NetworkCouncilContributionRecord.agent_role,
+                )
+            ).all()
+        contributions = [
+            CouncilContributionView(
+                contribution_id=row.contribution_id,
+                council_id=row.council_id,
+                attempt_number=row.attempt_number,
+                agent_role=row.agent_role,
+                input_digest=row.input_digest,
+                output_digest=row.output_digest,
+                model_release_id=row.model_release_id,
+                prompt_bundle_hash=row.prompt_bundle_hash,
+                output=dict(row.output_json or {}),
+                completed_at=row.completed_at,
+            )
+            for row in contribution_rows
         ]
         return CouncilView(
             council_id=record.council_id,
@@ -536,6 +566,7 @@ class NetworkCouncilService:
             stage=record.stage,
             proposals=proposals,
             expert_opinions=opinions,
+            contributions=contributions,
             failure_code=record.failure_code,
             requested_by_subject_id=record.requested_by_subject_id,
             created_at=record.created_at,

@@ -273,6 +273,54 @@ def test_council_tables_have_no_approval_or_execution_columns(test_db: Database)
 
 
 # ---------------------------------------------------------------------------
+# 专家贡献可读（消解 network_council_contributions 只写不读）
+# ---------------------------------------------------------------------------
+
+
+def test_get_council_exposes_per_role_contributions(
+    test_db: Database, context: TenantContext
+) -> None:
+    complete = CountingComplete()
+    service = NetworkCouncilService(test_db, NetworkCouncilRunner(complete=complete))
+    service.request_council(context, _request())
+
+    view = service.get_council(context, "sitinc_demo_1")
+    assert view is not None
+    assert len(view.contributions) == 3  # 三位专家各一条，协调官不落贡献行
+    assert {c.agent_role for c in view.contributions} == {
+        "RF_SPECTRUM",
+        "KERNEL_STACK",
+        "OPS_SAFETY",
+    }
+    for contribution in view.contributions:
+        assert contribution.council_id == view.council_id
+        assert contribution.attempt_number == 1
+        assert contribution.input_digest == "sha256:diag-1"
+        assert contribution.output_digest.startswith("sha256:")
+        assert contribution.prompt_bundle_hash
+        assert contribution.output["observations"] == ["事实 A"]
+        assert contribution.completed_at is not None
+
+
+def test_failed_council_has_no_contributions(
+    test_db: Database, context: TenantContext
+) -> None:
+    class FailingComplete:
+        def __call__(self, role: CouncilRole, payload: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("upstream unavailable")
+
+    service = NetworkCouncilService(
+        test_db, NetworkCouncilRunner(complete=FailingComplete())
+    )
+    with pytest.raises(CouncilFailure):
+        service.request_council(context, _request())
+
+    view = service.get_council(context, "sitinc_demo_1")
+    assert view is not None
+    assert view.contributions == []  # fail closed：失败会商不产出贡献行
+
+
+# ---------------------------------------------------------------------------
 # 网关自述目录版本 → 会商输入（接通 Policy 漂移检测的输入源）
 # ---------------------------------------------------------------------------
 

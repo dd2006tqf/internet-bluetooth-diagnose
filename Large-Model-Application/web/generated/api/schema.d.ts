@@ -7689,6 +7689,37 @@ export interface components {
             /** Training Known Cost Usd */
             training_known_cost_usd: number;
         };
+        /**
+         * CouncilContributionResponse
+         * @description 单个专家的原始贡献行（network_council_contributions 读视图）。
+         */
+        CouncilContributionResponse: {
+            /** Agent Role */
+            agent_role: string;
+            /** Attempt Number */
+            attempt_number: number;
+            /**
+             * Completed At
+             * Format: date-time
+             */
+            completed_at: string;
+            /** Contribution Id */
+            contribution_id: string;
+            /** Council Id */
+            council_id: string;
+            /** Input Digest */
+            input_digest: string;
+            /** Model Release Id */
+            model_release_id?: string | null;
+            /** Output */
+            output?: {
+                [key: string]: unknown;
+            };
+            /** Output Digest */
+            output_digest: string;
+            /** Prompt Bundle Hash */
+            prompt_bundle_hash?: string | null;
+        };
         /** CouncilExpertOpinionResponse */
         CouncilExpertOpinionResponse: {
             /** Observations */
@@ -15208,6 +15239,8 @@ export interface components {
         };
         /** NetworkCouncilResponse */
         NetworkCouncilResponse: {
+            /** Contributions */
+            contributions?: components["schemas"]["CouncilContributionResponse"][];
             /** Council Id */
             council_id: string;
             /**

@@ -5201,6 +5201,78 @@
         "title": "CostTotalsResponse",
         "type": "object"
       },
+      "CouncilContributionResponse": {
+        "description": "单个专家的原始贡献行（network_council_contributions 读视图）。",
+        "properties": {
+          "agent_role": {
+            "title": "Agent Role",
+            "type": "string"
+          },
+          "attempt_number": {
+            "title": "Attempt Number",
+            "type": "integer"
+          },
+          "completed_at": {
+            "format": "date-time",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "contribution_id": {
+            "title": "Contribution Id",
+            "type": "string"
+          },
+          "council_id": {
+            "title": "Council Id",
+            "type": "string"
+          },
+          "input_digest": {
+            "title": "Input Digest",
+            "type": "string"
+          },
+          "model_release_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Release Id"
+          },
+          "output": {
+            "additionalProperties": true,
+            "title": "Output",
+            "type": "object"
+          },
+          "output_digest": {
+            "title": "Output Digest",
+            "type": "string"
+          },
+          "prompt_bundle_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt Bundle Hash"
+          }
+        },
+        "required": [
+          "contribution_id",
+          "council_id",
+          "attempt_number",
+          "agent_role",
+          "input_digest",
+          "output_digest",
+          "completed_at"
+        ],
+        "title": "CouncilContributionResponse",
+        "type": "object"
+      },
       "CouncilExpertOpinionResponse": {
         "properties": {
           "observations": {
@@ -26819,6 +26891,13 @@
       },
       "NetworkCouncilResponse": {
         "properties": {
+          "contributions": {
+            "items": {
+              "$ref": "#/components/schemas/CouncilContributionResponse"
+            },
+            "title": "Contributions",
+            "type": "array"
+          },
           "council_id": {
             "title": "Council Id",
             "type": "string"

@@ -1055,6 +1055,21 @@ class CouncilExpertOpinionResponse(BaseModel):
     recommendation_direction: str = ""
 
 
+class CouncilContributionResponse(BaseModel):
+    """单个专家的原始贡献行（network_council_contributions 读视图）。"""
+
+    contribution_id: str
+    council_id: str
+    attempt_number: int
+    agent_role: str
+    input_digest: str
+    output_digest: str
+    model_release_id: str | None = None
+    prompt_bundle_hash: str | None = None
+    output: dict[str, Any] = Field(default_factory=dict)
+    completed_at: datetime
+
+
 class NetworkCouncilResponse(BaseModel):
     council_id: str
     incident_id: str
@@ -1063,6 +1078,7 @@ class NetworkCouncilResponse(BaseModel):
     stage: str
     proposals: list[CouncilProposalResponse] = Field(default_factory=list)
     expert_opinions: list[CouncilExpertOpinionResponse] = Field(default_factory=list)
+    contributions: list[CouncilContributionResponse] = Field(default_factory=list)
     failure_code: str | None = None
     requested_by_subject_id: str
     created_at: datetime
@@ -1100,6 +1116,21 @@ def _council_payload(view: Any) -> NetworkCouncilResponse:
                 recommendation_direction=o.recommendation_direction,
             )
             for o in view.expert_opinions
+        ],
+        contributions=[
+            CouncilContributionResponse(
+                contribution_id=c.contribution_id,
+                council_id=c.council_id,
+                attempt_number=c.attempt_number,
+                agent_role=c.agent_role,
+                input_digest=c.input_digest,
+                output_digest=c.output_digest,
+                model_release_id=c.model_release_id,
+                prompt_bundle_hash=c.prompt_bundle_hash,
+                output=dict(c.output),
+                completed_at=c.completed_at,
+            )
+            for c in view.contributions
         ],
         failure_code=view.failure_code,
         requested_by_subject_id=view.requested_by_subject_id,

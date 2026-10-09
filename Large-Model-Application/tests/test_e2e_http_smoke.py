@@ -114,6 +114,70 @@ def test_proposals_list_404_when_no_council(client: TestClient) -> None:
     assert r.json()["error"]["code"] == "wireless_incident_not_found"
 
 
+def test_council_detail_exposes_contributions(
+    client: TestClient, app_db: Database
+) -> None:
+    """GET 详情须带出 network_council_contributions（消解只写不读）。"""
+    from industrial_ops_agent.persistence.models import (
+        NetworkCouncilContributionRecord,
+        NetworkCouncilRecord,
+    )
+    from industrial_ops_agent.persistence.tenant import TenantContext
+
+    now = datetime.now(UTC)
+    ctx = TenantContext(tenant_id="tenant-alpha", subject_id="seeder")
+    with app_db.transaction(ctx) as session:
+        session.add(
+            NetworkCouncilRecord(
+                council_id="ncouncil-smoke1",
+                tenant_id="tenant-alpha",
+                incident_id="sitinc_smoke_1",
+                input_fingerprint="sha256:fp-smoke1",
+                status="REVIEW_PENDING",
+                stage="REVIEW_PENDING",
+                attempt_count=1,
+                proposals_json=[],
+                expert_opinions_json=[],
+                requested_by_subject_id="seeder",
+                completed_at=now,
+                version=1,
+            )
+        )
+        session.add(
+            NetworkCouncilContributionRecord(
+                contribution_id="nccontrib-smoke1",
+                tenant_id="tenant-alpha",
+                council_id="ncouncil-smoke1",
+                attempt_number=1,
+                agent_role="RF_SPECTRUM",
+                input_digest="sha256:diag-1",
+                output_json={
+                    "observations": ["事实 A"],
+                    "referenced_fact_ids": ["e1"],
+                    "recommendation_direction": "建议方向",
+                },
+                output_digest="sha256:abc123",
+                prompt_bundle_hash="pbh-test",
+                completed_at=now,
+            )
+        )
+
+    r = client.get(
+        "/api/v1/network/assurance/incidents/sitinc_smoke_1/council",
+        headers=_h(),
+    )
+    assert r.status_code == 200
+    contributions = r.json()["contributions"]
+    assert len(contributions) == 1
+    contribution = contributions[0]
+    assert contribution["council_id"] == "ncouncil-smoke1"
+    assert contribution["agent_role"] == "RF_SPECTRUM"
+    assert contribution["attempt_number"] == 1
+    assert contribution["input_digest"] == "sha256:diag-1"
+    assert contribution["output_digest"] == "sha256:abc123"
+    assert contribution["output"]["observations"] == ["事实 A"]
+
+
 def test_decide_requires_if_match(client: TestClient) -> None:
     r = client.post(
         "/api/v1/network/assurance/proposals/ncprop-x-a1-0/decision",

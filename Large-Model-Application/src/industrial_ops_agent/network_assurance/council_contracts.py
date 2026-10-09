@@ -251,6 +251,26 @@ class CouncilStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class CouncilContributionView(_ClosedModel):
+    """单个专家的原始贡献行（network_council_contributions 的读视图）。
+
+    承载 append-only 审计事实：哪次 attempt、哪位专家、吃进什么摘要、
+    吐出什么内容、用什么 prompt bundle——与 CouncilView.expert_opinions
+    （最终意见快照）互补，这里是**逐 attempt 的完整留痕**。
+    """
+
+    contribution_id: str
+    council_id: str
+    attempt_number: int = Field(ge=1)
+    agent_role: str
+    input_digest: str
+    output_digest: str
+    model_release_id: str | None = None
+    prompt_bundle_hash: str | None = None
+    output: dict[str, Any] = Field(default_factory=dict)
+    completed_at: datetime
+
+
 class CouncilView(_ClosedModel):
     """会商结果视图。
 
@@ -265,6 +285,7 @@ class CouncilView(_ClosedModel):
     stage: str
     proposals: list[ActionProposal] = Field(default_factory=list)
     expert_opinions: list[ExpertOpinion] = Field(default_factory=list)
+    contributions: list[CouncilContributionView] = Field(default_factory=list)
     failure_code: str | None = None
     requested_by_subject_id: str
     created_at: datetime
