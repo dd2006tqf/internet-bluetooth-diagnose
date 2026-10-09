@@ -104,6 +104,53 @@ jobs:
           tests/test_e2e_trace.py
           tests/test_e2e_http_smoke.py
 
+  contract-and-web:
+    # 曾经放在 Large-Model-Application/.github/workflows/ci.yml 的嵌套工作流
+    # 里——GitHub 不注册仓库根以外的 workflow，这道门禁从未生效过（休眠）。
+    # 现迁移至此：OpenAPI 契约漂移 + 生成客户端漂移 + 前端类型检查/生产构建。
+    name: OpenAPI 契约与前端构建门禁
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.15"
+          enable-cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.23.1"
+
+      - name: Enable pinned pnpm
+        run: corepack enable && corepack prepare pnpm@11.20.0 --activate
+
+      - name: 安装 Python 锁定依赖
+        working-directory: Large-Model-Application
+        run: uv sync --frozen --extra dev
+
+      - name: OpenAPI 契约漂移检查
+        working-directory: Large-Model-Application
+        run: scripts/generate_openapi.sh --check
+
+      - name: 安装前端锁定依赖
+        working-directory: Large-Model-Application
+        run: pnpm install --frozen-lockfile
+
+      - name: OpenAPI 客户端漂移检查
+        working-directory: Large-Model-Application
+        run: scripts/generate_openapi_client.sh --check
+
+      - name: 前端类型检查与生产构建
+        working-directory: Large-Model-Application/web
+        run: |
+          pnpm typecheck
+          pnpm build
+
   build-and-test:
     name: x86 编译与全量单元测试
     runs-on: ubuntu-latest
