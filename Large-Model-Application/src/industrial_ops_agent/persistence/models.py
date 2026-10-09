@@ -6022,6 +6022,11 @@ class NetworkActionOutcomeRecord(TenantScopedMixin, Base):
     #: L4 决策链 provenance（手工路径为 NULL——事实，不是"不安全"的判断）
     proposal_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     approval_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: 执行来源事实（迁移 0096）。COUNCIL_APPROVED = 经 Council→Policy→Approval
+    #: 链；MANUAL_OPERATION = 运维经 direct queue 直发。**只是来源，不是 Policy
+    #: 判断**——COUNCIL_APPROVED 不表示动作安全，MANUAL_OPERATION 不表示不安全。
+    #: 显式物化是为了让查询不必靠 proposal_id 的 NULL 反推来源。
+    execution_origin: Mapped[str] = mapped_column(String(32), nullable=False)
     #: 实际下发载荷的快照与哈希（执行实例的不可变记录）
     action_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     action_payload_digest: Mapped[str] = mapped_column(String(128), nullable=False)

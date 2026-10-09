@@ -25,6 +25,7 @@ from industrial_ops_agent.network_assurance.contracts import (
 from industrial_ops_agent.network_assurance.service import NetworkAssuranceService
 from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.models import (
+    NetworkActionOutcomeRecord,
     NetworkAssetRecord,
     NetworkPendingActionRecord,
 )
@@ -325,3 +326,76 @@ class TestRecordActionResults:
             rec = session.get(NetworkPendingActionRecord, "nact-legacy")
             assert rec is not None
             assert rec.status == "APPLIED"
+
+
+class TestExecutionOrigin:
+    """L1 outcome 的执行来源事实（迁移 0096）。
+
+    它回答"这次执行是怎么入队的"——审批链还是人工直发。**不是** Policy 判断：
+    COUNCIL_APPROVED 不表示动作安全，MANUAL_OPERATION 不表示不安全。
+    显式物化让查询不必靠 proposal_id 的 NULL 反推来源。
+    """
+
+    def _ack(self, test_db, service, tenant, act_id, device="edge-1"):
+        with test_db.transaction(tenant) as session:
+            claimed = service._claim_pending_actions(
+                session, tenant, device, now=datetime.now(UTC)
+            )
+        token = claimed[0]["claim_token"]
+        results = NetworkActionResults(
+            schema_version="network.edge.action-results.v2",
+            device_id=device,
+            results=[
+                NetworkActionOutcome(
+                    action_id=act_id,
+                    status="APPLIED",
+                    detail="applied",
+                    claim_token=token,
+                    generation=1,
+                    reported_at=datetime.now(UTC),
+                )
+            ],
+        )
+        service.record_action_results(tenant, results)
+
+    def _outcome(self, test_db, tenant, act_id) -> NetworkActionOutcomeRecord:
+        with test_db.transaction(tenant) as session:
+            rows = session.query(NetworkActionOutcomeRecord).all()
+        return next(r for r in rows if r.pending_action_id == act_id)
+
+    def test_direct_queue_records_manual_operation(
+        self, test_db: Database, service: NetworkAssuranceService, tenant: TenantContext
+    ) -> None:
+        """人工直发（不带 proposal_id/approval_id）→ MANUAL_OPERATION。"""
+
+        _provision_asset(test_db, tenant, "edge-1")
+        act_id = service.queue_action(
+            tenant, "edge-1", config_key="rtt.interval_ms", config_value="5000",
+            issued_by="admin",
+        )
+        self._ack(test_db, service, tenant, act_id)
+
+        outcome = self._outcome(test_db, tenant, act_id)
+        assert outcome.execution_origin == "MANUAL_OPERATION"
+        assert outcome.proposal_id is None
+        assert outcome.approval_id is None
+
+    def test_approved_chain_records_council_approved(
+        self, test_db: Database, service: NetworkAssuranceService, tenant: TenantContext
+    ) -> None:
+        """审批链入队（带 proposal_id/approval_id）→ COUNCIL_APPROVED。"""
+
+        _provision_asset(test_db, tenant, "edge-1")
+        act_id = service.queue_action(
+            tenant, "edge-1", config_key="rtt.interval_ms", config_value="3000",
+            issued_by="rehearsal-operator",
+            approved_by="second-engineer-approver",
+            proposal_id="ncprop-x-a1-0",
+            approval_id="ncapp-x",
+        )
+        self._ack(test_db, service, tenant, act_id)
+
+        outcome = self._outcome(test_db, tenant, act_id)
+        assert outcome.execution_origin == "COUNCIL_APPROVED"
+        assert outcome.proposal_id == "ncprop-x-a1-0"
+        assert outcome.approval_id == "ncapp-x"

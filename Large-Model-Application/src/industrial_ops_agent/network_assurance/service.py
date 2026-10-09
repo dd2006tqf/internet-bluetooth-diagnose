@@ -772,6 +772,13 @@ class NetworkAssuranceService:
                         asset_id=record.asset_id,
                         proposal_id=record.proposal_id,
                         approval_id=record.approval_id,
+                        # 来源事实：审批链必然带 proposal_id，direct queue 必然不带。
+                        # 只表达"怎么入队的"，不表达"是否安全"。
+                        execution_origin=(
+                            "COUNCIL_APPROVED"
+                            if record.proposal_id
+                            else "MANUAL_OPERATION"
+                        ),
                         action_snapshot={
                             "config_key": record.config_key,
                             "config_value": record.config_value,
