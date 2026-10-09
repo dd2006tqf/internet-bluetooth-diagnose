@@ -29,20 +29,25 @@ target_link_libraries(weaknet_cli PRIVATE weaknet PkgConfig::DBUS1 glog pthread)
 set_target_properties(weaknet_cli PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin)
 
-# 客户端使用示例程序（纳入构建目标，消除孤儿代码）
+# 示例/演示程序：EXCLUDE_FROM_ALL——只在显式 --target 时构建。
+# 它们不发布到 dist-arm64、不被 ctest/板端测试消费，全量编译（尤其
+# ARM64 QEMU 模拟）没必要为它们付时间。
 add_executable(example_usage example_usage.cpp)
 target_link_libraries(example_usage PRIVATE weaknet PkgConfig::DBUS1 glog pthread)
 set_target_properties(example_usage PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin)
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin
+    EXCLUDE_FROM_ALL TRUE)
 
 add_executable(ping_example ping_example.cpp)
 target_link_libraries(ping_example PRIVATE weaknet PkgConfig::DBUS1 glog pthread)
 set_target_properties(ping_example PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin)
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin
+    EXCLUDE_FROM_ALL TRUE)
 
 add_executable(test_network_quality test_network_quality.cpp)
 target_link_libraries(test_network_quality PRIVATE weaknet PkgConfig::DBUS1 glog pthread)
 set_target_properties(test_network_quality PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin)
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin
+    EXCLUDE_FROM_ALL TRUE)
 
 add_test(NAME test_lifecycle_api COMMAND test_lifecycle_api)
