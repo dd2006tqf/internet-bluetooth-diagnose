@@ -108,6 +108,11 @@ jobs:
     # 曾经放在 Large-Model-Application/.github/workflows/ci.yml 的嵌套工作流
     # 里——GitHub 不注册仓库根以外的 workflow，这道门禁从未生效过（休眠）。
     # 现迁移至此：OpenAPI 契约漂移 + 生成客户端漂移 + 前端类型检查/生产构建。
+    #
+    # Python 环境用 requirements-test.txt（依赖清单的唯一来源，与 cloud-tests
+    # 同源）建 .venv——不走 uv sync：uv.lock 的 dev extra 缺少级联 import 需要的
+    # pillow 等包（首跑 5d1fa70 即因 PIL 缺失在 generate_openapi 步骤红掉），
+    # 且 lock 与生产 .venv 有 60+ 版本漂移，契约快照是在 pip 环境下录制的。
     name: OpenAPI 契约与前端构建门禁
     runs-on: ubuntu-latest
     steps:
@@ -116,11 +121,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.8.15"
-          enable-cache: true
+          cache: pip
+          cache-dependency-path: Large-Model-Application/requirements-test.txt
 
       - uses: actions/setup-node@v4
         with:
@@ -129,9 +131,11 @@ jobs:
       - name: Enable pinned pnpm
         run: corepack enable && corepack prepare pnpm@11.20.0 --activate
 
-      - name: 安装 Python 锁定依赖
-        working-directory: Large-Model-Application
-        run: uv sync --frozen --extra dev
+      - name: 安装 Python 依赖（.venv，requirements-test.txt 为唯一来源）
+        run: |
+          python -m venv Large-Model-Application/.venv
+          Large-Model-Application/.venv/bin/pip install --quiet -r Large-Model-Application/requirements-test.txt
+          Large-Model-Application/.venv/bin/pip install --quiet -e Large-Model-Application --no-deps
 
       - name: OpenAPI 契约漂移检查
         working-directory: Large-Model-Application
