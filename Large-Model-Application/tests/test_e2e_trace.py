@@ -45,6 +45,16 @@ from industrial_ops_agent.network_assurance.network_council_service import (
     NetworkCouncilService,
 )
 from industrial_ops_agent.network_assurance.service import NetworkAssuranceService
+from industrial_ops_agent.network_assurance.wireless_contracts import (
+    DataSufficiency,
+    RiskDriver,
+    RiskLevel,
+    RiskWindow,
+    SubjectType,
+    TrendDirection,
+    TrendEvidence,
+    WindowEstimationStatus,
+)
 from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.models import (
     Base,
@@ -132,6 +142,47 @@ def _request(**overrides: Any) -> CouncilRequestInput:
     return CouncilRequestInput(**base)
 
 
+def _risk_window(
+    *,
+    subject_id: str = "AA:01",
+    risk_level: RiskLevel = RiskLevel.MEDIUM,
+    window_estimation_status: WindowEstimationStatus = WindowEstimationStatus.UNAVAILABLE,
+) -> RiskWindow:
+    """L3 预测的运行时快照（预测**不落库**，只能运行时捕获）。
+
+    这是 trace 能覆盖 L3 那一跳的唯一途径：报告里的 PREDICTION 节点与
+    prediction_snapshots 必须成对出现，否则验证器按设计判 PARTIAL
+    （"有预测节点却没有快照" = 不自洽，绝不假装完整）。
+    """
+    return RiskWindow(
+        subject_type=SubjectType.DEVICE,
+        subject_id=subject_id,
+        risk_level=risk_level,
+        window_estimation_status=window_estimation_status,
+        prediction_confidence=RiskLevel.LOW,
+        data_sufficiency=DataSufficiency.SUFFICIENT,
+        drivers=[
+            RiskDriver(
+                metric="median_jitter_ms",
+                contribution_pct=100.0,
+                direction=TrendDirection.DETERIORATING,
+                evidence_ids=["nsnap-e2e-1"],
+            )
+        ],
+        trend_evidence=[
+            TrendEvidence(
+                metric="median_jitter_ms",
+                statement="基线在预测窗口内持续漂移",
+                evidence_ids=["nsnap-e2e-1"],
+            )
+        ],
+        failure_criterion_id="weaknet-rf-service-degradation",
+        failure_criterion_version="rules-2026.10",
+        model_version="risk-window-v1+thresholds=sha256:e2e",
+        generated_at=datetime(2026, 10, 8, 12, 0, tzinfo=UTC),
+    )
+
+
 def _provision_asset(db: Database, ctx: TenantContext, asset_id: str) -> None:
     with db.transaction(ctx) as s:
         if s.get(NetworkAssetRecord, asset_id) is None:
@@ -210,7 +261,10 @@ def _find_proposal(
 def test_scenario_a_remote_happy_path(
     test_db: Database, context: TenantContext, tmp_path
 ):
-    _, view = _convene(test_db, context)
+    # L3 预测真实进入会商输入（prediction_results 参与 council_input_fingerprint），
+    # 不是事后贴上去的装饰——这样 trace 的 L3 节点才与当次会商输入同源。
+    prediction = _risk_window()
+    service, view = _convene(test_db, context, prediction_results=[prediction])
     approval_svc = NetworkActionApprovalService(test_db)
 
     proposal, approval = _find_proposal(test_db, manual=False)
@@ -248,6 +302,19 @@ def test_scenario_a_remote_happy_path(
                 id="sha256:diag-1",
                 digest_or_version="sha256:diag-1",
                 status="ALLOWED",
+            ),
+            # L3：预测不落库，节点值取自本次运行真实进入会商输入的那个 RiskWindow。
+            # 必须有配套 prediction_snapshots（见下），否则验证器按设计判 PARTIAL。
+            TraceNode(
+                kind="PREDICTION",
+                id=prediction.subject_id,
+                digest_or_version=prediction.model_version,
+                status=prediction.risk_level.value,
+                extra={
+                    "window": prediction.window_estimation_status.value,
+                    "data_sufficiency": prediction.data_sufficiency.value,
+                    "driver": prediction.drivers[0].metric,
+                },
             ),
             TraceNode(
                 kind="COUNCIL",
@@ -300,6 +367,25 @@ def test_scenario_a_remote_happy_path(
         ],
         edge_checks=[
             # 存在的边
+            TraceEdgeCheck("INCIDENT", "DIAGNOSIS", "PRESENT", "PRESENT"),
+            # L3 那一跳：用"同一输入重新算一次指纹"证明该预测确实进入了当次会商。
+            # prediction_results 参与 council_input_fingerprint，所以指纹一致
+            # 就等价于"预测被会商消费"；不一致即为断链。
+            TraceEdgeCheck(
+                "PREDICTION",
+                "COUNCIL",
+                "PRESENT",
+                "PRESENT"
+                if view.input_fingerprint
+                == service.fingerprint(
+                    service.build_input(
+                        _request(prediction_results=[prediction])
+                    )
+                )
+                else "ABSENT",
+                reason="l3_prediction_consumed_by_council",
+            ),
+            TraceEdgeCheck("COUNCIL", "PROPOSAL", "PRESENT", "PRESENT"),
             TraceEdgeCheck("PROPOSAL", "ACTION_DECISION", "PRESENT", "PRESENT"),
             TraceEdgeCheck("ACTION_DECISION", "APPROVAL", "PRESENT", "PRESENT"),
             TraceEdgeCheck("APPROVAL", "PENDING_ACTION", "PRESENT", "PRESENT"),
@@ -341,6 +427,17 @@ def test_scenario_a_remote_happy_path(
             TraceOperationCheck(
                 "edge_ack", pending.action_id, "ACCEPTED", "ACCEPTED"
             ),
+        ],
+        # L3 快照：预测不落库，只存在于本次运行。与上面的 PREDICTION 节点成对，
+        # 缺了它验证器会判 PARTIAL（那是"有节点没快照"的自洽性错误）。
+        prediction_snapshots=[
+            {
+                "subject_id": prediction.subject_id,
+                "risk_level": prediction.risk_level.value,
+                "window_estimation_status": prediction.window_estimation_status.value,
+                "model_version": prediction.model_version,
+                "failure_criterion_id": prediction.failure_criterion_id,
+            }
         ],
         completed_at=datetime.now(UTC).isoformat(),
     )
