@@ -294,14 +294,14 @@ User=radxa
 WorkingDirectory=/home/radxa/llama
 Environment=LD_LIBRARY_PATH=/home/radxa/llama/lib
 ExecStart=/home/radxa/llama/bin/llama-server \
-    -m /home/radxa/llama/models/qwen2.5-3b-instruct-q4_k_m.gguf \
+    -m /home/radxa/llama/models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
     --host 127.0.0.1 --port 8080 \
-    -c 2048 -t 4 -np 2 \
+    -c 2048 -t 4 -np 1 \
     --mlock
 Restart=on-failure
-RestartSec=10
-MemoryMax=5G
-CPUQuota=300%
+RestartSec=5
+MemoryMax=4.5G
+CPUAffinity=0 1
 
 [Install]
 WantedBy=multi-user.target
@@ -312,6 +312,11 @@ echo "===== LLM 部署完成 ====="
 echo "启动: ssh $BOARD 'sudo systemctl start llama-server'"
 echo "状态: ssh $BOARD 'sudo systemctl status llama-server'"
 ```
+
+> **现网实际值（2026-10-09 与板上 `/etc/systemd/system/llama-server.service` 逐项核对）**：
+> 模型为 `qwen2.5-0.5b-instruct-q4_k_m.gguf`（上文 3B 为方案目标，现网以 0.5B 落地，
+> 基准实测见 `架构设计.md` §12.4）；资源限制为 `MemoryMax=4.5G` + `CPUAffinity=0 1`
+> （无 `CPUQuota`）。执行安装时以本 heredoc 为准。
 
 `llama-server` 参数详解：
 
