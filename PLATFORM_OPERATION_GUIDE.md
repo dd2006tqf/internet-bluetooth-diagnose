@@ -16,7 +16,9 @@
 |      - 入口: Large-Model-Application/scripts/rehearsal_server.py                  |
 |      - 监听: 0.0.0.0:8000，前缀 /api/v1                                          |
 |      - PostgreSQL (weaknet-postgres 容器, 127.0.0.1:5432/industrial_ops)          |
-|      - .env 提供 IOAP_MODEL_GATEWAY_*（UpstreamCouncilClient 直连中转站）          |
+|      - .env 提供 IOAP_MODEL_GATEWAY_*（UpstreamCouncilClient 直连中转站）与        |
+|        REHEARSAL_EDGE_TOKEN（X-Edge-Token 校验值，不入库；2026-10-09 起          |
+|        从 systemd unit 明文迁入）                                                |
 |                                                                                   |
 |   2. 构建容器 (常驻)                                                              |
 |      - weaknet-arm64-dev：ARM64 QEMU 模拟编译环境                                 |
@@ -116,6 +118,11 @@ sudo journalctl -u weaknet-cloud-api.service -f
 # 一键完成：ARM64 容器内增量编译 + 打包产物 + rsync 到板端 + systemd 重启
 ./tools/ci.sh --skip-test
 ```
+
+**前置**：`secrets/edge_token`（不入库，gitignored）必须存在——仓库 `config.yaml`
+的 `edge.token` 是空占位，部署时由 `ci.sh` 把该文件的值注入板端
+`/etc/weaknet/config.yaml` 并收紧为 0600；文件缺失会直接拒绝部署。
+云端对应值在 `Large-Model-Application/.env` 的 `REHEARSAL_EDGE_TOKEN`，**两侧必须一致**。
 
 *注：板端服务启动后，若需手工查验板端状态：*
 ```bash

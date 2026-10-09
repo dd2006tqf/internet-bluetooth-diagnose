@@ -209,6 +209,18 @@ if [ "$SKIP_DEPLOY" = false ]; then
         sudo systemctl daemon-reload && sudo systemctl reload dbus 2>/dev/null || true; \
         sudo systemctl enable weaknet-server && sudo systemctl restart weaknet-server"
 
+    # Edge 预共享令牌注入：仓库 config.yaml 只带空占位，真实值来自不入库的
+    # secrets/edge_token（与 edge_priv.pem 同类凭据，不随 git 走）。缺失即拒绝
+    # 部署——否则上行会带着空 token 被云端 401，坏在暗处。注入后权限收紧 0600。
+    EDGE_TOKEN_FILE="${ROOT}/secrets/edge_token"
+    [[ -s "${EDGE_TOKEN_FILE}" ]] || fail "缺少 ${EDGE_TOKEN_FILE}（edge 上行预共享令牌），先创建该文件再部署"
+    EDGE_TOKEN="$(tr -d '[:space:]' < "${EDGE_TOKEN_FILE}")"
+    [[ "${EDGE_TOKEN}" =~ ^[A-Za-z0-9_-]+$ ]] || fail "secrets/edge_token 含非法字符（仅允许 [A-Za-z0-9_-]）"
+    ssh "${BOARD}" "sudo sed -i 's|^  token: \"\"\$|  token: \"${EDGE_TOKEN}\"|' /etc/weaknet/config.yaml && \
+        sudo chmod 600 /etc/weaknet/config.yaml && \
+        sudo grep -q 'token: \"${EDGE_TOKEN}\"' /etc/weaknet/config.yaml" || fail "edge token 注入板端失败（/etc/weaknet/config.yaml）"
+    pass "edge token 已注入板端并收紧权限"
+
     # 测试脚本也在部署步上传（rsync --delete 会删除 dist 之外的板端文件，
     # 若只在测试步上传，--skip-test 部署后板上会缺失该脚本）
     scp "${ROOT}/tools/weaknet-test-full.sh" "${BOARD}:/home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null

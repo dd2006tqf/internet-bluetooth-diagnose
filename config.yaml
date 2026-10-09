@@ -125,7 +125,10 @@ edge:
   # 现场标识（多网关部署时同一现场的多台网关填同一个值）。
   # 留空 = 回落 device_id，即单网关 "1 Gateway = 1 Site" 行为不变。
   site_id: ""
-  token: "dev-edge-token-20260915"
+  # 预共享上行令牌（X-Edge-Token）。仓库内只保留空占位，真实值由 tools/ci.sh
+  # 部署时从不入库的 secrets/edge_token 注入板端 /etc/weaknet/config.yaml（0600），
+  # 云端对应值在 Large-Model-Application/.env 的 REHEARSAL_EDGE_TOKEN（同不入库）。
+  token: ""
   key_id: "weaknet-edge-telemetry-v1"
   private_key_path: "/home/radxa/weaknet/config/edge_priv.pem"
   interval_ms: 10000
