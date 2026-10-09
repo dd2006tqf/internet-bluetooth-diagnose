@@ -219,7 +219,7 @@ if [ "$SKIP_DEPLOY" = false ]; then
     ssh "${BOARD}" "sudo cp /tmp/weaknet-server.service /etc/systemd/system/weaknet-server.service && \
         sudo cp /tmp/com.example.WeakNet.conf /etc/dbus-1/system.d/com.example.WeakNet.conf && \
         sudo mkdir -p /etc/weaknet && sudo cp /tmp/weaknet-config.yaml /etc/weaknet/config.yaml && \
-        sudo chmod 600 /etc/weaknet/config.yaml && \
+        sudo chmod 600 /etc/weaknet/config.yaml && sudo rm -f /tmp/weaknet-config.yaml && \
         sudo cp /tmp/libweaknet.so /usr/local/lib/libweaknet.so && sudo ldconfig && \
         sudo chmod o+rx /home/radxa/weaknet/data 2>/dev/null || true && \
         sudo systemctl daemon-reload && sudo systemctl reload dbus 2>/dev/null || true; \
