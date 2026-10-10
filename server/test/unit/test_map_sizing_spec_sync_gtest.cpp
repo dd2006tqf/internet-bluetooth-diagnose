@@ -43,6 +43,7 @@ const std::map<MapSizingScope, const char*> kScopeSourceFiles = {
     {MapSizingScope::TcpConn,         "src/tcp_conn_stats.bpf.c"},
     {MapSizingScope::SkbDrop,         "src/skb_drop.bpf.c"},
     {MapSizingScope::Bluetooth,       "src/bpf/a2dp_media.bpf.c"},
+    {MapSizingScope::TcpRtt,          "src/tcp_rtt.bpf.c"},
 };
 
 std::string readFileOrEmpty(const std::string& path) {
@@ -116,6 +117,7 @@ std::string scopeLabel(MapSizingScope scope) {
         case MapSizingScope::TcpConn:         return "TcpConn";
         case MapSizingScope::SkbDrop:         return "SkbDrop";
         case MapSizingScope::Bluetooth:       return "Bluetooth";
+        case MapSizingScope::TcpRtt:          return "TcpRtt";
     }
     return "?";
 }
@@ -210,6 +212,10 @@ TEST(MapSizingSpecSyncTest, KeyAndValueSizesMatchStructSizes) {
     struct session_control { uint64_t start_time, last_active; uint32_t state, reserved; uint64_t flags; };
     struct traffic_stats { uint64_t tx_bytes, rx_bytes, tx_packets, rx_packets; };
 
+    // 8. TcpRtt
+    struct tcp_rtt_key { uint32_t saddr, daddr; uint16_t sport, dport, family, pad; };
+    struct tcp_rtt_val { uint32_t srtt_us, min_rtt_us, max_rtt_us, snd_cwnd, snd_wnd, rcv_wnd; uint64_t sample_count, last_ts, sock_cookie; };
+
     const std::map<std::string, std::pair<uint32_t, uint32_t>> expected = {
         {"retrans_stats",      {sizeof(tcp_conn_key),       sizeof(tcp_retrans_stats)}},
         {"retrans_events",     {sizeof(tcp_conn_key),       sizeof(tcp_retrans_event)}},
@@ -225,6 +231,7 @@ TEST(MapSizingSpecSyncTest, KeyAndValueSizesMatchStructSizes) {
         {"drop_stats_map",     {sizeof(drop_key),           sizeof(drop_stat)}},
         {"active_sessions",    {sizeof(device_key),         sizeof(session_control)}},
         {"bt_traffic",         {sizeof(device_key),         sizeof(traffic_stats)}},
+        {"tcp_rtt_stats",      {sizeof(tcp_rtt_key),        sizeof(tcp_rtt_val)}},
     };
 
     size_t verified = 0;

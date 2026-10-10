@@ -106,6 +106,13 @@ monitors:
     interval_ms: 10000
     capture_pages: 64
 
+  tcp_rtt:
+    enabled: true
+    bpf_obj: build/tcp_rtt.bpf.o
+    map_sizing_mode: auto          # auto | fixed
+    map_sizing_ram_budget_bp: 50   # auto: 物理内存万分比（50 = 0.5%）
+    interval_ms: 10000
+
   active_probe:
     enabled: true
     interval_ms: 30000

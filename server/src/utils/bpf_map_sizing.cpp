@@ -81,6 +81,11 @@ const std::vector<MapSizeSpec> kBluetoothSpecs = {
     {"bt_traffic",      8, 32, 32, 64, 512},
 };
 
+/// tcp_rtt.bpf.o
+const std::vector<MapSizeSpec> kTcpRttSpecs = {
+    {"tcp_rtt_stats", 16, 48, 1024, 8192, 65536},
+};
+
 } // namespace
 
 const std::vector<MapSizeSpec>& getMapSizingSpecs(MapSizingScope scope) {
@@ -92,6 +97,7 @@ const std::vector<MapSizeSpec>& getMapSizingSpecs(MapSizingScope scope) {
         case MapSizingScope::TcpConn:         return kTcpConnSpecs;
         case MapSizingScope::SkbDrop:         return kSkbDropSpecs;
         case MapSizingScope::Bluetooth:       return kBluetoothSpecs;
+        case MapSizingScope::TcpRtt:          return kTcpRttSpecs;
     }
     return kSkbDropSpecs;
 }

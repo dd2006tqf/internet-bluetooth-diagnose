@@ -69,6 +69,7 @@
 #include "tcp_retransmit_monitor.hpp"
 #include "tcp_conn_monitor.hpp"
 #include "tcp_connect_monitor.hpp"
+#include "tcp_rtt_monitor.hpp"
 #include "assurance/tcp_connect_evaluator.hpp"
 #include "assurance/active_connectivity.hpp"
 #include "active_connectivity_monitor.hpp"
@@ -1080,6 +1081,30 @@ void start_tcp_connect_monitor_thread(ServerContext* ctx, std::thread* worker, T
         }
         monitor->stop();
         LOG_INFO(LogModule::NETWORK, "TCP connect monitor thread stopped");
+    });
+}
+
+void start_tcp_rtt_monitor_thread(ServerContext* ctx, std::thread* worker, TcpRttMonitor* monitor) {
+    *worker = std::thread([ctx, monitor]() {
+        if (!monitor) return;
+        LOG_INFO(LogModule::TCP_LOSS, "TCP passive RTT monitor thread started");
+        while (ctx->running.load() && !ctx->tcp_rtt_stop.load()) {
+            const auto stats = monitor->getStats();
+            if (stats.activeConns > 0) {
+                LOG_INFO(LogModule::TCP_LOSS, "TCP passive RTT tick: active_conns=" << stats.activeConns
+                    << " avg_rtt=" << stats.avgRttUs << "us"
+                    << " p50=" << stats.p50RttUs << "us"
+                    << " p90=" << stats.p90RttUs << "us"
+                    << " p99=" << stats.p99RttUs << "us"
+                    << " total_samples=" << stats.totalSamples);
+            }
+            const uint32_t interval = ctx->cfg.tcp_rtt.interval_ms.load();
+            for (int i = 0; i < static_cast<int>(interval / 100) && (ctx->running.load() && !ctx->tcp_rtt_stop.load()); ++i) {
+                std::this_thread::sleep_for(100ms);
+            }
+        }
+        monitor->stop();
+        LOG_INFO(LogModule::TCP_LOSS, "TCP passive RTT monitor thread stopped");
     });
 }
 

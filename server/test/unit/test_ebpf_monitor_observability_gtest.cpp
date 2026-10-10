@@ -8,6 +8,7 @@
 #include "tcp_retransmit_monitor.hpp"
 #include "tcp_conn_monitor.hpp"
 #include "skb_drop_monitor.hpp"
+#include "tcp_rtt_monitor.hpp"
 #include "bt_audio_analyzer.hpp"
 
 using namespace weaknet_dbus;
@@ -108,4 +109,10 @@ TEST(EbpfMonitorInterfaceTest, FailedInitializationReportsFallbackOrError) {
     EXPECT_FALSE(skbDrop.isAvailable());
     EXPECT_TRUE(skbDrop.commonState() == EbpfMonitorState::Error ||
                 skbDrop.commonState() == EbpfMonitorState::Fallback);
+
+    TcpRttMonitor tcpRtt;
+    EXPECT_FALSE(tcpRtt.init("/nonexistent/tcp_rtt.bpf.o"));
+    EXPECT_FALSE(tcpRtt.isAvailable());
+    EXPECT_TRUE(tcpRtt.commonState() == EbpfMonitorState::Error ||
+                tcpRtt.commonState() == EbpfMonitorState::Fallback);
 }

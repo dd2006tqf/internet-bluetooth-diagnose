@@ -672,6 +672,16 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
             return false;
         }
     }
+    // ===== tcp-rtt =====
+    // D-Bus Method: GetTcpRttStats → STRING (JSON)
+    else if (command == "tcp-rtt") {
+        if (weaknet_get_tcp_rtt_stats(buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ 被动 TCP RTT 统计: %s\n", buffer);
+        } else {
+            printf("❌ 被动 TCP RTT 查询失败: %s\n", error);
+            return false;
+        }
+    }
     // ===== dns-stats =====
     // D-Bus Method: GetDnsStats → STRING
     else if (command == "dns-stats") {

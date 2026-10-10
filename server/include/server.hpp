@@ -51,6 +51,7 @@ class TcpConnMonitor;       // 前置声明：TCP 连接生命周期监控（eBP
 class TcpConnectMonitor;    // 前置声明：TCP 建连可观测性（eBPF）
 class ActiveConnectivityMonitor; // 前置声明：受控主动连通性探测
 class SkbDropMonitor;       // 前置声明：Socket 丢包归因监控（eBPF）
+class TcpRttMonitor;        // 前置声明：被动 TCP RTT 监控（eBPF）
 class DatabaseManager;      // 前置声明：SQLite 历史数据持久化
 class WirelessEventStore;   // 前置声明：规范化无线设备事件存储（Phase 1）
 class BtLinkQualityTracker; // 前置声明：蓝牙链路质量跟踪器（Phase 2）
@@ -111,6 +112,7 @@ struct ServerContext {
     TcpConnMonitor* tcp_conn_monitor = nullptr;
     SkbDropMonitor* skb_drop_monitor = nullptr;
     TcpConnectMonitor* tcp_connect_monitor = nullptr;
+    TcpRttMonitor* tcp_rtt_monitor = nullptr;
 
     /// 受控主动连通性探测（宿主能力证据的唯一来源）
     std::unique_ptr<ActiveConnectivityMonitor> active_probe;
@@ -179,6 +181,7 @@ struct ServerContext {
     std::atomic<bool> tcp_retrans_stop{false};
     std::atomic<bool> tcp_conn_stop{false};
     std::atomic<bool> tcp_connect_stop{false};
+    std::atomic<bool> tcp_rtt_stop{false};
     std::atomic<bool> bt_events_stop{false};
     std::atomic<bool> active_probe_stop{false};
 
@@ -244,6 +247,7 @@ void start_process_net_profiler_thread(ServerContext* ctx, std::thread* worker, 
 void start_tcp_retrans_monitor_thread(ServerContext* ctx, std::thread* worker, TcpRetransMonitor* monitor);     ///< TCP 连接级重传（tcp_retransmit.bpf.o）
 void start_tcp_conn_monitor_thread(ServerContext* ctx, std::thread* worker, TcpConnMonitor* monitor);        ///< TCP 连接生命周期（tcp_conn_stats.bpf.o）
 void start_tcp_connect_monitor_thread(ServerContext* ctx, std::thread* worker, TcpConnectMonitor* monitor);   ///< TCP 建连（tcp_connect.bpf.o）
+void start_tcp_rtt_monitor_thread(ServerContext* ctx, std::thread* worker, TcpRttMonitor* monitor);           ///< 被动 TCP RTT（tcp_rtt.bpf.o）
 void start_active_probe_thread(ServerContext* ctx, std::thread* worker);   ///< 受控主动连通性探测
 void applyActiveProbeConfig(ServerContext* ctx);                           ///< 根据当前配置更新并下发主动探测参数
 

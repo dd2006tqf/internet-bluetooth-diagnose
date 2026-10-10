@@ -406,6 +406,14 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         *error = "skb_drop: unknown field '" + field + "'";
         return false;
     }
+    if (mon == "tcp_rtt") {
+        if (field == "enabled") return setBoolField(cfg->tcp_rtt.enabled, val, error);
+        if (field == "bpf_obj") { cfg->tcp_rtt.bpf_obj.set(trim(val)); return true; }
+        if (field == "interval" || field == "interval_ms") return setDurationField(cfg->tcp_rtt.interval_ms, val, error);
+        if (isMapSizingField(field)) return setMapSizingField(cfg->tcp_rtt.map_sizing, field, val, mon, error);
+        *error = "tcp_rtt: unknown field '" + field + "'";
+        return false;
+    }
     *error = "unknown monitor: '" + mon + "'";
     return false;
 }
@@ -609,6 +617,7 @@ bool getMonitorEnabled(const WeakNetConfig& cfg, const std::string& monitor, boo
     else if (monitor == "tcp_retrans") *enabled = cfg.tcp_retrans.enabled.load();
     else if (monitor == "tcp_conn") *enabled = cfg.tcp_conn.enabled.load();
     else if (monitor == "skb_drop") *enabled = cfg.skb_drop.enabled.load();
+    else if (monitor == "tcp_rtt") *enabled = cfg.tcp_rtt.enabled.load();
     else return false;
     return true;
 }
@@ -632,6 +641,7 @@ bool setMonitorEnabled(WeakNetConfig* cfg, const std::string& monitor, bool enab
     else if (monitor == "tcp_retrans") cfg->tcp_retrans.enabled.store(enabled);
     else if (monitor == "tcp_conn") cfg->tcp_conn.enabled.store(enabled);
     else if (monitor == "skb_drop") cfg->skb_drop.enabled.store(enabled);
+    else if (monitor == "tcp_rtt") cfg->tcp_rtt.enabled.store(enabled);
     else return false;
     return true;
 }
@@ -750,6 +760,12 @@ static bool applyMonitorParam(WeakNetConfig* cfg, const std::string& key,
         if (field == "bpf_obj") { cfg->skb_drop.bpf_obj.set(trim(value)); return true; }
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "skb_drop.interval: must be 1000ms~600000ms"; return false; } cfg->skb_drop.interval_ms.store(ms); return true; }
         if (isMapSizingField(field)) return setMapSizingField(cfg->skb_drop.map_sizing, field, value, "skb_drop", error);
+    }
+    if (mon == "tcp_rtt") {
+        if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "tcp_rtt.enabled: invalid bool"; return false; } cfg->tcp_rtt.enabled.store(b); return true; }
+        if (field == "bpf_obj") { cfg->tcp_rtt.bpf_obj.set(trim(value)); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "tcp_rtt.interval: must be 1000ms~600000ms"; return false; } cfg->tcp_rtt.interval_ms.store(ms); return true; }
+        if (isMapSizingField(field)) return setMapSizingField(cfg->tcp_rtt.map_sizing, field, value, "tcp_rtt", error);
     }
     if (mon == "server") {
         if (field == "data_dir") { cfg->data_dir.set(trim(value)); return true; }
@@ -936,6 +952,9 @@ bool snapshotMonitorParamImpl(const WeakNetConfig& cfg, const std::string& key,
     }
     if (mon == "skb_drop") {
         if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.skb_drop.interval_ms.load()); return true; }
+    }
+    if (mon == "tcp_rtt") {
+        if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.tcp_rtt.interval_ms.load()); return true; }
     }
     if (mon == "edge") {
         if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.edge.interval_ms.load()); return true; }
@@ -1153,7 +1172,7 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
     static const std::set<std::string> valid = {
         "all", "server", "rtt", "rssi", "tcp_loss", "traffic", "quality",
         "bluetooth", "dns", "wifi_loss", "http_latency", "process_profiler",
-        "tcp_retrans", "tcp_conn", "skb_drop", "tcp_connect", "active_probe", "edge"
+        "tcp_retrans", "tcp_conn", "skb_drop", "tcp_connect", "tcp_rtt", "active_probe", "edge"
     };
     if (valid.find(monitor) == valid.end()) {
         if (error) *error = "unknown monitor: " + monitor;
@@ -1335,6 +1354,16 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeString("map_sizing_mode", cfg.skb_drop.map_sizing.mode.get());
         writeUint("map_sizing_entries", cfg.skb_drop.map_sizing.entries.load());
         writeUint("map_sizing_ram_budget_bp", cfg.skb_drop.map_sizing.ram_budget_bp.load());
+        json.seekp(-1, std::ios_base::cur); json << "},";
+    }
+    if (monitor == "all" || monitor == "tcp_rtt") {
+        json << "\"tcp_rtt\":{";
+        writeBool("enabled", cfg.tcp_rtt.enabled.load());
+        writeString("bpf_obj", cfg.tcp_rtt.bpf_obj.get());
+        writeUint("interval_ms", cfg.tcp_rtt.interval_ms.load());
+        writeString("map_sizing_mode", cfg.tcp_rtt.map_sizing.mode.get());
+        writeUint("map_sizing_entries", cfg.tcp_rtt.map_sizing.entries.load());
+        writeUint("map_sizing_ram_budget_bp", cfg.tcp_rtt.map_sizing.ram_budget_bp.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
 

@@ -76,6 +76,7 @@ enum class MapSizingScope {
     TcpConn,           ///< tcp_conn 配置块
     SkbDrop,           ///< skb_drop 配置块
     Bluetooth,         ///< bluetooth 配置块（a2dp）
+    TcpRtt,            ///< tcp_rtt 被动 RTT 配置块
 };
 
 /// auto 模式下每 entry 的内核开销估算（map 元数据 + 桶开销）

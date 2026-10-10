@@ -607,6 +607,21 @@ bool weaknet_get_ebpf_monitor_health(char* buffer, size_t buffer_size, char* err
  */
 bool weaknet_get_skb_drop_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
 
+/**
+ * @brief 查询被动 TCP RTT 与拥塞统计快照 (JSON)
+ *
+ * 通过 D-Bus 调用 GetTcpRttStats 方法，返回由内核 tracepoint/tcp/tcp_probe
+ * 被动统计的真实连接平滑 RTT（P50/P90/P99、平均值）与连接快照。
+ *
+ * @param buffer       结果缓冲区
+ * @param buffer_size  缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size   错误信息缓冲区大小
+ * @return true  - 成功
+ * @return false - D-Bus 调用失败
+ */
+bool weaknet_get_tcp_rtt_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
 /* ============================== 运行时配置 API ============================== */
 
 /**

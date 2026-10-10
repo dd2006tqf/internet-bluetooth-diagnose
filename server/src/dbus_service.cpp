@@ -52,6 +52,7 @@
 #include "tcp_retransmit_monitor.hpp"
 #include "tcp_conn_monitor.hpp"
 #include "skb_drop_monitor.hpp"
+#include "tcp_rtt_monitor.hpp"
 #include "weaknet_config.hpp"
 #include "utils/json_escape.hpp"
 #include "database_manager.hpp"
@@ -160,6 +161,10 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetSkbDropStats)) {
         self->handleGetSkbDropStats(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetTcpRttStats)) {
+        self->handleGetTcpRttStats(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetEbpfMonitorHealth)) {
@@ -1265,6 +1270,68 @@ bool DbusService::handleGetSkbDropStats(DBusConnection* conn, DBusMessage* msg) 
 }
 
 /**
+ * @brief DBus 方法实现：GetTcpRttStats —— 查询被动 TCP RTT 与拥塞统计（JSON）
+ */
+bool DbusService::handleGetTcpRttStats(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetTcpRttStats called");
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) {
+        LOG_ERROR(LogModule::DBUS, "handleGetTcpRttStats: failed to create reply");
+        return false;
+    }
+
+    std::ostringstream json;
+    bool has_stats = false;
+    TcpRttSummary summary;
+    if (ctx_) {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        if (ctx_->tcp_rtt_monitor) {
+            summary = ctx_->tcp_rtt_monitor->getStats();
+            has_stats = true;
+        }
+    }
+
+    if (has_stats) {
+        json << "{\"total_samples\":" << summary.totalSamples
+             << ",\"active_connections\":" << summary.activeConns
+             << ",\"avg_rtt_us\":" << summary.avgRttUs
+             << ",\"p50_rtt_us\":" << summary.p50RttUs
+             << ",\"p90_rtt_us\":" << summary.p90RttUs
+             << ",\"p99_rtt_us\":" << summary.p99RttUs
+             << ",\"min_rtt_us\":" << summary.minRttUs
+             << ",\"max_rtt_us\":" << summary.maxRttUs
+             << ",\"connections\":[";
+        for (size_t i = 0; i < summary.topConns.size(); ++i) {
+            if (i > 0) json << ",";
+            const auto& c = summary.topConns[i];
+            json << "{\"src\":\"" << weaknet_utils::escapeJsonString(c.saddr) << ":" << c.sport
+                 << "\",\"dst\":\"" << weaknet_utils::escapeJsonString(c.daddr) << ":" << c.dport
+                 << "\",\"srtt_us\":" << c.srttUs
+                 << ",\"min_rtt_us\":" << c.minRttUs
+                 << ",\"max_rtt_us\":" << c.maxRttUs
+                 << ",\"snd_cwnd\":" << c.sndCwnd
+                 << ",\"snd_wnd\":" << c.sndWnd
+                 << ",\"rcv_wnd\":" << c.rcvWnd
+                 << ",\"samples\":" << c.sampleCount
+                 << ",\"last_timestamp_ns\":" << c.lastTimestampNs << "}";
+        }
+        json << "]}";
+    } else {
+        json << "{\"total_samples\":0,\"active_connections\":0,\"connections\":[],\"error\":\"tcp_rtt monitor unavailable\"}";
+    }
+
+    std::string result = json.str();
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = result.c_str();
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+/**
  * @brief DBus 方法实现：GetEbpfMonitorHealth —— 返回所有 eBPF monitor 健康状态（JSON）
  * @return JSON 字符串,结构: {"monitors":[{name,state,available,healthy,map_reads,map_read_errors,samples,average_read_time_us,status}, ...]}
  *
@@ -1305,6 +1372,7 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
             {"TcpRetransMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_retrans_monitor)},
             {"TcpConnMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_conn_monitor)},
             {"SkbDropMonitor", static_cast<const IEbpfMonitor*>(ctx_->skb_drop_monitor)},
+            {"TcpRttMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_rtt_monitor)},
             {"BtAudioAnalyzer", bt_audio}
         };
 

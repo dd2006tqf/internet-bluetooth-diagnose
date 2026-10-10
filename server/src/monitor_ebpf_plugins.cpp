@@ -26,6 +26,7 @@
 #include "tcp_conn_monitor.hpp"
 #include "skb_drop_monitor.hpp"
 #include "tcp_connect_monitor.hpp"
+#include "tcp_rtt_monitor.hpp"
 #include "bt_event_monitor.hpp"
 #include "bt_link_quality_tracker.hpp"
 #include "site_incident_correlator.hpp"
@@ -397,6 +398,52 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// 被动 TCP RTT 监控（order 20）
+// ---------------------------------------------------------------------------
+class TcpRttPlugin : public IMonitorPlugin {
+    ServerContext* ctx_ = nullptr;
+    std::thread worker_;
+    std::unique_ptr<TcpRttMonitor> monitor_;
+public:
+    const char* name() const override { return "tcp_rtt"; }
+    int order() const override { return 20; }
+    bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
+    bool start(ServerContext* ctx) override {
+        if (!ctx->cfg.tcp_rtt.enabled.load()) {
+            LOG_INFO(LogModule::TCP_LOSS, "TCP passive RTT monitor disabled by config");
+            return true;
+        }
+        monitor_ = std::make_unique<TcpRttMonitor>();
+        if (!monitor_->init(ctx->cfg.tcp_rtt.bpf_obj.get().c_str(),
+                            weaknet::resolveScopePlan(weaknet::MapSizingScope::TcpRtt,
+                                {ctx->cfg.tcp_rtt.map_sizing.mode.get(), ctx->cfg.tcp_rtt.map_sizing.entries.load(),
+                                 ctx->cfg.tcp_rtt.map_sizing.ram_budget_bp.load()}, weaknet::totalPhysicalRamBytes()))) {
+            LOG_WARNING(LogModule::TCP_LOSS, "TcpRttPlugin: init failed for "
+                        << ctx->cfg.tcp_rtt.bpf_obj.get());
+            monitor_.reset();
+            return false;
+        }
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+            ctx->tcp_rtt_monitor = monitor_.get();
+        }
+        ctx->tcp_rtt_stop.store(false);
+        start_tcp_rtt_monitor_thread(ctx, &worker_, monitor_.get());
+        return true;
+    }
+    void stop() override {
+        if (!ctx_) return;
+        ctx_->tcp_rtt_stop.store(true);
+        if (worker_.joinable()) worker_.join();
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+            if (ctx_->tcp_rtt_monitor == monitor_.get()) ctx_->tcp_rtt_monitor = nullptr;
+            monitor_.reset();
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
 // 蓝牙设备事件采集（order 10，依赖 bluetooth 插件先启动以拿到 adapter 上下文，
 // 但本身不直接依赖它——eBPF 挂内核符号，与 BlueZ D-Bus 状态互相独立）
 //
@@ -547,6 +594,7 @@ void registerEbpfPlugins() {
     registerPlugin("tcp_conn",        [] { return std::make_unique<TcpConnPlugin>(); });
     registerPlugin("skb_drop",        [] { return std::make_unique<SkbDropPlugin>(); });
     registerPlugin("tcp_connect",     [] { return std::make_unique<TcpConnectPlugin>(); });
+    registerPlugin("tcp_rtt",         [] { return std::make_unique<TcpRttPlugin>(); });
     registerPlugin("bt_events",       [] { return std::make_unique<BtEventsPlugin>(); });
 }
 

@@ -320,7 +320,7 @@ int main(int argc, char** argv) {
         // active_probe / edge——它们可以被 `set` 但 `list` 不显示，用户无从发现。
         printf("rtt\nrssi\ntcp_loss\ntraffic\nquality\n"
                "bluetooth\ndns\nwifi_loss\nhttp_latency\nprocess_profiler\n"
-               "tcp_retrans\ntcp_conn\nskb_drop\ntcp_connect\n"
+               "tcp_retrans\ntcp_conn\nskb_drop\ntcp_connect\ntcp_rtt\n"
                "active_probe\nedge\nserver\nall\n");
         ok = true;
     } else {

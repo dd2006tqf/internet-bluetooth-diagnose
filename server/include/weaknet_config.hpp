@@ -202,6 +202,13 @@ struct WeakNetConfig {
         std::atomic<uint32_t> capture_pages{32};
     } tcp_connect;
 
+    struct {
+        std::atomic<bool> enabled{true};
+        ConfigString bpf_obj{"build/tcp_rtt.bpf.o"};
+        std::atomic<uint32_t> interval_ms{10000};
+        MapSizingCfg map_sizing;   ///< tcp_rtt_stats
+    } tcp_rtt;
+
     // ---------- 受控主动连通性探测 ----------
     //
     // 默认 **关闭**，且**不内置任何第三方默认目标**。

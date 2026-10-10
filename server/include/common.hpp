@@ -44,6 +44,7 @@ static constexpr const char kMethodGetWifiLossStats[]        = "GetWifiLossStats
 static constexpr const char kMethodGetHttpLatencyStats[]    = "GetHttpLatencyStats";///< 查询 HTTP eBPF 请求延迟统计（p50/p99/慢请求）
 static constexpr const char kMethodGetProcessProfiling[]    = "GetProcessProfiling";///< 查询 eBPF 进程网络画像（Top N 带宽进程）
 static constexpr const char kMethodGetSkbDropStats[]        = "GetSkbDropStats";    ///< 查询 Socket/skb 丢包原因精确归因统计（JSON）
+static constexpr const char kMethodGetTcpRttStats[]         = "GetTcpRttStats";     ///< 查询被动 TCP RTT 与拥塞统计（JSON）
 static constexpr const char kMethodGetEbpfMonitorHealth[]   = "GetEbpfMonitorHealth";///< 查询所有 eBPF 监控器健康状态（是否成功加载）
 static constexpr const char kMethodGetHistory[]              = "GetHistory";         ///< 查询 SQLite 历史快照（支持时间范围和网卡过滤）
 static constexpr const char kMethodQueryDeviceEvents[]      = "QueryDeviceEvents";  ///< 查询规范化无线设备事件（时间范围/设备/类型过滤）
