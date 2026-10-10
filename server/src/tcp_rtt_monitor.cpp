@@ -58,10 +58,14 @@ struct TcpRttGlobalStatBpf {
     uint32_t max_srtt_us;
 };
 
-std::string formatIpv4(uint32_t addr) {
+// 把内核 tracepoint 中 sockaddr_storage.sin_addr（big-endian 网络序）按
+// 点分十进制字符串输出。bpf 侧写入的是网络序 uint32_t，这里要 inet_ntop 的
+// network-order s_addr 语义，因此直接传入原值即可（inet_ntop 期望 s_addr 为
+// 网络序，无需 ntohl）。
+std::string formatIpv4(uint32_t addr_network_order) {
     char buf[INET_ADDRSTRLEN] = {0};
     struct in_addr in;
-    in.s_addr = addr;
+    in.s_addr = addr_network_order;
     if (::inet_ntop(AF_INET, &in, buf, sizeof(buf))) {
         return std::string(buf);
     }

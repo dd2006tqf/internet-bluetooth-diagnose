@@ -114,15 +114,36 @@ int trace_tcp_probe(struct trace_event_raw_tcp_probe *ctx)
     }
 
     // 从 trace_event_raw_tcp_probe 提取四元组
-    // 内核 fast_assign 使用 struct sockaddr_in 结构对齐
+    //
+    // 字段布局说明：内核 trace_tcp_probe() 通过 TP_fast_assign 把
+    // sockaddr_storage(28B) 整块拷贝到 saddr/daddr，因此：
+    //   +0..1  = ss_family (AF_INET=2)
+    //   +2..3  = sin_port (big-endian)
+    //   +4..7  = sin_addr (big-endian IPv4)
+    // 端口号以 sockaddr_in.sin_port（偏移 2）为准，不用 ctx->sport/dport
+    // ——这两个 tracepoint 字段在部分内核版本上语义不稳定。
+    //
+    // 注意：用 ctx->saddr[N] 数组下标访问会产生「ctx + 常量偏移」的访存，
+    // 校验器与 CO-RE 都接受；绝不要写 (u8*)ctx + off 或 memcpy(ctx->saddr+N)
+    // ——后者是修改后的 ctx 指针解引用，校验器报
+    // "dereference of modified ctx ptr disallowed" 直接拒绝加载。
     struct tcp_conn_key key = {};
     key.family = family;
-    key.sport = ctx->sport;
-    key.dport = ctx->dport;
 
-    // IPv4 地址提取：saddr/daddr 前 4 字节为网络字节序 IPv4 地址
-    __builtin_memcpy(&key.saddr, ctx->saddr, sizeof(key.saddr));
-    __builtin_memcpy(&key.daddr, ctx->daddr, sizeof(key.daddr));
+    __u16 sport_be = (((__u16)ctx->saddr[2]) << 8) | ctx->saddr[3];
+    __u16 dport_be = (((__u16)ctx->daddr[2]) << 8) | ctx->daddr[3];
+    key.sport = sport_be;
+    key.dport = dport_be;
+
+    // IPv4 地址 = sockaddr_in.sin_addr @ sockaddr offset 4，网络字节序原样保留
+    key.saddr = (((__u32)ctx->saddr[4])       ) |
+                (((__u32)ctx->saddr[5]) <<  8) |
+                (((__u32)ctx->saddr[6]) << 16) |
+                (((__u32)ctx->saddr[7]) << 24);
+    key.daddr = (((__u32)ctx->daddr[4])       ) |
+                (((__u32)ctx->daddr[5]) <<  8) |
+                (((__u32)ctx->daddr[6]) << 16) |
+                (((__u32)ctx->daddr[7]) << 24);
 
     // 内核计算得到的平滑 RTT：tp->srtt_us >> 3
     __u32 rtt_us = ctx->srtt;
