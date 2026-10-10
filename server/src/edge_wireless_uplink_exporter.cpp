@@ -196,12 +196,13 @@ std::string EdgeWirelessUplinkExporter::buildBody(const WirelessUplinkPayload& p
     }
     body << "],";
 
-    // 环境窗口：承载深度内核快照（进程画像 Top N + 协议栈丢包归因）。
+    // 环境窗口：承载深度内核快照（进程画像 Top N + 协议栈丢包归因 + 被动 TCP RTT 连接画像）。
     // 只有确实取到数据时才 available=true——绝不用空数组冒充"观测过且正常"。
     const bool has_process_data = !payload.top_processes.empty();
     const bool has_drop_data = payload.drop_stats.has_value();
+    const bool has_tcp_rtt_data = payload.tcp_rtt_stats.has_value();
     body << "\"env_window\":{"
-         << "\"available\":" << ((has_process_data || has_drop_data) ? "true" : "false") << ","
+         << "\"available\":" << ((has_process_data || has_drop_data || has_tcp_rtt_data) ? "true" : "false") << ","
          << "\"link_type\":\"UNKNOWN\","
          << "\"wifi_anomaly\":false,"
          << "\"coexistence_warning\":false,"
@@ -240,6 +241,31 @@ std::string EdgeWirelessUplinkExporter::buildBody(const WirelessUplinkPayload& p
                  << ",\"last_timestamp_ns\":" << r.lastTimestampNs << "}";
         }
         body << "]}";
+        first_snapshot = false;
+    }
+    if (has_tcp_rtt_data) {
+        const auto& rs = *payload.tcp_rtt_stats;
+        if (!first_snapshot) body << ",";
+        body << "{\"kind\":\"tcp_rtt_top\",\"ts_ms\":" << payload.env_to_ms
+             << ",\"total_samples\":" << rs.totalSamples
+             << ",\"active_connections\":" << rs.activeConns
+             << ",\"avg_rtt_us\":" << rs.avgRttUs
+             << ",\"p50_rtt_us\":" << rs.p50RttUs
+             << ",\"p90_rtt_us\":" << rs.p90RttUs
+             << ",\"p99_rtt_us\":" << rs.p99RttUs
+             << ",\"top_connections\":[";
+        for (size_t i = 0; i < rs.topConns.size(); ++i) {
+            const auto& c = rs.topConns[i];
+            if (i) body << ",";
+            body << "{\"src\":" << jsonStr(c.saddr + ":" + std::to_string(c.sport))
+                 << ",\"dst\":" << jsonStr(c.daddr + ":" + std::to_string(c.dport))
+                 << ",\"srtt_us\":" << c.srttUs
+                 << ",\"min_rtt_us\":" << c.minRttUs
+                 << ",\"max_rtt_us\":" << c.maxRttUs
+                 << ",\"snd_cwnd\":" << c.sndCwnd
+                 << ",\"samples\":" << c.sampleCount << "}";
+        }
+        body << "]}";
     }
 
     body << "]}}";
@@ -265,12 +291,14 @@ EdgeWirelessUplinkExporter::EdgeWirelessUplinkExporter(
     weaknet_dbus::DatabaseManager& db,
     std::string state_path,
     ProfilerSampler profiler_sampler,
-    DropSampler drop_sampler)
+    DropSampler drop_sampler,
+    TcpRttSampler tcp_rtt_sampler)
     : config_(config),
       db_(db),
       state_path_(std::move(state_path)),
       profiler_sampler_(std::move(profiler_sampler)),
-      drop_sampler_(std::move(drop_sampler)) {}
+      drop_sampler_(std::move(drop_sampler)),
+      tcp_rtt_sampler_(std::move(tcp_rtt_sampler)) {}
 
 EdgeWirelessUplinkExporter::~EdgeWirelessUplinkExporter() { stop(); }
 
@@ -424,6 +452,16 @@ bool EdgeWirelessUplinkExporter::collect(WirelessUplinkPayload* out, std::string
                 drop_stats.topReasons.resize(5);
             }
             out->drop_stats = std::move(drop_stats);
+        }
+    }
+    if (tcp_rtt_sampler_) {
+        weaknet_dbus::TcpRttSummary rtt_stats;
+        tcp_rtt_sampler_(&rtt_stats);
+        if (rtt_stats.totalSamples > 0 || !rtt_stats.topConns.empty()) {
+            if (rtt_stats.topConns.size() > 10) {
+                rtt_stats.topConns.resize(10);
+            }
+            out->tcp_rtt_stats = std::move(rtt_stats);
         }
     }
 

@@ -199,6 +199,8 @@ public:
         json << ",";
         dump_sle("tcp_connect", exp.tcp_connect);
         json << ",";
+        dump_sle("tcp_rtt", exp.tcp_rtt);
+        json << ",";
         dump_sle("http_access", exp.http_access);
         json << ",";
         dump_sle("captive_portal", exp.captive_portal);

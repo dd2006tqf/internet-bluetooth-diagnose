@@ -182,8 +182,8 @@ def test_catalog_version_matches_cross_end_golden_vector() -> None:
     两个测试中必有一个失败——而不是等到真机上才发现全线 403。
     """
 
-    assert catalog_version() == "bdb093ac5310"
-    assert TOP_LEVEL_CATALOG_VERSION == "bdb093ac5310"
+    assert catalog_version() == "16f270ee5b0b"
+    assert TOP_LEVEL_CATALOG_VERSION == "16f270ee5b0b"
 
 
 def test_catalog_version_changes_when_content_changes() -> None:

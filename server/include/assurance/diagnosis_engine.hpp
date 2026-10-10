@@ -192,6 +192,7 @@ private:
         if (sle_name == "rf_health") return &exp.rf_health;
         if (sle_name == "dns_service") return &exp.dns_service;
         if (sle_name == "tcp_connect") return &exp.tcp_connect;
+        if (sle_name == "tcp_rtt") return &exp.tcp_rtt;
         if (sle_name == "http_access") return &exp.http_access;
         if (sle_name == "captive_portal") return &exp.captive_portal;
         if (sle_name == "active_dns") return &exp.active_dns;
@@ -219,7 +220,7 @@ private:
             // 提取具体 EvidenceItem metric
             for (const auto* sle : {&exp.ip_reachability, &exp.responsiveness, &exp.reliability,
                                     &exp.rf_health, &exp.dns_service, &exp.tcp_connect,
-                                    &exp.http_access, &exp.captive_portal}) {
+                                    &exp.tcp_rtt, &exp.http_access, &exp.captive_portal}) {
                 for (const auto& item : sle->evidence) {
                     if (field == item.metric) {
                         return item.value;

@@ -31,7 +31,7 @@ const weaknet::ActionRegistry& registry() {
 // 与云端 edge_action_catalog.TOP_LEVEL_CATALOG_VERSION 相同的金标值。
 // 改动序列化规则或目录/白名单内容时，两端必须同时更新，否则跨端比较失效。
 TEST(ActionCatalogVersion, MatchesCrossEndGoldenVector) {
-    EXPECT_EQ(weaknet::actionCatalogVersion(registry()), "bdb093ac5310");
+    EXPECT_EQ(weaknet::actionCatalogVersion(registry()), "16f270ee5b0b");
 }
 
 TEST(ActionCatalogVersion, IsTwelveHexChars) {
@@ -95,5 +95,5 @@ TEST(TrialableKeys, ExposedSortedAndNonEmpty) {
         EXPECT_LT(keys[i - 1], keys[i]) << "白名单未按字节序升序（或存在重复）";
     }
     // 与云端 CONFIG_KEYS 的规模对应；数量变化必须两端同步
-    EXPECT_EQ(keys.size(), 39u);
+    EXPECT_EQ(keys.size(), 41u);
 }

@@ -20,6 +20,7 @@ struct NetworkExperience {
     SleResult rf_health;   // Advisory
     SleResult dns_service;   // Phase 2A: DNS Service SLE
     SleResult tcp_connect;    // Stage 2: TCP Connect SLE
+    SleResult tcp_rtt;        // Passive TCP RTT (trace_tcp_probe srtt) SLE
     SleResult http_access;    // Stage 2: HTTP/HTTPS Access SLE
     SleResult captive_portal; // Stage 2: Captive Portal SLE
 

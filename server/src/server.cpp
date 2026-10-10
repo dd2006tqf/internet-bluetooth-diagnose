@@ -71,6 +71,7 @@
 #include "tcp_connect_monitor.hpp"
 #include "tcp_rtt_monitor.hpp"
 #include "assurance/tcp_connect_evaluator.hpp"
+#include "assurance/tcp_rtt_evaluator.hpp"
 #include "assurance/active_connectivity.hpp"
 #include "active_connectivity_monitor.hpp"
 #include "assurance/http_access_evaluator.hpp"
@@ -461,6 +462,25 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                         }
                     }
 
+                    // Passive TCP RTT SLE：已建立连接在数据传输阶段的内核平滑 srtt。
+                    // 与主动 ICMP 探测（Responsiveness）分离：反映真实业务端到端传输时延。
+                    weaknet::SleResult tcp_rtt_sle;
+                    {
+                        std::shared_lock<std::shared_mutex> mon_lock(ctx->monitor_pointers_mutex);
+                        if (ctx->tcp_rtt_monitor && ctx->tcp_rtt_monitor->isAvailable()) {
+                            const auto rtt_summary = ctx->tcp_rtt_monitor->getStats();
+                            tcp_rtt_sle = weaknet::TcpRttEvaluator::evaluate(rtt_summary);
+                            LOG_INFO(LogModule::NETWORK, "TCP_RTT SLE: state="
+                                << weaknet::healthStateToString(tcp_rtt_sle.state)
+                                << " coverage=" << weaknet::coverageToString(tcp_rtt_sle.coverage)
+                                << " reason=" << tcp_rtt_sle.reason
+                                << " p50=" << rtt_summary.p50RttUs << "us"
+                                << " p90=" << rtt_summary.p90RttUs << "us"
+                                << " conns=" << rtt_summary.activeConns
+                                << " samples=" << rtt_summary.totalSamples);
+                        }
+                    }
+
                     // HTTP/HTTPS Access SLE：TCP 通了不代表应用层可用。
                     // 语义边界：4xx 是业务语义（服务端正常应答），只有 5xx 与
                     // 无响应/TLS 失败才算传输层故障。
@@ -546,7 +566,7 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     }
 
                     exp = weaknet::OverallPolicy::decide(active_iface, reach_sle, resp_sle, rel_sle,
-                                                         rf_sle, dns_sle, tcp_sle,
+                                                         rf_sle, dns_sle, tcp_sle, tcp_rtt_sle,
                                                          http_sle, portal_sle,
                                                          active.dns, active.tcp,
                                                          active.https, active.portal,
@@ -1488,6 +1508,13 @@ int start_server(int argc, char** argv) {
                     std::shared_lock<std::shared_mutex> lock(ctx.monitor_pointers_mutex);
                     if (ctx.skb_drop_monitor && ctx.skb_drop_monitor->isAvailable()) {
                         *out = ctx.skb_drop_monitor->getDropStats();
+                    }
+                },
+                [&ctx](weaknet_dbus::TcpRttSummary* out) {
+                    if (!out) return;
+                    std::shared_lock<std::shared_mutex> lock(ctx.monitor_pointers_mutex);
+                    if (ctx.tcp_rtt_monitor && ctx.tcp_rtt_monitor->isAvailable()) {
+                        *out = ctx.tcp_rtt_monitor->getStats();
                     }
                 });
             if (ctx.wireless_uplink->start()) {

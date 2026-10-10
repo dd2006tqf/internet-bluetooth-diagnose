@@ -114,6 +114,7 @@ NetworkSleKeyLiteral = Literal[
 ServiceSleKeyLiteral = Literal[
     "dns",
     "tcp_connect",
+    "tcp_rtt",
     "http_access",
     "captive_portal",
     "active_dns",
@@ -129,6 +130,7 @@ SERVICE_SLE_KEYS: Final[frozenset[str]] = frozenset(
     {
         "dns",
         "tcp_connect",
+        "tcp_rtt",
         "http_access",
         "captive_portal",
         "active_dns",

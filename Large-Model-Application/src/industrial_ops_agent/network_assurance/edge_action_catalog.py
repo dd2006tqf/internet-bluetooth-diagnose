@@ -144,6 +144,8 @@ CONFIG_KEYS: Final[frozenset[str]] = frozenset(
         "tcp_conn.interval",
         "skb_drop.interval_ms",
         "skb_drop.interval",
+        "tcp_rtt.interval_ms",
+        "tcp_rtt.interval",
         "edge.interval_ms",
         "edge.interval",
         "edge.timeout_ms",

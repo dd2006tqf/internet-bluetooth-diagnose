@@ -87,6 +87,7 @@ CAUSAL_CONSUMED_SLE_KEYS: frozenset[str] = frozenset(
         "dns",
         "active_dns",
         "tcp_connect",
+        "tcp_rtt",
         "active_tcp",
         "captive_portal",
     }
@@ -381,6 +382,21 @@ class NetworkCopilotService:
             )
             step += 1
             actions.append("结合重传/时延指标定位传输劣化区段")
+
+        # --- Transport: passive tcp_rtt (kernel srtt via tcp_probe) ------------
+        tcp_rtt_state = state_of(service, "tcp_rtt")
+        if tcp_rtt_state in {"BAD", "DEGRADED"}:
+            chain.append(
+                {
+                    "step": str(step),
+                    "explanation": (
+                        f"被动 TCP RTT（内核 srtt 观测）为 {tcp_rtt_state}：业务连接的端到端往返时延偏高，"
+                        "若本机 ICMP 探测延迟正常则指示远端端点或公网中转拥塞（advisory，非否决）。"
+                    ),
+                }
+            )
+            step += 1
+            actions.append("对比主动探测 RTT 与按连接 srtt，区分本地无线劣化与远端链路拥塞")
 
         # --- Portal interception ------------------------------------------------
         captive_state = state_of(service, "captive_portal")

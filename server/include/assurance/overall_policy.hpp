@@ -96,6 +96,28 @@ public:
                                    const SleResult& active_portal,
                                    AssessmentProfile profile,
                                    bool band_conflict = false) {
+        return decide(iface, reach, resp, rel, rf, dns, tcp_connect, SleResult{},
+                      http_access, captive_portal, active_dns, active_tcp,
+                      active_https, active_portal, profile, band_conflict);
+    }
+
+    // 含被动 TCP RTT（trace_tcp_probe srtt）的完整签名
+    static NetworkExperience decide(const std::string& iface,
+                                   const SleResult& reach,
+                                   const SleResult& resp,
+                                   const SleResult& rel,
+                                   const SleResult& rf,
+                                   const SleResult& dns,
+                                   const SleResult& tcp_connect,
+                                   const SleResult& tcp_rtt,
+                                   const SleResult& http_access,
+                                   const SleResult& captive_portal,
+                                   const SleResult& active_dns,
+                                   const SleResult& active_tcp,
+                                   const SleResult& active_https,
+                                   const SleResult& active_portal,
+                                   AssessmentProfile profile,
+                                   bool band_conflict = false) {
         NetworkExperience exp;
         exp.iface = iface;
         exp.assessment_profile = profile;
@@ -105,6 +127,7 @@ public:
         exp.rf_health = rf;
         exp.dns_service = dns;
         exp.tcp_connect = tcp_connect;
+        exp.tcp_rtt = tcp_rtt;
         exp.http_access = http_access;
         exp.captive_portal = captive_portal;
         exp.active_dns = active_dns;
@@ -274,6 +297,13 @@ public:
             exp.warnings.push_back(
                 "Observed TCP connect failures on application endpoints (not an Internet availability verdict)");
         }
+        const bool tcp_rtt_app = (tcp_rtt.applicability == Applicability::APPLICABLE &&
+                                  profile == AssessmentProfile::INTERNET_ACCESS &&
+                                  (tcp_rtt.state != HealthState::UNKNOWN || tcp_rtt.coverage != Coverage::NONE));
+        if (tcp_rtt_app && tcp_rtt.state == HealthState::BAD) {
+            exp.warnings.push_back(
+                "Observed high passive TCP srtt on application flows (advisory, endpoint-dependent)");
+        }
 
         // Captive Portal：仅当存在受控探测证据时才可确诊。
         // scope == NO_CAPABILITY 表示当前没有可靠的 portal 判定能力
@@ -317,6 +347,10 @@ public:
         if (tcp_degraded) {
             exp.warnings.push_back(
                 "Observed TCP connect degradation on application endpoints (non-blocking)");
+        }
+        if (tcp_rtt_app && tcp_rtt.state == HealthState::DEGRADED) {
+            exp.warnings.push_back(
+                "Observed elevated passive TCP srtt on application flows (non-blocking)");
         }
         if (http_degraded) {
             exp.warnings.push_back(

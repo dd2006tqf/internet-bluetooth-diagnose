@@ -872,6 +872,7 @@ const std::vector<std::string>& trialableKeyNames() {
         "tcp_retrans.interval_ms", "tcp_retrans.interval",
         "tcp_conn.interval_ms", "tcp_conn.interval",
         "skb_drop.interval_ms", "skb_drop.interval",
+        "tcp_rtt.interval_ms", "tcp_rtt.interval",
         "edge.interval_ms", "edge.interval", "edge.timeout_ms", "edge.timeout",
     };
     // 指纹与二分查找都要求有序：排序只作用于副本，原始声明保持可解析形态。

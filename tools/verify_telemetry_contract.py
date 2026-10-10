@@ -277,11 +277,11 @@ def _check_wireless_uplink_contract(cpp_src: str) -> list[str]:
 #: `env_window.snapshots[]` 条目允许的 kind 值。云端该字段是自由 JSON 数组
 #: （EnvironmentWindowView.snapshots: list[dict]），没有 pydantic 结构约束，
 #: 因此这份白名单是板端"乱写 kind 云端照单全收"的唯一防线。
-KERNEL_SNAPSHOT_KINDS = ("process_top", "skb_drop_hist")
+KERNEL_SNAPSHOT_KINDS = ("process_top", "skb_drop_hist", "tcp_rtt_top")
 
 
 def _check_kernel_snapshot_contract(cpp_src: str) -> list[str]:
-    """深度内核快照（进程画像 / skb_drop）的 kind 与字段双侧核对。"""
+    """深度内核快照（进程画像 / skb_drop / tcp_rtt）的 kind 与字段双侧核对。"""
 
     errors: list[str] = []
     for kind in KERNEL_SNAPSHOT_KINDS:
@@ -309,6 +309,21 @@ def _check_kernel_snapshot_contract(cpp_src: str) -> list[str]:
         if _cpp_key(field) not in cpp_src:
             errors.append(f"kernel snapshot: C++ emitter is missing drop field '{field}'")
 
+    # tcp_rtt_top 条目字段
+    for field in (
+        "total_samples",
+        "active_connections",
+        "avg_rtt_us",
+        "p50_rtt_us",
+        "p90_rtt_us",
+        "p99_rtt_us",
+        "top_connections",
+        "srtt_us",
+        "snd_cwnd",
+    ):
+        if _cpp_key(field) not in cpp_src:
+            errors.append(f"kernel snapshot: C++ emitter is missing tcp_rtt field '{field}'")
+
     return errors
 
 
@@ -319,6 +334,7 @@ def _selftest() -> int:
         "service_health": {
             "dns",
             "tcp_connect",
+            "tcp_rtt",
             "http_access",
             "captive_portal",
             "active_dns",

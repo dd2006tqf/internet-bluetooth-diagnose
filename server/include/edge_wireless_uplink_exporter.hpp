@@ -50,6 +50,7 @@
 #include "process_net_profiler.hpp"
 #include "site_incident.hpp"
 #include "skb_drop_monitor.hpp"
+#include "tcp_rtt_monitor.hpp"
 #include "weaknet_config.hpp"
 #include "wireless_event.hpp"
 
@@ -90,9 +91,10 @@ struct WirelessUplinkPayload {
     std::vector<std::vector<std::string>> incident_evidence;  ///< 与 incidents 同序
     std::vector<weaknet_dbus::DeviceLinkProfile> baselines;
 
-    /// 深度内核快照（进程画像 Top N + 协议栈丢包归因）
+    /// 深度内核快照（进程画像 Top N + 协议栈丢包归因 + 被动 TCP RTT 连接画像）
     std::vector<weaknet_dbus::ProcessNetInfo> top_processes;
     std::optional<weaknet_dbus::DropStatsSummary> drop_stats;
+    std::optional<weaknet_dbus::TcpRttSummary> tcp_rtt_stats;
 
     /// 环境窗口（Wi-Fi 侧证据与深度内核快照）。
     uint64_t env_from_ms = 0;
@@ -106,20 +108,22 @@ class EdgeWirelessUplinkExporter {
 public:
     using ProfilerSampler = std::function<void(std::vector<weaknet_dbus::ProcessNetInfo>*)>;
     using DropSampler = std::function<void(weaknet_dbus::DropStatsSummary*)>;
+    using TcpRttSampler = std::function<void(weaknet_dbus::TcpRttSummary*)>;
 
     /**
      * @param config     运行时配置（读 edge.* 字段）
      * @param db         数据库管理器（事实的唯一来源）
      * @param state_path 游标文件路径（通常位于 data_dir 下）
      *
-     * `profiler_sampler` / `drop_sampler` 是每次采集时才求值的回调，
+     * `profiler_sampler` / `drop_sampler` / `tcp_rtt_sampler` 是每次采集时才求值的回调，
      * 内部加锁保护，杜绝跨线程 UAF。
      */
     EdgeWirelessUplinkExporter(const weaknet_dbus::WeakNetConfig& config,
                                weaknet_dbus::DatabaseManager& db,
                                std::string state_path,
                                ProfilerSampler profiler_sampler = {},
-                               DropSampler drop_sampler = {});
+                               DropSampler drop_sampler = {},
+                               TcpRttSampler tcp_rtt_sampler = {});
     ~EdgeWirelessUplinkExporter();
 
     EdgeWirelessUplinkExporter(const EdgeWirelessUplinkExporter&) = delete;
@@ -182,6 +186,7 @@ private:
     std::string state_path_;
     ProfilerSampler profiler_sampler_;
     DropSampler drop_sampler_;
+    TcpRttSampler tcp_rtt_sampler_;
 
     std::thread thread_;
     std::atomic<bool> running_{false};
