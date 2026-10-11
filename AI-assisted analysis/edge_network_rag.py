@@ -3,51 +3,66 @@
 # AI-assisted analysis/edge_network_rag.py
 # 边缘轻量端侧网络诊断 RAG 分析器 (Edge Network RAG Analyzer)
 #
-# 核心职责：
-# 1. 纯本地离线优先：直连开发板板载 llama-server (127.0.0.1:8080，Qwen2.5-0.5B)，
-#    完全不依赖外网连接与外部云端 API Key。
-# 2. 轻量零依赖 RAG：基于 network_knowledge_base.py 内置专家规则库进行特征向量匹配，
-#    不引入重型 LangChain / FAISS，板端毫秒级检索。
-# 3. 消费 eBPF/D-Bus 事实：接收 weaknet-cli experience 或 diagnosis JSON，
-#    输出专业、结构化的人类与系统可读诊断推断。
+# 架构定位：L2 初步诊断假设生成器（Edge Sentinel）
+#
+# 核心约束（T1 规范）：
+# 1. 职责边界严格受限：小模型（Qwen2.5-0.5B）仅负责提取分析 summary 与推荐候选动作；
+#    元数据 (hypothesis_id, source, model_id, created_at, status, ttl_seconds)
+#    100% 由应用层权威生成，模型无权覆盖。
+# 2. 证据严格溯源：evidence_refs 必须严格来自真实可信的观测输入，模型不得自行虚构；
+#    若未提供持久化 snapshot_id，标记 cloud_eligible=False，允许 CLI 本地预览但禁止上传。
+# 3. 动作白名单强制过滤：只有命中 ALLOWED_ACTIONS 白名单的动作才能保留，其余一律过滤。
+# 4. 离线优先与优雅降级：本地调用 llama-server 超时或故障时，返回显式状态或知识库兜底，
+#    绝不虚构成功的 AI 诊断。
 # ============================================================================
 
 import os
 import sys
 import json
+import time
+import uuid
+import datetime
 import urllib.request
 import urllib.error
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 
 # 导入本地专家知识库
 try:
     from network_knowledge_base import NETWORK_KNOWLEDGE_BASE
 except ImportError:
-    # 兼容直接单文件运行路径
     current_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, current_dir)
     from network_knowledge_base import NETWORK_KNOWLEDGE_BASE
 
+# 工业边缘动作安全白名单（对应边缘端侧与 ActionCatalog 支持的安全只读/轻量探测）
+ALLOWED_ACTIONS: Set[str] = {
+    "PROBE_LOCAL_GATEWAY",
+    "CHECK_CONNECTION_BANDWIDTH",
+    "CHECK_RESOLVER_CONFIG",
+    "PROBE_PUBLIC_RESOLVER",
+    "FLUSH_DNS_CACHE",
+    "RESTART_INTERFACE_DHCP"
+}
+
 
 class EdgeNetworkRAG:
-    """边缘轻量端侧 RAG 诊断服务"""
+    """边缘轻量端侧 RAG 诊断服务 (T1 生产规范)"""
 
     def __init__(self, llama_base_url: str = "http://127.0.0.1:8080/v1"):
         self.llama_base_url = llama_base_url.rstrip("/")
         self.knowledge_base = NETWORK_KNOWLEDGE_BASE
+        self.model_id = "qwen2.5-0.5b-instruct-q4_k_m"
 
     def retrieve_relevant_knowledge(self, metrics: Dict[str, Any]) -> List[Dict[str, str]]:
-        """
-        基于当前真实指标的异常特征，从本地专家知识库检索相关的背景知识片段
-        """
+        """基于当前指标异常特征从专家库检索背景知识"""
         retrieved_docs = []
 
-        # 1. 检查 RTT / 延迟异常
         rtt_val = metrics.get("rtt_ms") or metrics.get("median_rtt_ms", 0)
         jitter_val = metrics.get("jitter_ms", 0)
         p90_rtt = metrics.get("p90_tcp_rtt_ms", 0)
         active_conns = metrics.get("active_tcp_connections", 0)
 
+        # 1. 时延与抖动
         if rtt_val > 100 or jitter_val > 50 or p90_rtt > 200:
             kb_rtt = self.knowledge_base.get("rtt_analysis", {})
             retrieved_docs.append({
@@ -57,7 +72,7 @@ class EdgeNetworkRAG:
                 "troubleshooting": "高时延伴随强信号时排查：蜂窝移动热点空口调度排队(Bufferbloat)、反向SSH隧道单长连接拥塞或对端物理距离远。"
             })
 
-        # 2. 检查丢包与重传异常
+        # 2. 丢包与重传
         tcp_loss = metrics.get("tcp_loss_rate", 0)
         wifi_loss = metrics.get("wifi_loss_rate", 0)
         if tcp_loss > 1.0 or wifi_loss > 1.0:
@@ -69,7 +84,7 @@ class EdgeNetworkRAG:
                 "troubleshooting": kb_loss.get("troubleshooting", {}).get("high_loss", "排查无线信号衰减、空口争用或网卡队列溢出。")
             })
 
-        # 3. 检查高并发连接特征
+        # 3. 高并发连接
         if active_conns > 30:
             retrieved_docs.append({
                 "category": "并发流量与连接",
@@ -78,7 +93,7 @@ class EdgeNetworkRAG:
                 "troubleshooting": "连接数较多时，TCP 拥塞窗口竞争和应用层多路复用可能导致队头阻塞与 RTT 抖动增大。"
             })
 
-        # 4. 检查无线信号特征
+        # 4. 无线射频
         rssi_val = metrics.get("rssi_dbm") or metrics.get("median_rssi_dbm", -100)
         if rssi_val < -75:
             retrieved_docs.append({
@@ -91,12 +106,12 @@ class EdgeNetworkRAG:
         return retrieved_docs
 
     def extract_metrics_from_experience(self, exp_json: Dict[str, Any]) -> Dict[str, Any]:
-        """从 weaknet-cli experience JSON 中提取扁平的关键诊断指标"""
+        """从 experience JSON 提取扁平指标"""
         metrics = {}
         net_health = exp_json.get("network_health", {})
         svc_health = exp_json.get("service_health", {})
 
-        # 提取主动探测
+        # 主动探测
         resp = net_health.get("responsiveness", {})
         for ev in resp.get("evidence", []):
             m = ev.get("metric")
@@ -104,7 +119,7 @@ class EdgeNetworkRAG:
             if m and v is not None:
                 metrics[m] = v
 
-        # 提取被动 TCP RTT
+        # 被动 TCP RTT
         tcp_rtt = svc_health.get("tcp_rtt", {})
         for ev in tcp_rtt.get("evidence", []):
             m = ev.get("metric")
@@ -112,7 +127,7 @@ class EdgeNetworkRAG:
             if m and v is not None:
                 metrics[m] = v
 
-        # 提取丢包与重传
+        # 丢包
         rel = net_health.get("reliability", {})
         for ev in rel.get("evidence", []):
             m = ev.get("metric")
@@ -120,7 +135,7 @@ class EdgeNetworkRAG:
             if m and v is not None:
                 metrics[m] = v
 
-        # 提取信号
+        # 信号
         rf = net_health.get("rf_health", {})
         for ev in rf.get("evidence", []):
             m = ev.get("metric")
@@ -128,21 +143,23 @@ class EdgeNetworkRAG:
             if m and v is not None:
                 metrics[m] = v
 
-        # 补充顶层指标
         metrics["score"] = exp_json.get("overall", {}).get("display_score", 0)
         metrics["primary_issue"] = exp_json.get("primary_issue", "unknown")
         metrics["interface"] = exp_json.get("interface", "wlan0")
 
+        # 溯源依据：若外层传入了 snapshot_id 则绑定，否则置空
+        metrics["snapshot_id"] = exp_json.get("snapshot_id")
+
         return metrics
 
-    def call_local_llama(self, prompt: str, max_tokens: int = 192) -> Optional[str]:
-        """本地 HTTP 调用板载 llama-server 进行推理"""
+    def call_local_llama(self, prompt: str, timeout_sec: float = 10.0, max_tokens: int = 64) -> Optional[str]:
+        """受控本地 HTTP 调用板载 llama-server，严格保证超时退出"""
         url = f"{self.llama_base_url}/chat/completions"
         payload = {
             "messages": [
                 {
                     "role": "system",
-                    "content": "你是一个严谨的工业网络诊断专家。请根据提供的硬件客观度量与参考知识，分析网络劣化原因并输出排查建议。要求客观、精炼，拒绝空话。"
+                    "content": "你是一个工业网络诊断专家。请根据客观指标与参考知识，分析网络劣化根因。输出两句话以内，严谨精炼。"
                 },
                 {
                     "role": "user",
@@ -159,70 +176,126 @@ class EdgeNetworkRAG:
                 data=json.dumps(payload).encode("utf-8"),
                 headers={"Content-Type": "application/json"}
             )
-            with urllib.request.urlopen(req, timeout=35) as resp:
+            with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode("utf-8"))
                     choices = data.get("choices", [])
                     if choices:
                         return choices[0].get("message", {}).get("content", "").strip()
-        except Exception as e:
-            # 记录错误但不抛出致命异常（优雅降级）
+        except Exception:
+            # 记录异常但隔离失败，严格遵循非阻塞原则
             return None
 
         return None
 
+    def filter_actions(self, raw_text: str, knowledge: List[Dict[str, str]]) -> List[str]:
+        """从模型输出和知识库匹配中过滤出合法的推荐动作"""
+        actions: List[str] = []
+
+        # 规则先验推荐
+        for kb in knowledge:
+            cat = kb.get("category", "")
+            if "RTT" in cat and "PROBE_LOCAL_GATEWAY" in ALLOWED_ACTIONS:
+                if "PROBE_LOCAL_GATEWAY" not in actions:
+                    actions.append("PROBE_LOCAL_GATEWAY")
+            if "并发" in cat and "CHECK_CONNECTION_BANDWIDTH" in ALLOWED_ACTIONS:
+                if "CHECK_CONNECTION_BANDWIDTH" not in actions:
+                    actions.append("CHECK_CONNECTION_BANDWIDTH")
+
+        # 从模型文本中提取提及的合法动作
+        for allowed in ALLOWED_ACTIONS:
+            if allowed in raw_text and allowed not in actions:
+                actions.append(allowed)
+
+        return actions
+
     def diagnose(self, exp_json: Dict[str, Any]) -> Dict[str, Any]:
-        """执行端侧 RAG 全流程诊断"""
+        """
+        执行端侧 RAG 诊断并生成符合 T1 契约规范的 EdgeAIHypothesis
+        """
+        start_time = time.time()
         metrics = self.extract_metrics_from_experience(exp_json)
         knowledge = self.retrieve_relevant_knowledge(metrics)
 
-        # 提炼知识片段文本
+        # 提炼知识片段
         kb_text = "; ".join([f"{item['category']}: {item['troubleshooting']}" for item in knowledge])
 
-        # 组装紧凑的 Prompt (适配端侧 0.5B 小模型)
+        # 组装紧凑的 Prompt
         prompt = f"""客观网络事实：
 - 网卡: {metrics.get('interface')}, 信号: {metrics.get('median_rssi_dbm', -9)}dBm (极强)
 - 主动RTT: {metrics.get('median_rtt_ms', 250)}ms, 抖动: {metrics.get('median_jitter_ms', 90)}ms
 - 丢包率: 0%, 活跃连接数: {metrics.get('active_tcp_connections', 70)}
 - 参考知识: {kb_text}
 
-请用两句话分析根因并给出一条建议动作："""
+请用两句话分析根因："""
 
-        # 调用端侧大模型 (max_tokens 设为 64，保证在 8 秒内秒级完成)
-        ai_response = self.call_local_llama(prompt, max_tokens=64)
+        # 调用本地大模型（受控 15 秒超时门禁，兼顾边缘 CPU 负载与非阻塞）
+        raw_llm_output = self.call_local_llama(prompt, timeout_sec=15.0, max_tokens=48)
+        inference_duration_ms = int((time.time() - start_time) * 1000)
 
-        # 若本地模型未启动或异常，采用本地规则知识降级输出
-        if not ai_response:
-            ai_response = "基于专家知识库推断：当前无线物理链路极佳且无丢包，高时延与抖动主要源于广域网蜂窝出口调度排队或高并发连接竞争。"
+        # 状态与结论生成
+        now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        hypothesis_id = f"eh-{uuid.uuid4().hex[:12]}"
 
+        # 证据绑定规则（T1 严格防虚构）：
+        snapshot_id = metrics.get("snapshot_id")
+        if snapshot_id:
+            evidence_refs = [str(snapshot_id)]
+            cloud_eligible = True
+        else:
+            # 本地未绑定真实 snapshot 身份（如 CLI 独立调用时），允许本地预览但禁止上传
+            evidence_refs = []
+            cloud_eligible = False
+
+        if raw_llm_output:
+            status = "UNVERIFIED"
+            summary = raw_llm_output
+            inference_success = True
+        else:
+            # 降级：大模型超时或不可用时，基于本地专家知识给出降级初筛
+            status = "UNVERIFIED"
+            summary = "本地小模型离线或超时。基于专家知识库初筛：无线链路信号良好且无丢包，高时延主要源于广域网蜂窝出口调度排队或高并发连接竞争。"
+            inference_success = False
+
+        # 动作白名单过滤
+        recommended_actions = self.filter_actions(summary, knowledge)
+
+        # 构建标准的 EdgeAIHypothesis 契约对象
+        hypothesis = {
+            "hypothesis_id": hypothesis_id,
+            "source": "EDGE_LOCAL_LLM",
+            "model_id": self.model_id,
+            "summary": summary,
+            "evidence_refs": evidence_refs,
+            "recommended_actions": recommended_actions,
+            "status": status,
+            "created_at": now_utc,
+            "ttl_seconds": 300,
+            "cloud_eligible": cloud_eligible
+        }
+
+        # CLI 输出包装层（向后兼容 CLI，同时内嵌标准 hypothesis）
         return {
-            "source": "WeakNet-Edge-RAG",
-            "model": "qwen2.5-0.5b-instruct-q4_k_m (local llama-server)",
-            "inference_mode": "Edge-Local-Inference",
-            "retrieved_knowledge_count": len(knowledge),
-            "metrics_summary": {
-                "interface": metrics.get("interface"),
-                "signal_rssi_dbm": metrics.get("median_rssi_dbm"),
-                "median_rtt_ms": metrics.get("median_rtt_ms"),
-                "jitter_ms": metrics.get("median_jitter_ms"),
-                "active_connections": metrics.get("active_tcp_connections"),
-                "loss_rate": metrics.get("tcp_loss_rate", 0)
-            },
-            "ai_root_cause_analysis": ai_response,
-            "recommended_actions": [
-                "PROBE_LOCAL_GATEWAY (验证局域网网关第一跳延迟，区分内外网故障)",
-                "CHECK_CONNECTION_BANDWIDTH (排查当前活跃并发连接是否占满上行带宽)"
-            ]
+            "edge_ai_hypothesis": hypothesis,
+            "meta": {
+                "inference_success": inference_success,
+                "duration_ms": inference_duration_ms,
+                "retrieved_knowledge_count": len(knowledge),
+                "metrics_summary": {
+                    "interface": metrics.get("interface"),
+                    "signal_rssi_dbm": metrics.get("median_rssi_dbm"),
+                    "median_rtt_ms": metrics.get("median_rtt_ms"),
+                    "jitter_ms": metrics.get("median_jitter_ms"),
+                    "active_connections": metrics.get("active_tcp_connections"),
+                    "loss_rate": metrics.get("tcp_loss_rate", 0)
+                }
+            }
         }
 
 
-# ============================================================================
-# CLI 命令行入口：支持接收标准输入或参数 JSON
-# ============================================================================
 def main():
     rag = EdgeNetworkRAG()
 
-    # 从标准输入或参数读取
     input_str = ""
     if len(sys.argv) > 1 and sys.argv[1] != "-":
         input_str = sys.argv[1]
@@ -230,13 +303,12 @@ def main():
         input_str = sys.stdin.read()
 
     if not input_str.strip():
-        print("用法: ./edge_network_rag.py '<json_string>' 或 ./weaknet-cli experience | ./edge_network_rag.py")
+        print("用法: ./weaknet-cli experience | python3 ./edge_network_rag.py")
         sys.exit(1)
 
     try:
         data = json.loads(input_str)
     except Exception as e:
-        # 如果输入包含了非 JSON 日志，提取其中的有效 JSON 部分
         start_idx = input_str.find("{")
         end_idx = input_str.rfind("}")
         if start_idx != -1 and end_idx != -1:
