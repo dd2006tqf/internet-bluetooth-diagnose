@@ -305,6 +305,46 @@ class NetworkDeviceTelemetry(_ClosedModel):
         return self
 
 
+class EdgeAiHypothesis(_ClosedModel):
+    """L2 diagnostic hypothesis produced asynchronously by the edge small model.
+
+    Strictly separated from ``NetworkExperienceSnapshot`` (L1 facts):
+    this record is an unverified advisory hypothesis tied to a specific
+    snapshot in the same batch via ``(device_id, network_epoch, sequence_id, interface)``.
+    """
+
+    hypothesis_id: str = Field(
+        min_length=4,
+        max_length=64,
+        pattern=r"^eh-[A-Za-z0-9_-]{1,60}$",
+    )
+    device_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+    )
+    network_epoch: int = Field(ge=0)
+    sequence_id: int = Field(ge=1)
+    interface: str = Field(min_length=1, max_length=64)
+
+    source: Literal["EDGE_LOCAL_LLM"] = "EDGE_LOCAL_LLM"
+    model_id: str = Field(min_length=1, max_length=128)
+    summary: str = Field(min_length=1, max_length=1024)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=8)
+    recommended_actions: list[str] = Field(default_factory=list, max_length=8)
+    status: Literal["UNVERIFIED"] = "UNVERIFIED"
+    created_at: datetime
+    ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    cloud_eligible: bool = True
+
+    @field_validator("created_at")
+    @classmethod
+    def _require_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("created_at must carry a timezone")
+        return value
+
+
 class NetworkTelemetryBatch(_ClosedModel):
     """The signed payload: one or more snapshots from a single device."""
 
@@ -312,16 +352,13 @@ class NetworkTelemetryBatch(_ClosedModel):
     snapshots: list[NetworkDeviceTelemetry] = Field(
         min_length=1, max_length=MAX_SNAPSHOTS_PER_BATCH
     )
+    edge_ai_hypotheses: list[EdgeAiHypothesis] = Field(
+        default_factory=list, max_length=4
+    )
 
     @model_validator(mode="after")
     def _require_single_device_and_ascending_sequence(self) -> Self:
-        """Reject mixed-device batches and out-of-order replays.
-
-        A batch is signed by exactly one device key, so mixing devices inside
-        one signed payload would let a compromised device attribute
-        fabricated snapshots to a peer. Ascending order is required so the
-        server's watermark comparison stays meaningful.
-        """
+        """Reject mixed-device batches, out-of-order replays, and unlinked hypotheses."""
         device_ids = {item.device_id for item in self.snapshots}
         if len(device_ids) != 1:
             raise ValueError("a signed batch must carry snapshots from exactly one device")
@@ -331,6 +368,21 @@ class NetworkTelemetryBatch(_ClosedModel):
             raise ValueError("snapshots must be ordered by ascending sequence_id")
         if len(set(sequences)) != len(sequences):
             raise ValueError("snapshots must not repeat a sequence_id")
+
+        # Validate that every hypothesis references a real snapshot in this batch
+        valid_snapshots = {
+            (s.device_id, s.network_epoch, s.sequence_id, s.snapshot.interface)
+            for s in self.snapshots
+        }
+        for hyp in self.edge_ai_hypotheses:
+            if not hyp.cloud_eligible:
+                raise ValueError("ineligible edge_ai_hypothesis must not be uploaded")
+            key = (hyp.device_id, hyp.network_epoch, hyp.sequence_id, hyp.interface)
+            if key not in valid_snapshots:
+                raise ValueError(
+                    f"edge_ai_hypothesis {hyp.hypothesis_id} references snapshot {key} "
+                    "not present in this telemetry batch"
+                )
         return self
 
 

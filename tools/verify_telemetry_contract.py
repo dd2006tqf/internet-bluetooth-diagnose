@@ -51,7 +51,9 @@ sys.path.insert(0, str(REPO_ROOT / "Large-Model-Application/src"))
 from industrial_ops_agent.network_assurance.contracts import (  # noqa: E402
     NETWORK_SLE_KEYS,
     SERVICE_SLE_KEYS,
+    EdgeAiHypothesis,
     NetworkExperienceSnapshot,
+    NetworkTelemetryBatch,
 )
 from industrial_ops_agent.network_assurance.copilot import (  # noqa: E402
     CAUSAL_CONSUMED_SLE_KEYS,
@@ -327,6 +329,78 @@ def _check_kernel_snapshot_contract(cpp_src: str) -> list[str]:
     return errors
 
 
+def _check_edge_ai_hypothesis_contract(serializer_src: str) -> list[str]:
+    """Check C++ toEdgeAiHypothesisJson vs Python EdgeAiHypothesis & NetworkTelemetryBatch."""
+    errors: list[str] = []
+
+    expected_fields = set(EdgeAiHypothesis.model_fields)
+    missing = [f for f in expected_fields if _cpp_key(f) not in serializer_src]
+    if missing:
+        errors.append(
+            f"edge_ai_hypothesis: C++ serializer is missing contract fields: {sorted(missing)}"
+        )
+
+    # Validate backward compatibility (batch without edge_ai_hypotheses)
+    sample_snap = _build_sample_snapshot({"ip_reachability"}, {"dns"})
+    batch_legacy = {
+        "schema_version": "network.edge.telemetry.v1",
+        "snapshots": [
+            {
+                "device_id": "radxa-cubie-a7a",
+                "sequence_id": 1,
+                "network_epoch": 1,
+                "config_generation": 1,
+                "captured_at": "2026-10-11T12:00:00Z",
+                "snapshot": sample_snap,
+            }
+        ],
+    }
+    try:
+        parsed_legacy = NetworkTelemetryBatch.model_validate(batch_legacy)
+        if parsed_legacy.edge_ai_hypotheses != []:
+            errors.append("edge_ai_hypothesis: legacy batch did not default to empty list")
+    except Exception as exc:
+        errors.append(f"edge_ai_hypothesis: legacy batch failed validation: {exc}")
+
+    # Validate batch with linked hypothesis
+    batch_with_hyp = dict(batch_legacy)
+    batch_with_hyp["edge_ai_hypotheses"] = [
+        {
+            "hypothesis_id": "eh-123456789abc",
+            "device_id": "radxa-cubie-a7a",
+            "network_epoch": 1,
+            "sequence_id": 1,
+            "interface": "wlan0",
+            "source": "EDGE_LOCAL_LLM",
+            "model_id": "qwen2.5-0.5b-instruct-q4_k_m",
+            "summary": "Cellular uplink bufferbloat detected.",
+            "evidence_refs": ["snap-radxa-cubie-a7a-1-1"],
+            "recommended_actions": ["PROBE_LOCAL_GATEWAY"],
+            "status": "UNVERIFIED",
+            "created_at": "2026-10-11T12:00:05Z",
+            "ttl_seconds": 300,
+            "cloud_eligible": True,
+        }
+    ]
+    try:
+        NetworkTelemetryBatch.model_validate(batch_with_hyp)
+    except Exception as exc:
+        errors.append(f"edge_ai_hypothesis: linked hypothesis batch failed validation: {exc}")
+
+    # Validate rejection of unlinked hypothesis (referencing non-existent sequence_id)
+    batch_unlinked = dict(batch_legacy)
+    unlinked_hyp = dict(batch_with_hyp["edge_ai_hypotheses"][0])
+    unlinked_hyp["sequence_id"] = 999
+    batch_unlinked["edge_ai_hypotheses"] = [unlinked_hyp]
+    try:
+        NetworkTelemetryBatch.model_validate(batch_unlinked)
+        errors.append("edge_ai_hypothesis: unlinked hypothesis should have been rejected")
+    except Exception:
+        pass
+
+    return errors
+
+
 def _selftest() -> int:
     """Verify the verifier fails when the C++ emitter drifts."""
     fixture = {
@@ -400,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     sample = _build_sample_snapshot(emitted["network_health"], emitted["service_health"])
     failures.extend(_check_deserialization(sample))
     failures.extend(_check_causal_coverage(emitted))
+    failures.extend(_check_edge_ai_hypothesis_contract(serializer_src))
 
     if args.json:
         report = {

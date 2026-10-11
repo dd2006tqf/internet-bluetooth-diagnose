@@ -172,4 +172,57 @@ inline std::string toEdgeTelemetrySnapshotJson(const NetworkExperience& exp, con
     return json.str();
 }
 
+/**
+ * @brief 端侧大模型异步初筛假设（L2 EdgeAIHypothesis），与 L1 快照严格分离。
+ * 在外层遥测信封中以顶层 `edge_ai_hypotheses` 数组形式并列携带。
+ */
+struct EdgeAiHypothesisRecord {
+    std::string hypothesis_id;
+    std::string device_id;
+    uint64_t network_epoch{0};
+    uint64_t sequence_id{1};
+    std::string interface_name;
+    std::string source{"EDGE_LOCAL_LLM"};
+    std::string model_id{"qwen2.5-0.5b-instruct-q4_k_m"};
+    std::string summary;
+    std::vector<std::string> evidence_refs;
+    std::vector<std::string> recommended_actions;
+    std::string status{"UNVERIFIED"};
+    std::string created_at;
+    int ttl_seconds{300};
+    bool cloud_eligible{true};
+};
+
+inline std::string toEdgeAiHypothesisJson(const EdgeAiHypothesisRecord& h) {
+    using weaknet_utils::escapeJsonString;
+    std::ostringstream json;
+    json << "{";
+    json << "\"hypothesis_id\":\"" << escapeJsonString(h.hypothesis_id) << "\",";
+    json << "\"device_id\":\"" << escapeJsonString(h.device_id) << "\",";
+    json << "\"network_epoch\":" << h.network_epoch << ",";
+    json << "\"sequence_id\":" << h.sequence_id << ",";
+    json << "\"interface\":\"" << escapeJsonString(h.interface_name) << "\",";
+    json << "\"source\":\"" << escapeJsonString(h.source) << "\",";
+    json << "\"model_id\":\"" << escapeJsonString(h.model_id) << "\",";
+    json << "\"summary\":\"" << escapeJsonString(h.summary) << "\",";
+    json << "\"evidence_refs\":[";
+    for (size_t i = 0; i < h.evidence_refs.size(); ++i) {
+        json << "\"" << escapeJsonString(h.evidence_refs[i]) << "\"";
+        if (i + 1 < h.evidence_refs.size()) json << ",";
+    }
+    json << "],";
+    json << "\"recommended_actions\":[";
+    for (size_t i = 0; i < h.recommended_actions.size(); ++i) {
+        json << "\"" << escapeJsonString(h.recommended_actions[i]) << "\"";
+        if (i + 1 < h.recommended_actions.size()) json << ",";
+    }
+    json << "],";
+    json << "\"status\":\"" << escapeJsonString(h.status) << "\",";
+    json << "\"created_at\":\"" << escapeJsonString(h.created_at) << "\",";
+    json << "\"ttl_seconds\":" << h.ttl_seconds << ",";
+    json << "\"cloud_eligible\":" << (h.cloud_eligible ? "true" : "false");
+    json << "}";
+    return json.str();
+}
+
 }  // namespace weaknet

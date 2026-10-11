@@ -432,13 +432,23 @@ EdgeExporterStats EdgeTelemetryExporter::stats() const {
     return copy;
 }
 
+void EdgeTelemetryExporter::enqueueHypothesis(EdgeAiHypothesisRecord hypothesis) {
+    if (!hypothesis.cloud_eligible) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (pending_hypotheses_.size() >= 8) {
+        pending_hypotheses_.pop_front();
+    }
+    pending_hypotheses_.push_back(std::move(hypothesis));
+}
+
 bool EdgeTelemetryExporter::buildRecord(const AssessmentSnapshot& snapshot,
                                        EdgeTelemetryRecord* out, std::string* error) {
     const auto& exp = snapshot.experience;
+    const std::string dev_id = config_.edge.device_id.get();
 
     std::ostringstream body;
     body << "{\"schema_version\":\"network.edge.telemetry.v1\",\"snapshots\":[{";
-    body << "\"device_id\":\"" << weaknet_utils::escapeJsonString(config_.edge.device_id.get()) << "\",";
+    body << "\"device_id\":\"" << weaknet_utils::escapeJsonString(dev_id) << "\",";
     body << "\"display_name\":\"" << weaknet_utils::escapeJsonString(hostname_) << "\",";
     body << "\"sequence_id\":" << snapshot.sequence_id << ",";
     body << "\"network_epoch\":" << snapshot.network_epoch << ",";
@@ -452,7 +462,37 @@ bool EdgeTelemetryExporter::buildRecord(const AssessmentSnapshot& snapshot,
     // 不复用 toExperienceJsonV2 再改写形状——那等于对刚产出的 JSON 做字符串
     // 手术，脆弱且会让两份契约互相污染（见 serializer 头文件说明）。
     const auto* topo_ptr = snapshot.topology.has_value() ? &snapshot.topology.value() : nullptr;
-    body << "\"snapshot\":" << toEdgeTelemetrySnapshotJson(exp, topo_ptr) << "}]}";
+    body << "\"snapshot\":" << toEdgeTelemetrySnapshotJson(exp, topo_ptr) << "}]";
+
+    // 提取并绑定与当前快照上下文匹配的端侧 AI 初筛假设（L2 逻辑隔离，同一信封并列传输）
+    std::vector<EdgeAiHypothesisRecord> matched_hyps;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = pending_hypotheses_.begin();
+        while (it != pending_hypotheses_.end() && matched_hyps.size() < 4) {
+            if (it->interface_name == exp.iface) {
+                EdgeAiHypothesisRecord h = *it;
+                // 强制绑定当前真实可信快照身份，保证云端跨字段校验 100% 通过
+                h.device_id = dev_id;
+                h.network_epoch = snapshot.network_epoch;
+                h.sequence_id = snapshot.sequence_id;
+                matched_hyps.push_back(std::move(h));
+                it = pending_hypotheses_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    if (!matched_hyps.empty()) {
+        body << ",\"edge_ai_hypotheses\":[";
+        for (size_t i = 0; i < matched_hyps.size(); ++i) {
+            body << toEdgeAiHypothesisJson(matched_hyps[i]);
+            if (i + 1 < matched_hyps.size()) body << ",";
+        }
+        body << "]";
+    }
+    body << "}";
 
     out->sequence_id = snapshot.sequence_id;
     out->network_epoch = snapshot.network_epoch;

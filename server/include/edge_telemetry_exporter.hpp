@@ -53,6 +53,7 @@
 #include <vector>
 
 #include "assessment_snapshot.hpp"
+#include "assurance/edge_telemetry_serializer.hpp"
 #include "weaknet_config.hpp"
 
 namespace weaknet_dbus {
@@ -226,6 +227,11 @@ public:
         return pending_action_results_.size();
     }
 
+    /**
+     * @brief 入队一条端侧 AI 初筛假设（L2 EdgeAIHypothesis），将在匹配对应快照时随信封一同签名上报。
+     */
+    void enqueueHypothesis(EdgeAiHypothesisRecord hypothesis);
+
 private:
     void run();
 
@@ -282,6 +288,8 @@ private:
     std::deque<EdgeTelemetryRecord> buffer_;
     ///< 已就地执行、待回传服务端确认的动作结果（保留至确认送达）。
     std::deque<EdgeActionResultRecord> pending_action_results_;
+    ///< 待随遥测信封上报的端侧 AI 初筛假设（有界缓冲，最多保留 8 条）。
+    std::deque<EdgeAiHypothesisRecord> pending_hypotheses_;
 
     std::thread thread_;
     std::atomic<bool> running_{false};
