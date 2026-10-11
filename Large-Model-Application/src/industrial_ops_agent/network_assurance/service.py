@@ -56,6 +56,7 @@ from sqlalchemy.orm import Session
 
 from industrial_ops_agent.domain import as_utc
 from industrial_ops_agent.network_assurance.contracts import (
+    EdgeAiHypothesis,
     NetworkActionOutcome,
     NetworkActionResults,
     NetworkAssetDetail,
@@ -80,6 +81,7 @@ from industrial_ops_agent.persistence.models import (
     NetworkAssetRecord,
     NetworkDeviceBaselineHistoryRecord,
     NetworkDeviceBaselineRecord,
+    NetworkEdgeHypothesisRecord,
     NetworkEnvWindowRecord,
     NetworkGatewayCatalogVersionRecord,
     NetworkPendingActionRecord,
@@ -270,6 +272,7 @@ class NetworkAssuranceService:
                 )
 
             self._advance_asset_headline(session, asset, batch, now=now)
+            self._ingest_edge_hypotheses(session, context, asset.asset_id, batch.edge_ai_hypotheses, now=now)
             pending = self._claim_pending_actions(session, context, asset.asset_id, now=now)
 
         return IngestResult(
@@ -1375,6 +1378,69 @@ class NetworkAssuranceService:
             offline_after_seconds=self._offline_after_seconds,
         )
         asset.version += 1
+
+    def _ingest_edge_hypotheses(
+        self,
+        session: Session,
+        context: TenantContext,
+        asset_id: str,
+        hypotheses: list[EdgeAiHypothesis],
+        *,
+        now: datetime,
+    ) -> None:
+        """Persist L2 edge AI hypotheses in a strictly separated table.
+
+        Idempotent on ``(tenant_id, asset_id, hypothesis_id)`` so ring-buffer
+        replays do not duplicate hypotheses. Also verifies that the referenced
+        L1 snapshot exists in ``network_snapshots``.
+        """
+        for hyp in hypotheses:
+            if not hyp.cloud_eligible:
+                continue
+
+            # Idempotency check
+            existing = session.execute(
+                select(NetworkEdgeHypothesisRecord.record_id).where(
+                    NetworkEdgeHypothesisRecord.tenant_id == context.tenant_id,
+                    NetworkEdgeHypothesisRecord.asset_id == asset_id,
+                    NetworkEdgeHypothesisRecord.hypothesis_id == hyp.hypothesis_id,
+                )
+            ).first()
+            if existing is not None:
+                continue
+
+            # Verify referenced L1 snapshot exists in network_snapshots
+            snap_exists = session.execute(
+                select(NetworkSnapshotRecord.snapshot_id).where(
+                    NetworkSnapshotRecord.tenant_id == context.tenant_id,
+                    NetworkSnapshotRecord.asset_id == asset_id,
+                    NetworkSnapshotRecord.network_epoch == hyp.network_epoch,
+                    NetworkSnapshotRecord.sequence_id == hyp.sequence_id,
+                )
+            ).first()
+            if snap_exists is None:
+                continue
+
+            session.add(
+                NetworkEdgeHypothesisRecord(
+                    record_id=f"neh-{uuid4().hex}",
+                    tenant_id=context.tenant_id,
+                    hypothesis_id=hyp.hypothesis_id,
+                    asset_id=asset_id,
+                    network_epoch=hyp.network_epoch,
+                    sequence_id=hyp.sequence_id,
+                    interface=hyp.interface,
+                    source=hyp.source,
+                    model_id=hyp.model_id,
+                    summary=hyp.summary,
+                    evidence_refs_json=list(hyp.evidence_refs),
+                    recommended_actions_json=list(hyp.recommended_actions),
+                    status="UNVERIFIED",
+                    ttl_seconds=hyp.ttl_seconds,
+                    hypothesis_created_at=as_utc(hyp.created_at),
+                    received_at=now,
+                )
+            )
 
     @staticmethod
     def _is_current_headline(asset: NetworkAssetRecord, telemetry: NetworkDeviceTelemetry) -> bool:

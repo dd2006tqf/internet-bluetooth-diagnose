@@ -203,6 +203,21 @@ class KnowledgeContext(_ClosedModel):
     retrieval_strategy_version: str = Field(default="rag-v1", max_length=64)
 
 
+class EdgeHypothesisRef(_ClosedModel):
+    """【T5】端侧小模型初筛假设（L2 Advisory）——**不是证据**。
+
+    防循环证据铁律：
+    - 绝不进入 ``DecisionEvidenceContext``，绝不进入 ``allowed_binding_ref_ids()``；
+    - 任何专家或协调官不得将 ``hypothesis_id`` 作为 ``SourceBinding`` 的独立事实依据；
+    - 仅作为边缘侧现场初判背景供参考，所有最终提案的证据引用必须溯源回 L1 真实物理观测。
+    """
+
+    hypothesis_id: str = Field(min_length=4, max_length=64)
+    model_id: str = Field(min_length=1, max_length=128)
+    summary: str = Field(min_length=1, max_length=1024)
+    recommended_actions: list[str] = Field(default_factory=list, max_length=8)
+
+
 class CouncilInput(_ClosedModel):
     """契约 D 的只读输入包。
 
@@ -217,6 +232,7 @@ class CouncilInput(_ClosedModel):
     evidence_context: DecisionEvidenceContext
     operational_constraints: OperationalConstraints
     knowledge_context: KnowledgeContext
+    edge_hypotheses: list[EdgeHypothesisRef] = Field(default_factory=list, max_length=4)
 
     def allowed_binding_ref_ids(self) -> dict[SourceBindingKind, set[str]]:
         """当前输入内允许被引用的对象集合（W8 的唯一依据）。"""

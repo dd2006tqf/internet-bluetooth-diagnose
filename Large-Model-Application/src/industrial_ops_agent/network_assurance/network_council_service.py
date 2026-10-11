@@ -49,6 +49,7 @@ from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.models import (
     NetworkCouncilContributionRecord,
     NetworkCouncilRecord,
+    NetworkEdgeHypothesisRecord,
     NetworkGatewayCatalogVersionRecord,
     NetworkSiteIncidentRecord,
     NetworkWirelessEventRecord,
@@ -81,6 +82,7 @@ class CouncilRequestInput:
     gateway_catalog_version: str = TOP_LEVEL_CATALOG_VERSION
     knowledge_cases: list[tuple[str, str]] | None = None
     retrieval_strategy_version: str = "rag-v1"
+    edge_hypotheses: list[dict[str, Any]] | None = None
 
 
 class NetworkCouncilService:
@@ -102,6 +104,7 @@ class NetworkCouncilService:
     def build_input(self, request: CouncilRequestInput) -> CouncilInput:
         from industrial_ops_agent.network_assurance.council_contracts import (
             DecisionEvidenceContext,
+            EdgeHypothesisRef,
             KnowledgeCaseRef,
             KnowledgeContext,
         )
@@ -130,6 +133,10 @@ class NetworkCouncilService:
                 ],
                 retrieval_strategy_version=request.retrieval_strategy_version,
             ),
+            edge_hypotheses=[
+                EdgeHypothesisRef.model_validate(h)
+                for h in (request.edge_hypotheses or [])
+            ],
         )
 
     def fingerprint(self, council_input: CouncilInput) -> str:
@@ -201,6 +208,7 @@ class NetworkCouncilService:
             # 网关自述的目录版本（漂移检测输入源）。缺失即"无漂移事实"，
             # 不是"漂移"——把缺失当漂移会让旧固件全线阻断。
             reported_catalog: str | None = None
+            active_edge_hypotheses: list[dict[str, Any]] = []
             gateway_key = incident.gateway_id or incident.asset_id
             if gateway_key:
                 gateway_row = session.get(
@@ -209,6 +217,32 @@ class NetworkCouncilService:
                 )
                 if gateway_row is not None:
                     reported_catalog = gateway_row.catalog_version
+
+                # 【T5】提取未过期的端侧小模型初筛假设（TTL 过滤），仅作为背景上下文
+                now_utc = datetime.now(UTC)
+                hyp_rows = session.scalars(
+                    select(NetworkEdgeHypothesisRecord)
+                    .where(
+                        NetworkEdgeHypothesisRecord.tenant_id == context.tenant_id,
+                        NetworkEdgeHypothesisRecord.asset_id == gateway_key,
+                    )
+                    .order_by(NetworkEdgeHypothesisRecord.received_at.desc())
+                    .limit(4)
+                ).all()
+                for h_row in hyp_rows:
+                    created = h_row.hypothesis_created_at
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=UTC)
+                    age_sec = (now_utc - created).total_seconds()
+                    if age_sec <= h_row.ttl_seconds:
+                        active_edge_hypotheses.append(
+                            {
+                                "hypothesis_id": h_row.hypothesis_id,
+                                "model_id": h_row.model_id,
+                                "summary": h_row.summary,
+                                "recommended_actions": list(h_row.recommended_actions_json or []),
+                            }
+                        )
 
         # L3 预测：逐设备（DEVICE 级），可为空
         predictions: list[Any] = []
@@ -251,6 +285,7 @@ class NetworkCouncilService:
             ),
             knowledge_cases=knowledge_cases,
             retrieval_strategy_version=retrieval_strategy_version,
+            edge_hypotheses=active_edge_hypotheses,
         )
 
     # ------------------------------------------------------------------

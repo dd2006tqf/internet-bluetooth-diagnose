@@ -104,6 +104,9 @@ def _input_summary(council_input: CouncilInput) -> dict[str, Any]:
         "operational_constraints": council_input.operational_constraints.model_dump(
             mode="json"
         ),
+        "edge_advisory_context": [
+            h.model_dump(mode="json") for h in council_input.edge_hypotheses
+        ],
     }
 
 

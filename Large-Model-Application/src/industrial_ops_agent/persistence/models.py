@@ -6067,6 +6067,49 @@ class NetworkGatewayCatalogVersionRecord(TenantScopedMixin, Base):
     reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class NetworkEdgeHypothesisRecord(TenantScopedMixin, Base):
+    """【T4】端侧小模型异步生成的初步诊断假设（L2 Advisory Evidence）。
+
+    与 L1 观测事实表 `network_snapshots` 严格物理隔离：
+    1. 本表记录状态恒为 `UNVERIFIED`，仅供云端 Council / Copilot 作为只读上下文参考；
+    2. 严禁被云端当作独立于 L1 快照的新物理证据重复累加置信度（防循环证据）；
+    3. 严禁直接触发执行队列（必须走 Council -> Policy -> Approval 受控治理链）。
+    """
+
+    __tablename__ = "network_edge_hypotheses"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "asset_id",
+            "hypothesis_id",
+            name="uq_network_edge_hypothesis_id",
+        ),
+        Index(
+            "ix_network_edge_hypotheses_snapshot",
+            "tenant_id",
+            "asset_id",
+            "network_epoch",
+            "sequence_id",
+        ),
+    )
+
+    record_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    hypothesis_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    network_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sequence_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    interface: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="EDGE_LOCAL_LLM")
+    model_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_refs_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    recommended_actions_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="UNVERIFIED")
+    ttl_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    hypothesis_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class SiteIncidentDiagnosisRecord(TenantScopedMixin, Base):
     """【Phase 4b】区域无线事故诊断记录（独立于物理事实，支持版本演进与审计）。
 
