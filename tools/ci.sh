@@ -141,6 +141,8 @@ info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(npr
     install -m 0755 build-arm64-native/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
     install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
     install -m 0644 build-arm64-native/client/lib/libweaknet.so dist-arm64/client/lib/
+    install -m 0755 "AI-assisted analysis/edge_network_rag.py" dist-arm64/edge_network_rag.py
+    install -m 0644 "AI-assisted analysis/network_knowledge_base.py" dist-arm64/network_knowledge_base.py
     cp -a "${SYSROOT_DIR}/usr/local/lib/libbpf.so"* dist-arm64/lib/ 2>/dev/null || true
 
     echo "产物: $(find dist-arm64 -type f | wc -l) 个文件"

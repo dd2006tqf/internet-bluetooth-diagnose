@@ -21,6 +21,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 #include "weaknet_client.h"
 
@@ -39,7 +40,7 @@ static void printUsage(const char* prog) {
         "  %s incidents [--state <STATE>]\n"
         "         [--start <ms>] [--end <ms>] [--limit <N>]\n"
         "                                 # 查询区域级异常事件 SiteIncident（JSON，只读）\n"
-        "  %s diagnosis                   # 查询当前网络确定性诊断事实（DiagnosisFacts JSON，只读）\n"
+        "  %s diagnosis [--ai]            # 查询网络诊断事实（--ai 联动端侧 RAG + 板载 Qwen 深度分析）\n"
         "  %s experience                  # 查询当前网络体验权威快照（NetworkExperience JSON，只读）\n"
         "  sudo %s action <action_id> [<key> <val>] # 执行白名单安全排查动作（仅限 root）\n"
         "\n"
@@ -215,14 +216,58 @@ static bool callSaveOverrides() {
     return true;
 }
 
-static bool callDiagnosis() {
+static bool callDiagnosis(bool enable_ai = false) {
     std::vector<char> buf(64 * 1024);
     char err[256];
     if (!weaknet_get_diagnosis(buf.data(), buf.size(), err, sizeof(err))) {
         fprintf(stderr, "GetDiagnosis 失败: %s\n", err);
         return false;
     }
-    printf("%s\n", buf.data());
+
+    if (!enable_ai) {
+        printf("%s\n", buf.data());
+        return true;
+    }
+
+    // --ai 标志：调用本地端侧 Edge RAG (Python 脚本桥接板载 Qwen-0.5B 与知识库)
+    std::vector<char> exp_buf(64 * 1024);
+    if (!weaknet_get_network_experience(exp_buf.data(), exp_buf.size(), err, sizeof(err))) {
+        fprintf(stderr, "获取网络体验快照失败，降级输出原始诊断: %s\n", err);
+        printf("%s\n", buf.data());
+        return true;
+    }
+
+    // 优先调用 /home/radxa/weaknet/edge_network_rag.py
+    const char* script_candidates[] = {
+        "/home/radxa/weaknet/edge_network_rag.py",
+        "./edge_network_rag.py",
+        "../edge_network_rag.py"
+    };
+
+    const char* chosen_script = nullptr;
+    for (const char* path : script_candidates) {
+        if (access(path, R_OK) == 0) {
+            chosen_script = path;
+            break;
+        }
+    }
+
+    if (!chosen_script) {
+        fprintf(stderr, "⚠️ 未找到端侧 RAG 脚本，降级输出基础诊断\n");
+        printf("%s\n", buf.data());
+        return true;
+    }
+
+    std::string cmd = std::string("python3 ") + chosen_script;
+    FILE* pipe = popen(cmd.c_str(), "w");
+    if (!pipe) {
+        fprintf(stderr, "⚠️ 启动端侧 RAG 进程失败\n");
+        printf("%s\n", buf.data());
+        return true;
+    }
+
+    fwrite(exp_buf.data(), 1, strlen(exp_buf.data()), pipe);
+    pclose(pipe);
     return true;
 }
 
@@ -309,7 +354,8 @@ int main(int argc, char** argv) {
     } else if (strcmp(cmd, "incidents") == 0) {
         ok = callIncidents(argc, argv);
     } else if (strcmp(cmd, "diagnosis") == 0) {
-        ok = callDiagnosis();
+        bool enable_ai = (argc >= 3 && strcmp(argv[2], "--ai") == 0);
+        ok = callDiagnosis(enable_ai);
     } else if (strcmp(cmd, "experience") == 0) {
         ok = callExperience();
     } else if (strcmp(cmd, "action") == 0) {
