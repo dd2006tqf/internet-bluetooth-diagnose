@@ -212,7 +212,7 @@ if [ "$SKIP_DEPLOY" = false ]; then
     log ""
     log "===== Step 3: 部署到开发板 ====="
 
-    if ! ping -c 1 -W 2 "${BOARD#*@}" >/dev/null 2>&1; then
+    if [ "${BOARD}" != "board" ] && ! ping -c 1 -W 2 "${BOARD#*@}" >/dev/null 2>&1; then
         fail "开发板不可达"
     fi
 

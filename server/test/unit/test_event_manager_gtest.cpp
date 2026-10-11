@@ -37,9 +37,10 @@ class EventManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         mgr_ = &getEventManager();
+        mock_ctx_ = std::make_unique<ServerContext>();
         // 创建 mock DbusService 并挂到 mock_ctx_ 上，使 emitEvent 能调用 mock
-        mock_ctx_.service = std::make_unique<DbusService>(&mock_ctx_);
-        mgr_->startEventMonitoring(&mock_ctx_);
+        mock_ctx_->service = std::make_unique<DbusService>(mock_ctx_.get());
+        mgr_->startEventMonitoring(mock_ctx_.get());
     }
 
     void TearDown() override {
@@ -50,10 +51,11 @@ protected:
         mgr_->unregisterCallback(EventType::RttChanged);
         mgr_->unregisterCallback(EventType::RssiChanged);
         mgr_->unregisterCallback(EventType::BluetoothDeviceChanged);
-        mock_ctx_.service.reset();
+        mock_ctx_->service.reset();
+        mock_ctx_.reset();
     }
 
-    ServerContext mock_ctx_{};
+    std::unique_ptr<ServerContext> mock_ctx_;
     NetworkEventManager* mgr_;
 };
 
