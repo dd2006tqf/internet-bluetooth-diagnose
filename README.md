@@ -100,34 +100,31 @@ cmake --build build-x86 -j$(nproc)
 ctest --test-dir build-x86/server --output-on-failure
 ```
 
-### 2. ARM64 交叉编译与一键部署到开发板
+### 2. ARM64 原生交叉编译与一键部署到开发板
 
-本项目目标运行平台为 ARM64。为保证内核头文件（`vmlinux.h`）与 glibc 二进制兼容性，**严禁在 x86 宿主机直接交叉编译**，统一使用常驻 Docker 容器 `weaknet-arm64-dev` 进行增量编译。
+本项目目标运行平台为 ARM64（Radxa Cubie A7A，Debian 11 Bullseye）。构建系统采用**宿主机裸机原生 Clang 交叉编译体系**，完全脱离 Docker 容器与 QEMU 模拟，支持 `-j$(nproc)` 多核满血并发，全量构建在 ~40 秒内完成。
 
-#### （1）确保 ARM64 容器正常运行
+#### （1）环境准备（如需全新初始化）
+宿主机需具备 Clang 18 以及 Bullseye ARM64 Sysroot：
 ```bash
-# 若宿主重启过，先重置 binfmt 解释器注册并启动容器
-docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-docker start weaknet-arm64-dev
-
-# 验证容器环境
-docker exec weaknet-arm64-dev uname -m   # 应输出: aarch64
+# 若在新机器上首次运行，执行自动化 Sysroot 安装脚本（仅需执行一次）：
+sudo ./scripts/setup_arm64_sysroot.sh
 ```
 
 #### （2）一键流水线（编译 + 打包 + 部署 + 真机测试）
 ```bash
-# 自动通过 SSH 部署到开发板（优先通过 mDNS 解析或指定 BOARD 环境变量）
-BOARD=radxa@radxa-cubie-a7a.local ./tools/ci.sh
+# 宿主机极速原生交叉编译 + 部署到开发板并执行冒烟测试：
+BOARD=board ./tools/ci.sh --skip-push
 
-# 若处于跨网段环境，直接指定开发板实际 IP：
-BOARD=radxa@radxa-cubie-a7a.local ./tools/ci.sh
+# 仅在宿主机完成编译与打包（耗时 ~40 秒，不连板端）：
+./tools/ci.sh --local-only
 ```
 
 流水线会自动完成：
-- 容器内 ARM64 增量编译与 BPF 探针编译
+- 宿主机多核原生交叉编译 C++ 核心组件与 11 个 eBPF 探针字节码
 - 打包输出 `dist-arm64/`
-- rsync 增量同步产物至板端 `/home/radxa/weaknet/`（自动保留板端持久化数据库与密钥）
-- 配置 systemd 服务与 D-Bus 系统总线并热重启
+- rsync 增量同步产物至板端 `/home/radxa/weaknet/`（自动保留板端持久化数据库与配置）
+- 自动注入 edge token 并热重启 systemd 托管服务（`weaknet-server`）
 - 远程执行板端真机冒烟套件（`health`, `get`, `test-basic`, `test-network`, `test-ping`）
 
 ---
