@@ -621,6 +621,10 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                 if (ctx->edge_exporter && ctx->edge_exporter->isRunning()) {
                     auto latest = ctx->assessment_store.latest();
                     if (latest) {
+                        // T3: 异步非阻塞触发端侧 AI 初筛调度器（仅在 DEGRADED/BAD 且冷却允许时入槽）
+                        if (ctx->edge_ai_scheduler && ctx->edge_ai_scheduler->isRunning()) {
+                            ctx->edge_ai_scheduler->submitIfEligible(latest);
+                        }
                         // 传 shared_ptr 而非 *latest：exporter 需要共同持有该快照，
                         // 否则本作用域结束后它会留下悬垂指针（详见 enqueue 声明处）。
                         ctx->edge_exporter->enqueue(std::move(latest));
@@ -1478,6 +1482,17 @@ int start_server(int argc, char** argv) {
 
     if (ctx.edge_exporter->start()) {
         LOG_INFO(LogModule::SYSTEM, "edge telemetry exporter started");
+
+        // T3: 启动端侧 AI 异步初筛调度器（容量=1，并发=1，300s 冷却，15s SIGKILL 硬超时）
+        ctx.edge_ai_scheduler = std::make_unique<weaknet::EdgeAiScheduler>(
+            ctx.cfg.edge.device_id.get(),
+            [&ctx](weaknet::EdgeAiHypothesisRecord hyp) {
+                if (ctx.edge_exporter) {
+                    ctx.edge_exporter->enqueueHypothesis(std::move(hyp));
+                }
+            });
+        ctx.edge_ai_scheduler->start();
+        LOG_INFO(LogModule::SYSTEM, "edge AI scheduler started (cooldown=300s, hard_timeout=15s)");
     }
 
     // 启动无线事实上行（Phase 4a，可选）。
@@ -1549,6 +1564,12 @@ int start_server(int argc, char** argv) {
     // 历史持久化线程：只读 weak_mgr 快照 + 写 DB，不依赖其他线程资源，最后 join 最安全。
     // 此前缺失该 join，导致 ~ServerContext 析构时该线程可能仍持 ctx* 访问 → 悬垂/terminate。
     if (ctx.history_thread.joinable())                  ctx.history_thread.join();
+
+    // 停止端侧 AI 调度器：先于 edge_exporter 停止，避免回调访问已析构的 exporter
+    if (ctx.edge_ai_scheduler) {
+        ctx.edge_ai_scheduler->stop();
+        ctx.edge_ai_scheduler.reset();
+    }
 
     // 停止边缘遥测上报：先于 ~ServerContext，保证不再访问 ctx.cfg。
     if (ctx.edge_exporter) {

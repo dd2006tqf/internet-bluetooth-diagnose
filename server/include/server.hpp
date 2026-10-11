@@ -32,6 +32,7 @@
 #include "assurance/action_registry.hpp"
 #include "edge_telemetry_exporter.hpp"
 #include "edge_wireless_uplink_exporter.hpp"
+#include "assurance/edge_ai_scheduler.hpp"
 
 // 前置声明，避免强依赖 dbus 头
 struct DBusConnection;
@@ -156,6 +157,8 @@ struct ServerContext {
     /// Phase 4a：无线事实（事件/事故/基线）独立上行器。与遥测并列，
     /// 幂等域与失败重发语义不同，故不合并（见集成设计决策 D1）。
     std::unique_ptr<weaknet::EdgeWirelessUplinkExporter> wireless_uplink;
+    /// T3：端侧 AI 异步初筛调度器（容量=1，并发=1，300s 冷却，15s SIGKILL 硬超时）
+    std::unique_ptr<weaknet::EdgeAiScheduler> edge_ai_scheduler;
 
     // ---------- 端侧确定性诊断引擎与证据生成服务 ----------
     std::shared_ptr<weaknet::ActionRegistry> action_registry;
