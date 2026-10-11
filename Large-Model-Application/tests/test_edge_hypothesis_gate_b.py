@@ -82,9 +82,9 @@ def _make_sle(state: str = "GOOD") -> NetworkSleResult:
     )
 
 
-def _make_sample_snapshot() -> NetworkExperienceSnapshot:
+def _make_sample_snapshot(iface: str = "wlan0") -> NetworkExperienceSnapshot:
     return NetworkExperienceSnapshot(
-        interface="wlan0",
+        interface=iface,
         assessment_profile="INTERNET_ACCESS",
         overall_state="DEGRADED",
         overall_coverage="FULL_FOR_PROFILE",
@@ -286,3 +286,73 @@ def test_t5_council_filters_ttl_and_forbids_circular_evidence_binding(
     )
     violations = validate_proposals([bad_proposal], council_input)
     assert any("eh-active0002" in v for v in violations)
+
+
+def test_t4_evidence_refs_must_resolve_to_real_snapshots(
+    test_db: Database, tenant: TenantContext
+) -> None:
+    """Plan rule 3（证据强一致）：evidence_refs 必须可解析回真实快照。
+
+    - 指向不存在的快照 → 不入库；
+    - 引用形态无法解析 → 不入库；
+    - 指向的快照接口与假设接口不一致 → 不入库；
+    - 只有全部可解析且身份一致的假设才落表。
+    """
+    svc = NetworkAssuranceService(database=test_db)
+    now = datetime.now(UTC)
+
+    def _hyp(hid: str, seq: int, iface: str, refs: list[str]) -> EdgeAiHypothesis:
+        return EdgeAiHypothesis(
+            hypothesis_id=hid,
+            device_id="radxa-cubie-a7a",
+            network_epoch=2,
+            sequence_id=seq,
+            interface=iface,
+            model_id="qwen2.5-0.5b-instruct-q4_k_m",
+            summary="证据链校验测试假设",
+            evidence_refs=refs,
+            recommended_actions=["PROBE_LOCAL_GATEWAY"],
+            created_at=now,
+            ttl_seconds=300,
+            cloud_eligible=True,
+        )
+
+    batch = NetworkTelemetryBatch(
+        snapshots=[
+            NetworkDeviceTelemetry(
+                device_id="radxa-cubie-a7a",
+                sequence_id=30,
+                network_epoch=2,
+                config_generation=1,
+                captured_at=now,
+                snapshot=_make_sample_snapshot("wlan0"),
+            ),
+            NetworkDeviceTelemetry(
+                device_id="radxa-cubie-a7a",
+                sequence_id=31,
+                network_epoch=2,
+                config_generation=1,
+                captured_at=now,
+                snapshot=_make_sample_snapshot("eth0"),
+            ),
+        ],
+        edge_ai_hypotheses=[
+            # 可入库：引用同批次 seq=30 快照，身份一致
+            _hyp("eh-goodref0001", 30, "wlan0", ["snap-radxa-cubie-a7a-2-30"]),
+            # 拒绝：引用不存在的 seq=999
+            _hyp("eh-missref0002", 30, "wlan0", ["snap-radxa-cubie-a7a-2-999"]),
+            # 拒绝：引用形态无法解析
+            _hyp("eh-badformat003", 30, "wlan0", ["bogus-not-a-snap-ref"]),
+            # 拒绝：引用 seq=30（wlan0）但假设声明 eth0 —— 接口不一致
+            _hyp("eh-ifacemism004", 31, "eth0", ["snap-radxa-cubie-a7a-2-30"]),
+        ],
+    )
+
+    res = svc.ingest_batch(tenant, batch, key_id="key-1", received_at=now)
+    assert res.accepted == 2
+    assert res.duplicates == 0
+
+    with test_db.transaction(tenant) as session:
+        hyps = session.scalars(select(NetworkEdgeHypothesisRecord)).all()
+        stored = {h.hypothesis_id for h in hyps}
+        assert stored == {"eh-goodref0001"}

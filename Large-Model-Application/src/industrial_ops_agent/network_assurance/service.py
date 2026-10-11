@@ -1391,8 +1391,10 @@ class NetworkAssuranceService:
         """Persist L2 edge AI hypotheses in a strictly separated table.
 
         Idempotent on ``(tenant_id, asset_id, hypothesis_id)`` so ring-buffer
-        replays do not duplicate hypotheses. Also verifies that the referenced
-        L1 snapshot exists in ``network_snapshots``.
+        replays do not duplicate hypotheses. Plan rule 3 (evidence 强一致):
+        every ``evidence_refs`` entry must resolve to a real snapshot in the
+        current batch or already persisted, with the same gateway identity
+        and interface — an unverifiable evidence chain is never stored.
         """
         for hyp in hypotheses:
             if not hyp.cloud_eligible:
@@ -1410,6 +1412,7 @@ class NetworkAssuranceService:
                 continue
 
             # Verify referenced L1 snapshot exists in network_snapshots
+            # (hyp 绑定身份 = 同批次快照身份，由 exporter 强制盖章)
             snap_exists = session.execute(
                 select(NetworkSnapshotRecord.snapshot_id).where(
                     NetworkSnapshotRecord.tenant_id == context.tenant_id,
@@ -1419,6 +1422,13 @@ class NetworkAssuranceService:
                 )
             ).first()
             if snap_exists is None:
+                continue
+
+            # Plan rule 3: evidence_refs 指向的快照必须真实可解析（当前批次
+            # 或已入库），且网关身份与接口严格一致。解析失败/指向不存在的
+            # 快照/身份不一致 → 整条假设不入库（宁可少一条 advisory，
+            # 不接受无法溯源的证据链）。
+            if not self._evidence_refs_resolve(session, context, asset_id, hyp):
                 continue
 
             session.add(
@@ -1441,6 +1451,47 @@ class NetworkAssuranceService:
                     received_at=now,
                 )
             )
+
+    @staticmethod
+    def _evidence_refs_resolve(
+        session: Session,
+        context: TenantContext,
+        asset_id: str,
+        hyp: EdgeAiHypothesis,
+    ) -> bool:
+        """每条 evidence_ref 都必须解析回真实快照（网关身份 + 接口一致）。
+
+        边缘侧引用形态固定为合成标识 ``snap-<device_id>-<epoch>-<seq>``
+        （见 ``EdgeAiScheduler`` 构造 snapshot_id 处）。device_id 自身可含
+        ``-``，epoch/seq 恒在尾部且为数字，故从尾部拆分。空 refs 或任何
+        无法验证的形态一律判 False（fail-safe：不可溯源的证据不入库）。
+        """
+        if not hyp.evidence_refs:
+            return False
+        for ref in hyp.evidence_refs:
+            parts = ref.rsplit("-", 2)
+            if len(parts) != 3 or parts[0] != f"snap-{hyp.device_id}":
+                return False
+            try:
+                epoch, seq = int(parts[1]), int(parts[2])
+            except ValueError:
+                return False
+            row = session.execute(
+                select(NetworkSnapshotRecord.experience_json).where(
+                    NetworkSnapshotRecord.tenant_id == context.tenant_id,
+                    NetworkSnapshotRecord.asset_id == asset_id,
+                    NetworkSnapshotRecord.network_epoch == epoch,
+                    NetworkSnapshotRecord.sequence_id == seq,
+                )
+            ).first()
+            if row is None:
+                return False
+            exp = row[0] or {}
+            if exp.get("device_id") != hyp.device_id:
+                return False
+            if exp.get("interface") != hyp.interface:
+                return False
+        return True
 
     @staticmethod
     def _is_current_headline(asset: NetworkAssetRecord, telemetry: NetworkDeviceTelemetry) -> bool:

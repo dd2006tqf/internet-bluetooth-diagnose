@@ -12,6 +12,7 @@
 | `evidence_context` | 专家引用的 L1 事实集合 |
 | `operational_constraints`（含 catalog 版本） | 约束与部署版本漂移会改变可选动作域 |
 | `knowledge_context_fingerprint` | RAG 案例会实际影响建议；不入指纹则知识库更新后永远复用旧会商 |
+| `edge_hypotheses` | 端侧初筛假设进每份 payload 的 ``edge_advisory_context``，是模型实际输入语义的一部分；不入指纹则同一事故在假设刷新后会复用旧会商，新的现场线索永不参与 |
 | prompt bundle hash | 提示词变了，模型行为就变了 |
 | `COUNCIL_CONTRACT_VERSION` | 契约演化必须可追溯 |
 
@@ -101,6 +102,20 @@ def council_input_fingerprint(
             council_input.operational_constraints.model_dump(mode="json")
         ),
         "knowledge_context": knowledge_context_fingerprint(council_input.knowledge_context),
+        # 端侧假设与知识案例不同：hypothesis_id 每次生成唯一，且 summary 正文
+        # 就是模型看到的 advisory 内容本身（不是"措辞微调"层面的噪声），因此
+        # 按语义全量入指纹；排序保证同一集合不同顺序是同一输入。
+        "edge_hypotheses": sorted(
+            _canonical_json(
+                {
+                    "hypothesis_id": h.hypothesis_id,
+                    "model_id": h.model_id,
+                    "summary": h.summary,
+                    "recommended_actions": h.recommended_actions,
+                }
+            )
+            for h in council_input.edge_hypotheses
+        ),
         "prompt_bundle_hash": prompt_bundle_hash,
         "contract_version": contract_version,
     }

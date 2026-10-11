@@ -22,6 +22,7 @@ from industrial_ops_agent.network_assurance.council_contracts import (
     COUNCIL_CONTRACT_VERSION,
     CouncilInput,
     DecisionEvidenceContext,
+    EdgeHypothesisRef,
     KnowledgeCaseRef,
     KnowledgeContext,
     OperationalConstraints,
@@ -224,6 +225,46 @@ def test_knowledge_fingerprint_does_not_leak_case_text() -> None:
         KnowledgeContext(cases=[KnowledgeCaseRef(case_id="case-A", case_version="1")])
     )
     assert "case-A" not in digest
+
+
+# ---------------------------------------------------------------------------
+# 端侧假设（edge_hypotheses）：进 payload 的 advisory 必须进指纹
+# ---------------------------------------------------------------------------
+
+
+def _hypothesis(hypothesis_id: str, summary: str = "疑似空口排队") -> EdgeHypothesisRef:
+    return EdgeHypothesisRef(
+        hypothesis_id=hypothesis_id,
+        model_id="qwen2.5-0.5b-instruct-q4_k_m",
+        summary=summary,
+        recommended_actions=["PROBE_LOCAL_GATEWAY"],
+    )
+
+
+def test_edge_hypothesis_presence_changes_fingerprint() -> None:
+    """无假设 vs 有假设是两种模型输入（advisory 进了每份 payload），指纹必须不同。"""
+    assert fp(make_input()) != fp(make_input(edge_hypotheses=[_hypothesis("eh-1")]))
+
+
+def test_new_edge_hypothesis_changes_fingerprint() -> None:
+    """假设刷新（新 hypothesis_id）后不得复用旧会商——否则新线索永不参与。"""
+    first = fp(make_input(edge_hypotheses=[_hypothesis("eh-1")]))
+    second = fp(make_input(edge_hypotheses=[_hypothesis("eh-2")]))
+    assert first != second
+
+
+def test_edge_hypothesis_summary_change_changes_fingerprint() -> None:
+    """summary 是模型实际读到的 advisory 正文，语义变化必须触发重新会商。"""
+    a = fp(make_input(edge_hypotheses=[_hypothesis("eh-1", summary="疑似空口排队")]))
+    b = fp(make_input(edge_hypotheses=[_hypothesis("eh-1", summary="疑似 DNS 解析慢")]))
+    assert a != b
+
+
+def test_edge_hypothesis_order_does_not_change_fingerprint() -> None:
+    """同一集合不同顺序是同一输入（与 knowledge case 排序语义一致）。"""
+    forward = make_input(edge_hypotheses=[_hypothesis("eh-1"), _hypothesis("eh-2")])
+    reverse = make_input(edge_hypotheses=[_hypothesis("eh-2"), _hypothesis("eh-1")])
+    assert fp(forward) == fp(reverse)
 
 
 # ---------------------------------------------------------------------------
