@@ -171,11 +171,12 @@
 
 ### eBPF 与编译环境
 
-- **eBPF/服务端编译必须用 ARM64 Docker 容器**：本项目目标是 ARM64 开发板（Radxa Cubie A7A），eBPF 程序和 C++ 服务端的编译验证必须通过常驻 ARM64 容器 `weaknet-arm64-dev`（基于 `weaknet-builder:bullseye-arm64` 镜像）执行，并预置开发板的 `board-assets/vmlinux.h`。**禁止在 x86 开发机上直接编译**（会因 `user_pt_regs` 报错且产物架构错误）。详见 `docs/交叉编译与开发板部署.md`。容器内编译命令：
+- **ARM64 裸机原生交叉编译为主**：本项目目标是 ARM64 开发板（Radxa Cubie A7A）。eBPF 程序与 C++ 服务端优先在 x86_64 宿主机通过 Clang 18 原生交叉编译（`cmake/toolchain-arm64-cross.cmake` + `/opt/sysroot-bullseye-arm64`），预置开发板 `board-assets/vmlinux.h`，支持 `-j$(nproc)` 多核秒级并行构建（约 40 秒完成）。
+- **编译执行命令**：
   ```bash
-  docker exec weaknet-arm64-dev bash -c \
-    'cd /src && cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-arm64 -j1'
+  cmake -B build-arm64-native -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm64-cross.cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=ON && cmake --build build-arm64-native -j$(nproc)
   ```
+- **一键打包部署**：统一通过 `./tools/ci.sh` 执行编译、打包 `dist-arm64`、部署与真机测试。若宿主机缺失 sysroot，脚本支持自动报错或使用 `scripts/setup_arm64_sysroot.sh` 一键初始化。
 
 ### surface 与 evidence 契约
 
@@ -249,9 +250,9 @@
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
-| "ARM64 编译" / "原生交叉编译" | `cmake -B build-arm64-native -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm64-cross.cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=ON && cmake --build build-arm64-native -j$(nproc)` | **推荐**：宿主机裸机原生 Clang + Bullseye Sysroot（全量仅需 ~40s，脱离 QEMU） |
-| "容器内编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-arm64 -j1'` | 备选回退：QEMU 模拟容器（全量需 ~15 分钟） |
+| "ARM64 编译" / "原生交叉编译" | `cmake -B build-arm64-native -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm64-cross.cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=ON && cmake --build build-arm64-native -j$(nproc)` | 宿主机裸机原生 Clang + Bullseye Sysroot（全量仅需 ~40s，脱离 QEMU 容器） |
 | "编译 eBPF" | `cmake --build build-arm64-native --target ebpf -j$(nproc)` | 单独编译 11 个 eBPF 程序（约 2 秒完成） |
+| "初始化 Sysroot" | `sudo ./scripts/setup_arm64_sysroot.sh` | 自动化初始化/更新 `/opt/sysroot-bullseye-arm64` |
 
 ### 历史数据查询
 
@@ -273,7 +274,6 @@
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
 | "板子在线吗" / "检查开发板" | `ping -c 1 -W 2 radxa-cubie-a7a.local && ssh radxa@radxa-cubie-a7a.local 'uname -m'` | 检查连通性 + 架构 |
-| "容器状态" | `docker ps --filter name=weaknet-arm64-dev` | 检查 ARM64 容器 |
 | "CI 状态" | `gh run list --limit 5` | 查看 GitHub Actions 运行记录 |
 
 ### 配置化与实时调参（新增）

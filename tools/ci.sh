@@ -13,13 +13,13 @@
 #   ./tools/ci.sh --skip-test        # 不测试
 #
 # 环境变量:
-#   CONTAINER - ARM64 构建容器名（默认: weaknet-arm64-dev）
-#   BOARD     - 开发板 SSH 地址（默认: radxa@radxa-cubie-a7a.local）
+#   SYSROOT_DIR - ARM64 Sysroot 路径（默认: /opt/sysroot-bullseye-arm64）
+#   BOARD       - 开发板 SSH 地址（默认: radxa@radxa-cubie-a7a.local 或 board）
 # ============================================================================
 set -euo pipefail
 
 # ---- 配置 ----
-CONTAINER="${CONTAINER:-weaknet-arm64-dev}"
+SYSROOT_DIR="${SYSROOT_DIR:-/opt/sysroot-bullseye-arm64}"
 BOARD="${BOARD:-radxa@radxa-cubie-a7a.local}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT}/dist-arm64"
@@ -49,8 +49,8 @@ for arg in "$@"; do
             echo "  --skip-test   不运行开发板测试"
             echo ""
             echo "环境变量:"
-            echo "  CONTAINER=容器名   ARM64 构建容器（默认: weaknet-arm64-dev）"
-            echo "  BOARD=用户名@IP    开发板地址（默认: radxa@radxa-cubie-a7a.local）"
+            echo "  SYSROOT_DIR=路径   ARM64 Bullseye Sysroot（默认: /opt/sysroot-bullseye-arm64）"
+            echo "  BOARD=主机或别名   开发板地址（默认: radxa@radxa-cubie-a7a.local 或 board）"
             exit 0
             ;;
         *) echo "未知参数: $arg"; exit 1 ;;
@@ -102,100 +102,58 @@ $(git diff --cached --stat | tail -1)"
 fi
 
 # ============================================================
-# Step 2: ARM64 编译 + 打包（增量编译）
+# Step 2: ARM64 编译 + 打包（宿主机原生交叉编译）
 # ============================================================
 log ""
 log "===== Step 2: ARM64 编译 + 打包 ====="
 
-# 优先使用宿主机裸机原生交叉编译（/opt/sysroot-bullseye-arm64 + clang -j$(nproc)），
-# 脱离 QEMU 模拟，耗时从 ~15 分钟降至 ~30 秒。
-# 若宿主机未准备 sysroot，则自动回退到 Docker QEMU 容器模式。
+# 使用宿主机裸机原生交叉编译（/opt/sysroot-bullseye-arm64 + clang -j$(nproc)），
+# 完全脱离 QEMU 模拟与 Docker 容器，耗时从 ~15 分钟降至 ~40 秒。
 BUILD_STATUS=0
-if [ -d "/opt/sysroot-bullseye-arm64" ] && [ -f "${ROOT}/cmake/toolchain-arm64-cross.cmake" ]; then
-    info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(nproc))"
-    (
-        set -euo pipefail
-        cd "${ROOT}"
-
-        echo "--- CMake 配置（宿主机原生交叉编译）---"
-        cmake -B build-arm64-native \
-              -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm64-cross.cmake \
-              -DCMAKE_BUILD_TYPE=Debug \
-              -DBUILD_EBPF=ON 2>&1
-
-        echo "--- 编译服务端 + eBPF + 客户端 (-j$(nproc)) ---"
-        cmake --build build-arm64-native --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf ebpf -j"$(nproc)" 2>&1
-
-        echo "--- 打包 dist-arm64 ---"
-        rm -rf dist-arm64
-        mkdir -p dist-arm64/server/bin dist-arm64/server/build dist-arm64/server/test \
-                 dist-arm64/client/bin dist-arm64/client/lib dist-arm64/lib
-
-        install -m 0755 build-arm64-native/server/weaknet-dbus-server dist-arm64/server/bin/
-        install -m 0755 build-arm64-native/server/history_query_tool dist-arm64/server/bin/
-        install -m 0755 build-arm64-native/server/test/test_ebpf dist-arm64/server/test/
-        for f in build-arm64-native/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true; done
-        install -m 0755 build-arm64-native/client/bin/test_client_bin dist-arm64/client/bin/test-client
-        install -m 0755 build-arm64-native/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
-        install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
-        install -m 0644 build-arm64-native/client/lib/libweaknet.so dist-arm64/client/lib/
-        cp -a /opt/sysroot-bullseye-arm64/usr/local/lib/libbpf.so* dist-arm64/lib/ 2>/dev/null || true
-
-        echo "产物: $(find dist-arm64 -type f | wc -l) 个文件"
-        file dist-arm64/server/bin/weaknet-dbus-server
-
-        echo "--- ccache 统计 ---"
-        if command -v ccache >/dev/null 2>&1; then
-            ccache -s 2>/dev/null | grep -E "cache hit|cache miss|hit rate|files in cache|cache size" || true
-        fi
-    ) 2>&1 | tee -a "$REPORT" || BUILD_STATUS=${PIPESTATUS[0]}
-else
-    info "回退使用 Docker QEMU 容器编译 (${CONTAINER})"
-    docker exec "${CONTAINER}" bash -c '
-set -euo pipefail
-cd /src
-
-# 增量编译：保留 build 目录，仅重建改动的文件
-# 使用 ccache 缓存编译结果，减少重复编译
-echo "--- CMake 配置（增量）---"
-CCACHE_OPTS=""
-if command -v ccache >/dev/null 2>&1; then
-    CCACHE_OPTS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+if [ ! -d "${SYSROOT_DIR}" ] || [ ! -f "${ROOT}/cmake/toolchain-arm64-cross.cmake" ]; then
+    fail "缺少 Sysroot (${SYSROOT_DIR}) 或工具链文件。请先运行 sudo ./scripts/setup_arm64_sysroot.sh 初始化"
 fi
-cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug ${CCACHE_OPTS} 2>&1
 
-echo "--- 编译服务端 + eBPF + 客户端 ---"
-cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf ebpf -j1 2>&1
+info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(nproc))"
+(
+    set -euo pipefail
+    cd "${ROOT}"
 
-echo "--- 打包 dist-arm64 ---"
-rm -rf dist-arm64
-mkdir -p dist-arm64/server/bin dist-arm64/server/build dist-arm64/server/test \
-         dist-arm64/client/bin dist-arm64/client/lib dist-arm64/lib
+    echo "--- CMake 配置（宿主机原生交叉编译）---"
+    cmake -B build-arm64-native \
+          -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm64-cross.cmake \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_EBPF=ON 2>&1
 
-install -m 0755 build-arm64/server/weaknet-dbus-server dist-arm64/server/bin/
-install -m 0755 build-arm64/server/history_query_tool dist-arm64/server/bin/
-install -m 0755 build-arm64/server/test/test_ebpf dist-arm64/server/test/
-for f in build-arm64/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true; done
-install -m 0755 build-arm64/client/bin/test_client_bin dist-arm64/client/bin/test-client
-install -m 0755 build-arm64/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
-install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
-install -m 0644 build-arm64/client/lib/libweaknet.so dist-arm64/client/lib/
-cp -a /usr/local/lib/libbpf.so* dist-arm64/lib/ 2>/dev/null || true
+    echo "--- 编译服务端 + eBPF + 客户端 (-j$(nproc)) ---"
+    cmake --build build-arm64-native --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf ebpf -j"$(nproc)" 2>&1
 
-echo "产物: $(find dist-arm64 -type f | wc -l) 个文件"
-file dist-arm64/server/bin/weaknet-dbus-server
+    echo "--- 打包 dist-arm64 ---"
+    rm -rf dist-arm64
+    mkdir -p dist-arm64/server/bin dist-arm64/server/build dist-arm64/server/test \
+             dist-arm64/client/bin dist-arm64/client/lib dist-arm64/lib
 
-# 输出 ccache 命中率（统计命令失败不应影响编译/打包成功）
-echo "--- ccache 统计 ---"
-if command -v ccache >/dev/null 2>&1; then
-    ccache -s 2>/dev/null | grep -E "cache hit|cache miss|hit rate|files in cache|cache size" || true
-else
-    echo "ccache 未安装，跳过统计"
-fi' 2>&1 | tee -a "$REPORT" || BUILD_STATUS=${PIPESTATUS[0]}
-fi
+    install -m 0755 build-arm64-native/server/weaknet-dbus-server dist-arm64/server/bin/
+    install -m 0755 build-arm64-native/server/history_query_tool dist-arm64/server/bin/
+    install -m 0755 build-arm64-native/server/test/test_ebpf dist-arm64/server/test/
+    for f in build-arm64-native/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true; done
+    install -m 0755 build-arm64-native/client/bin/test_client_bin dist-arm64/client/bin/test-client
+    install -m 0755 build-arm64-native/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
+    install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
+    install -m 0644 build-arm64-native/client/lib/libweaknet.so dist-arm64/client/lib/
+    cp -a "${SYSROOT_DIR}/usr/local/lib/libbpf.so"* dist-arm64/lib/ 2>/dev/null || true
+
+    echo "产物: $(find dist-arm64 -type f | wc -l) 个文件"
+    file dist-arm64/server/bin/weaknet-dbus-server
+
+    echo "--- ccache 统计 ---"
+    if command -v ccache >/dev/null 2>&1; then
+        ccache -s 2>/dev/null | grep -E "cache hit|cache miss|hit rate|files in cache|cache size" || true
+    fi
+) 2>&1 | tee -a "$REPORT" || BUILD_STATUS=${PIPESTATUS[0]}
 
 if [ "$BUILD_STATUS" -ne 0 ]; then
-    fail "ARM64 编译/打包失败（容器退出码 ${BUILD_STATUS}）——中止：不打印成功、不进入部署，板端保持旧版本"
+    fail "ARM64 编译/打包失败（退出码 ${BUILD_STATUS}）——中止：不打印成功、不进入部署，板端保持旧版本"
 fi
 pass "编译 + 打包完成"
 
