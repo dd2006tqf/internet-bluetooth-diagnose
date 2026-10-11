@@ -249,8 +249,9 @@
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
-| "容器内编译" / "ARM64 编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-arm64 -j1'` | 需要 ~10 分钟（QEMU 模拟） |
-| "编译 eBPF" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake --build build-arm64 --target ebpf -j1'` | 单独编译 eBPF 程序 |
+| "ARM64 编译" / "原生交叉编译" | `cmake -B build-arm64-native -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm64-cross.cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=ON && cmake --build build-arm64-native -j$(nproc)` | **推荐**：宿主机裸机原生 Clang + Bullseye Sysroot（全量仅需 ~40s，脱离 QEMU） |
+| "容器内编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-arm64 -j1'` | 备选回退：QEMU 模拟容器（全量需 ~15 分钟） |
+| "编译 eBPF" | `cmake --build build-arm64-native --target ebpf -j$(nproc)` | 单独编译 11 个 eBPF 程序（约 2 秒完成） |
 
 ### 历史数据查询
 

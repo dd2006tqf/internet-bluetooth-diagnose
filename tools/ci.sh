@@ -107,13 +107,51 @@ fi
 log ""
 log "===== Step 2: ARM64 编译 + 打包 ====="
 
-# 构建/打包任一步失败都必须让整个步骤失败：
-#  - 容器内 set -euo pipefail 保证 build 失败时不执行打包（旧 dist 不被清掉）
-#  - 外层用 PIPESTATUS 捕获真实退出码（tee 会把退出码洗成 0，且不能依赖
-#    管道语义的暗约定），失败立即 fail——绝不打印"编译 + 打包完成"、
-#    绝不进入部署步，避免把上一次的旧产物当成新版本发出去
+# 优先使用宿主机裸机原生交叉编译（/opt/sysroot-bullseye-arm64 + clang -j$(nproc)），
+# 脱离 QEMU 模拟，耗时从 ~15 分钟降至 ~30 秒。
+# 若宿主机未准备 sysroot，则自动回退到 Docker QEMU 容器模式。
 BUILD_STATUS=0
-docker exec "${CONTAINER}" bash -c '
+if [ -d "/opt/sysroot-bullseye-arm64" ] && [ -f "${ROOT}/cmake/toolchain-arm64-cross.cmake" ]; then
+    info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(nproc))"
+    (
+        set -euo pipefail
+        cd "${ROOT}"
+
+        echo "--- CMake 配置（宿主机原生交叉编译）---"
+        cmake -B build-arm64-native \
+              -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm64-cross.cmake \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DBUILD_EBPF=ON 2>&1
+
+        echo "--- 编译服务端 + eBPF + 客户端 (-j$(nproc)) ---"
+        cmake --build build-arm64-native --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf ebpf -j"$(nproc)" 2>&1
+
+        echo "--- 打包 dist-arm64 ---"
+        rm -rf dist-arm64
+        mkdir -p dist-arm64/server/bin dist-arm64/server/build dist-arm64/server/test \
+                 dist-arm64/client/bin dist-arm64/client/lib dist-arm64/lib
+
+        install -m 0755 build-arm64-native/server/weaknet-dbus-server dist-arm64/server/bin/
+        install -m 0755 build-arm64-native/server/history_query_tool dist-arm64/server/bin/
+        install -m 0755 build-arm64-native/server/test/test_ebpf dist-arm64/server/test/
+        for f in build-arm64-native/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true; done
+        install -m 0755 build-arm64-native/client/bin/test_client_bin dist-arm64/client/bin/test-client
+        install -m 0755 build-arm64-native/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
+        install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
+        install -m 0644 build-arm64-native/client/lib/libweaknet.so dist-arm64/client/lib/
+        cp -a /opt/sysroot-bullseye-arm64/usr/local/lib/libbpf.so* dist-arm64/lib/ 2>/dev/null || true
+
+        echo "产物: $(find dist-arm64 -type f | wc -l) 个文件"
+        file dist-arm64/server/bin/weaknet-dbus-server
+
+        echo "--- ccache 统计 ---"
+        if command -v ccache >/dev/null 2>&1; then
+            ccache -s 2>/dev/null | grep -E "cache hit|cache miss|hit rate|files in cache|cache size" || true
+        fi
+    ) 2>&1 | tee -a "$REPORT" || BUILD_STATUS=${PIPESTATUS[0]}
+else
+    info "回退使用 Docker QEMU 容器编译 (${CONTAINER})"
+    docker exec "${CONTAINER}" bash -c '
 set -euo pipefail
 cd /src
 
@@ -127,9 +165,6 @@ fi
 cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug ${CCACHE_OPTS} 2>&1
 
 echo "--- 编译服务端 + eBPF + 客户端 ---"
-# 注意：weaknet_cli 是独立目标（weaknet 只是动态库），此前不在清单里，
-# 导致 CLI 源码改动后 CI 仍打包部署陈旧的 weaknet-cli（实测：events 命令
-# 上板后报"未知命令"，板端二进制停在上一次手动全量构建的版本）。
 cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf ebpf -j1 2>&1
 
 echo "--- 打包 dist-arm64 ---"
@@ -157,6 +192,7 @@ if command -v ccache >/dev/null 2>&1; then
 else
     echo "ccache 未安装，跳过统计"
 fi' 2>&1 | tee -a "$REPORT" || BUILD_STATUS=${PIPESTATUS[0]}
+fi
 
 if [ "$BUILD_STATUS" -ne 0 ]; then
     fail "ARM64 编译/打包失败（容器退出码 ${BUILD_STATUS}）——中止：不打印成功、不进入部署，板端保持旧版本"
