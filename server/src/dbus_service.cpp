@@ -44,6 +44,7 @@
 #include "net_ping.h"
 #include "bt_monitor.hpp"
 #include "bt_audio_analyzer.hpp"
+#include "bt_data_path_analyzer.hpp"
 #include "bt_audio_fusion.hpp"
 #include "dns_monitor.hpp"
 #include "wifi_packet_loss_monitor.hpp"
@@ -1373,7 +1374,8 @@ bool DbusService::handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* 
             {"TcpConnMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_conn_monitor)},
             {"SkbDropMonitor", static_cast<const IEbpfMonitor*>(ctx_->skb_drop_monitor)},
             {"TcpRttMonitor", static_cast<const IEbpfMonitor*>(ctx_->tcp_rtt_monitor)},
-            {"BtAudioAnalyzer", bt_audio}
+            {"BtAudioAnalyzer", bt_audio},
+            {"BtDataPathAnalyzer", static_cast<const IEbpfMonitor*>(ctx_->bt_hci_analyzer)}
         };
 
         // 手工拼接 JSON：项目不依赖 JSON 库，字段名和字符串值都要做 JSON 转义

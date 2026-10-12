@@ -258,6 +258,19 @@ add_custom_command(
     COMMENT "Compiling eBPF: bt_events.bpf.c"
 )
 
+# bt_hci_traffic：工业蓝牙 HCI ACL 数据通道双向流量观测（Phase 1 新架构）
+add_custom_command(
+    OUTPUT ${BPF_BUILD_DIR}/bt_hci_traffic.bpf.o
+    COMMAND ${CLANG} -g -O2 -target bpf
+        -I${BPF_BUILD_DIR}
+        -c ${CMAKE_CURRENT_SOURCE_DIR}/src/bpf/bt_hci_traffic.bpf.c
+        -o ${BPF_BUILD_DIR}/bt_hci_traffic.bpf.o
+    DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/bpf/bt_hci_traffic.bpf.c
+        ${VMLINUX_H}
+    COMMENT "Compiling eBPF: bt_hci_traffic.bpf.c"
+)
+
 # 汇总 eBPF 目标（默认构建，但不阻塞服务端二进制）
 add_custom_target(ebpf
     DEPENDS
@@ -270,6 +283,7 @@ add_custom_target(ebpf
         ${BPF_BUILD_DIR}/skb_drop.bpf.o
         ${BPF_BUILD_DIR}/a2dp_media.bpf.o
         ${BPF_BUILD_DIR}/bt_events.bpf.o
+        ${BPF_BUILD_DIR}/bt_hci_traffic.bpf.o
         ${BPF_BUILD_DIR}/tcp_connect.bpf.o
         ${BPF_BUILD_DIR}/tcp_rtt.bpf.o
 )

@@ -53,6 +53,7 @@ class TcpConnectMonitor;    // 前置声明：TCP 建连可观测性（eBPF）
 class ActiveConnectivityMonitor; // 前置声明：受控主动连通性探测
 class SkbDropMonitor;       // 前置声明：Socket 丢包归因监控（eBPF）
 class TcpRttMonitor;        // 前置声明：被动 TCP RTT 监控（eBPF）
+class BtDataPathAnalyzer;   // 前置声明：蓝牙 HCI ACL 数据通道分析器（eBPF）
 class DatabaseManager;      // 前置声明：SQLite 历史数据持久化
 class WirelessEventStore;   // 前置声明：规范化无线设备事件存储（Phase 1）
 class BtLinkQualityTracker; // 前置声明：蓝牙链路质量跟踪器（Phase 2）
@@ -114,6 +115,7 @@ struct ServerContext {
     SkbDropMonitor* skb_drop_monitor = nullptr;
     TcpConnectMonitor* tcp_connect_monitor = nullptr;
     TcpRttMonitor* tcp_rtt_monitor = nullptr;
+    BtDataPathAnalyzer* bt_hci_analyzer = nullptr;
 
     /// 受控主动连通性探测（宿主能力证据的唯一来源）
     std::unique_ptr<ActiveConnectivityMonitor> active_probe;

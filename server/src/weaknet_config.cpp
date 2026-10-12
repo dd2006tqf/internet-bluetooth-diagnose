@@ -603,11 +603,11 @@ bool getMonitorEnabled(const WeakNetConfig& cfg, const std::string& monitor, boo
     else if (monitor == "traffic") *enabled = cfg.traffic.enabled.load();
     else if (monitor == "quality") *enabled = cfg.quality.enabled.load();
     else if (monitor == "bluetooth") *enabled = cfg.bluetooth.enabled.load();
-    // bt_events 与 bluetooth 同属蓝牙数据域、共用一个 enabled 开关，
-    // 但它们是两个独立插件：bluetooth 走 BlueZ D-Bus 采集状态，
-    // bt_events 走内核 eBPF 采集断连事件。MonitorManager::startConfigured()
-    // 对本表查不到的名字会直接判 Failed，因此这里必须登记。
+    // bt_events 与 bt_hci_traffic 与 bluetooth 同属蓝牙数据域、共用一个 enabled 开关，
+    // 但它们是独立插件：bluetooth 走 BlueZ D-Bus 采集状态，
+    // bt_events 走内核 eBPF 采集断连事件，bt_hci_traffic 走 eBPF 采集 ACL 双向流量。
     else if (monitor == "bt_events") *enabled = cfg.bluetooth.enabled.load();
+    else if (monitor == "bt_hci_traffic") *enabled = cfg.bluetooth.enabled.load();
     else if (monitor == "dns") *enabled = cfg.dns.enabled.load();
     else if (monitor == "tcp_connect") *enabled = cfg.tcp_connect.enabled.load();
     else if (monitor == "active_probe") *enabled = cfg.active_probe.enabled.load();
@@ -632,6 +632,7 @@ bool setMonitorEnabled(WeakNetConfig* cfg, const std::string& monitor, bool enab
     else if (monitor == "quality") cfg->quality.enabled.store(enabled);
     else if (monitor == "bluetooth") cfg->bluetooth.enabled.store(enabled);
     else if (monitor == "bt_events") cfg->bluetooth.enabled.store(enabled);
+    else if (monitor == "bt_hci_traffic") cfg->bluetooth.enabled.store(enabled);
     else if (monitor == "dns") cfg->dns.enabled.store(enabled);
     else if (monitor == "tcp_connect") cfg->tcp_connect.enabled.store(enabled);
     else if (monitor == "active_probe") cfg->active_probe.enabled.store(enabled);

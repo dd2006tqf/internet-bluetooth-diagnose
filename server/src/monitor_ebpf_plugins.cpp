@@ -28,6 +28,8 @@
 #include "tcp_connect_monitor.hpp"
 #include "tcp_rtt_monitor.hpp"
 #include "bt_event_monitor.hpp"
+#include "bt_data_path_analyzer.hpp"
+#include "bt_hci_connection_tracker.hpp"
 #include "bt_link_quality_tracker.hpp"
 #include "site_incident_correlator.hpp"
 #include "wireless_event_store.hpp"
@@ -585,6 +587,77 @@ public:
     }
 };
 
+// ---------------------------------------------------------------------------
+// 工业蓝牙 HCI ACL 数据通道流量监测（Phase 1 新架构，order 10）
+// ---------------------------------------------------------------------------
+class BtHciTrafficPlugin : public IMonitorPlugin {
+    ServerContext* ctx_ = nullptr;
+    std::shared_ptr<weaknet::BtHciConnectionTracker> tracker_;
+    std::unique_ptr<BtDataPathAnalyzer> analyzer_;
+    std::thread worker_;
+    std::atomic<bool> stop_{false};
+public:
+    const char* name() const override { return "bt_hci_traffic"; }
+    int order() const override { return 10; }
+    bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
+    bool start(ServerContext* ctx) override {
+        if (!ctx->cfg.bluetooth.enabled.load()) {
+            LOG_INFO(LogModule::BLUETOOTH, "bt_hci_traffic plugin disabled by config (bluetooth.enabled=false)");
+            return true;
+        }
+
+        tracker_ = std::make_shared<weaknet::BtHciConnectionTracker>();
+        analyzer_ = std::make_unique<BtDataPathAnalyzer>(tracker_);
+
+        std::string bpf_path = ctx->cfg.bluetooth.hci_traffic_bpf_obj.get();
+        if (!analyzer_->init(bpf_path, "hci0")) {
+            LOG_WARNING(LogModule::BLUETOOTH, "BtHciTrafficPlugin: init failed for "
+                        << bpf_path << " — falling back to offline mode ("
+                        << analyzer_->lastError() << ")");
+        }
+
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+            ctx->bt_hci_analyzer = analyzer_.get();
+        }
+
+        stop_.store(false);
+        worker_ = std::thread([this]() {
+            while (!stop_.load() && ctx_ && ctx_->running.load()) {
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                if (analyzer_ && analyzer_->isAvailable()) {
+                    auto obs = analyzer_->collectObservations();
+                    if (!obs.empty()) {
+                        LOG_DEBUG(LogModule::BLUETOOTH, "BtDataPathAnalyzer collected "
+                                  << obs.size() << " observations");
+                    }
+                }
+            }
+        });
+
+        LOG_INFO(LogModule::BLUETOOTH, "BtHciTrafficPlugin started successfully, hooks: "
+                 << analyzer_->attachedHookName());
+        return true;
+    }
+    void stop() override {
+        stop_.store(true);
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+        if (analyzer_) {
+            analyzer_->stop();
+        }
+        if (ctx_) {
+            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+            if (ctx_->bt_hci_analyzer == analyzer_.get()) {
+                ctx_->bt_hci_analyzer = nullptr;
+            }
+        }
+        analyzer_.reset();
+        tracker_.reset();
+    }
+};
+
 void registerEbpfPlugins() {
     registerPlugin("dns",             [] { return std::make_unique<DnsPlugin>(); });
     registerPlugin("wifi_loss",       [] { return std::make_unique<WifiLossPlugin>(); });
@@ -596,6 +669,7 @@ void registerEbpfPlugins() {
     registerPlugin("tcp_connect",     [] { return std::make_unique<TcpConnectPlugin>(); });
     registerPlugin("tcp_rtt",         [] { return std::make_unique<TcpRttPlugin>(); });
     registerPlugin("bt_events",       [] { return std::make_unique<BtEventsPlugin>(); });
+    registerPlugin("bt_hci_traffic",  [] { return std::make_unique<BtHciTrafficPlugin>(); });
 }
 
 }  // namespace weaknet_dbus

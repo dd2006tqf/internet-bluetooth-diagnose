@@ -216,6 +216,14 @@ add_executable(test_edge_ai_scheduler_gtest
     unit/test_edge_ai_scheduler_gtest.cpp)
 target_link_libraries(test_edge_ai_scheduler_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_bt_hci_traffic_gtest
+    unit/test_bt_hci_traffic_gtest.cpp)
+target_link_libraries(test_bt_hci_traffic_gtest PRIVATE ${TEST_COMMON_LIBS})
+
+add_executable(runner_bt_hci_analyzer
+    runner_bt_hci_analyzer.cpp)
+target_link_libraries(runner_bt_hci_analyzer PRIVATE ${TEST_COMMON_LIBS})
+
 # 交叉校验规格表 default_entries 与 .bpf.c 编译期常量的一致性：
 # 需要读取 server/ 下的 BPF 源码，故显式传入源码目录
 add_executable(test_map_sizing_spec_sync_gtest
@@ -275,7 +283,8 @@ foreach(test_target
     test_map_sizing_spec_sync_gtest
     test_per_key_counter_tracker_gtest
     test_action_catalog_version_gtest
-    test_edge_ai_scheduler_gtest)
+    test_edge_ai_scheduler_gtest
+    test_bt_hci_traffic_gtest)
     add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()
 

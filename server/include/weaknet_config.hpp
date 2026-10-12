@@ -123,6 +123,9 @@ struct WeakNetConfig {
         /// 后者是工业无线诊断的主线。
         ConfigString events_bpf_obj{"build/bt_events.bpf.o"};
 
+        /// Phase 1 HCI ACL 工业数据通道流量探针对象（bt_hci_traffic.bpf.o）
+        ConfigString hci_traffic_bpf_obj{"build/bt_hci_traffic.bpf.o"};
+
         // ---------- Phase 3a: 区域关联阈值（SiteIncident）----------
         //
         // 这五个值决定 SiteIncidentCorrelator 的**构造期**配置：插件 start 时
