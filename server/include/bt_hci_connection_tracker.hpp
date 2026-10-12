@@ -85,6 +85,14 @@ public:
      */
     void resetController(const std::string& controller);
 
+    /**
+     * @brief 从内核 Linux HCI 套接字同步当前控制器的底层真实连接表 (HCIGETCONNLIST ioctl)
+     * 自动发现新建链路、更新 (handle -> MAC) 映射，并探测被内核销毁的断开连接。
+     * @param controller 控制器标识，如 "hci0"
+     * @return 实际同步成功的活跃连接数
+     */
+    size_t syncFromKernel(const std::string& controller = "hci0");
+
     size_t activeCount() const;
 
 private:

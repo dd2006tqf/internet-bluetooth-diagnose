@@ -346,6 +346,28 @@ bool DatabaseManager::ensureSchema() {
             PRIMARY KEY (incident_id, event_id)
         );
         CREATE INDEX IF NOT EXISTS idx_site_incident_events_event ON site_incident_events(event_id);
+
+        -- bt_data_path_metrics: 工业蓝牙数传链路流量时间序列指标（Phase 1b）
+        -- 记录 ACL 双向增量与速率，守住 L1 纯净性
+        CREATE TABLE IF NOT EXISTS bt_data_path_metrics (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts                 INTEGER NOT NULL,
+            controller_id      TEXT    DEFAULT 'hci0',
+            handle             INTEGER NOT NULL,
+            generation         INTEGER NOT NULL,
+            attribution_scope  TEXT    DEFAULT 'unknown',
+            device_address     TEXT    DEFAULT '',
+            window_ms          INTEGER NOT NULL,
+            tx_bytes           INTEGER NOT NULL,
+            rx_bytes           INTEGER NOT NULL,
+            tx_packets         INTEGER NOT NULL,
+            rx_packets         INTEGER NOT NULL,
+            tx_bps             REAL    NOT NULL,
+            rx_bps             REAL    NOT NULL,
+            max_gap_ms         INTEGER DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_bt_data_path_ts ON bt_data_path_metrics(ts);
+        CREATE INDEX IF NOT EXISTS idx_bt_data_path_dev ON bt_data_path_metrics(device_address);
     )";
     if (!exec(schema)) return false;
 
@@ -796,6 +818,17 @@ int DatabaseManager::cleanup(int retention_days) {
     sqlite3_exec(db_, incident_sql.str().c_str(), nullptr, nullptr, &incident_err);
     if (incident_err) {
         sqlite3_free(incident_err);
+    }
+
+    // 清理过期的工业蓝牙 HCI ACL 数据通道指标记录（Phase 1b）
+    std::ostringstream bt_metrics_sql;
+    bt_metrics_sql << "DELETE FROM bt_data_path_metrics WHERE ts < "
+                   << "(CAST(strftime('%s','now') AS INTEGER) - "
+                   << retention_days << " * 86400) * 1000";
+    char* bt_metrics_err = nullptr;
+    sqlite3_exec(db_, bt_metrics_sql.str().c_str(), nullptr, nullptr, &bt_metrics_err);
+    if (bt_metrics_err) {
+        sqlite3_free(bt_metrics_err);
     }
 
     return deleted;
@@ -1794,6 +1827,150 @@ static int stringRangeCallback(void* data, int /*argc*/, char** argv, char** /*c
     auto* s = static_cast<std::string*>(data);
     if (argv[0]) *s = argv[0];
     return 0;
+}
+
+bool DatabaseManager::insertBtDataPathMetric(int64_t ts_ms,
+                                            const std::string& controller_id,
+                                            uint16_t handle,
+                                            uint32_t generation,
+                                            const std::string& attribution_scope,
+                                            const std::string& device_address,
+                                            uint32_t window_ms,
+                                            uint64_t tx_bytes,
+                                            uint64_t rx_bytes,
+                                            uint64_t tx_packets,
+                                            uint64_t rx_packets,
+                                            double tx_bps,
+                                            double rx_bps,
+                                            uint32_t max_gap_ms) {
+    if (!db_) return false;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    const char* sql = R"(
+        INSERT INTO bt_data_path_metrics (
+            ts, controller_id, handle, generation, attribution_scope,
+            device_address, window_ms, tx_bytes, rx_bytes, tx_packets,
+            rx_packets, tx_bps, rx_bps, max_gap_ms
+        ) VALUES (
+            ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?,
+            ?, ?, ?, ?
+        );
+    )";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::insertBtDataPathMetric prepare failed: "
+                                         << sqlite3_errmsg(db_));
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, ts_ms);
+    sqlite3_bind_text(stmt, 2, controller_id.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, static_cast<int>(handle));
+    sqlite3_bind_int64(stmt, 4, static_cast<int64_t>(generation));
+    sqlite3_bind_text(stmt, 5, attribution_scope.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, device_address.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 7, static_cast<int>(window_ms));
+    sqlite3_bind_int64(stmt, 8, static_cast<int64_t>(tx_bytes));
+    sqlite3_bind_int64(stmt, 9, static_cast<int64_t>(rx_bytes));
+    sqlite3_bind_int64(stmt, 10, static_cast<int64_t>(tx_packets));
+    sqlite3_bind_int64(stmt, 11, static_cast<int64_t>(rx_packets));
+    sqlite3_bind_double(stmt, 12, tx_bps);
+    sqlite3_bind_double(stmt, 13, rx_bps);
+    sqlite3_bind_int(stmt, 14, static_cast<int>(max_gap_ms));
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::insertBtDataPathMetric step failed: "
+                                         << sqlite3_errmsg(db_));
+        return false;
+    }
+    return true;
+}
+
+std::string DatabaseManager::queryBtDataPathMetrics(const std::string& device_address,
+                                                    int64_t start_ms,
+                                                    int64_t end_ms,
+                                                    int limit) {
+    if (!db_) return "[]";
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    std::ostringstream sql;
+    sql << "SELECT ts, controller_id, handle, generation, attribution_scope, "
+        << "device_address, window_ms, tx_bytes, rx_bytes, tx_packets, rx_packets, "
+        << "tx_bps, rx_bps, max_gap_ms FROM bt_data_path_metrics WHERE 1=1";
+
+    if (!device_address.empty()) {
+        sql << " AND device_address = ?";
+    }
+    if (start_ms > 0) {
+        sql << " AND ts >= ?";
+    }
+    if (end_ms > 0) {
+        sql << " AND ts <= ?";
+    }
+    sql << " ORDER BY ts DESC LIMIT ?;";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql.str().c_str(), -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::queryBtDataPathMetrics prepare failed: " << sqlite3_errmsg(db_));
+        return "[]";
+    }
+
+    int bindIdx = 1;
+    if (!device_address.empty()) {
+        sqlite3_bind_text(stmt, bindIdx++, device_address.c_str(), -1, SQLITE_STATIC);
+    }
+    if (start_ms > 0) {
+        sqlite3_bind_int64(stmt, bindIdx++, start_ms);
+    }
+    if (end_ms > 0) {
+        sqlite3_bind_int64(stmt, bindIdx++, end_ms);
+    }
+    sqlite3_bind_int(stmt, bindIdx++, limit > 0 ? limit : 100);
+
+    std::ostringstream json;
+    json << "[";
+    bool first = true;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (!first) json << ",";
+        first = false;
+
+        auto textOrEmpty = [&](int col) -> std::string {
+            const char* v = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
+            return v ? v : "";
+        };
+
+        json << "{"
+             << "\"ts\":" << sqlite3_column_int64(stmt, 0) << ","
+             << "\"controller_id\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(1)) << "\","
+             << "\"handle\":" << sqlite3_column_int(stmt, 2) << ","
+             << "\"generation\":" << sqlite3_column_int64(stmt, 3) << ","
+             << "\"attribution_scope\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(4)) << "\","
+             << "\"device_address\":\"" << weaknet_utils::escapeJsonString(textOrEmpty(5)) << "\","
+             << "\"window_ms\":" << sqlite3_column_int(stmt, 6) << ","
+             << "\"tx_bytes\":" << sqlite3_column_int64(stmt, 7) << ","
+             << "\"rx_bytes\":" << sqlite3_column_int64(stmt, 8) << ","
+             << "\"tx_packets\":" << sqlite3_column_int64(stmt, 9) << ","
+             << "\"rx_packets\":" << sqlite3_column_int64(stmt, 10) << ","
+             << "\"tx_bps\":" << sqlite3_column_double(stmt, 11) << ","
+             << "\"rx_bps\":" << sqlite3_column_double(stmt, 12) << ","
+             << "\"max_gap_ms\":" << sqlite3_column_int(stmt, 13)
+             << "}";
+    }
+
+    sqlite3_finalize(stmt);
+    json << "]";
+    return json.str();
 }
 
 std::string DatabaseManager::getDbInfo() {

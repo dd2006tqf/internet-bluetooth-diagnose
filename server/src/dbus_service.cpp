@@ -132,6 +132,10 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
         self->handleQueryDeviceEvents(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodQueryBtDataPath)) {
+        self->handleQueryBtDataPath(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
     if (dbus_message_is_method_call(msg, kInterface, kMethodQuerySiteIncidents)) {
         self->handleQuerySiteIncidents(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
@@ -1601,6 +1605,69 @@ bool DbusService::handleQueryDeviceEvents(DBusConnection* conn, DBusMessage* msg
     dbus_message_iter_init_append(reply, &reply_args);
     const char* s = result.c_str();
     dbus_message_iter_append_basic(&reply_args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+bool DbusService::handleQueryBtDataPath(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleQueryBtDataPath called");
+
+    // 参数：STRING device_address, INT64 start_ms, INT64 end_ms, INT32 limit
+    std::string device_address;
+    int64_t start_ms = 0, end_ms = 0;
+    int32_t limit = 100;
+
+    DBusMessageIter args;
+    if (dbus_message_iter_init(msg, &args) == TRUE) {
+        if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING) {
+            const char* val = nullptr;
+            dbus_message_iter_get_basic(&args, &val);
+            if (val) device_address = val;
+        }
+        if (dbus_message_iter_next(&args) &&
+            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT64) {
+            dbus_message_iter_get_basic(&args, &start_ms);
+        }
+        if (dbus_message_iter_next(&args) &&
+            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT64) {
+            dbus_message_iter_get_basic(&args, &end_ms);
+        }
+        if (dbus_message_iter_next(&args) &&
+            dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT32) {
+            dbus_message_iter_get_basic(&args, &limit);
+        }
+    }
+
+    constexpr int32_t kMaxLimit = 10000;
+    if (limit <= 0) {
+        limit = 1;
+    } else if (limit > kMaxLimit) {
+        limit = kMaxLimit;
+    }
+    if (start_ms > 0 && end_ms > 0 && end_ms < start_ms) {
+        std::swap(start_ms, end_ms);
+    }
+
+    std::string result = "[]";
+    if (ctx_ && ctx_->db_mgr) {
+        result = ctx_->db_mgr->queryBtDataPathMetrics(device_address, start_ms, end_ms, limit);
+    } else {
+        result = "{\"error\":\"database not available\"}";
+    }
+
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+
+    DBusMessageIter out_args;
+    dbus_message_iter_init_append(reply, &out_args);
+    const char* str = result.c_str();
+    if (!dbus_message_iter_append_basic(&out_args, DBUS_TYPE_STRING, &str)) {
+        dbus_message_unref(reply);
+        return false;
+    }
+
     dbus_connection_send(conn, reply, nullptr);
     dbus_connection_flush(conn);
     dbus_message_unref(reply);

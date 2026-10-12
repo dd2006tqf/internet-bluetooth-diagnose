@@ -33,6 +33,7 @@
 #include "bt_link_quality_tracker.hpp"
 #include "site_incident_correlator.hpp"
 #include "wireless_event_store.hpp"
+#include "database_manager.hpp"
 #include "utils/bpf_map_sizing.hpp"
 
 namespace weaknet_dbus {
@@ -623,13 +624,48 @@ public:
 
         stop_.store(false);
         worker_ = std::thread([this]() {
+            int sync_countdown = 0;
             while (!stop_.load() && ctx_ && ctx_->running.load()) {
                 std::this_thread::sleep_for(std::chrono::seconds(2));
+                if (stop_.load()) break;
+
+                // 周期性同步内核连接表（每 4 秒同步一次，即 2 个 tick）
+                if (tracker_ && (++sync_countdown % 2 == 0)) {
+                    tracker_->syncFromKernel("hci0");
+                }
+
                 if (analyzer_ && analyzer_->isAvailable()) {
                     auto obs = analyzer_->collectObservations();
                     if (!obs.empty()) {
                         LOG_DEBUG(LogModule::BLUETOOTH, "BtDataPathAnalyzer collected "
                                   << obs.size() << " observations");
+                        const int64_t now_ms = static_cast<int64_t>(
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch()).count());
+
+                        if (ctx_ && ctx_->db_mgr) {
+                            for (const auto& item : obs) {
+                                // 仅持久化有活跃流量或已知设备的观测，避免无用全零刷库
+                                if (item.tx_packets > 0 || item.rx_packets > 0 || item.device_id.has_value()) {
+                                    ctx_->db_mgr->insertBtDataPathMetric(
+                                        now_ms,
+                                        item.controller_id,
+                                        item.connection_handle,
+                                        item.connection_generation,
+                                        item.attribution_scope,
+                                        item.device_id.value_or(""),
+                                        item.window_ms,
+                                        item.tx_bytes,
+                                        item.rx_bytes,
+                                        item.tx_packets,
+                                        item.rx_packets,
+                                        item.tx_throughput_bps,
+                                        item.rx_throughput_bps,
+                                        item.max_gap_ms
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }

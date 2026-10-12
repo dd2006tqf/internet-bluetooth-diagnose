@@ -207,6 +207,51 @@ public:
                                     int limit = 100);
 
     // ------------------------------------------------------------------
+    // Phase 1b：工业蓝牙 HCI ACL 数据通道流量指标存储
+    // ------------------------------------------------------------------
+
+    /**
+     * @brief 记录单条蓝牙数据通道周期指标快照
+     * @param ts_ms 采样时刻（Unix 毫秒）
+     * @param controller_id 控制器名（如 "hci0"）
+     * @param handle 12位连接句柄
+     * @param generation 连接代次
+     * @param attribution_scope 归因范围 ("device"|"controller"|"unknown")
+     * @param device_address 设备 MAC（若未知传空）
+     * @param window_ms 窗口大小（毫秒）
+     * @param tx_bytes 增量 TX payload 字节
+     * @param rx_bytes 增量 RX payload 字节
+     * @param tx_packets 增量 TX 报文数
+     * @param rx_packets 增量 RX 报文数
+     * @param tx_bps 吞吐率 bits/s
+     * @param rx_bps 吞吐率 bits/s
+     * @param max_gap_ms 收发间隔（毫秒）
+     * @return true 写入成功
+     */
+    bool insertBtDataPathMetric(int64_t ts_ms,
+                                const std::string& controller_id,
+                                uint16_t handle,
+                                uint32_t generation,
+                                const std::string& attribution_scope,
+                                const std::string& device_address,
+                                uint32_t window_ms,
+                                uint64_t tx_bytes,
+                                uint64_t rx_bytes,
+                                uint64_t tx_packets,
+                                uint64_t rx_packets,
+                                double tx_bps,
+                                double rx_bps,
+                                uint32_t max_gap_ms);
+
+    /**
+     * @brief 查询蓝牙数据通道历史指标记录，返回 JSON 数组字符串
+     */
+    std::string queryBtDataPathMetrics(const std::string& device_address,
+                                       int64_t start_ms = 0,
+                                       int64_t end_ms = 0,
+                                       int limit = 100);
+
+    // ------------------------------------------------------------------
     // Phase 3a：区域级异常事件（SiteIncident）
     //
     // 为什么必须有这两张表（而不是只放内存）：

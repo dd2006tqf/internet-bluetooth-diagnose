@@ -40,6 +40,9 @@ static void printUsage(const char* prog) {
         "  %s incidents [--state <STATE>]\n"
         "         [--start <ms>] [--end <ms>] [--limit <N>]\n"
         "                                 # 查询区域级异常事件 SiteIncident（JSON，只读）\n"
+        "  %s bt-traffic [--device <addr>]\n"
+        "         [--start <ms>] [--end <ms>] [--limit <N>]\n"
+        "                                 # 查询工业蓝牙 HCI ACL 数据通道流量指标（JSON，只读）\n"
         "  %s diagnosis [--ai]            # 查询网络诊断事实（--ai 联动端侧 RAG + 板载 Qwen 深度分析）\n"
         "  %s experience                  # 查询当前网络体验权威快照（NetworkExperience JSON，只读）\n"
         "  sudo %s action <action_id> [<key> <val>] # 执行白名单安全排查动作（仅限 root）\n"
@@ -50,7 +53,7 @@ static void printUsage(const char* prog) {
         "\n"
         "监控器与参数目标：\n"
         "  插件监控器（支持 get/set 及 monitor 启停）：\n"
-        "        rtt, rssi, tcp_loss, traffic, quality, bluetooth, bt_events,\n"
+        "        rtt, rssi, tcp_loss, traffic, quality, bluetooth, bt_events, bt_hci_traffic,\n"
         "        dns, wifi_loss, http_latency, process_profiler, tcp_retrans,\n"
         "        tcp_conn, skb_drop, tcp_connect\n"
         "  常驻服务/全局组件（仅支持 get/set 调参，非插件）：\n"
@@ -59,12 +62,14 @@ static void printUsage(const char* prog) {
         "示例：\n"
         "  sudo %s set rtt.interval 5s\n"
         "  %s get rtt\n"
+        "  %s bt-traffic\n"
+        "  %s bt-traffic --device 20:23:00:00:00:01\n"
         "  %s diagnosis\n"
         "  %s experience\n"
         "  sudo %s action CHECK_RESOLVER_CONFIG\n"
         "  sudo %s action PROBE_PUBLIC_RESOLVER resolver 223.5.5.5\n"
         "  %s list\n",
-        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static bool callSet(const char* key, const char* value) {
@@ -169,6 +174,49 @@ static bool callIncidents(int argc, char** argv) {
     if (!weaknet_query_site_incidents(state.c_str(), start_ms, end_ms, limit,
                                       buf.data(), buf.size(), err, sizeof(err))) {
         fprintf(stderr, "区域事件查询失败: %s\n", err);
+        return false;
+    }
+    printf("%s\n", buf.data());
+    return true;
+}
+
+/// weaknet-cli bt-traffic：查询工业蓝牙 HCI ACL 数据通道历史指标（只读，Phase 1b）
+static bool callBtTraffic(int argc, char** argv) {
+    std::string device;
+    int64_t start_ms = 0, end_ms = 0;
+    int32_t limit = 100;
+
+    for (int i = 2; i < argc; ++i) {
+        auto need = [&](const char* opt) -> const char* {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "缺少 %s 的值\n", opt);
+                return nullptr;
+            }
+            return argv[++i];
+        };
+        if (strcmp(argv[i], "--device") == 0) {
+            const char* v = need("--device"); if (!v) return false;
+            device = v;
+        } else if (strcmp(argv[i], "--start") == 0) {
+            const char* v = need("--start"); if (!v) return false;
+            start_ms = strtoll(v, nullptr, 10);
+        } else if (strcmp(argv[i], "--end") == 0) {
+            const char* v = need("--end"); if (!v) return false;
+            end_ms = strtoll(v, nullptr, 10);
+        } else if (strcmp(argv[i], "--limit") == 0) {
+            const char* v = need("--limit"); if (!v) return false;
+            limit = static_cast<int32_t>(strtol(v, nullptr, 10));
+        } else {
+            fprintf(stderr, "未知参数: %s\n", argv[i]);
+            return false;
+        }
+    }
+
+    std::vector<char> buf(1 << 20);
+    char err[256];
+    if (!weaknet_query_bt_data_path(device.c_str(), start_ms, end_ms, limit,
+                                    buf.data(), buf.size(), err, sizeof(err))) {
+        fprintf(stderr, "蓝牙数传指标查询失败: %s\n", err);
         return false;
     }
     printf("%s\n", buf.data());
@@ -353,6 +401,8 @@ int main(int argc, char** argv) {
         ok = callEvents(argc, argv);
     } else if (strcmp(cmd, "incidents") == 0) {
         ok = callIncidents(argc, argv);
+    } else if (strcmp(cmd, "bt-traffic") == 0) {
+        ok = callBtTraffic(argc, argv);
     } else if (strcmp(cmd, "diagnosis") == 0) {
         bool enable_ai = (argc >= 3 && strcmp(argv[2], "--ai") == 0);
         ok = callDiagnosis(enable_ai);

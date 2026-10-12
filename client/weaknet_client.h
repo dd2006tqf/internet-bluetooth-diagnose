@@ -760,6 +760,32 @@ bool weaknet_query_site_incidents(const char* state,
                                   char* error_buffer, size_t error_size);
 
 /**
+ * @brief 查询工业蓝牙 HCI ACL 数据通道历史指标（只读，Phase 1b）
+ *
+ * 通过 D-Bus 调用 QueryBtDataPath 方法，从 SQLite 获取工业蓝牙数传
+ * 链路客观流量时间序列数据。
+ *
+ * D-Bus 调用：
+ *   - Method: QueryBtDataPath
+ *   - Args: STRING device_address, INT64 start_ms, INT64 end_ms, INT32 limit
+ *   - Returns: STRING（JSON 数组）
+ *
+ * @param device_address 设备 MAC 地址过滤（空字符串表示不限）
+ * @param start_ms       起始时间 Unix 毫秒（0 表示不限）
+ * @param end_ms         结束时间 Unix 毫秒（0 表示不限）
+ * @param limit          最大返回条数（上限 10000）
+ * @param buffer         结果缓冲区
+ * @param buffer_size    结果缓冲区大小
+ * @param error_buffer   错误信息缓冲区
+ * @param error_size     错误信息缓冲区大小
+ * @return true 成功；false 失败
+ */
+bool weaknet_query_bt_data_path(const char* device_address,
+                                int64_t start_ms, int64_t end_ms, int32_t limit,
+                                char* buffer, size_t buffer_size,
+                                char* error_buffer, size_t error_size);
+
+/**
  * @brief 查询历史监控数据
  *
  * 通过 D-Bus 调用 GetHistory 方法，服务端从 SQLite 数据库中

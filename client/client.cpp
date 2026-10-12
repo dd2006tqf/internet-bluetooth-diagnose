@@ -1147,6 +1147,55 @@ public:
         return true;
     }
 
+    /**
+     * @brief 查询工业蓝牙 HCI ACL 数据通道历史指标（只读，Phase 1b）
+     * 调用 QueryBtDataPath
+     */
+    bool queryBtDataPath(const std::string& device_address, int64_t start_ms, int64_t end_ms,
+                         int32_t limit, std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+
+        DBusMessage* msg = dbus_message_new_method_call(kBusName, kObjectPath,
+                                                        kInterface, kMethodQueryBtDataPath);
+        if (!msg) {
+            errorMsg = "创建蓝牙数传指标查询消息失败";
+            return false;
+        }
+
+        DBusMessageIter args;
+        dbus_message_iter_init_append(msg, &args);
+        const char* dev_cstr = device_address.c_str();
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &dev_cstr);
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_INT64, &start_ms);
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_INT64, &end_ms);
+        dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &limit);
+
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 5000, &err);
+        dbus_message_unref(msg);
+
+        if (dbus_error_is_set(&err)) {
+            errorMsg = "蓝牙数传指标查询失败: " + std::string(err.message);
+            dbus_error_free(&err);
+            return false;
+        }
+        if (!reply) {
+            errorMsg = "未收到蓝牙数传指标查询应答";
+            return false;
+        }
+
+        const char* data = nullptr;
+        if (!dbus_message_get_args(reply, &err, DBUS_TYPE_STRING, &data, DBUS_TYPE_INVALID)) {
+            errorMsg = "解析蓝牙数传指标查询结果失败";
+            dbus_message_unref(reply);
+            return false;
+        }
+        result = data ? data : "";
+        dbus_message_unref(reply);
+        return true;
+    }
+
 private:
     /** @brief 统一设置错误消息并返回 false 的辅助函数 */
     bool fail(const char* msg, std::string& errorMsg) {
@@ -2015,6 +2064,26 @@ extern "C" bool weaknet_query_site_incidents(const char* state,
     const std::string state_str = state ? state : "";
     if (weaknet_dbus::g_client->querySiteIncidents(state_str, start_ms, end_ms, limit,
                                                    result, errorMsg)) {
+        snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    }
+    snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+    return false;
+}
+
+extern "C" bool weaknet_query_bt_data_path(const char* device_address,
+                                           int64_t start_ms, int64_t end_ms, int32_t limit,
+                                           char* buffer, size_t buffer_size,
+                                           char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    const std::string dev_str = device_address ? device_address : "";
+    if (weaknet_dbus::g_client->queryBtDataPath(dev_str, start_ms, end_ms, limit,
+                                                result, errorMsg)) {
         snprintf(buffer, buffer_size, "%s", result.c_str());
         return true;
     }

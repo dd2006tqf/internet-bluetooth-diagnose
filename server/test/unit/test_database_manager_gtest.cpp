@@ -316,3 +316,69 @@ TEST_F(DatabaseManagerTest, DefaultsNullOrEmptyAssessmentProfileToUnspecified) {
     const std::string result = db.queryHistory("wlan0", "", "", 10);
     EXPECT_NE(result.find("\"assessment_profile\":\"UNSPECIFIED\""), std::string::npos);
 }
+
+// ============================================================================
+// Phase 1b：工业蓝牙 HCI ACL 数据通道指标存储与检索测试
+// ============================================================================
+TEST_F(DatabaseManagerTest, InsertAndQueryBtDataPathMetrics) {
+    DatabaseManager db(dbPath_);
+    ASSERT_TRUE(db.isOpen());
+
+    const int64_t now_ms = 1700000000000LL;
+
+    // 1. 写入第 1 条指标：设备 A (AA:BB:CC:11:22:33)
+    bool ok1 = db.insertBtDataPathMetric(
+        now_ms,
+        "hci0",
+        129,
+        1,
+        "device",
+        "AA:BB:CC:11:22:33",
+        1000,
+        5000,
+        10000,
+        50,
+        100,
+        40000.0,
+        80000.0,
+        25
+    );
+    EXPECT_TRUE(ok1);
+
+    // 2. 写入第 2 条指标：设备 B (DD:EE:FF:44:55:66)
+    bool ok2 = db.insertBtDataPathMetric(
+        now_ms + 2000,
+        "hci0",
+        130,
+        1,
+        "device",
+        "DD:EE:FF:44:55:66",
+        2000,
+        2500,
+        3500,
+        25,
+        35,
+        10000.0,
+        14000.0,
+        40
+    );
+    EXPECT_TRUE(ok2);
+
+    // 3. 全量查询
+    std::string all_res = db.queryBtDataPathMetrics("", 0, 0, 10);
+    EXPECT_NE(all_res.find("AA:BB:CC:11:22:33"), std::string::npos);
+    EXPECT_NE(all_res.find("DD:EE:FF:44:55:66"), std::string::npos);
+    EXPECT_NE(all_res.find("\"tx_bytes\":5000"), std::string::npos);
+    EXPECT_NE(all_res.find("\"rx_bps\":80000"), std::string::npos);
+
+    // 4. 按设备 MAC 过滤
+    std::string dev_a_res = db.queryBtDataPathMetrics("AA:BB:CC:11:22:33", 0, 0, 10);
+    EXPECT_NE(dev_a_res.find("AA:BB:CC:11:22:33"), std::string::npos);
+    EXPECT_EQ(dev_a_res.find("DD:EE:FF:44:55:66"), std::string::npos);
+
+    // 5. 按时间窗口过滤
+    std::string time_filtered = db.queryBtDataPathMetrics("", now_ms + 1000, now_ms + 3000, 10);
+    EXPECT_EQ(time_filtered.find("AA:BB:CC:11:22:33"), std::string::npos);
+    EXPECT_NE(time_filtered.find("DD:EE:FF:44:55:66"), std::string::npos);
+}
+

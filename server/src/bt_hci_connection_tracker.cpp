@@ -1,6 +1,11 @@
 #include "bt_hci_connection_tracker.hpp"
 #include <algorithm>
 #include <cctype>
+#include <cstring>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <set>
 
 namespace weaknet {
 
@@ -115,6 +120,89 @@ void BtHciConnectionTracker::resetController(const std::string& controller) {
             generation_counter_[k]++;
         }
     }
+}
+
+size_t BtHciConnectionTracker::syncFromKernel(const std::string& controller) {
+    // 1. 打开 HCI 控制套接字 (AF_BLUETOOTH, SOCK_RAW, BTPROTO_HCI)
+    #ifndef AF_BLUETOOTH
+    #define AF_BLUETOOTH 31
+    #endif
+    #ifndef BTPROTO_HCI
+    #define BTPROTO_HCI 1
+    #endif
+    #ifndef HCIGETCONNLIST
+    // _IOR('H', 212, int) = 0x800448d4
+    #define HCIGETCONNLIST 0x800448d4
+    #endif
+
+    int sock = ::socket(AF_BLUETOOTH, SOCK_RAW | SOCK_CLOEXEC, BTPROTO_HCI);
+    if (sock < 0) {
+        return activeCount();
+    }
+
+    // 解析 controller 编号，如 "hci0" -> 0
+    uint16_t dev_id = 0;
+    if (controller.rfind("hci", 0) == 0 && controller.size() > 3) {
+        try {
+            dev_id = static_cast<uint16_t>(std::stoi(controller.substr(3)));
+        } catch (...) {
+            dev_id = 0;
+        }
+    }
+
+    // 内存缓冲区：头部 4 字节 (dev_id + conn_num) + 最多 64 条 struct hci_conn_info (每条 16 字节)
+    struct RawHciConnInfo {
+        uint16_t handle;
+        uint8_t bdaddr[6];
+        uint8_t type;
+        uint8_t out;
+        uint16_t state;
+        uint32_t link_mode;
+    } __attribute__((packed));
+
+    uint8_t buf[4 + 64 * sizeof(RawHciConnInfo)] = {0};
+    *reinterpret_cast<uint16_t*>(buf) = dev_id;
+    *reinterpret_cast<uint16_t*>(buf + 2) = 64; // 最多获取 64 个连接
+
+    int ret = ::ioctl(sock, HCIGETCONNLIST, buf);
+    ::close(sock);
+
+    if (ret < 0) {
+        return activeCount();
+    }
+
+    uint16_t conn_num = *reinterpret_cast<uint16_t*>(buf + 2);
+    if (conn_num > 64) conn_num = 64;
+
+    std::set<uint16_t> live_handles;
+    const RawHciConnInfo* conns = reinterpret_cast<const RawHciConnInfo*>(buf + 4);
+
+    for (uint16_t i = 0; i < conn_num; ++i) {
+        uint16_t handle = conns[i].handle & 0x0FFF;
+        live_handles.insert(handle);
+
+        // 内核 bdaddr 反序存储 (b[0] 为低位)
+        char mac_buf[18];
+        snprintf(mac_buf, sizeof(mac_buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 conns[i].bdaddr[5], conns[i].bdaddr[4], conns[i].bdaddr[3],
+                 conns[i].bdaddr[2], conns[i].bdaddr[1], conns[i].bdaddr[0]);
+        std::string mac(mac_buf);
+
+        std::string addr_type = (conns[i].type == 0x80) ? "LE" : "BREDR";
+
+        // 更新/建立真实连接
+        onConnectionEstablished(controller, handle, mac, addr_type);
+    }
+
+    // 检查并清理已被内核销毁但尚未收到事件的句柄
+    std::vector<HciConnectionRecord> current_actives = getActiveConnections(controller);
+    for (const auto& rec : current_actives) {
+        if (live_handles.find(rec.key.handle) == live_handles.end()) {
+            onConnectionDisconnected(controller, rec.key.handle);
+        }
+    }
+
+    return activeCount();
 }
 
 size_t BtHciConnectionTracker::activeCount() const {
