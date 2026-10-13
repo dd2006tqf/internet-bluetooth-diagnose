@@ -34,6 +34,7 @@
 #include "site_incident_correlator.hpp"
 #include "wireless_event_store.hpp"
 #include "database_manager.hpp"
+#include "bt_data_path_anomaly_detector.hpp"
 #include "utils/bpf_map_sizing.hpp"
 
 namespace weaknet_dbus {
@@ -595,6 +596,7 @@ class BtHciTrafficPlugin : public IMonitorPlugin {
     ServerContext* ctx_ = nullptr;
     std::shared_ptr<weaknet::BtHciConnectionTracker> tracker_;
     std::unique_ptr<BtDataPathAnalyzer> analyzer_;
+    std::unique_ptr<BtDataPathAnomalyDetector> anomaly_detector_;
     std::thread worker_;
     std::atomic<bool> stop_{false};
 public:
@@ -610,6 +612,13 @@ public:
         tracker_ = std::make_shared<weaknet::BtHciConnectionTracker>();
         analyzer_ = std::make_unique<BtDataPathAnalyzer>(tracker_);
 
+        BtAnomalyDetectorConfig anomaly_cfg;
+        anomaly_cfg.stall_timeout_ms = ctx->cfg.bluetooth.stall_timeout_ms.load();
+        anomaly_cfg.stall_consecutive_windows = ctx->cfg.bluetooth.stall_consecutive_windows.load();
+        anomaly_cfg.min_expected_bps = static_cast<double>(ctx->cfg.bluetooth.min_expected_bps.load());
+        anomaly_cfg.degraded_consecutive_windows = ctx->cfg.bluetooth.degraded_consecutive_windows.load();
+        anomaly_detector_ = std::make_unique<BtDataPathAnomalyDetector>(anomaly_cfg);
+
         std::string bpf_path = ctx->cfg.bluetooth.hci_traffic_bpf_obj.get();
         if (!analyzer_->init(bpf_path, "hci0")) {
             LOG_WARNING(LogModule::BLUETOOTH, "BtHciTrafficPlugin: init failed for "
@@ -620,6 +629,7 @@ public:
         {
             std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
             ctx->bt_hci_analyzer = analyzer_.get();
+            ctx->bt_anomaly_detector = anomaly_detector_.get();
         }
 
         stop_.store(false);
@@ -666,6 +676,39 @@ public:
                                 }
                             }
                         }
+
+                        // Phase 2：运行规则驱动 L2 异常评估
+                        if (anomaly_detector_) {
+                            // 动态吸收最新运行时配置
+                            BtAnomalyDetectorConfig cur_cfg;
+                            cur_cfg.stall_timeout_ms = ctx_->cfg.bluetooth.stall_timeout_ms.load();
+                            cur_cfg.stall_consecutive_windows = ctx_->cfg.bluetooth.stall_consecutive_windows.load();
+                            cur_cfg.min_expected_bps = static_cast<double>(ctx_->cfg.bluetooth.min_expected_bps.load());
+                            cur_cfg.degraded_consecutive_windows = ctx_->cfg.bluetooth.degraded_consecutive_windows.load();
+                            anomaly_detector_->updateConfig(cur_cfg);
+
+                            auto anomalies = anomaly_detector_->evaluate(obs, now_ms);
+                            for (const auto& anomaly : anomalies) {
+                                LOG_WARNING(LogModule::BLUETOOTH, "L2 BT Anomaly detected: ["
+                                            << anomaly.anomaly_type << "] handle=" << anomaly.connection_handle
+                                            << " device=" << anomaly.device_address << ": "
+                                            << anomaly.description);
+
+                                // 若已绑定具体设备，桥接生成一条规范化设备事件 (LinkDegraded) 注入事件存储
+                                if (!anomaly.device_address.empty() && ctx_->wireless_event_store) {
+                                    WirelessDeviceEvent ev;
+                                    ev.device_address = anomaly.device_address;
+                                    ev.event_type = DeviceEventType::LinkDegraded;
+                                    ev.protocol = WirelessProtocol::Bluetooth;
+                                    ev.source = EvidenceSource::Derived;
+                                    ev.source_detail = anomaly.anomaly_type;
+                                    ev.suspected_cause = anomaly.description;
+                                    ev.timestamp_ms = static_cast<uint64_t>(now_ms);
+                                    ev.details_json = anomaly.toJson();
+                                    ctx_->wireless_event_store->recordEvent(ev);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -688,8 +731,12 @@ public:
             if (ctx_->bt_hci_analyzer == analyzer_.get()) {
                 ctx_->bt_hci_analyzer = nullptr;
             }
+            if (ctx_->bt_anomaly_detector == anomaly_detector_.get()) {
+                ctx_->bt_anomaly_detector = nullptr;
+            }
         }
         analyzer_.reset();
+        anomaly_detector_.reset();
         tracker_.reset();
     }
 };

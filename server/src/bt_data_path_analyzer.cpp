@@ -172,17 +172,37 @@ std::string BtDataPathAnalyzer::lastError() const {
 
 bool BtDataPathAnalyzer::readRawMapValue(uint16_t handle, RawAclTrafficVal* out) const {
     if (!out) return false;
-    uint32_t key = handle & 0x0FFF;
+    uint32_t raw_h = handle & 0x0FFF;
+
+    // 解析控制器序号 (hci0 -> 0)
+    uint32_t hci_id = 0;
+    if (controller_id_.rfind("hci", 0) == 0 && controller_id_.size() > 3) {
+        try {
+            hci_id = static_cast<uint32_t>(std::stoi(controller_id_.substr(3)));
+        } catch (...) {
+            hci_id = 0;
+        }
+    }
+    uint32_t map_key = (hci_id << 16) | raw_h;
 
     if (mapFd_ >= 0) {
-        int ret = bpf_map_lookup_elem(mapFd_, &key, out);
+        int ret = bpf_map_lookup_elem(mapFd_, &map_key, out);
+        if (ret != 0 && hci_id == 0) {
+            // 兼容可能单以 handle 为 key 的老版本 Map 布局
+            ret = bpf_map_lookup_elem(mapFd_, &raw_h, out);
+        }
         return (ret == 0);
     }
 
-    // 内存测试桩回退
-    auto it = mock_map_.find(handle & 0x0FFF);
+    // 内存测试桩回退 (优先复合 key，后退回 raw handle)
+    auto it = mock_map_.find(map_key);
     if (it != mock_map_.end()) {
         *out = it->second;
+        return true;
+    }
+    auto it_raw = mock_map_.find(raw_h);
+    if (it_raw != mock_map_.end()) {
+        *out = it_raw->second;
         return true;
     }
     return false;
@@ -190,7 +210,18 @@ bool BtDataPathAnalyzer::readRawMapValue(uint16_t handle, RawAclTrafficVal* out)
 
 void BtDataPathAnalyzer::injectMockSample(uint16_t handle, const RawAclTrafficVal& val) {
     std::lock_guard<std::mutex> lock(mutex_);
-    mock_map_[handle & 0x0FFF] = val;
+    uint32_t raw_h = handle & 0x0FFF;
+    uint32_t hci_id = 0;
+    if (controller_id_.rfind("hci", 0) == 0 && controller_id_.size() > 3) {
+        try {
+            hci_id = static_cast<uint32_t>(std::stoi(controller_id_.substr(3)));
+        } catch (...) {
+            hci_id = 0;
+        }
+    }
+    uint32_t map_key = (hci_id << 16) | raw_h;
+    mock_map_[map_key] = val;
+    mock_map_[raw_h] = val; // 兼容
 }
 
 std::vector<BtDataPathObservation> BtDataPathAnalyzer::collectObservations(
@@ -277,19 +308,29 @@ std::vector<BtDataPathObservation> BtDataPathAnalyzer::collectObservations(
                     now_point - last_it->second.time).count();
                 window_ms = (elapsed > 0) ? static_cast<uint32_t>(elapsed) : 1;
             } else {
-                // 代次跃迁，首次观测当前代次
+                // 代次跃迁（复用 Handle 或重连）：
+                // 核心防串号逻辑：旧代次遗留的内核累积计数在此代次被设为 Base 基准，
+                // 不将历史残留值当作当前新代次的增量，初次跃迁增量归零，彻底杜绝数据串号。
+                tx_bytes = 0;
+                rx_bytes = 0;
+                tx_pkts = 0;
+                rx_pkts = 0;
+                window_ms = 1000;
+            }
+        } else {
+            // 首次观测此 Handle：若为首代启动，使用当前值；若当前已为高代次（表明进程重启或晚于建立），
+            // 设当前内核值为基准，以 0 起步避免把历史值计入本代次首个窗口
+            if (current_generation <= 1) {
                 tx_bytes = curr_val.tx_bytes;
                 rx_bytes = curr_val.rx_bytes;
                 tx_pkts = curr_val.tx_packets;
                 rx_pkts = curr_val.rx_packets;
-                window_ms = 1000;
+            } else {
+                tx_bytes = 0;
+                rx_bytes = 0;
+                tx_pkts = 0;
+                rx_pkts = 0;
             }
-        } else {
-            // 首次观测
-            tx_bytes = curr_val.tx_bytes;
-            rx_bytes = curr_val.rx_bytes;
-            tx_pkts = curr_val.tx_packets;
-            rx_pkts = curr_val.rx_packets;
             window_ms = 1000;
         }
 

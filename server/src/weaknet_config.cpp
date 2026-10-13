@@ -300,6 +300,43 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
             cfg->bluetooth.incident_active_window_ms.store(ms);
             return true;
         }
+        // Phase 2 蓝牙数据通道异常规则阈值
+        if (field == "stall_timeout" || field == "stall_timeout_ms") {
+            uint32_t ms = 0;
+            if (!parseDurationMs(val, &ms) || ms > 600000) {
+                *error = "bluetooth.stall_timeout: must be 0~10m";
+                return false;
+            }
+            cfg->bluetooth.stall_timeout_ms.store(ms);
+            return true;
+        }
+        if (field == "stall_consecutive_windows") {
+            uint32_t w = 0;
+            if (!parseUint(val, &w) || w < 1 || w > 100) {
+                *error = "bluetooth.stall_consecutive_windows: must be 1~100";
+                return false;
+            }
+            cfg->bluetooth.stall_consecutive_windows.store(w);
+            return true;
+        }
+        if (field == "min_expected_bps") {
+            uint32_t bps = 0;
+            if (!parseUint(val, &bps)) {
+                *error = "bluetooth.min_expected_bps: invalid integer";
+                return false;
+            }
+            cfg->bluetooth.min_expected_bps.store(bps);
+            return true;
+        }
+        if (field == "degraded_consecutive_windows") {
+            uint32_t w = 0;
+            if (!parseUint(val, &w) || w < 1 || w > 100) {
+                *error = "bluetooth.degraded_consecutive_windows: must be 1~100";
+                return false;
+            }
+            cfg->bluetooth.degraded_consecutive_windows.store(w);
+            return true;
+        }
         if (isMapSizingField(field)) return setMapSizingField(cfg->bluetooth.map_sizing, field, val, mon, error);
         *error = "bluetooth: unknown field '" + field + "'";
         return false;
@@ -698,6 +735,11 @@ static bool applyMonitorParam(WeakNetConfig* cfg, const std::string& key,
         if (field == "incident_window" || field == "incident_window_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "bluetooth.incident_window: must be 1s~10m"; return false; } cfg->bluetooth.incident_window_ms.store(ms); return true; }
         if (field == "incident_quiet_window" || field == "incident_quiet_window_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 86400000)) { if (error) *error = "bluetooth.incident_quiet_window: must be 1s~24h"; return false; } cfg->bluetooth.incident_quiet_window_ms.store(ms); return true; }
         if (field == "incident_active_window" || field == "incident_active_window_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "bluetooth.incident_active_window: must be 1s~10m"; return false; } cfg->bluetooth.incident_active_window_ms.store(ms); return true; }
+        // Phase 2 蓝牙数据通道异常规则阈值
+        if (field == "stall_timeout" || field == "stall_timeout_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 0, 600000)) { if (error) *error = "bluetooth.stall_timeout: must be 0~10m"; return false; } cfg->bluetooth.stall_timeout_ms.store(ms); return true; }
+        if (field == "stall_consecutive_windows") { uint32_t w; if (!parseUint(value, &w) || !checkRange(w, 1, 100)) { if (error) *error = "bluetooth.stall_consecutive_windows: must be 1~100"; return false; } cfg->bluetooth.stall_consecutive_windows.store(w); return true; }
+        if (field == "min_expected_bps") { uint32_t bps; if (!parseUint(value, &bps)) { if (error) *error = "bluetooth.min_expected_bps: invalid integer"; return false; } cfg->bluetooth.min_expected_bps.store(bps); return true; }
+        if (field == "degraded_consecutive_windows") { uint32_t w; if (!parseUint(value, &w) || !checkRange(w, 1, 100)) { if (error) *error = "bluetooth.degraded_consecutive_windows: must be 1~100"; return false; } cfg->bluetooth.degraded_consecutive_windows.store(w); return true; }
     }
     if (mon == "dns") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "dns.enabled: invalid bool"; return false; } cfg->dns.enabled.store(b); return true; }
@@ -928,6 +970,10 @@ bool snapshotMonitorParamImpl(const WeakNetConfig& cfg, const std::string& key,
         if (field == "incident_window" || field == "incident_window_ms") { *value_out = to_str_u32(cfg.bluetooth.incident_window_ms.load()); return true; }
         if (field == "incident_quiet_window" || field == "incident_quiet_window_ms") { *value_out = to_str_u32(cfg.bluetooth.incident_quiet_window_ms.load()); return true; }
         if (field == "incident_active_window" || field == "incident_active_window_ms") { *value_out = to_str_u32(cfg.bluetooth.incident_active_window_ms.load()); return true; }
+        if (field == "stall_timeout" || field == "stall_timeout_ms") { *value_out = to_str_u32(cfg.bluetooth.stall_timeout_ms.load()); return true; }
+        if (field == "stall_consecutive_windows") { *value_out = to_str_u32(cfg.bluetooth.stall_consecutive_windows.load()); return true; }
+        if (field == "min_expected_bps") { *value_out = to_str_u32(cfg.bluetooth.min_expected_bps.load()); return true; }
+        if (field == "degraded_consecutive_windows") { *value_out = to_str_u32(cfg.bluetooth.degraded_consecutive_windows.load()); return true; }
     }
     if (mon == "dns") {
         if (field == "interval" || field == "interval_ms") { *value_out = to_str_u32(cfg.dns.interval_ms.load()); return true; }

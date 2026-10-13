@@ -116,6 +116,7 @@ struct ServerContext {
     TcpConnectMonitor* tcp_connect_monitor = nullptr;
     TcpRttMonitor* tcp_rtt_monitor = nullptr;
     BtDataPathAnalyzer* bt_hci_analyzer = nullptr;
+    class BtDataPathAnomalyDetector* bt_anomaly_detector = nullptr;
 
     /// 受控主动连通性探测（宿主能力证据的唯一来源）
     std::unique_ptr<ActiveConnectivityMonitor> active_probe;

@@ -227,20 +227,34 @@ TEST(BtDataPathAnalyzerTest, HandleReuseProtection) {
     tracker->onConnectionEstablished("hci0", 50, "BB:22:22:22:22:22");
     auto t1 = t0 + std::chrono::milliseconds(500);
 
-    // 模拟内核计数器在代次变更时的采样
+    // 模拟内核计数器在代次变更时的采样 (包含设备 1 遗留的 500 字节 + 设备 2 新增数据)
     RawAclTrafficVal val2{};
-    val2.tx_bytes = 600;
-    val2.rx_bytes = 700;
+    val2.tx_bytes = 600; // 设备 1 留存 500 + 设备 2 初始 100
+    val2.rx_bytes = 700; // 设备 1 留存 500 + 设备 2 初始 200
     analyzer.injectMockSample(50, val2);
 
-    auto obs_list = analyzer.collectObservations(t1);
-    ASSERT_EQ(obs_list.size(), 1u);
-    const auto& obs = obs_list[0];
+    // 第 1 轮采集：代次跃迁发生，系统将旧值重置为基准锚点，增量归零隔离
+    auto obs_list1 = analyzer.collectObservations(t1);
+    ASSERT_EQ(obs_list1.size(), 1u);
+    const auto& obs1 = obs_list1[0];
 
-    EXPECT_EQ(obs.connection_generation, 2u);
-    ASSERT_TRUE(obs.device_id.has_value());
-    EXPECT_EQ(*obs.device_id, "BB:22:22:22:22:22");
-    // 代次跃迁后，增量被独立隔离核算，不发生跨设备污染
-    EXPECT_EQ(obs.tx_bytes, 600u);
-    EXPECT_EQ(obs.rx_bytes, 700u);
+    EXPECT_EQ(obs1.connection_generation, 2u);
+    ASSERT_TRUE(obs1.device_id.has_value());
+    EXPECT_EQ(*obs1.device_id, "BB:22:22:22:22:22");
+    EXPECT_EQ(obs1.tx_bytes, 0u);
+    EXPECT_EQ(obs1.rx_bytes, 0u);
+
+    // 第 2 轮采集：设备 2 产生实际业务流量 (+50 TX, +80 RX)
+    auto t2 = t1 + std::chrono::milliseconds(1000);
+    RawAclTrafficVal val3 = val2;
+    val3.tx_bytes += 50;
+    val3.rx_bytes += 80;
+    analyzer.injectMockSample(50, val3);
+
+    auto obs_list2 = analyzer.collectObservations(t2);
+    ASSERT_EQ(obs_list2.size(), 1u);
+    const auto& obs2 = obs_list2[0];
+    EXPECT_EQ(obs2.connection_generation, 2u);
+    EXPECT_EQ(obs2.tx_bytes, 50u);
+    EXPECT_EQ(obs2.rx_bytes, 80u);
 }

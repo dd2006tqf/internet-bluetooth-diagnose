@@ -96,12 +96,19 @@ int BPF_KPROBE(bt_hci_send_frame, void *hdev, struct sk_buff *skb) {
 
     __u32 handle = raw_handle & 0x0FFF;
 
-    // 4. 更新 Handle 统计
-    struct bpf_acl_traffic_val *stat = bpf_map_lookup_elem(&bt_acl_traffic, &handle);
+    // 提取控制器序号，构成复合 Key: (hci_id << 16) | handle
+    __u16 hci_id = 0;
+    if (hdev) {
+        bpf_probe_read_kernel(&hci_id, sizeof(hci_id), (const char *)hdev + 64);
+    }
+    __u32 map_key = ((__u32)hci_id << 16) | handle;
+
+    // 4. 更新复合 Key 统计
+    struct bpf_acl_traffic_val *stat = bpf_map_lookup_elem(&bt_acl_traffic, &map_key);
     if (!stat) {
         struct bpf_acl_traffic_val init = {};
-        bpf_map_update_elem(&bt_acl_traffic, &handle, &init, BPF_NOEXIST);
-        stat = bpf_map_lookup_elem(&bt_acl_traffic, &handle);
+        bpf_map_update_elem(&bt_acl_traffic, &map_key, &init, BPF_NOEXIST);
+        stat = bpf_map_lookup_elem(&bt_acl_traffic, &map_key);
         if (!stat) return 0;
     }
 
@@ -150,12 +157,19 @@ int BPF_KPROBE(bt_hci_recv_frame, void *hdev, struct sk_buff *skb) {
 
     __u32 handle = raw_handle & 0x0FFF;
 
-    // 4. 更新 Handle 统计
-    struct bpf_acl_traffic_val *stat = bpf_map_lookup_elem(&bt_acl_traffic, &handle);
+    // 提取控制器序号，构成复合 Key: (hci_id << 16) | handle
+    __u16 hci_id = 0;
+    if (hdev) {
+        bpf_probe_read_kernel(&hci_id, sizeof(hci_id), (const char *)hdev + 64);
+    }
+    __u32 map_key = ((__u32)hci_id << 16) | handle;
+
+    // 4. 更新复合 Key 统计
+    struct bpf_acl_traffic_val *stat = bpf_map_lookup_elem(&bt_acl_traffic, &map_key);
     if (!stat) {
         struct bpf_acl_traffic_val init = {};
-        bpf_map_update_elem(&bt_acl_traffic, &handle, &init, BPF_NOEXIST);
-        stat = bpf_map_lookup_elem(&bt_acl_traffic, &handle);
+        bpf_map_update_elem(&bt_acl_traffic, &map_key, &init, BPF_NOEXIST);
+        stat = bpf_map_lookup_elem(&bt_acl_traffic, &map_key);
         if (!stat) return 0;
     }
 

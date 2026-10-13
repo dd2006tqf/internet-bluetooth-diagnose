@@ -126,6 +126,12 @@ struct WeakNetConfig {
         /// Phase 1 HCI ACL 工业数据通道流量探针对象（bt_hci_traffic.bpf.o）
         ConfigString hci_traffic_bpf_obj{"build/bt_hci_traffic.bpf.o"};
 
+        // ---------- Phase 2: 工业蓝牙数据通道异常检测规则阈值 ----------
+        std::atomic<uint32_t> stall_timeout_ms{5000};          ///< 业务心跳预期周期（0 表示禁用停顿检测）
+        std::atomic<uint32_t> stall_consecutive_windows{2};     ///< 触发停顿的连续超时窗口数
+        std::atomic<uint32_t> min_expected_bps{0};              ///< 业务保底吞吐量（0 表示未设定预期）
+        std::atomic<uint32_t> degraded_consecutive_windows{3};  ///< 触发劣化的连续窗口数
+
         // ---------- Phase 3a: 区域关联阈值（SiteIncident）----------
         //
         // 这五个值决定 SiteIncidentCorrelator 的**构造期**配置：插件 start 时

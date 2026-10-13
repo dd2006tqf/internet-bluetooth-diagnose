@@ -220,6 +220,10 @@ add_executable(test_bt_hci_traffic_gtest
     unit/test_bt_hci_traffic_gtest.cpp)
 target_link_libraries(test_bt_hci_traffic_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_bt_anomaly_detector_gtest
+    unit/test_bt_anomaly_detector_gtest.cpp)
+target_link_libraries(test_bt_anomaly_detector_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 add_executable(runner_bt_hci_analyzer
     runner_bt_hci_analyzer.cpp)
 target_link_libraries(runner_bt_hci_analyzer PRIVATE ${TEST_COMMON_LIBS})
@@ -284,7 +288,8 @@ foreach(test_target
     test_per_key_counter_tracker_gtest
     test_action_catalog_version_gtest
     test_edge_ai_scheduler_gtest
-    test_bt_hci_traffic_gtest)
+    test_bt_hci_traffic_gtest
+    test_bt_anomaly_detector_gtest)
     add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()
 
