@@ -671,7 +671,7 @@ client = OpenAI(
 | `tools/benchmark_models.py` | 板端多模型能效基准矩阵（权重/RSS/TTFT/tok/s/温升/契约通过率） | `python3 tools/benchmark_models.py --help`，需板端 llama-server 在线 |
 | `tools/interference_test.py` | 物理资源争用干扰测试（并发 DNS/TCP + LLM 满载下测 D-Bus P99、RSS 波动、核心温度） | `python3 tools/interference_test.py`，需服务+LLM 同时运行 |
 | `tools/soak_monitor.py` | 24h 长稳 soak 监控（v1 FROZEN 判据用） | `python3 tools/soak_monitor.py` |
-| `tools/dns_oracle.py` | DNS 断言 oracle（Phase2A 验证用） | 见 `Phase2A-DNS-Service-Assurance-验证记录.md` |
+| `tools/dns_oracle.py` | DNS 断言 oracle（DNS Service SLE 判定断言） | `python3 tools/dns_oracle.py --help` |
 | `tools/verify_telemetry_contract.py` | 上行遥测契约校验 | 见 `verify_telemetry_contract.py` 工具源码与 CI 用法 |
 
 ### 开发板新增文件

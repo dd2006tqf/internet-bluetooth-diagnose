@@ -189,6 +189,7 @@
   - 若代码未启动工作流就写好 → 直接提交为普通 commit，不创建 change；
   - 若必须纳入受管流程 → 先 `git revert` 代码到变更前，走完「freeze → 改代码 → 记录 evidence → evaluation」干净流程，再归档；
   - **严禁**在提交代码后再用 change 追认，否则会因 footprint 为 0 和 fingerprint 反复变化而报废。
+- **工作流外任务必须留记录**：凡是不走 OpenSpec change 的任务（快速修复、spike、探索性改动、工作流外实施等），完成时必须在 `openspec/tasks/` 下建一个 `YYYY-MM-DD-<kebab-name>.md`，按该目录 `README.md` 的三节模板记录**构思、实现方式、结果**。该目录不受 harness fingerprint 约束、可自由编辑，但也**不具备验收效力**——不能替代 OpenSpec 证据。走工作流的任务由 `openspec/changes/` 管理，不重复记录到此处。
 
 ## 操作顺序
 

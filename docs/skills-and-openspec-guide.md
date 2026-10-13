@@ -400,7 +400,7 @@ Skills 是来自 [superpowers](https://github.com/obra/superpowers) 框架的技
 3. 逐个提问
 4. 提出 2-3 种方案及权衡
 5. 呈现设计，逐节询问
-6. 将设计写入 `docs/superpowers/specs/` 或 OpenSpec design.md
+6. 将设计写入 OpenSpec design.md；不走工作流的任务设计写入 `openspec/tasks/` 
 7. 自我审查
 8. 用户审查规范
 9. 过渡到 writing-plans 技能

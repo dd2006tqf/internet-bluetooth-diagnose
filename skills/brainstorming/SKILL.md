@@ -46,7 +46,7 @@ When in doubt between two paths, take the heavier one.
      b. **硬件与环境依赖**：是否依赖真实硬件/内核？x86 本地能否通过单元测试完全闭环，还是必须走 ARM64 Docker 交叉编译与 eBPF 探针？
      c. **多线程并发安全**：新数据是否跨线程读写？是否受 `WeakNetMgr::iface_mutex_` 保护或属于 `MonitorManager` 插件生命周期管辖？
 5. Present design, ask after each section
-6. Write validated design to docs/superpowers/specs/ or OpenSpec design.md
+6. Write validated design to OpenSpec design.md; for tasks outside the workflow, write to openspec/tasks/
 7. Self-review: placeholder scan, consistency, scope, ambiguity
 8. User reviews written spec
 9. Transition to writing-plans skill
