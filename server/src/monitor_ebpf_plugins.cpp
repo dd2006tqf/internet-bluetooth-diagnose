@@ -599,6 +599,7 @@ class BtHciTrafficPlugin : public IMonitorPlugin {
     std::unique_ptr<BtDataPathAnomalyDetector> anomaly_detector_;
     std::thread worker_;
     std::atomic<bool> stop_{false};
+    std::atomic<uint64_t> anomaly_seq_{0};
 public:
     const char* name() const override { return "bt_hci_traffic"; }
     int order() const override { return 10; }
@@ -696,9 +697,13 @@ public:
                                             << " severity=" << anomaly.severity << ": "
                                             << anomaly.description);
 
-                                // 若已绑定具体设备，桥接生成一条规范化设备事件 (LinkDegraded) 注入事件存储
+                                // 若已绑定具体设备，桥接生成一条规范化设备事件 (LinkDegraded) 注入事件存储。
+                                // 必须赋全局唯一 event_id：device_events.event_id 是 UNIQUE 且
+                                // INSERT OR IGNORE——留空会让第 2 条起全部撞空串被静默吞掉（板端实测）。
                                 if (!anomaly.device_address.empty() && ctx_->wireless_event_store) {
                                     WirelessDeviceEvent ev;
+                                    ev.event_id = "bt_l2_" + std::to_string(now_ms) + "_" +
+                                                  std::to_string(++anomaly_seq_);
                                     ev.device_address = anomaly.device_address;
                                     ev.event_type = DeviceEventType::LinkDegraded;
                                     ev.protocol = WirelessProtocol::Bluetooth;
