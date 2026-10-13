@@ -163,6 +163,21 @@ sudo weaknet-cli monitor enable bluetooth
 sudo weaknet-cli monitor save
 ```
 
+### 工业蓝牙数据通道观测与 L2 异常诊断（Phase 1 / 1b / 2）
+`bt_hci_traffic` 插件基于 `kprobe/hci_send_frame` 与 `kprobe/hci_recv_frame` 对称采集 HCI ACL 净荷流量，经 `ioctl(HCIGETCONNLIST)` 绑定连接句柄与设备 MAC（含三元组代次隔离与死句柄清理），落库到 `bt_data_path_metrics`（7 天保留期），并由规则驱动 L2 检测器评估三类确定性异常（`BT_DATAPATH_STALL_SUSPECTED` / `BT_DATAPATH_THROUGHPUT_DEGRADED` / `BT_DATAPATH_ATTRIBUTION_LOST`）。旧 A2DP 音频探针默认停用（`bluetooth.a2dp_fusion_enabled=false`）。
+```bash
+# 查询工业蓝牙 HCI ACL 数据通道历史指标（支持 --device / --start / --end / --limit）
+weaknet-cli bt-traffic
+weaknet-cli bt-traffic --device D0:96:EA:52:30:AC --limit 20
+
+# 查询 L2 异常派生的 LINK_DEGRADED 设备事件（含完整 L1 窗口证据）
+weaknet-cli events --type LINK_DEGRADED
+
+# 实时调整 L2 异常检测规则阈值（需 root）
+sudo weaknet-cli set bluetooth.stall_timeout_ms 5000
+sudo weaknet-cli set bluetooth.min_expected_bps 10000
+```
+
 ### 历史数据查询工具
 ```bash
 # 查询数据库整体统计信息

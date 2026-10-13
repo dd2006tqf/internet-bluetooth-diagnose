@@ -115,7 +115,11 @@ struct WeakNetConfig {
     struct {
         std::atomic<bool> enabled{true};
         std::atomic<uint32_t> interval_ms{3000};
-        ConfigString bpf_obj{"build/a2dp_media.bpf.o"};   ///< Phase2 eBPF 融合层对象
+        ConfigString bpf_obj{"build/a2dp_media.bpf.o"};   ///< Phase2 eBPF 融合层对象（legacy A2DP）
+        /// 旧 A2DP 音频探针开关：工业蓝牙 HCI ACL 新探针（bt_hci_traffic）验收通过后
+        /// 默认停用，避免两套采集链同时挂在内核上重复统计/增加开销；保留配置键、
+        /// bt_history 表与 GetBluetoothAudioQuality 接口兼容，需要时可显式开回。
+        std::atomic<bool> a2dp_fusion_enabled{false};
         MapSizingCfg map_sizing;                          ///< a2dp LRU map 定标
         /// Phase 1 设备事件采集器对象（bt_events.bpf.o）。
         /// 与 a2dp_media 是**两条独立的数据路径**：a2dp 走 map 累计音频流量，

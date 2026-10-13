@@ -252,6 +252,7 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "enabled") return setBoolField(cfg->bluetooth.enabled, val, error);
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->bluetooth.interval_ms, val, error);
         if (field == "bpf_obj") { cfg->bluetooth.bpf_obj.set(trim(val)); return true; }
+        if (field == "a2dp_fusion_enabled") return setBoolField(cfg->bluetooth.a2dp_fusion_enabled, val, error);
         if (field == "events_bpf_obj") { cfg->bluetooth.events_bpf_obj.set(trim(val)); return true; }
         if (field == "hci_traffic_bpf_obj") { cfg->bluetooth.hci_traffic_bpf_obj.set(trim(val)); return true; }
         // Phase 3a 区域关联阈值（范围校验与运行时 set 路径保持一致，
@@ -728,6 +729,7 @@ static bool applyMonitorParam(WeakNetConfig* cfg, const std::string& key,
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 60000)) { if (error) *error = "bluetooth.interval: must be 1000ms~60000ms"; return false; } cfg->bluetooth.interval_ms.store(ms); return true; }
         if (isMapSizingField(field)) return setMapSizingField(cfg->bluetooth.map_sizing, field, value, "bluetooth", error);
         if (field == "bpf_obj") { cfg->bluetooth.bpf_obj.set(trim(value)); return true; }
+        if (field == "a2dp_fusion_enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "bluetooth.a2dp_fusion_enabled: invalid bool"; return false; } cfg->bluetooth.a2dp_fusion_enabled.store(b); return true; }
         if (field == "events_bpf_obj") { cfg->bluetooth.events_bpf_obj.set(trim(value)); return true; }
         if (field == "hci_traffic_bpf_obj") { cfg->bluetooth.hci_traffic_bpf_obj.set(trim(value)); return true; }
         // Phase 3a 区域关联阈值。范围校验与 yaml 加载路径一致；这些键改完需
@@ -1286,6 +1288,7 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeBool("enabled", cfg.bluetooth.enabled.load());
         writeUint("interval_ms", cfg.bluetooth.interval_ms.load());
         writeString("bpf_obj", cfg.bluetooth.bpf_obj.get());
+        writeBool("a2dp_fusion_enabled", cfg.bluetooth.a2dp_fusion_enabled.load());
         writeString("events_bpf_obj", cfg.bluetooth.events_bpf_obj.get());
         writeString("map_sizing_mode", cfg.bluetooth.map_sizing.mode.get());
         writeUint("map_sizing_entries", cfg.bluetooth.map_sizing.entries.load());

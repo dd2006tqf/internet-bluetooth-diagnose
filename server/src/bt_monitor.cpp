@@ -1419,31 +1419,38 @@ void start_bt_monitor_thread(ServerContext* ctx, std::thread* worker, BtMonitor*
             LOG_INFO(LogModule::BLUETOOTH, "BT monitor: initialized successfully");
 
             // ================================================================
-            // Phase 2: 初始化 eBPF 融合层
-            // 在蓝牙适配器就绪后，尝试加载 eBPF 程序挂载到内核 L2CAP 钩子
-            // 若挂载失败则自动降级为纯 D-Bus 模式，不影响蓝牙监控基础功能
+            // Phase 2: 初始化 eBPF 融合层（legacy A2DP，默认停用）
+            // 工业蓝牙 HCI ACL 新探针（bt_hci_traffic）验收通过后，旧 A2DP 探针
+            // 默认不挂载，避免两套采集链同时挂在内核上重复统计/增加开销。
+            // 保留 bluetooth.a2dp_fusion_enabled 开关与接口兼容，需要时可显式开回。
             // ================================================================
-            try {
-                // 按 bluetooth 配置块解算 a2dp 两张 map 的容量计划；必须在
-                // bpf_object__load 之前传入，否则 active_sessions/bt_traffic
-                // 会保留内核编译期容量，使 bluetooth.map_sizing 三键永不生效
-                bool ebpfOk = monitor->initPhase2(
-                    ctx->cfg.bluetooth.bpf_obj.get().c_str(),
-                    weaknet::resolveScopePlan(
-                        weaknet::MapSizingScope::Bluetooth,
-                        {ctx->cfg.bluetooth.map_sizing.mode.get(),
-                         ctx->cfg.bluetooth.map_sizing.entries.load(),
-                         ctx->cfg.bluetooth.map_sizing.ram_budget_bp.load()},
-                        weaknet::totalPhysicalRamBytes()));
-                if (ebpfOk) {
-                    LOG_INFO(LogModule::BLUETOOTH, "BT monitor: Phase 2 eBPF fusion enabled ("
-                             << (monitor->isPhase2Available() ? "active" : "fallback") << ")");
-                } else {
-                    LOG_INFO(LogModule::BLUETOOTH, "BT monitor: Phase 2 eBPF unavailable"
-                             " — falling back to D-Bus-only audio quality monitoring");
+            if (ctx->cfg.bluetooth.a2dp_fusion_enabled.load()) {
+                try {
+                    // 按 bluetooth 配置块解算 a2dp 两张 map 的容量计划；必须在
+                    // bpf_object__load 之前传入，否则 active_sessions/bt_traffic
+                    // 会保留内核编译期容量，使 bluetooth.map_sizing 三键永不生效
+                    bool ebpfOk = monitor->initPhase2(
+                        ctx->cfg.bluetooth.bpf_obj.get().c_str(),
+                        weaknet::resolveScopePlan(
+                            weaknet::MapSizingScope::Bluetooth,
+                            {ctx->cfg.bluetooth.map_sizing.mode.get(),
+                             ctx->cfg.bluetooth.map_sizing.entries.load(),
+                             ctx->cfg.bluetooth.map_sizing.ram_budget_bp.load()},
+                            weaknet::totalPhysicalRamBytes()));
+                    if (ebpfOk) {
+                        LOG_INFO(LogModule::BLUETOOTH, "BT monitor: Phase 2 eBPF fusion enabled ("
+                                 << (monitor->isPhase2Available() ? "active" : "fallback") << ")");
+                    } else {
+                        LOG_INFO(LogModule::BLUETOOTH, "BT monitor: Phase 2 eBPF unavailable"
+                                 " — falling back to D-Bus-only audio quality monitoring");
+                    }
+                } catch (const std::exception& e) {
+                    LOG_ERROR(LogModule::BLUETOOTH, "BT monitor: Phase 2 init failed: " << e.what());
                 }
-            } catch (const std::exception& e) {
-                LOG_ERROR(LogModule::BLUETOOTH, "BT monitor: Phase 2 init failed: " << e.what());
+            } else {
+                LOG_INFO(LogModule::BLUETOOTH,
+                         "BT monitor: legacy A2DP eBPF probe retired by default "
+                         "(bluetooth.a2dp_fusion_enabled=false; superseded by bt_hci_traffic)");
             }
         }
 

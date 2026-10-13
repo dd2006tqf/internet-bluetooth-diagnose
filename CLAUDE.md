@@ -283,6 +283,8 @@
 | "查配置" / "config get" | `weaknet-cli get <monitor>` | 查询监控器当前参数（JSON），如 `weaknet-cli get rtt` |
 | "改配置" / "config set" | `weaknet-cli set <key> <value>` | 实时设置参数（白名单校验），如 `weaknet-cli set rtt.interval 5s` |
 | "列配置" / "config list" | `weaknet-cli list` | 列出所有可用监控器名 |
+| "查蓝牙流量" / "bt-traffic" | `weaknet-cli bt-traffic [--device <MAC>]` | 查询工业蓝牙 HCI ACL 数据通道历史指标（JSON，只读） |
+| "查设备事件" / "events" | `weaknet-cli events [--type LINK_DEGRADED]` | 查询规范化无线设备事件（含 L2 数据通道异常派生事件） |
 
 ---
 
