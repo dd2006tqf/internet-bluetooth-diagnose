@@ -133,3 +133,69 @@ TEST_F(BtDataPathAnomalyDetectorTest, GenerationBumpResetsAnomalyCounters) {
     auto a2 = detector.evaluate({obs}, 2000);
     EXPECT_TRUE(a2.empty());
 }
+
+TEST_F(BtDataPathAnomalyDetectorTest, RepeatedSilenceDoesNotFloodEmissions) {
+    BtDataPathAnomalyDetector detector(cfg_);
+    // threshold=2: WARNING 在第 2 个静默窗口跨越，CRITICAL 在第 4 个窗口升级；
+    // 此后持续静默不再逐窗口重复上报（板端实测曾每 2 秒刷一条）。
+
+    BtDataPathObservation obs;
+    obs.controller_id = "hci0";
+    obs.connection_handle = 80;
+    obs.connection_generation = 1;
+    obs.attribution_scope = "device";
+    obs.device_id = "CC:33:44:55:66:77";
+    obs.tx_bytes = 0;
+    obs.rx_bytes = 0;
+
+    int warning_count = 0, critical_count = 0, other = 0;
+    for (int i = 1; i <= 20; ++i) {
+        auto anomalies = detector.evaluate({obs}, 1000LL * i);
+        for (const auto& a : anomalies) {
+            if (a.anomaly_type != "BT_DATAPATH_STALL_SUSPECTED") { other++; continue; }
+            if (a.severity == "WARNING") warning_count++;
+            else if (a.severity == "CRITICAL") critical_count++;
+        }
+    }
+    EXPECT_EQ(warning_count, 1);   // 第 2 窗口恰好一次
+    EXPECT_EQ(critical_count, 1);  // 第 4 窗口恰好一次升级
+    EXPECT_EQ(other, 0);
+
+    // 恢复流量后重新武装：再来一轮静默必须能再次上报
+    obs.tx_bytes = 100;
+    detector.evaluate({obs}, 30000);
+    obs.tx_bytes = 0;
+    int rearm_warning = 0;
+    for (int i = 21; i <= 24; ++i) {
+        auto anomalies = detector.evaluate({obs}, 1000LL * i);
+        for (const auto& a : anomalies) {
+            if (a.anomaly_type == "BT_DATAPATH_STALL_SUSPECTED" && a.severity == "WARNING")
+                rearm_warning++;
+        }
+    }
+    EXPECT_EQ(rearm_warning, 1);
+}
+
+TEST_F(BtDataPathAnomalyDetectorTest, AttributionLostReportsOncePerEpisode) {
+    BtDataPathAnomalyDetector detector(cfg_);
+
+    BtDataPathObservation obs;
+    obs.controller_id = "hci0";
+    obs.connection_handle = 90;
+    obs.connection_generation = 1;
+    obs.attribution_scope = "controller";
+    obs.device_id = std::nullopt;
+    obs.tx_bytes = 300;
+    obs.rx_bytes = 100;
+    obs.tx_throughput_bps = 24000.0;
+    obs.rx_throughput_bps = 8000.0;
+
+    // 持续 controller 归因 + 有流量：只上报一次
+    int count = 0;
+    for (int i = 1; i <= 5; ++i) {
+        auto anomalies = detector.evaluate({obs}, 1000LL * i);
+        for (const auto& a : anomalies)
+            if (a.anomaly_type == "BT_DATAPATH_ATTRIBUTION_LOST") count++;
+    }
+    EXPECT_EQ(count, 1);
+}

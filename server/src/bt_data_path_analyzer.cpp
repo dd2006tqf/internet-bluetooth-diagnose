@@ -224,6 +224,50 @@ void BtDataPathAnalyzer::injectMockSample(uint16_t handle, const RawAclTrafficVa
     mock_map_[raw_h] = val; // 兼容
 }
 
+size_t BtDataPathAnalyzer::pruneStaleEntries(const std::set<uint16_t>& live_handles) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t pruned = 0;
+
+    // 内核 Map 条目遍历（key 可能是复合 key，取低 12 位与活跃集比对）
+    if (mapFd_ >= 0) {
+        std::vector<uint32_t> dead_keys;
+        uint32_t key = 0, next_key = 0;
+        int ret = bpf_map_get_next_key(mapFd_, nullptr, &next_key);
+        while (ret == 0) {
+            key = next_key;
+            uint16_t h = static_cast<uint16_t>(key & 0x0FFF);
+            if (live_handles.find(h) == live_handles.end()) {
+                dead_keys.push_back(key);
+            }
+            ret = bpf_map_get_next_key(mapFd_, &key, &next_key);
+        }
+        for (uint32_t k : dead_keys) {
+            if (bpf_map_delete_elem(mapFd_, &k) == 0) {
+                pruned++;
+                last_samples_.erase(static_cast<uint16_t>(k & 0x0FFF));
+            }
+        }
+    }
+
+    // 内存测试桩同步清理
+    for (auto it = mock_map_.begin(); it != mock_map_.end(); ) {
+        uint16_t h = static_cast<uint16_t>(it->first & 0x0FFF);
+        if (live_handles.find(h) == live_handles.end()) {
+            last_samples_.erase(h);
+            it = mock_map_.erase(it);
+            pruned++;
+        } else {
+            ++it;
+        }
+    }
+
+    if (pruned > 0) {
+        LOG_DEBUG(LogModule::BLUETOOTH, "BtDataPathAnalyzer pruned " << pruned
+                  << " stale map entries (dead handles)");
+    }
+    return pruned;
+}
+
 std::vector<BtDataPathObservation> BtDataPathAnalyzer::collectObservations(
     std::chrono::steady_clock::time_point now_point) {
 

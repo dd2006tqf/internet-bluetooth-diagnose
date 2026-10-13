@@ -253,6 +253,7 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->bluetooth.interval_ms, val, error);
         if (field == "bpf_obj") { cfg->bluetooth.bpf_obj.set(trim(val)); return true; }
         if (field == "events_bpf_obj") { cfg->bluetooth.events_bpf_obj.set(trim(val)); return true; }
+        if (field == "hci_traffic_bpf_obj") { cfg->bluetooth.hci_traffic_bpf_obj.set(trim(val)); return true; }
         // Phase 3a 区域关联阈值（范围校验与运行时 set 路径保持一致，
         // 避免"yaml 能写、weaknet-cli set 拒收"的双标准）
         if (field == "incident_min_devices") {
@@ -728,6 +729,7 @@ static bool applyMonitorParam(WeakNetConfig* cfg, const std::string& key,
         if (isMapSizingField(field)) return setMapSizingField(cfg->bluetooth.map_sizing, field, value, "bluetooth", error);
         if (field == "bpf_obj") { cfg->bluetooth.bpf_obj.set(trim(value)); return true; }
         if (field == "events_bpf_obj") { cfg->bluetooth.events_bpf_obj.set(trim(value)); return true; }
+        if (field == "hci_traffic_bpf_obj") { cfg->bluetooth.hci_traffic_bpf_obj.set(trim(value)); return true; }
         // Phase 3a 区域关联阈值。范围校验与 yaml 加载路径一致；这些键改完需
         // `monitor restart bt_events` 生效（关联器配置构造期冻结）。
         if (field == "incident_min_devices") { uint32_t v; if (!parseUint(value, &v) || !checkRange(v, 2, 1000)) { if (error) *error = "bluetooth.incident_min_devices: must be 2~1000"; return false; } cfg->bluetooth.incident_min_devices.store(v); return true; }
@@ -1293,6 +1295,11 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeUint("incident_window_ms", cfg.bluetooth.incident_window_ms.load());
         writeUint("incident_quiet_window_ms", cfg.bluetooth.incident_quiet_window_ms.load());
         writeUint("incident_active_window_ms", cfg.bluetooth.incident_active_window_ms.load());
+        writeString("hci_traffic_bpf_obj", cfg.bluetooth.hci_traffic_bpf_obj.get());
+        writeUint("stall_timeout_ms", cfg.bluetooth.stall_timeout_ms.load());
+        writeUint("stall_consecutive_windows", cfg.bluetooth.stall_consecutive_windows.load());
+        writeUint("min_expected_bps", cfg.bluetooth.min_expected_bps.load());
+        writeUint("degraded_consecutive_windows", cfg.bluetooth.degraded_consecutive_windows.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "dns") {

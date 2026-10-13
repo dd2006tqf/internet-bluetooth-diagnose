@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -116,6 +117,19 @@ public:
      * @brief 手动注入原始累计数据（无内核环境下的单元测试与算法验证桩）
      */
     void injectMockSample(uint16_t handle, const RawAclTrafficVal& val);
+
+    /**
+     * @brief 删除不再对应活跃内核连接的 Map 条目（含内存测试桩）
+     *
+     * 内核断连后 BPF Map 条目不会自动消失：长期运行会把 64 条 HASH 槽位
+     * 耗尽在死句柄上（新连接 BPF_NOEXIST 建项失败 → 流量漏计），且死句柄的
+     * 残留累计值会持续产出"controller"归因的幻影观测。调用方以内核连接表
+     * （Tracker 活跃集）为真值，删除不在活跃集的条目。
+     *
+     * @param live_handles 当前内核活跃句柄集合（12 位）
+     * @return 删除的条目数
+     */
+    size_t pruneStaleEntries(const std::set<uint16_t>& live_handles);
 
     std::shared_ptr<weaknet::BtHciConnectionTracker> connectionTracker() const {
         return tracker_;

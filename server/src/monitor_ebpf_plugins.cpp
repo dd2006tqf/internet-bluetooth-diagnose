@@ -634,13 +634,14 @@ public:
 
         stop_.store(false);
         worker_ = std::thread([this]() {
-            int sync_countdown = 0;
             while (!stop_.load() && ctx_ && ctx_->running.load()) {
                 std::this_thread::sleep_for(std::chrono::seconds(2));
                 if (stop_.load()) break;
 
-                // 周期性同步内核连接表（每 4 秒同步一次，即 2 个 tick）
-                if (tracker_ && (++sync_countdown % 2 == 0)) {
+                // 每个采样周期先同步内核连接表：HCIGETCONNLIST 实测单次 ~1.3µs，
+                // 每 2 秒一次对 CPU 无感。必须先于 collect/prune——Tracker 活跃集
+                // 是死句柄清理的真值，滞后同步会让刚建立的连接被误删（丢计数）。
+                if (tracker_) {
                     tracker_->syncFromKernel("hci0");
                 }
 
@@ -691,7 +692,8 @@ public:
                             for (const auto& anomaly : anomalies) {
                                 LOG_WARNING(LogModule::BLUETOOTH, "L2 BT Anomaly detected: ["
                                             << anomaly.anomaly_type << "] handle=" << anomaly.connection_handle
-                                            << " device=" << anomaly.device_address << ": "
+                                            << " device=" << anomaly.device_address
+                                            << " severity=" << anomaly.severity << ": "
                                             << anomaly.description);
 
                                 // 若已绑定具体设备，桥接生成一条规范化设备事件 (LinkDegraded) 注入事件存储
@@ -708,6 +710,20 @@ public:
                                     ctx_->wireless_event_store->recordEvent(ev);
                                 }
                             }
+                        }
+
+                        // 以内核连接表（Tracker 活跃集）为真值，清理死句柄的 Map 残留。
+                        // 断连后 BPF Map 条目不会自动消失：不清理会耗尽 64 槽位
+                        // （新连接建项失败 → 流量漏计），并让死句柄的残留累计值
+                        // 持续产出 controller 归因的幻影观测（板端实测）。
+                        // 必须在 collectObservations 之后：死句柄的最终窗口增量
+                        // 需要先被核算并落库。
+                        if (tracker_) {
+                            std::set<uint16_t> live_handles;
+                            for (const auto& rec : tracker_->getActiveConnections("hci0")) {
+                                live_handles.insert(rec.key.handle);
+                            }
+                            analyzer_->pruneStaleEntries(live_handles);
                         }
                     }
                 }

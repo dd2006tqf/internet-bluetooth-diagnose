@@ -258,3 +258,34 @@ TEST(BtDataPathAnalyzerTest, HandleReuseProtection) {
     EXPECT_EQ(obs2.tx_bytes, 50u);
     EXPECT_EQ(obs2.rx_bytes, 80u);
 }
+
+TEST(BtDataPathAnalyzerTest, PruneRemovesDeadHandleEntriesOnly) {
+    auto tracker = std::make_shared<BtHciConnectionTracker>();
+    BtDataPathAnalyzer analyzer(tracker);
+
+    // handle 50 是活跃连接；handle 77 是断连后的死句柄残留
+    tracker->onConnectionEstablished("hci0", 50, "AA:00:00:00:00:50");
+
+    RawAclTrafficVal v50{};
+    v50.tx_bytes = 111;
+    analyzer.injectMockSample(50, v50);
+    RawAclTrafficVal v77{};
+    v77.tx_bytes = 999;
+    analyzer.injectMockSample(77, v77);
+
+    // 活跃集只有 50 → 77 必须被清掉，50 必须保留
+    std::set<uint16_t> live = {50};
+    size_t pruned = analyzer.pruneStaleEntries(live);
+    EXPECT_EQ(pruned, 1u);
+
+    RawAclTrafficVal out{};
+    EXPECT_TRUE(analyzer.readRawMapValue(50, &out));
+    EXPECT_EQ(out.tx_bytes, 111u);
+    EXPECT_FALSE(analyzer.readRawMapValue(77, &out));
+
+    // 清理后死句柄不再出现在观测里
+    auto obs = analyzer.collectObservations(std::chrono::steady_clock::now());
+    for (const auto& o : obs) {
+        EXPECT_NE(o.connection_handle, 77);
+    }
+}

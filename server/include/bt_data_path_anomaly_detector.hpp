@@ -104,6 +104,12 @@ private:
         uint32_t consecutive_stalls{0};
         uint32_t consecutive_degraded{0};
         int64_t last_active_ts_ms{0};
+        // 抑制重复上报：只在阈值首次跨越或严重度升级时产出异常，
+        // 否则一条持续静默的连接会每 2 秒刷一条异常+一条事件（板端实测踩过）。
+        // 0=未上报 1=WARNING 已上报 2=CRITICAL 已上报
+        int stall_reported_level{0};
+        bool degraded_reported{false};
+        bool attribution_reported{false};
     };
 
     BtAnomalyDetectorConfig config_;

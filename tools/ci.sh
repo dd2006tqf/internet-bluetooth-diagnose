@@ -177,7 +177,9 @@ if [ "$SKIP_DEPLOY" = false ]; then
     fi
 
     # 清理板上源码、构建中间文件和旧部署残留；保留持久化 data/ 数据
-    ssh "${BOARD}" "sudo systemctl stop weaknet-server 2>/dev/null || true; sudo killall weaknet-dbus-server 2>/dev/null || true; sudo rm -rf /home/radxa/weaknet/server/src /home/radxa/weaknet/server/include /home/radxa/weaknet/build /home/radxa/weaknet/server/build /home/radxa/weaknet/client/src /home/radxa/weaknet/CMakeFiles /home/radxa/weaknet/logs /home/radxa/weaknet/server/server 2>/dev/null || true"
+    # __pycache__ 必须以 root 删除：root 进程（诊断 RAG 脚本等）会生成 root 属主的
+    # .pyc，radxa 用户无法 unlink，导致后续 rsync --delete 恒失败（实测踩过 3 次）
+    ssh "${BOARD}" "sudo systemctl stop weaknet-server 2>/dev/null || true; sudo killall weaknet-dbus-server 2>/dev/null || true; sudo rm -rf /home/radxa/weaknet/__pycache__ /home/radxa/weaknet/server/src /home/radxa/weaknet/server/include /home/radxa/weaknet/build /home/radxa/weaknet/server/build /home/radxa/weaknet/client/src /home/radxa/weaknet/CMakeFiles /home/radxa/weaknet/logs /home/radxa/weaknet/server/server 2>/dev/null || true"
 
     # 只同步 dist-arm64 编译产物，不同步源码和构建目录（保留持久化 data/、config/ 密钥及日志）
     rsync -az --delete --exclude "data/" --exclude "config/" --exclude "server/logs/" -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" \

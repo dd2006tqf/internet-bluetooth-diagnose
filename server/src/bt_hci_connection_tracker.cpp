@@ -179,6 +179,15 @@ size_t BtHciConnectionTracker::syncFromKernel(const std::string& controller) {
 
     for (uint16_t i = 0; i < conn_num; ++i) {
         uint16_t handle = conns[i].handle & 0x0FFF;
+
+        // 过滤未建立链路：内核 conn list 会包含 BT_CONNECT（page 进行中）的
+        // 半开连接，其 handle 恒为 0（Connection Complete 之前控制器还没分配）。
+        // 板端实测：一次失败的 l2ping page 就会留下 handle=0 的记录，被当作
+        // 活跃连接后 STALL 规则会对"从未连上"的设备持续误报（与 bt_events BPF
+        // 对 handle=0 的过滤同理——理论边界是句柄 0 合法，但控制器实际分配
+        // 几乎总是从非 0 开始，过滤海量失败尝试是净收益）。
+        // 注意：跳过的 handle=0 不进 live_handles，若曾有残留记录会被下方清理。
+        if (handle == 0) continue;
         live_handles.insert(handle);
 
         // 内核 bdaddr 反序存储 (b[0] 为低位)
