@@ -508,7 +508,7 @@ gcc -o myapp myapp.c -L/path/to/dist-arm64/client/lib -lweaknet -ldbus-1
 
 - [CLAUDE.md](../CLAUDE.md) - 项目完整操作指南
 - [交叉编译与开发板部署.md](../docs/交叉编译与开发板部署.md) - ARM64 编译部署全流程
-- [架构设计.md](../docs/架构设计.md) - 系统架构与监控器设计
+- [架构设计-模块与代码结构.md](../docs/架构设计-模块与代码结构.md) - 系统架构与监控器设计
 - [学习路线图.md](../docs/学习路线图.md) - 6.2.1 配置化驱动章节
 
 ---

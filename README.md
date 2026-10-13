@@ -67,7 +67,7 @@ AI-powered-Network-Diagnostics/
 │   └── weaknet-test-full.sh    # 开发板真机全量冒烟测试脚本
 ├── docs/                       # 项目全景技术文档
 │   ├── ai/                     # OpenSpec 工作流、铁律与规范
-│   ├── 架构设计.md             # 系统全局架构与模块设计
+│   ├── 架构设计-模块与代码结构.md             # 系统全局架构与模块设计
 │   ├── 网络体验评价体系.md      # 分层 SLE 评估体系模型
 │   ├── 交叉编译与开发板部署.md  # ARM64 开发板环境与编译规范
 │   └── weaknet_cli_usage.md    # 调参 CLI 使用手册

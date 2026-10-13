@@ -57,7 +57,7 @@ Per `CLAUDE.md`:
 
 ```bash
 # 核心文档清单扫描
-# 1. 架构与顶层说明：README.md, docs/架构设计.md, docs/项目评估.md, docs/学习路线图.md
+# 1. 架构与顶层说明：README.md, docs/架构设计-模块与代码结构.md, docs/学习路线图.md
 # 2. 客户端与集成说明：client/README_CLIENT.md, client/README_LIBRARY.md, docs/weaknet_cli_usage.md
 # 3. 部署与环境说明：docs/交叉编译与开发板部署.md, docs/ci-测试使用指南.md
 # 4. 技能与规范文档：CLAUDE.md, docs/skills-and-openspec-guide.md, skills/

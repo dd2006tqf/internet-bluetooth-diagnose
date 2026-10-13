@@ -36,7 +36,7 @@
 |                        【边缘端 / Radxa Cubie A7A 开发板】                         |
 |                                                                                   |
 |   4. WeakNet 内核网络监测服务 (systemd: weaknet-server)                            |
-|      - 10 个 eBPF 内核级探针（详见 docs/架构设计.md）                                |
+|      - 10 个 eBPF 内核级探针（详见 docs/架构设计-模块与代码结构.md）                                |
 |      - C++ 弱网多维评估引擎（SLE 评估矩阵，每 15 秒发布不可变评估快照）               |
 |      - 本地 SQLite 历史持久化 (/home/radxa/weaknet/data/history.db)                |
 |      - 遥测上报器 (EdgeTelemetryExporter: libcurl + Ed25519 签名)                  |
