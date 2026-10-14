@@ -733,6 +733,17 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
             return false;
         }
     }
+    // ===== bt-traffic =====
+    // D-Bus Method: QueryBtDataPath → JSON
+    else if (command == "bt-traffic") {
+        std::string dev = (argc >= 3) ? argv[2] : "";
+        if (weaknet_query_bt_data_path(dev.c_str(), 0, 0, 10, buffer, sizeof(buffer), error, sizeof(error))) {
+            printf("✅ 工业蓝牙数据通道历史指标: %s\n", buffer);
+        } else {
+            printf("❌ 蓝牙数据通道指标查询失败: %s\n", error);
+            return false;
+        }
+    }
     // ===== ping HOSTNAME =====
     // D-Bus Method: Ping(STRING hostname) → STRING
     // 需要 argc >= 3，argv[2] 为目标主机名

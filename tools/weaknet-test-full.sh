@@ -144,6 +144,7 @@ run_client_test "wifi-loss" "wifi-loss"
 run_client_test "http-latency" "http-latency"
 run_client_test "profiling" "profiling"
 run_client_test "history" "history"
+run_client_test "bt-traffic" "bt-traffic"
 
 # ==============================================
 # Phase 11: 单元测试（不依赖服务端）
