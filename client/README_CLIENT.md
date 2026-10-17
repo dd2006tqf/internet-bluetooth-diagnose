@@ -85,10 +85,6 @@ bool weaknet_check_changes(char* message_buffer, size_t message_size,
 bool weaknet_health_check(char* result_buffer, size_t result_size,
                          char* error_buffer, size_t error_size);
 
-// 从文件读取状态（离线模式）
-bool weaknet_get_from_file(char* buffer, size_t buffer_size,
-                          char* error_buffer, size_t error_size);
-
 // 获取蓝牙设备列表（返回 "MAC|Name|RSSI|Connected|Type|Level" 数组）
 bool weaknet_get_bluetooth_devices(char* buffer, size_t buffer_size,
                                    char* error_buffer, size_t error_size);

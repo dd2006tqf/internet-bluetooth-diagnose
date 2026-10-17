@@ -110,7 +110,6 @@ bool weaknet_is_connected();          // 检查连接状态
 ```c
 bool weaknet_get_interfaces(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
 bool weaknet_health_check(char* result_buffer, size_t result_size, char* error_buffer, size_t error_size);
-bool weaknet_get_from_file(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
 bool weaknet_ping_host(const char* hostname, char* result_buffer, size_t result_size, char* error_buffer, size_t error_size);
 ```
 

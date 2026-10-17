@@ -199,9 +199,18 @@ file(MAKE_DIRECTORY ${BPF_BUILD_DIR})
 
 set(VMLINUX_H "${BPF_BUILD_DIR}/vmlinux.h")
 
+# 交叉编译（CMAKE_CROSSCOMPILING 由 toolchain 的 CMAKE_SYSTEM_NAME 置位）时，
+# 通过 cmake -E env 显式把 TARGET_ARCH 传给 generate_vmlinux.sh——配置期的
+# set(ENV{...}) 到不了构建期的自定义命令进程，只能在这里逐命令传参。
+if(CMAKE_CROSSCOMPILING)
+    set(VMLINUX_GEN_ENV ${CMAKE_COMMAND} -E env TARGET_ARCH=aarch64)
+else()
+    set(VMLINUX_GEN_ENV ${CMAKE_COMMAND} -E env)
+endif()
+
 add_custom_command(
     OUTPUT ${VMLINUX_H}
-    COMMAND ${CMAKE_SOURCE_DIR}/cmake/generate_vmlinux.sh ${VMLINUX_H} ${CMAKE_SOURCE_DIR}/board-assets/vmlinux.h
+    COMMAND ${VMLINUX_GEN_ENV} ${CMAKE_SOURCE_DIR}/cmake/generate_vmlinux.sh ${VMLINUX_H} ${CMAKE_SOURCE_DIR}/board-assets/vmlinux.h
     COMMENT "Generating vmlinux.h"
 )
 

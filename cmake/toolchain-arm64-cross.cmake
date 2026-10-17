@@ -25,9 +25,6 @@ set(CMAKE_CXX_COMPILER_TARGET ${TARGET_TRIPLE})
 set(CMAKE_SYSROOT ${SYSROOT_DIR})
 set(CMAKE_FIND_ROOT_PATH ${SYSROOT_DIR})
 
-# 告知 generate_vmlinux.sh 正在针对 aarch64 交叉编译，强制拷贝 board-assets/vmlinux.h
-set(ENV{TARGET_ARCH} "aarch64")
-
 # 关键：--gcc-toolchain=${SYSROOT_DIR}/usr 让 Clang 使用 sysroot 内的 GCC 10 (crtbeginS.o / libstdc++)，
 # 而不去捡宿主机 Ubuntu 的 GCC 13 (glibc 2.39)。
 set(COMMON_CROSS_FLAGS "--target=${TARGET_TRIPLE} --sysroot=${SYSROOT_DIR} --gcc-toolchain=${SYSROOT_DIR}/usr -Wno-unused-command-line-argument")
