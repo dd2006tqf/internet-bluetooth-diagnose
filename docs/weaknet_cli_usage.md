@@ -234,6 +234,9 @@ $ weaknet-cli incidents --state OPEN
 # 查询端侧确定性机器诊断事实（DiagnosisFacts）
 $ weaknet-cli diagnosis
 
+# 携带端侧大模型智能初筛（Edge AI RAG 假设生成）
+$ weaknet-cli diagnosis --ai
+
 # 查询权威网络体验快照（Schema v2）
 $ weaknet-cli experience
 
@@ -243,7 +246,19 @@ $ sudo weaknet-cli action PROBE_PUBLIC_RESOLVER resolver 223.5.5.5
 $ sudo weaknet-cli action INSPECT_DEFAULT_GATEWAY
 ```
 
-### 3.7 `weaknet-cli get <monitor>`
+### 3.7 `weaknet-cli bt-traffic`
+
+查询工业蓝牙 HCI ACL 数据通道历史指标（只读，Phase 1b）：
+
+```bash
+# 查询全部活跃连接的 ACL 数据通道指标
+$ weaknet-cli bt-traffic
+
+# 按对端 MAC 过滤
+$ weaknet-cli bt-traffic --device 20:23:00:00:00:01
+```
+
+### 3.8 `weaknet-cli get <monitor>`
 
 查询指定监控器的完整当前参数（JSON 格式）。
 
@@ -261,7 +276,7 @@ $ weaknet-cli get all
 }
 ```
 
-**支持的监控器名**：`rtt` `rssi` `tcp_loss` `traffic` `quality` `bluetooth` `dns` `wifi_loss` `http_latency` `process_profiler` `tcp_retrans` `tcp_conn` `skb_drop` `tcp_connect` `active_probe` `edge` `server` `all`
+**支持的监控器名**：`rtt` `rssi` `tcp_loss` `traffic` `quality` `bluetooth` `dns` `wifi_loss` `http_latency` `process_profiler` `tcp_retrans` `tcp_conn` `skb_drop` `tcp_connect` `tcp_rtt` `bt_events` `bt_hci_traffic` `active_probe` `edge` `server` `all`
 
 **输出字段说明**（以 `rtt` 为例）：
 
@@ -276,7 +291,7 @@ $ weaknet-cli get all
 
 ---
 
-### 3.7 `weaknet-cli set <key> <value>`
+### 3.9 `weaknet-cli set <key> <value>`
 
 实时修改监控器参数。**立即生效**，无需重启服务。
 

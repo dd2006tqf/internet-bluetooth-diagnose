@@ -1,3 +1,9 @@
+# ⚠️ 休眠工作流（DORMANT —— 不会被 GitHub 执行）
+#
+# GitHub Actions 只注册仓库根目录 .github/workflows/ 下的 workflow，
+# 本文件位于嵌套子目录，从未被触发过。
+# 连带的 `create_supply_chain_statement.py` 与 `docker/model-runtime.Dockerfile`
+# 属于离线/云端供应链归档资产，保留本文件作为设计资产与迁移来源。
 name: M6 signed model runtime
 
 on:

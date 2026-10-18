@@ -96,7 +96,7 @@ cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
 # 编译全部组件
 cmake --build build-x86 -j$(nproc)
 
-# 运行本地全量单元测试（48 个套件，实测 48/48 通过，约 3.6 秒）
+# 运行本地全量单元测试（52 个套件，实测 52/52 通过，约 4.6 秒）
 ctest --test-dir build-x86/server --output-on-failure
 ```
 
@@ -121,7 +121,7 @@ BOARD=board ./tools/ci.sh --skip-push
 ```
 
 流水线会自动完成：
-- 宿主机多核原生交叉编译 C++ 核心组件与 11 个 eBPF 探针字节码
+- 宿主机多核原生交叉编译 C++ 核心组件与 12 个 eBPF 探针字节码
 - 打包输出 `dist-arm64/`
 - rsync 增量同步产物至板端 `/home/radxa/weaknet/`（自动保留板端持久化数据库与配置）
 - 自动注入 edge token 并热重启 systemd 托管服务（`weaknet-server`）
@@ -216,7 +216,7 @@ web/node_modules/.bin/pnpm --dir web dev
 
 ## 🔌 C / C++ 客户端二次集成
 
-动态链接库 `libweaknet.so` 与头文件 `weaknet_client.h` 为第三方应用提供了极简的接入方式：
+动态链接库 `libweaknet.so` 与头文件 `weaknet_client.h` 为第三方应用提供了极简的接入方式（完整集成流程见 `client/example_usage.cpp`）：
 
 ```cpp
 #include <iostream>
@@ -229,10 +229,13 @@ int main() {
         return -1;
     }
 
-    // 2. 发起健康评估调用
+    // 2. 发起健康评估调用（出参带错误缓冲区，与 weaknet_client.h 一致）
     char result_buf[2048] = {0};
-    if (weaknet_health_check(result_buf, sizeof(result_buf))) {
+    char error_buf[256] = {0};
+    if (weaknet_health_check(result_buf, sizeof(result_buf), error_buf, sizeof(error_buf))) {
         std::cout << "当前健康状态快照:\n" << result_buf << std::endl;
+    } else {
+        std::cerr << "健康检查失败: " << error_buf << std::endl;
     }
 
     // 3. 释放资源

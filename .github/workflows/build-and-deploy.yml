@@ -77,7 +77,7 @@ jobs:
           docker exec ${{ env.CONTAINER }} bash -c '
           cd /src
           cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug
-          cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet test_client_bin test_ebpf ebpf -j1
+          cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf ebpf -j1
           '
 
       - name: 运行 ARM64 单元测试
@@ -102,7 +102,11 @@ jobs:
             install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true
           done
           install -m 0755 build-arm64/client/bin/test_client_bin dist-arm64/client/bin/test-client
+          install -m 0755 build-arm64/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
+          install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
           install -m 0644 build-arm64/client/lib/libweaknet.so dist-arm64/client/lib/
+          install -m 0755 "AI-assisted analysis/edge_network_rag.py" dist-arm64/edge_network_rag.py
+          install -m 0644 "AI-assisted analysis/network_knowledge_base.py" dist-arm64/network_knowledge_base.py
           cp -a /usr/local/lib/libbpf.so* dist-arm64/lib/
 
           echo "=== 产物 ==="
@@ -110,6 +114,7 @@ jobs:
           echo "个文件"
           file dist-arm64/server/bin/weaknet-dbus-server
           file dist-arm64/server/bin/history_query_tool
+          file dist-arm64/client/bin/weaknet-cli
           '
 
       - name: 上传构建产物

@@ -21,7 +21,7 @@
 4. 远程运行功能测试（health/get/eBPF/指标/历史）
 5. 生成报告到 `ci-reports/`
 
-> **单元测试不在开发板上跑**。48 个 gtest 套件的归属是 x86：
+> **单元测试不在开发板上跑**。52 个 gtest 套件的归属是 x86：
 > `ctest --test-dir build-x86/server`（本地，也是 `.ai-harness/project-profile.json`
 > 的 `test-all` 命令）与 GitHub Actions。板端只部署 `test_ebpf`
 > （需要 root + 内核 eBPF，只能真机跑），由 `weaknet-test-full.sh` 的 Phase 11 执行。
@@ -39,7 +39,7 @@
 只在本地容器内编译并打包 `dist-arm64/`，不部署到开发板。
 
 > 注意：`ci.sh` **不在本地跑单元测试**。本地跑单测请直接用
-> `ctest --test-dir build-x86/server`（x86，48 个套件）或容器内
+> `ctest --test-dir build-x86/server`（x86，52 个套件）或容器内
 > `ctest --test-dir build-arm64/server`。
 
 ### 完整参数列表
@@ -91,7 +91,7 @@ ci-reports/
 
 ## 测试覆盖
 
-### 单元测试（48 个套件）
+### 单元测试（52 个套件）
 
 跑法：`ctest --test-dir build-x86/server --output-on-failure`
 
@@ -144,6 +144,11 @@ ci-reports/
 | test_map_sizing_spec_sync_gtest | map sizing 规格表与 BPF 源码常量同步校验 |
 | test_per_key_counter_tracker_gtest | 按键计数器追踪（新增/增长/重置差分） |
 | test_action_catalog_version_gtest | 动作目录指纹跨端金标与白名单有序性（漂移检测输入源） |
+| test_topology_collector_gtest | 网络拓扑关系收集器 |
+| test_edge_ai_scheduler_gtest | 端侧 AI 初筛调度器 |
+| test_bt_hci_traffic_gtest | 蓝牙 HCI ACL 流量聚合与特征解析 |
+| test_bt_anomaly_detector_gtest | 蓝牙 L2 数据通道异常检测器（stall/degraded） |
+| test_bt_events_lifecycle_gtest | 跨插件指针读写锁纪律与 UsingInterfaceManager 显式停机 |
 
 ### 功能测试
 
