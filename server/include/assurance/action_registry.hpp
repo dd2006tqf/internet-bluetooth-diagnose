@@ -212,9 +212,16 @@ public:
         }
         c_argv.push_back(nullptr);
 
+        // S9：进入独立进程组，超时时 kill(-pid) 杀死整组进程（防孤儿孙进程残留）
+        posix_spawnattr_t attr;
+        posix_spawnattr_init(&attr);
+        posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+        posix_spawnattr_setpgroup(&attr, 0);
+
         pid_t pid = 0;
-        int ret = posix_spawn(&pid, spec.executable.c_str(), &actions, nullptr, c_argv.data(), ::environ);
+        int ret = posix_spawn(&pid, spec.executable.c_str(), &actions, &attr, c_argv.data(), ::environ);
         posix_spawn_file_actions_destroy(&actions);
+        posix_spawnattr_destroy(&attr);
 
         // 父进程关闭写端
         close(out_pipe[1]);
@@ -254,8 +261,8 @@ public:
             int remaining_ms = static_cast<int>(total_ms.count() - elapsed.count());
 
             if (remaining_ms <= 0) {
-                // 超时强制杀死子进程
-                kill(pid, SIGKILL);
+                // 超时强制杀死整个进程组（S9：kill(-pid)）
+                kill(-pid, SIGKILL);
                 result.timed_out = true;
                 result.error = "Execution timed out after " + std::to_string(timeout_seconds) + " seconds";
                 break;
@@ -265,7 +272,7 @@ public:
             if (pr < 0) {
                 if (errno == EINTR) continue;
                 result.error = "poll failed: " + std::string(strerror(errno));
-                kill(pid, SIGKILL);
+                kill(-pid, SIGKILL);
                 break;
             }
 

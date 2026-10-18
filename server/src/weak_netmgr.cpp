@@ -396,33 +396,100 @@ bool WeakNetMgr::updateRttAndStateForIfaceSafe(const std::string& iface_name, in
 }
 
 bool WeakNetMgr::updateWifiRssiSafe(const std::string& ctrlDir) {
-    LOG_DEBUG(LogModule::WEAK_MGR, "updateWifiRssiSafe: acquiring lock");
-    std::vector<std::pair<std::string, int>> rssi_snapshots;
-    bool result = false;
+    // C3：复制 rtt/jitter 的"锁内拷贝快照 → 锁外 I/O → 短锁回写"模式。
+    // 过去整段 updateWifiRssi（含 socket connect / nl80211 dump / wpa_supplicant
+    // 命令交互 / proc 遍历等阻塞 I/O）都在 iface_mutex_ 独占锁内执行，
+    // 导致其它高频读取当前网卡的线程（D-Bus dispatch / looper）被毫秒级阻塞。
+
+    // 1. 锁内只拷贝 WiFi 网卡名单快照
+    std::vector<std::string> wifi_ifaces;
     {
         std::lock_guard<std::mutex> lock(iface_mutex_);
-        LOG_DEBUG(LogModule::WEAK_MGR, "updateWifiRssiSafe: lock acquired, calling updateWifiRssi");
-        result = updateWifiRssi(current_interfaces_, ctrlDir);
-        if (result) ++snapshot_generation_;
-        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-        if (result) {
-            for (auto& iface : current_interfaces_) {
-                iface.markMetricUpdated(snapshot_generation_, now);
-                rssi_snapshots.emplace_back(iface.ifName(), iface.rssiDbm());
+        for (const auto& iface : current_interfaces_) {
+            if (iface.type() == NetType::WiFi) {
+                wifi_ifaces.push_back(iface.ifName());
             }
         }
-        LOG_DEBUG(LogModule::WEAK_MGR, "updateWifiRssiSafe: updateWifiRssi completed, releasing lock");
+    }
+    if (wifi_ifaces.empty()) return false;
+
+    // 2. 锁外执行全部网络/文件 I/O 采样
+    auto client = WiFiRssiClient::getInstance();
+    struct MeasuredSample {
+        std::string ifname;
+        RssiSample sample;
+    };
+    std::vector<MeasuredSample> measurements;
+    measurements.reserve(wifi_ifaces.size());
+
+    for (const auto& ifname : wifi_ifaces) {
+        if (!client->connect(ifname, ctrlDir)) {
+            continue;
+        }
+        RssiSample s = readNl80211Rssi(ifname);
+        if (!s.valid) {
+            int rssi = client->getRssi();
+            if (rssi != -1000) {
+                s = {rssi, true, false, "wpa_supplicant"};
+            } else {
+                rssi = readProcWirelessRssi(ifname);
+                if (rssi != -1000) s = {rssi, true, true, "proc_net_wireless_quality"};
+            }
+        }
+        if (s.valid && s.dbm != -1000) {
+            measurements.push_back({ifname, s});
+        }
     }
 
-    // MR-2: 锁外发布
-    if (metrics_registry_ && result) {
-        for (const auto& item : rssi_snapshots) {
-            if (item.second > -1000) {
-                metrics_registry_->publish(item.first, weaknet::MetricId::RSSI_DBM, weaknet::MetricSample::valid(item.second));
+    if (measurements.empty()) return false;
+
+    // 3. 短锁回写结果到 current_interfaces_
+    bool anyChanged = false;
+    std::vector<std::pair<std::string, int>> rssi_snapshots;
+    {
+        std::lock_guard<std::mutex> lock(iface_mutex_);
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        const auto ts_ms = metricTimestampMs();
+
+        for (const auto& m : measurements) {
+            for (auto& x : current_interfaces_) {
+                if (x.ifName() != m.ifname) continue;
+                x.setRssiEstimated(m.sample.estimated);
+                x.setRssiSource(m.sample.source);
+                x.setRssiSampleTsMs(ts_ms);
+
+                if (x.rssiDbm() != m.sample.dbm) {
+                    x.setRssiDbm(m.sample.dbm);
+                    anyChanged = true;
+                    if (x.usingNow()) {
+                        LOG_INFO(LogModule::RSSI, "using iface " << x.ifName()
+                                 << " RSSI=" << m.sample.dbm << " dBm");
+                    }
+                }
+                rssi_snapshots.emplace_back(x.ifName(), x.rssiDbm());
+                break;
+            }
+        }
+        if (anyChanged) {
+            ++snapshot_generation_;
+            for (auto& iface : current_interfaces_) {
+                iface.markMetricUpdated(snapshot_generation_, now);
             }
         }
     }
-    return result;
+
+    // 4. MR-2：锁外向 MetricsRegistry 发布
+    if (metrics_registry_) {
+        for (const auto& item : rssi_snapshots) {
+            if (item.second > -1000) {
+                metrics_registry_->publish(
+                    item.first, weaknet::MetricId::RSSI_DBM,
+                    weaknet::MetricSample::valid(item.second));
+            }
+        }
+    }
+    return anyChanged;
 }
 
 bool WeakNetMgr::updateTcpLossRateSafe(const std::string& iface_name, double loss_rate, const std::string& loss_level) {

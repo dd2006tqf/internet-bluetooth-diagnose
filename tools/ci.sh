@@ -196,35 +196,31 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # 部署 systemd 单元、D-Bus 系统总线策略、运行时配置并启动服务实例
     scp "${ROOT}/tools/weaknet-server.service" "${BOARD}:/tmp/weaknet-server.service" 2>/dev/null
     scp "${ROOT}/tools/com.example.WeakNet.conf" "${BOARD}:/tmp/com.example.WeakNet.conf" 2>/dev/null
-    scp "${ROOT}/config.yaml" "${BOARD}:/tmp/weaknet-config.yaml" 2>/dev/null
-
-    # Edge 预共享令牌注入：仓库 config.yaml 只带空占位，真实值来自不入库的
-    # secrets/edge_token（与 edge_priv.pem 同类凭据，不随 git 走）。缺失/非法
-    # 字符即拒绝部署——否则上行带空 token 被云端拒绝，坏在暗处。
-    # 必须在 cp 到 /etc 与服务重启【之前】注入到 /tmp 副本：先注入后启动。
-    # 踩坑记录（2026-10-09）：初版把注入放在重启之后，服务读到空 token 把
-    # 上行静默关闭（"edge.token 未配置"），部署后上行断到手动补重启为止。
+    # S5：Edge 预共享令牌通过安全通道渲染并直接安装到 /etc/weaknet/config.yaml（0600），
+    # 绝不写入 /tmp（消除世界可读窗口），且 token 绝不进入远程命令 argv（ps 可见风险）。
     EDGE_TOKEN_FILE="${ROOT}/secrets/edge_token"
     [[ -s "${EDGE_TOKEN_FILE}" ]] || fail "缺少 ${EDGE_TOKEN_FILE}（edge 上行预共享令牌），先创建该文件再部署"
     EDGE_TOKEN="$(tr -d '[:space:]' < "${EDGE_TOKEN_FILE}")"
     [[ "${EDGE_TOKEN}" =~ ^[A-Za-z0-9_-]+$ ]] || fail "secrets/edge_token 含非法字符（仅允许 [A-Za-z0-9_-]）"
-    ssh "${BOARD}" "sudo sed -i 's|^  token: \"\"\$|  token: \"${EDGE_TOKEN}\"|' /tmp/weaknet-config.yaml && \
-        sudo grep -q 'token: \"${EDGE_TOKEN}\"' /tmp/weaknet-config.yaml" || fail "edge token 注入板端失败（/tmp/weaknet-config.yaml）"
-    pass "edge token 已注入待部署配置（先注入后启动）"
+    RENDERED_CONFIG="$(mktemp "${ROOT}/.ci-config-XXXXXX.yaml")"
+    chmod 0600 "${RENDERED_CONFIG}"
+    sed "s|^  token: \"\"$|  token: \"${EDGE_TOKEN}\"|" config.yaml > "${RENDERED_CONFIG}"
+    ssh "${BOARD}" "sudo mkdir -p /etc/weaknet && sudo install -m 0600 /dev/stdin /etc/weaknet/config.yaml" < "${RENDERED_CONFIG}" || {
+        shred -u "${RENDERED_CONFIG}" 2>/dev/null || rm -f "${RENDERED_CONFIG}"
+        fail "edge token 注入板端失败（stdin → /etc/weaknet/config.yaml）"
+    }
+    shred -u "${RENDERED_CONFIG}" 2>/dev/null || rm -f "${RENDERED_CONFIG}"
+    pass "edge token 已安全注入 /etc/weaknet/config.yaml（0600，不进 argv/tmp）"
 
     # 客户端动态库安装到系统路径，供 weaknet-cli 链接（服务端走 unit 内 LD_LIBRARY_PATH）
     scp "${DIST_DIR}/client/lib/libweaknet.so" "${BOARD}:/tmp/libweaknet.so" 2>/dev/null
     ssh "${BOARD}" "sudo cp /tmp/weaknet-server.service /etc/systemd/system/weaknet-server.service && \
         sudo cp /tmp/com.example.WeakNet.conf /etc/dbus-1/system.d/com.example.WeakNet.conf && \
-        sudo mkdir -p /etc/weaknet && sudo cp /tmp/weaknet-config.yaml /etc/weaknet/config.yaml && \
-        sudo chmod 600 /etc/weaknet/config.yaml && sudo rm -f /tmp/weaknet-config.yaml && \
         sudo cp /tmp/libweaknet.so /usr/local/lib/libweaknet.so && sudo ldconfig && \
         sudo chmod o+rx /home/radxa/weaknet/data 2>/dev/null || true && \
         sudo systemctl daemon-reload && sudo systemctl reload dbus 2>/dev/null || true; \
         sudo systemctl enable weaknet-server && sudo systemctl restart weaknet-server"
 
-    # 测试脚本也在部署步上传（rsync --delete 会删除 dist 之外的板端文件，
-    # 若只在测试步上传，--skip-test 部署后板上会缺失该脚本）
     scp "${ROOT}/tools/weaknet-test-full.sh" "${BOARD}:/home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null
     ssh "${BOARD}" "chmod +x /home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null
     pass "部署完成"

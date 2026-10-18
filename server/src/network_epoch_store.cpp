@@ -87,6 +87,20 @@ bool NetworkEpochStore::writeState(uint64_t value) const {
         std::remove(tmp_path.c_str());
         return false;
     }
+
+    // C4：rename 成功后必须 fsync 父目录，保证目录项（dentry）写入底层介质。
+    // 否则掉电时数据块虽然已落盘，但目录项仍在页缓存中未刷入，
+    // 重启后可能观测到老文件名、全零或文件缺失。
+    const size_t slash = state_path_.find_last_of('/');
+    const std::string dir = (slash != std::string::npos)
+                                ? (slash == 0 ? "/" : state_path_.substr(0, slash))
+                                : ".";
+    int dirfd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY);
+    if (dirfd >= 0) {
+        ::fsync(dirfd);
+        ::close(dirfd);
+    }
+
     return true;
 }
 
