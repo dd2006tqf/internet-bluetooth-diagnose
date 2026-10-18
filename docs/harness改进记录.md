@@ -198,3 +198,35 @@ bash scripts/change_abort.sh <change-name> --purge
 |---|---|---|---|
 | 10 | freeze 前改代码致 adopt 死锁 | 严格先 freeze 再改代码 | ✅ 已记录 |
 | 11 | active_change 字段删除致 exit 4 | 保留该键为 null | ✅ 已记录 |
+
+---
+
+## 改进点12：受管清单补登记（2026-10-18，全库评审 P2-c）
+
+### 问题
+
+`harness_doctor` 报 2 个 error，且会阻塞所有 change 的 freeze/evidence 步骤（`manifest_policy.loadManifest()` 被 `snapshot_update.sh`/`task_verify.sh`/`evaluator_check.sh` 调用）：
+
+1. `control.manifest`：CLAUDE.md 10-13 大改后未跑 `manifest_sync.sh`，托管模板哈希失配；
+2. `control.workflow-contract`：CLAUDE.md 引用 `scripts/setup_arm64_sysroot.sh`，但该脚本不在受管清单（`manifest_policy.js` 的 `templatePaths` + `workflow-contract.json` 的 `managed_scripts`），报 "document exports an unmanaged script"。
+
+修复问题 2 后又暴露第 3 个潜伏错误：`docs/ai/workflow-errors-ref.md` 在 10-13 文档清理（`f9b363e`）中被删除，但它仍是受管模板（`loadManifest` 报 ENOENT）。
+
+### 修复
+
+1. **登记**：`scripts/setup_arm64_sysroot.sh` 按项目"scripts/ 下皆受管"的铁律语义，加入 `templatePaths`（`manifest_policy.js`）+ `managed_scripts`（`workflow-contract.json`，保持字典序）+ `manifest.json` 模板条目（template_version 2 + 正确 content_sha256）；
+2. **注销**：`docs/ai/workflow-errors-ref.md` 自身声明"铁律已全部迁移至 CLAUDE.md"且清理是有意的，故从 `templatePaths` 与 `manifest.json` 中移除（而非复活该文档）；
+3. **补登记**：CLAUDE.md、AGENTS.md、docs/ai/工作流使用指南.md 各补一行 `quick_brief:`（清除 advisory）；`project_index.sh --refresh` 重建索引。
+
+### 修改文件
+
+- `scripts/manifest_policy.js`（templatePaths +1/-1）
+- `.ai-harness/workflow-contract.json`（managed_scripts +1）
+- `.ai-harness/manifest.json`（模板条目 +1/-1，随后 manifest_sync）
+- `CLAUDE.md` / `AGENTS.md` / `docs/ai/工作流使用指南.md`（quick_brief 行）
+
+### 教训
+
+- **新增 scripts/ 下脚本后，必须同步三处**：`templatePaths`、`workflow-contract.json` `managed_scripts`、`manifest.json` 条目，然后 `manifest_sync.sh`——否则受管文档一旦引用它就触发 contract error。
+- **删除受管模板文件前，先查 `templatePaths`**：docs 清理误删模板会留下 ENOENT 潜伏错误，直到其它哈希错误修好才暴露。
+- 修完后验证基线：`harness_doctor --json` = pass（0 error / 0 warning）、`workflow_contract_check.sh` = OK、`project_index --check` = fresh。

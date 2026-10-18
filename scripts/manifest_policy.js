@@ -10,7 +10,6 @@ const templatePaths = [
   'docs/ai/evaluation.md', 'docs/ai/check-rules.md', 'docs/ai/quick-brief.md',
   'docs/ai/tooling.md', 'docs/ai/cpp.md', 'docs/ai/testing.md', 'docs/ai/build.md',
   'docs/ai/golden-principles.md', 'docs/ai/rca.md',
-  'docs/ai/workflow-errors-ref.md',
   'prompts/planner.md', 'prompts/generator.md', 'prompts/evaluator.md', 'prompts/archive.md',
   'prompts/handoff.md', 'prompts/resume.md', 'prompts/full-code-review.md', 'prompts/rca.md',
   'prompts/debt-scan.md', 'prompts/debt-fix.md',
@@ -32,6 +31,7 @@ const templatePaths = [
   'scripts/quick_brief_check.sh', 'scripts/rca_new.sh', 'scripts/ai_debt_scan.sh', 'scripts/sync_hashes.js',
   'scripts/pre_finish.sh',
   'scripts/manifest_sync.sh',
+  'scripts/setup_arm64_sysroot.sh',
   'scripts/evaluation_fix.sh',
   '.ai-harness/workflow-contract.json'
 ];

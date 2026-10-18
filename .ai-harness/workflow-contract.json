@@ -332,6 +332,7 @@
     "scripts/quick_brief_check.sh",
     "scripts/rca_new.sh",
     "scripts/resume_from_snapshot.sh",
+    "scripts/setup_arm64_sysroot.sh",
     "scripts/snapshot_update.sh",
     "scripts/source_fingerprint.sh",
     "scripts/task_verify.sh",

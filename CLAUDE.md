@@ -1,5 +1,7 @@
 # AI Engineering Harness
 
+quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator）与铁律执行；先证据后声明，先消费者后接口，遇阻塞必问不自作主张。
+
 <!-- autoai:workflow-binding:v1
 {"role":"control","facts":["openspec-only-planning","single-active-selector","single-evaluator-verdict","project-profile-command-ids"]}
 -->
