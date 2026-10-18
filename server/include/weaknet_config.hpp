@@ -289,6 +289,14 @@ struct WeakNetConfig {
         ConfigString private_key_path{""};
         // 密钥标识（服务端据 X-Edge-Key-Id 选择信任锚）
         ConfigString key_id{""};
+        // 云端下行验签公钥（Ed25519 PEM）：非空时，telemetry 响应里的
+        // pending_actions 必须携带对该数组字节的有效 detached 签名，
+        // 否则整批拒绝（S1）。留空 = 不验签（兼容旧云端，迁移期默认）。
+        ConfigString cloud_public_key_path{""};
+        // 允许非回环明文 HTTP 上报（仅实验环境）。默认 false：
+        // edge.url 指向非回环地址且 scheme 为 http 时拒绝加载，
+        // 防止令牌/签名密钥在链路上裸奔（S1#3）。
+        std::atomic<bool> allow_insecure_http{false};
         // 上报周期；与评估节奏（quality 线程）对齐，一个周期最多一条
         std::atomic<uint32_t> interval_ms{10000};
         // 单次 HTTP 请求超时；弱网下不宜过长，失败留待下一轮补发
@@ -369,6 +377,7 @@ enum class ConfigState : uint8_t {
 struct TrialWindow {
     std::chrono::steady_clock::time_point armed_at;   ///< trial 起始时间
     std::chrono::steady_clock::time_point deadline;   ///< 看门狗到期点
+    bool deadline_extended{false};  ///< S7：UNKNOWN 证据是否已消费唯一一次窗口延长
     uint64_t generation{0};                            ///< 触发本 trial 的动作代次
     std::string pending_action_id;                     ///< 最近一次动作 ID（追踪用）
     std::map<std::string, std::string> pending_keys;   ///< 本 trial 内被修改的 key -> 新值
@@ -390,8 +399,11 @@ public:
     /**
      * @param state_path prior_values 持久化路径（通常在 data_dir 下）。
      *                   空字符串 → 不持久化（仅内存态，崩溃即丢）。
+     * @param window     看门狗窗口；默认 180s。测试以 0s 窗口让 deadline
+     *                   立即到期（为可测性开放，生产路径不改默认）。
      */
-    explicit ConfigTransaction(std::string state_path = "");
+    explicit ConfigTransaction(std::string state_path = "",
+                               std::chrono::seconds window = kDefaultWindow);
 
     /// 当前状态（线程安全读）。
     ConfigState state() const;
@@ -448,6 +460,13 @@ public:
      * 本函数只判断「时间到了」。
      */
     bool deadlineExpired(std::chrono::steady_clock::time_point now) const;
+
+    /**
+     * @brief S7：健康 UNKNOWN 时把试用窗口延长一次（原 deadline + window，
+     *        即最多 2× 窗口）。每个 trial 只允许延长一次；非 TRIAL 或已延长
+     *        时返回 false，调用方据此保守回滚。
+     */
+    bool extendDeadline();
 
     /**
      * @brief 启动时从 state_path 恢复 prior_values（如果上次崩溃在 TRIAL 中）。

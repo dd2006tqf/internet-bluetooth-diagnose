@@ -35,6 +35,7 @@ from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from industrial_ops_agent.api.dependencies import (
+    get_edge_downlink_signer,
     get_authorizer,
     get_edge_telemetry_verifier,
     get_identity,
@@ -66,6 +67,9 @@ from industrial_ops_agent.network_assurance.model_config import (
     CopilotModelTestResponse,
     get_model_config_manager,
 )
+from industrial_ops_agent.network_assurance.edge_action_catalog import (
+    is_known_config_key,
+)
 from industrial_ops_agent.network_assurance.service import (
     NetworkAssuranceConflict,
     NetworkAssuranceNotFound,
@@ -73,6 +77,7 @@ from industrial_ops_agent.network_assurance.service import (
     edge_subject_id,
 )
 from industrial_ops_agent.network_assurance.signing import (
+    EdgeDownlinkActionSigner,
     EdgeTelemetryVerifier,
     NetworkSignatureError,
 )
@@ -92,11 +97,20 @@ class EdgeTelemetryAcceptedResponse(BaseModel):
     ``pending_actions`` rides on the response rather than a separate channel
     so a device behind NAT needs only outbound connectivity. The device
     applies them and reports outcomes on its next upload.
+
+    S1#1: when a downlink signing key is provisioned the exact bytes of the
+    ``pending_actions`` array carry an Ed25519 detached signature
+    (``pending_actions_signature`` hex + ``pending_actions_key_id`` label).
+    Unprovisioned deployments leave both ``null`` (legacy-board compatible);
+    a board with ``edge.cloud_public_key_path`` set treats null as unsigned
+    and rejects the whole batch fail-closed.
     """
 
     accepted: int
     duplicates: int
     pending_actions: list[dict[str, Any]] = Field(default_factory=list)
+    pending_actions_signature: str | None = None
+    pending_actions_key_id: str | None = None
 
 
 class NetworkTimelineResponse(BaseModel):
@@ -274,6 +288,9 @@ async def ingest_edge_telemetry(
     request: Request,
     verifier: Annotated[EdgeTelemetryVerifier, Depends(get_edge_telemetry_verifier)],
     service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+    _downlink_signer: Annotated[
+        EdgeDownlinkActionSigner | None, Depends(get_edge_downlink_signer)
+    ],
 ) -> EdgeTelemetryAcceptedResponse:
     """Accept a batch, tolerating replay after a lost acknowledgement."""
 
@@ -287,10 +304,14 @@ async def ingest_edge_telemetry(
         # rather than partially accepting.
         import logging
 
+        from hashlib import sha256
+
         logging.getLogger("uvicorn.error").error(
-            "422 edge validation failure: %s, raw: %s",
+            "422 edge validation failure: %s, payload_sha256=%s bytes=%d errors=%d",
             exc.errors(),
-            raw.decode(errors="replace")[:500],
+            sha256(raw).hexdigest()[:16],
+            len(raw),
+            exc.error_count(),
         )
         raise AppError(
             status_code=422,
@@ -318,10 +339,17 @@ async def ingest_edge_telemetry(
             message="Device is registered to another tenant",
         ) from exc
 
+    actions = list(result.pending_actions)
+    signature: str | None = None
+    key_id: str | None = None
+    if actions and (signer := _downlink_signer) is not None:
+        signature, key_id = signer.sign_actions(actions)
     return EdgeTelemetryAcceptedResponse(
         accepted=result.accepted,
         duplicates=result.duplicates,
-        pending_actions=list(result.pending_actions),
+        pending_actions=actions,
+        pending_actions_signature=signature,
+        pending_actions_key_id=key_id,
     )
 
 
@@ -350,10 +378,14 @@ async def ingest_edge_wireless_events(
     except ValidationError as exc:
         import logging
 
+        from hashlib import sha256
+
         logging.getLogger("uvicorn.error").error(
-            "422 edge wireless validation failure: %s, raw: %s",
+            "422 edge wireless validation failure: %s, payload_sha256=%s bytes=%d errors=%d",
             exc.errors(),
-            raw.decode(errors="replace")[:500],
+            sha256(raw).hexdigest()[:16],
+            len(raw),
+            exc.error_count(),
         )
         raise AppError(
             status_code=422,
@@ -534,12 +566,32 @@ async def queue_network_action(
     device records outcome.
     """
 
+    # S2：直连接口收紧三件套。
+    # 1) 权限从 MANAGE_NETWORK_DEVICE（"看/管设备"）升为 EXECUTE_NETWORK_ACTION
+    #    （与 Council /execute 同一把执行权），管理/审批角色不再能绕过审批链直发。
     authorizer.require(
         identity,
-        Action.MANAGE_NETWORK_DEVICE,
+        Action.EXECUTE_NETWORK_ACTION,
         ResourceContext(identity.tenant_id, resource_id=asset_id),
         request_id=getattr(request.state, "request_id", "unavailable"),
     )
+    # 2) 目录 fail-closed：云端远程可变更的配置键全集就是受审阅白名单
+    #    （edge_action_catalog.CONFIG_KEYS == 板端 trialableKeyNames 镜像）。
+    #    目录外的键（含 identity/enabled/active_probe.* 等"已知但非 trialable"
+    #    的板端键）一律拒绝：远程变更这些键没有审批记录可挂靠，必须走 Council
+    #    审批链产出 ApprovedAction，或本地 weaknet-cli 执行。
+    if not is_known_config_key(body.config_key):
+        raise AppError(
+            status_code=409,
+            code="edge_config_key_requires_approval",
+            category="conflict",
+            message=(
+                "config_key is outside the reviewed remote-change whitelist; "
+                "queue it through the council approval chain or change it locally"
+            ),
+        )
+    # 3) 白名单（== trialable）键保留直发：板端 180s 试用看门狗 +
+    #    generation 防重放仍然兜底，出错自动回滚。
     try:
         action_id = service.queue_action(
             identity.tenant_context,

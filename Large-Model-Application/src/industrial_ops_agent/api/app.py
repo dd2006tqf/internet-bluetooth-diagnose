@@ -136,7 +136,10 @@ from industrial_ops_agent.multimodal.realtime import RealtimeSessionService
 from industrial_ops_agent.multimodal.realtime_transcripts import RealtimeTranscriptService
 from industrial_ops_agent.multimodal.speech import SpeechSynthesisGateway
 from industrial_ops_agent.network_assurance.service import NetworkAssuranceService
-from industrial_ops_agent.network_assurance.signing import EdgeTelemetryVerifier
+from industrial_ops_agent.network_assurance.signing import (
+    EdgeDownlinkActionSigner,
+    EdgeTelemetryVerifier,
+)
 from industrial_ops_agent.observability import HttpMetrics, configure_logging, observe_request
 from industrial_ops_agent.operations.service import OperationsService
 from industrial_ops_agent.orchestration.activities import RecognitionDispatcher
@@ -220,6 +223,7 @@ def create_app(
     edge_pack_signer: Ed25519PackSigner | None = None,
     network_assurance_service: NetworkAssuranceService | None = None,
     edge_telemetry_verifier: EdgeTelemetryVerifier | None = None,
+    edge_downlink_signer: EdgeDownlinkActionSigner | None = None,
     http_metrics: HttpMetrics | None = None,
 ) -> FastAPI:
     """Create an isolated application with explicit runtime dependencies."""
@@ -283,6 +287,7 @@ def create_app(
     app.state.edge_pack_signer = edge_pack_signer
     app.state.network_assurance_service = network_assurance_service
     app.state.edge_telemetry_verifier = edge_telemetry_verifier
+    app.state.edge_downlink_signer = edge_downlink_signer
 
     @app.middleware("http")
     async def emergency_access_selection(

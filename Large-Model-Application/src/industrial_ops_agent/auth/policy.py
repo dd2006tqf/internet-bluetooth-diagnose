@@ -696,6 +696,9 @@ OPA_ENFORCED_ACTIONS = frozenset(
     {
         Action.CONTROL_AGENT,
         Action.MANAGE_NETWORK_DEVICE,
+        # S3：直连 /actions 路由的执行权进入 OPA 强制集——与 Council /execute
+        # 同一把动作走同一道外部策略门；OPA 不可用沿用 fail-closed（503 语义）。
+        Action.EXECUTE_NETWORK_ACTION,
         Action.PUBLISH_KNOWLEDGE,
         Action.MANAGE_KNOWLEDGE_GRAPH,
         Action.ACTIVATE_KNOWLEDGE_GRAPH,

@@ -287,6 +287,12 @@ EdgeTelemetryExporter::EdgeTelemetryExporter(
 
 EdgeTelemetryExporter::~EdgeTelemetryExporter() {
     stop();
+#ifdef WEAKNET_HAVE_TLS
+    if (cloud_public_key_) {
+        EVP_PKEY_free(static_cast<EVP_PKEY*>(cloud_public_key_));
+        cloud_public_key_ = nullptr;
+    }
+#endif
 }
 
 bool EdgeTelemetryExporter::configComplete(std::string* error) const {
@@ -638,17 +644,126 @@ bool EdgeTelemetryExporter::transmit(const std::vector<EdgeTelemetryRecord>& rec
 #endif  // WEAKNET_HAVE_CURL
 }
 
+void EdgeTelemetryExporter::ensureDownlinkKeyLoaded() {
+    if (downlink_verify_enabled_) return;
+    const std::string key_path = config_.edge.cloud_public_key_path.get();
+    if (key_path.empty()) return;
+    downlink_verify_enabled_ = true;  // 先启用再加载：加载失败 = 一切拒绝
+    std::call_once(downlink_key_once_, [this, &key_path] {
+#ifdef WEAKNET_HAVE_TLS
+        FILE* fp = std::fopen(key_path.c_str(), "rb");
+        if (!fp) {
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                      "下行动作验签公钥无法打开，未签名响应将被整批拒绝: " << key_path);
+            return;
+        }
+        EVP_PKEY* key = PEM_read_PUBKEY(fp, nullptr, nullptr, nullptr);
+        std::fclose(fp);
+        if (!key || EVP_PKEY_base_id(key) != EVP_PKEY_ED25519) {
+            if (key) EVP_PKEY_free(key);
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                      "下行动作验签公钥无效（需 Ed25519 PEM），未签名响应将被整批拒绝: "
+                          << key_path);
+            return;
+        }
+        cloud_public_key_ = key;
+        LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                 "下行动作验签已启用: " << key_path);
+#else
+        LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                  "本构建未编译 OpenSSL，下行动作验签不可用，未签名响应将被整批拒绝");
+#endif
+    });
+}
+
+bool EdgeTelemetryExporter::verifyPendingActionsSignature(const std::string& body) const {
+#ifdef WEAKNET_HAVE_TLS
+    if (!cloud_public_key_) return false;  // 公钥缺失/加载失败 → fail-closed
+
+    // 精确截取 pending_actions 数组原始字节（含 [ ]）——签名覆盖的就是
+    // 报文里这段字节，与上行"序列化一次→签这段字节→原样发送"同构。
+    const std::string array_key = "\"pending_actions\"";
+    const size_t key_pos = body.find(array_key);
+    if (key_pos == std::string::npos) return false;
+    const size_t array_start = body.find('[', key_pos + array_key.size());
+    if (array_start == std::string::npos) return false;
+    size_t array_end = std::string::npos;
+    bool in_string = false, escaped = false;
+    for (size_t i = array_start + 1; i < body.size(); ++i) {
+        const char c = body[i];
+        if (escaped) { escaped = false; continue; }
+        if (c == '\\') { escaped = true; continue; }
+        if (c == '"') { in_string = !in_string; continue; }
+        if (c == ']' && !in_string) { array_end = i; break; }
+    }
+    if (array_end == std::string::npos) return false;
+
+    std::string signature_hex, key_id;
+    if (!extractStringField(body, "pending_actions_signature", 0, &signature_hex, nullptr) ||
+        signature_hex.empty()) {
+        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                    "下行动作响应未携带 pending_actions_signature，整批拒绝");
+        return false;
+    }
+    extractStringField(body, "pending_actions_key_id", 0, &key_id, nullptr);
+
+    std::vector<unsigned char> signature;
+    signature.reserve(signature_hex.size() / 2);
+    const auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    if (signature_hex.size() % 2 != 0) return false;
+    for (size_t i = 0; i < signature_hex.size(); i += 2) {
+        const int hi = nibble(signature_hex[i]), lo = nibble(signature_hex[i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        signature.push_back(static_cast<unsigned char>((hi << 4) | lo));
+    }
+    if (signature.size() != 64) return false;
+
+    bool ok = false;
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (ctx) {
+        auto* key = static_cast<EVP_PKEY*>(const_cast<void*>(cloud_public_key_));
+        if (EVP_DigestVerifyInit(ctx, nullptr, nullptr, nullptr, key) == 1) {
+            const unsigned char* msg =
+                reinterpret_cast<const unsigned char*>(body.data()) + array_start;
+            const size_t msg_len = array_end - array_start + 1;
+            ok = EVP_DigestVerify(ctx, signature.data(), signature.size(), msg, msg_len) == 1;
+        }
+        EVP_MD_CTX_free(ctx);
+    }
+    if (!ok) {
+        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                    "下行动作响应验签失败（key_id=" << key_id << "），整批拒绝");
+    }
+    return ok;
+#else
+    (void)body;
+    return false;
+#endif
+}
+
 void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body) {
+    ensureDownlinkKeyLoaded();
     const auto actions = parsePendingActions(response_body);
     if (actions.empty()) return;
+
+    // S1#1：配置了验签公钥时，先验签后执行——签名失败/缺失整批拒绝，
+    // 不给"伪造响应改配置"留任何单条落地的机会。
+    if (downlink_verify_enabled_ && !verifyPendingActionsSignature(response_body)) {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.unsigned_responses_rejected++;
+        return;
+    }
 
     for (const auto& action : actions) {
         std::string error;
         bool ok = false;
 
         const bool trialable = weaknet_dbus::isTrialableKey(action.key);
-        const bool v2_metadata = action.generation_present || !action.claim_token.empty() ||
-                                 !action.nonce.empty();
 
         // 应答丢失→遥测重发→云端重放 pending_actions 是常态路径。
         // 已执行过的 action_id 回执**首次的真实结果**，绝不重执行（重执行会重置
@@ -667,9 +782,11 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
             continue;
         }
 
-        // fail-closed：trialable key 或携带 v2 元数据的动作必须带有效 generation，
-        // 否则 generation=0 会绕过 stale 判定、且永远推进不了 last_applied。
-        if ((trialable || v2_metadata) && (!action.generation_present || action.generation == 0)) {
+        // fail-closed（S1#2：generation 全量强制）：**所有**云端下行动作必须
+        // 携带 generation_present 且 > 0——云端排队路径本就单调发放 generation，
+        // 缺失意味着报文不是合法 v2 下行（伪造或残缺），generation=0 会绕过
+        // stale 判定、且永远推进不了 last_applied。
+        if (!action.generation_present || action.generation == 0) {
             error = "missing_or_invalid_generation";
         } else {
             const bool stale = action.generation > 0 &&
@@ -845,7 +962,10 @@ bool EdgeTelemetryExporter::evaluateTrialDeadline(const AssessmentSnapshot* late
 
     const auto overall = latest_snapshot->experience.overall;
     const auto reach = latest_snapshot->experience.ip_reachability.state;
-    const bool healthy = (overall != weaknet::HealthState::BAD) &&
+    // S7：确认条件收紧——只有 overall 明确 GOOD 才算健康。旧判据
+    // "overall != BAD" 会把 UNKNOWN/DEGRADED 也当健康直接 confirmStable，
+    // 等于让"评估器没看懂"替配置变更背书。
+    const bool healthy = (overall == weaknet::HealthState::GOOD) &&
                          (reach != weaknet::HealthState::BAD);
 
     if (healthy) {
@@ -861,10 +981,26 @@ bool EdgeTelemetryExporter::evaluateTrialDeadline(const AssessmentSnapshot* late
     }
 
     auto* cfg = const_cast<weaknet_dbus::WeakNetConfig*>(&config_);
-    const std::string reason = "watchdog_timeout_health_bad";
+
+    // 证据不足（UNKNOWN）≠ 证据不利：不确认也不立即回滚，延长一次窗口
+    // （至 2× deadline）再观察；延长配额耗尽仍非 GOOD → 下方保守回滚。
+    const bool unknown = overall == weaknet::HealthState::UNKNOWN ||
+                         reach == weaknet::HealthState::UNKNOWN;
+    if (unknown && config_txn_->extendDeadline()) {
+        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                    "TRIAL 看门狗超时 + 健康 UNKNOWN → 延长试用窗口一次 (gen="
+                        << generation << ", overall="
+                        << weaknet::healthStateToString(overall)
+                        << ", ip_reachability="
+                        << weaknet::healthStateToString(reach) << ")");
+        return false;
+    }
+
+    const std::string reason = unknown ? "watchdog_timeout_health_unknown"
+                                       : "watchdog_timeout_health_bad";
     if (config_txn_->forceRollback(cfg, reason)) {
         LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
-                    "TRIAL 看门狗超时 + 健康 BAD → 已回滚 (overall=" << static_cast<int>(overall)
+                    "TRIAL 看门狗超时 + 非 GOOD → 已回滚 (overall=" << static_cast<int>(overall)
                     << " ip_reachability=" << static_cast<int>(reach) << ")");
         emitRollbackReceipt(reason);
         return true;

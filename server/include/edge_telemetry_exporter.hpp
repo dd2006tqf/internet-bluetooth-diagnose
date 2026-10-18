@@ -77,6 +77,7 @@ struct EdgeExporterStats {
     uint64_t dropped_oldest{0};       ///< 因缓冲满而挤掉的旧快照数
     uint64_t actions_applied{0};      ///< 成功落地的下行动作数
     uint64_t actions_rejected{0};     ///< 被白名单/范围校验拒绝的动作数
+    uint64_t unsigned_responses_rejected{0};  ///< S1：未签名/验签失败的响应整批拒绝数
     uint64_t action_results_sent{0};  ///< 已回传服务端并获确认的动作结果数
     size_t buffered{0};               ///< 当前缓冲深度
 };
@@ -171,6 +172,9 @@ public:
     bool isRunning() const { return running_.load(); }
 
     /// 执行服务端下发的动作（走既有白名单校验），并把结果暂存待回传。
+    /// S1：配置了 edge.cloud_public_key_path 时，响应中的 pending_actions
+    /// 必须携带对该数组字节的有效 Ed25519 detached 签名，否则整批拒绝
+    /// （unsigned_responses_rejected++），单条动作一律不落地。
     /// 设为 public 方便单测与调试。
     void applyPendingActions(const std::string& response_body);
 
@@ -301,6 +305,16 @@ private:
     /// 进程内即可：重启后服务端会把 action 重新标记为 DELIVERED 并等待回执，
     /// 此时重建执行是正确行为。
     std::unordered_map<std::string, bool> executed_action_ids_;
+
+    /// S1：云端下行验签。edge.cloud_public_key_path 非空时按需加载 Ed25519
+    /// 公钥（void* 保存 EVP_PKEY*，不把 OpenSSL 头暴露进本头文件）；
+    /// 加载失败保持启用且指针为空 = 全部响应拒绝（fail-closed）。
+    void* cloud_public_key_{nullptr};
+    bool downlink_verify_enabled_{false};
+    std::once_flag downlink_key_once_;
+    void ensureDownlinkKeyLoaded();
+    /// 对响应内 pending_actions 数组原始字节做 Ed25519 验签。
+    bool verifyPendingActionsSignature(const std::string& body) const;
 
     mutable std::mutex stats_mutex_;
     EdgeExporterStats stats_;

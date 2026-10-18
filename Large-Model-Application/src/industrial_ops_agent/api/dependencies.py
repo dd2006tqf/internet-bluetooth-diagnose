@@ -37,7 +37,10 @@ from industrial_ops_agent.multimodal.realtime import RealtimeSessionService
 from industrial_ops_agent.multimodal.realtime_transcripts import RealtimeTranscriptService
 from industrial_ops_agent.multimodal.speech import SpeechSynthesisGateway
 from industrial_ops_agent.network_assurance.service import NetworkAssuranceService
-from industrial_ops_agent.network_assurance.signing import EdgeTelemetryVerifier
+from industrial_ops_agent.network_assurance.signing import (
+    EdgeDownlinkActionSigner,
+    EdgeTelemetryVerifier,
+)
 from industrial_ops_agent.operations.service import OperationsService
 from industrial_ops_agent.orchestration.activities import RecognitionDispatcher
 from industrial_ops_agent.persistence.database import Database
@@ -763,3 +766,17 @@ async def get_edge_telemetry_verifier(request: Request) -> EdgeTelemetryVerifier
             retryable=False,
         )
     return verifier
+
+
+async def get_edge_downlink_signer(request: Request) -> EdgeDownlinkActionSigner | None:
+    """Return the downlink action signer, or ``None`` when unprovisioned.
+
+    Unlike the verifier this is **optional by design** (S1#1 migration):
+    a deployment that has not yet generated the downlink keypair serves
+    unsigned responses, which legacy boards accept. The signature fields
+    simply stay absent; once a board configures
+    ``edge.cloud_public_key_path`` its fail-closed verification demands
+    this signer be provisioned on the server side.
+    """
+
+    return getattr(request.app.state, "edge_downlink_signer", None)

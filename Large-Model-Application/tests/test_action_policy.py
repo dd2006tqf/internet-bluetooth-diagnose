@@ -176,3 +176,11 @@ def test_blocked_decision_still_carries_risk_for_audit() -> None:
     assert decision.allowed is False
     assert decision.risk is RiskLevel.HIGH
     assert decision.block_reason
+
+
+def test_execute_network_action_is_in_opa_enforced_set() -> None:
+    """S3：直连 /actions 与 Council /execute 的执行权一律进 OPA 强制集。"""
+    from industrial_ops_agent.auth.policy import OPA_ENFORCED_ACTIONS, Action
+
+    assert Action.EXECUTE_NETWORK_ACTION in OPA_ENFORCED_ACTIONS
+    assert Action.MANAGE_NETWORK_DEVICE in OPA_ENFORCED_ACTIONS

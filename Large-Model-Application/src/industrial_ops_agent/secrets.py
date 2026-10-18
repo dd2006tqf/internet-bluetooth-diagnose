@@ -25,6 +25,10 @@ class SecretName(StrEnum):
     LABEL_STUDIO_API_TOKEN = "label_studio_api_token"
     MODEL_GATEWAY_API_KEY = "model_gateway_api_key"
     EDGE_PACK_SIGNING_PRIVATE_KEY = "edge_pack_signing_private_key"
+    #: S1#1：云端对 telemetry 响应内 pending_actions 数组的 Ed25519 detached
+    #: 签名私钥（base64 编码的 PEM）。未配置时响应不带签名字段（迁移期）；
+    #: 板端配置了 edge.cloud_public_key_path 后即 fail-closed 拒绝无签名下行。
+    NETWORK_EDGE_DOWNLINK_SIGNING_PRIVATE_KEY = "network_edge_downlink_signing_private_key"
     REALTIME_TURN_SHARED_SECRET = "realtime_turn_shared_secret"
     ENTERPRISE_TOOL_GATEWAY_TOKEN = "enterprise_tool_gateway_token"
     ENTERPRISE_MCP_CLIENT_SECRET = "enterprise_mcp_client_secret"
@@ -108,6 +112,9 @@ ENVIRONMENT_VARIABLES: Mapping[SecretName, str] = {
     SecretName.LABEL_STUDIO_API_TOKEN: "IOAP_LABEL_STUDIO_API_TOKEN",
     SecretName.MODEL_GATEWAY_API_KEY: "IOAP_MODEL_GATEWAY_API_KEY",
     SecretName.EDGE_PACK_SIGNING_PRIVATE_KEY: "IOAP_EDGE_PACK_SIGNING_PRIVATE_KEY",
+    SecretName.NETWORK_EDGE_DOWNLINK_SIGNING_PRIVATE_KEY: (
+        "IOAP_NETWORK_EDGE_DOWNLINK_SIGNING_PRIVATE_KEY"
+    ),
     SecretName.REALTIME_TURN_SHARED_SECRET: "IOAP_REALTIME_TURN_SHARED_SECRET",
     SecretName.ENTERPRISE_TOOL_GATEWAY_TOKEN: "IOAP_ENTERPRISE_TOOL_GATEWAY_TOKEN",
     SecretName.ENTERPRISE_MCP_CLIENT_SECRET: "IOAP_ENTERPRISE_MCP_CLIENT_SECRET",

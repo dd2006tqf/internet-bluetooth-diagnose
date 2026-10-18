@@ -13,6 +13,7 @@ role_actions := {
     "memory.revoke",
   },
   "after_sales_engineer": {
+    "network_action.execute",
     "agent.control",
     "incident.control",
     "action.propose",
@@ -35,6 +36,7 @@ role_actions := {
     "maintenance_council.request",
   },
   "domain_expert": {
+    "network_action.execute",
     "agent.control",
     "incident.control",
     "knowledge.publish",

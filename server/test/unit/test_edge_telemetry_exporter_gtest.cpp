@@ -527,3 +527,330 @@ TEST(EdgeTelemetryPendingActions, LocalConfigChangeReissueCreatesDistinctReceipt
 
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// S1#2：generation 全量强制——非 trialable 的裸动作也必须携带 generation
+//
+// 判据：旧门禁只拦 (trialable || v2_metadata) 的动作，普通动作缺 generation
+// 时 generation=0 直通 setMonitorParam，绕过 stale 判定与 last_applied 推进，
+// 使"伪造响应改任意配置键"的链条在板端敞开。
+// ---------------------------------------------------------------------------
+
+TEST(EdgeTelemetryPendingActions, NonTrialableMissingGenerationFailsClosed) {
+    const std::string response =
+        "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
+        "\"action_id\":\"nact-plain-no-gen\","
+        "\"key\":\"edge.enabled\","
+        "\"value\":\"true\""
+        "}]}";
+
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.edge.enabled.store(false);
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+
+    exporter.applyPendingActions(response);
+
+    // 无论 key 是否 trialable，缺 generation 一律拒绝
+    EXPECT_FALSE(cfg.edge.enabled.load());
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::STABLE);
+    EXPECT_EQ(exporter.stats().actions_rejected, 1u);
+}
+
+// ---------------------------------------------------------------------------
+// S1#1：配置了云端验签公钥时，未签名/验签失败的下行动作响应整批拒绝
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct ScopedKeyPair {
+    std::string private_path;
+    std::string public_path;
+    ~ScopedKeyPair() {
+        if (!private_path.empty()) unlink(private_path.c_str());
+        if (!public_path.empty()) unlink(public_path.c_str());
+    }
+};
+
+/// 生成一对临时 Ed25519 密钥（私钥签名、公钥验签），失败返回空 private_path。
+ScopedKeyPair makeScopedKeyPair() {
+#ifdef WEAKNET_HAVE_TLS
+    ScopedKeyPair pair;
+    EVP_PKEY* key = nullptr;
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr);
+    if (ctx && EVP_PKEY_keygen_init(ctx) > 0 && EVP_PKEY_keygen(ctx, &key) > 0) {
+        std::string priv_tmpl = "/tmp/gtest_cloud_priv_XXXXXX";
+        std::vector<char> priv_buf(priv_tmpl.begin(), priv_tmpl.end());
+        priv_buf.push_back('\0');
+        int priv_fd = mkstemp(priv_buf.data());
+        if (priv_fd >= 0) {
+            FILE* fp = fdopen(priv_fd, "w");
+            if (fp) {
+                PEM_write_PrivateKey(fp, key, nullptr, nullptr, 0, nullptr, nullptr);
+                fclose(fp);
+                pair.private_path = priv_buf.data();
+            }
+        }
+        std::string pub_tmpl = "/tmp/gtest_cloud_pub_XXXXXX";
+        std::vector<char> pub_buf(pub_tmpl.begin(), pub_tmpl.end());
+        pub_buf.push_back('\0');
+        int pub_fd = mkstemp(pub_buf.data());
+        if (pub_fd >= 0) {
+            FILE* fp = fdopen(pub_fd, "w");
+            if (fp) {
+                PEM_write_PUBKEY(fp, key);
+                fclose(fp);
+                pair.public_path = pub_buf.data();
+            }
+        }
+    }
+    if (ctx) EVP_PKEY_CTX_free(ctx);
+    if (key) EVP_PKEY_free(key);
+    return pair;
+#else
+    return {};
+#endif
+}
+
+/// 对给定字节做 Ed25519 签名（hex），模拟云端对 pending_actions 数组的 detached 签名。
+std::string signBytesWithFile(const std::string& bytes, const std::string& key_path) {
+#ifdef WEAKNET_HAVE_TLS
+    FILE* fp = std::fopen(key_path.c_str(), "rb");
+    if (!fp) return {};
+    EVP_PKEY* key = PEM_read_PrivateKey(fp, nullptr, nullptr, nullptr);
+    std::fclose(fp);
+    if (!key) return {};
+    std::string hex;
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    do {
+        if (!ctx) break;
+        if (EVP_DigestSignInit(ctx, nullptr, nullptr, nullptr, key) != 1) break;
+        size_t sig_len = 0;
+        if (EVP_DigestSign(ctx, nullptr, &sig_len,
+                           reinterpret_cast<const unsigned char*>(bytes.data()),
+                           bytes.size()) != 1) break;
+        std::vector<unsigned char> sig(sig_len);
+        if (EVP_DigestSign(ctx, sig.data(), &sig_len,
+                           reinterpret_cast<const unsigned char*>(bytes.data()),
+                           bytes.size()) != 1) break;
+        static const char* kHex = "0123456789abcdef";
+        for (size_t i = 0; i < sig_len; ++i) {
+            hex.push_back(kHex[(sig[i] >> 4) & 0x0F]);
+            hex.push_back(kHex[sig[i] & 0x0F]);
+        }
+    } while (false);
+    if (ctx) EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(key);
+    return hex;
+#else
+    (void)bytes; (void)key_path;
+    return {};
+#endif
+}
+
+/// 按板端解析器同一规则截取 pending_actions 数组的原始字节（含 [ ]）。
+std::string extractActionsArray(const std::string& body) {
+    const std::string array_key = "\"pending_actions\"";
+    const size_t pos = body.find(array_key);
+    if (pos == std::string::npos) return {};
+    const size_t start = body.find('[', pos + array_key.size());
+    if (start == std::string::npos) return {};
+    bool in_string = false, escaped = false;
+    for (size_t i = start + 1; i < body.size(); ++i) {
+        const char c = body[i];
+        if (escaped) { escaped = false; continue; }
+        if (c == '\\') { escaped = true; continue; }
+        if (c == '"') { in_string = !in_string; continue; }
+        if (c == ']' && !in_string) return body.substr(start, i - start + 1);
+    }
+    return {};
+}
+
+}  // namespace
+
+TEST(EdgeTelemetryPendingActions, RejectsUnsignedResponseWhenCloudKeyConfigured) {
+    auto keys = makeScopedKeyPair();
+    if (keys.private_path.empty()) {
+        GTEST_SKIP() << "无法生成临时 Ed25519 密钥（测试环境缺 OpenSSL）";
+    }
+
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    cfg.edge.cloud_public_key_path.set(keys.public_path);
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+
+    const std::string actions = "[{"
+        "\"action_id\":\"nact-unsigned-1\","
+        "\"key\":\"rtt.interval_ms\","
+        "\"value\":\"2000\","
+        "\"generation\":8}]";
+
+    // 未签名响应：整批拒绝，动作不落地、单条拒绝计数不动，专用计数 +1
+    const std::string unsigned_body =
+        "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":" + actions + "}";
+    exporter.applyPendingActions(unsigned_body);
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 10000u);
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::STABLE);
+    EXPECT_EQ(exporter.stats().actions_rejected, 0u);
+    EXPECT_EQ(exporter.stats().unsigned_responses_rejected, 1u);
+
+    // 签名有效：验签放行，动作正常进入 TRIAL
+    const std::string signature = signBytesWithFile(actions, keys.private_path);
+    ASSERT_FALSE(signature.empty());
+    const std::string signed_body =
+        "{\"accepted\":1,\"duplicates\":0,"
+        "\"pending_actions_signature\":\"" + signature + "\","
+        "\"pending_actions_key_id\":\"cloud-downlink-v1\","
+        "\"pending_actions\":" + actions + "}";
+    ASSERT_EQ(extractActionsArray(signed_body), actions);  // 板端验签覆盖的就是这段字节
+    exporter.applyPendingActions(signed_body);
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 2000u);
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::TRIAL);
+    EXPECT_EQ(exporter.stats().unsigned_responses_rejected, 1u);  // 没有二次整批拒绝
+}
+
+TEST(EdgeTelemetryPendingActions, TamperedActionsFailSignature) {
+    auto keys = makeScopedKeyPair();
+    if (keys.private_path.empty()) {
+        GTEST_SKIP() << "无法生成临时 Ed25519 密钥（测试环境缺 OpenSSL）";
+    }
+
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    cfg.edge.cloud_public_key_path.set(keys.public_path);
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+
+    const std::string actions =
+        "[{\"action_id\":\"nact-a\",\"key\":\"rtt.interval_ms\",\"value\":\"2000\",\"generation\":9}]";
+    const std::string signature = signBytesWithFile(actions, keys.private_path);
+    ASSERT_FALSE(signature.empty());
+
+    // 中间人改了 value 但签名还是旧字节的 → 验签失败 → 整批拒绝
+    const std::string tampered_actions =
+        "[{\"action_id\":\"nact-a\",\"key\":\"rtt.interval_ms\",\"value\":\"1\",\"generation\":9}]";
+    const std::string tampered_body =
+        "{\"accepted\":1,\"duplicates\":0,"
+        "\"pending_actions_signature\":\"" + signature + "\","
+        "\"pending_actions_key_id\":\"cloud-downlink-v1\","
+        "\"pending_actions\":" + tampered_actions + "}";
+    exporter.applyPendingActions(tampered_body);
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 10000u);
+    EXPECT_EQ(exporter.stats().unsigned_responses_rejected, 1u);
+}
+
+// ---------------------------------------------------------------------------
+// S7：TRIAL 看门狗——UNKNOWN 不确认也不立即回滚（延长一次至 2×deadline），
+// 确认条件收紧为 overall==GOOD && reach!=BAD；DEGRADED 明确回滚。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+AssessmentSnapshot makeSnapshotWith(weaknet::HealthState overall,
+                                    weaknet::HealthState reach) {
+    AssessmentSnapshot snap;
+    snap.sequence_id = 1;
+    snap.config_generation = 1;
+    snap.network_epoch = 1;
+    snap.wall_timestamp = std::chrono::system_clock::now();
+    snap.profile = AssessmentProfile::INTERNET_ACCESS;
+    snap.experience.iface = "wlan0";
+    snap.experience.overall = overall;
+    snap.experience.overall_coverage = Coverage::FULL_FOR_PROFILE;
+    SleResult reach_result;
+    reach_result.state = reach;
+    reach_result.coverage = Coverage::FULL_FOR_PROFILE;
+    snap.experience.ip_reachability = reach_result;
+    return snap;
+}
+
+}  // namespace
+
+TEST(EdgeTelemetryWatchdog, GoodSnapshotConfirmsStable) {
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    // window=0：deadline 在 startTrial 后立即到期，测试无需等 180 秒
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>("", std::chrono::seconds(0));
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+
+    std::string err;
+    ASSERT_TRUE(txn->startTrial(cfg, "rtt.interval_ms", "2000", "act-good", 1, &err)) << err;
+    cfg.rtt.interval_ms.store(2000);
+
+    const auto snap = makeSnapshotWith(weaknet::HealthState::GOOD, weaknet::HealthState::GOOD);
+    EXPECT_TRUE(exporter.evaluateTrialDeadline(&snap));
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::STABLE);
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 2000u);
+}
+
+TEST(EdgeTelemetryWatchdog, DegradedSnapshotRollsBackNotConfirm) {
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>("", std::chrono::seconds(0));
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+
+    std::string err;
+    ASSERT_TRUE(txn->startTrial(cfg, "rtt.interval_ms", "2000", "act-deg", 1, &err)) << err;
+    cfg.rtt.interval_ms.store(2000);
+
+    // DEGRADED 不再算"健康"：旧代码 overall!=BAD 就 confirm，现在必须保守回滚
+    const auto snap = makeSnapshotWith(weaknet::HealthState::DEGRADED, weaknet::HealthState::GOOD);
+    EXPECT_TRUE(exporter.evaluateTrialDeadline(&snap));
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::STABLE);
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 10000u);  // prior 值已还原
+}
+
+TEST(EdgeTelemetryWatchdog, UnknownHealthExtendsTrialOnceThenRollsBack) {
+    // ROLLBACK 回执在入队时即签名：没有私钥就没有回执（与生产"无身份不回执"一致）
+    const std::string key_path = makeScopedTempKeyPath();
+    if (key_path.empty()) {
+        GTEST_SKIP() << "无法生成临时 Ed25519 密钥（测试环境缺 OpenSSL）";
+    }
+    struct Cleanup { ~Cleanup() { unlink(path_.c_str()); } std::string path_; } cleanup{key_path};
+
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    cfg.edge.private_key_path.set(key_path);
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>("", std::chrono::seconds(0));
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+
+    std::string err;
+    ASSERT_TRUE(txn->startTrial(cfg, "rtt.interval_ms", "2000", "act-unk", 1, &err)) << err;
+    cfg.rtt.interval_ms.store(2000);
+
+    const auto snap =
+        makeSnapshotWith(weaknet::HealthState::UNKNOWN, weaknet::HealthState::UNKNOWN);
+
+    // 第一次到期：UNKNOWN 证据不足——不确认也不回滚，延长一次试用窗口
+    exporter.evaluateTrialDeadline(&snap);
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::TRIAL);
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 2000u);
+
+    // 延长的窗口（window=0 → 立即再次到期）耗尽且仍 UNKNOWN → 保守回滚
+    EXPECT_TRUE(exporter.evaluateTrialDeadline(&snap));
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::STABLE);
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 10000u);
+    EXPECT_EQ(exporter.pendingActionResultCount(), 1u);  // ROLLBACK 回执
+}
+
+TEST(EdgeTelemetryWatchdog, UnknownExtensionIsSingleShotEvenIfHealthRecoversLate) {
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.rtt.interval_ms.store(10000);
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>("", std::chrono::seconds(0));
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+
+    std::string err;
+    ASSERT_TRUE(txn->startTrial(cfg, "rtt.interval_ms", "2000", "act-unk2", 1, &err)) << err;
+    cfg.rtt.interval_ms.store(2000);
+
+    const auto unknown =
+        makeSnapshotWith(weaknet::HealthState::UNKNOWN, weaknet::HealthState::UNKNOWN);
+    exporter.evaluateTrialDeadline(&unknown);  // 消耗唯一一次延长
+    // 恢复 GOOD 但延长窗口已耗尽：GOOD 依然可以确认（确认窗口 = 延长窗口内）
+    const auto good =
+        makeSnapshotWith(weaknet::HealthState::GOOD, weaknet::HealthState::GOOD);
+    exporter.evaluateTrialDeadline(&good);
+    EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::STABLE);
+    EXPECT_EQ(cfg.rtt.interval_ms.load(), 2000u);  // GOOD → confirm，保留新值
+}

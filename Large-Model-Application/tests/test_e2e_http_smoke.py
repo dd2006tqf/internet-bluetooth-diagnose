@@ -274,9 +274,13 @@ def test_queue_action_denied_returns_403_not_500(
         lambda: NetworkAssuranceService(database=app_db),
     )
 
+    # S2 将动作下发权从 MANAGE_NETWORK_DEVICE 升为 EXECUTE_NETWORK_ACTION。
+    # 角色矩阵中 sales (AFTER_SALES_ENGINEER) 既没有 MANAGE 也没有 EXECUTE 之外的
+    # 绕过权限，且测试内 _StubVerifier 将 "field_engineer" 映射到没有 EXECUTE 的角色；
+    # 此处用 "field_engineer" 角色触发 authorizer 拒绝，断言 403 而非 500。
     r = client.post(
         "/api/v1/network/assets/radxa-cubie-a7a/actions",
-        headers=_h("op-1", "expert"),
+        headers=_h("op-1", "field_engineer"),
         json={"config_key": "rtt.interval", "config_value": "10s"},
     )
     assert r.status_code == 403
@@ -381,3 +385,110 @@ def test_runbook_after_approval_is_not_executed(
         headers={**_h("op", "expert"), "Idempotency-Key": "smoke-2"},
     )
     assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# S2：直连接口权限与白名单门禁
+# ---------------------------------------------------------------------------
+
+
+def test_direct_action_requires_execute_network_action_role(
+    client: TestClient, app_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S2#1：MANAGE_NETWORK_DEVICE（tenant_admin）不再能直接下发动作。
+
+    直发动作与 Council /execute 权限对齐为 EXECUTE_NETWORK_ACTION。
+    """
+    from industrial_ops_agent.api.dependencies import (
+        get_network_assurance_service as _real_accessor,
+    )
+    from industrial_ops_agent.network_assurance.service import NetworkAssuranceService
+
+    monkeypatch.setitem(
+        client.app.dependency_overrides,
+        _real_accessor,
+        lambda: NetworkAssuranceService(database=app_db),
+    )
+
+    # admin 角色只有 MANAGE_NETWORK_DEVICE，没有 EXECUTE_NETWORK_ACTION → 403
+    r = client.post(
+        "/api/v1/network/assets/radxa-cubie-a7a/actions",
+        headers=_h("admin-1", "admin"),
+        json={"config_key": "rtt.interval", "config_value": "10s"},
+    )
+    assert r.status_code == 403
+    assert r.json()["error"]["code"] == "authorization_denied"
+
+
+def test_direct_action_rejects_non_catalog_config_key(
+    client: TestClient, app_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S2#2：不在受审阅白名单内（非 trialable）的键一律 409。
+
+    即使 caller 拥有 EXECUTE 权限，非白名单键（如 identity、bpf_obj、
+    active_probe 探测目标等）也必须经由 Council 审批链或本地设置。
+    """
+    from industrial_ops_agent.api.dependencies import (
+        get_network_assurance_service as _real_accessor,
+    )
+    from industrial_ops_agent.network_assurance.service import NetworkAssuranceService
+
+    monkeypatch.setitem(
+        client.app.dependency_overrides,
+        _real_accessor,
+        lambda: NetworkAssuranceService(database=app_db),
+    )
+
+    # expert 有 EXECUTE 权限，但 active_probe.targets 不在 remote-change 白名单
+    r = client.post(
+        "/api/v1/network/assets/radxa-cubie-a7a/actions",
+        headers=_h("expert-1", "expert"),
+        json={
+            "config_key": "active_probe.targets",
+            "config_value": "cf|1.1.1.1|443|cf",
+        },
+    )
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "edge_config_key_requires_approval"
+
+
+def test_direct_action_accepts_whitelisted_trialable_key(
+    client: TestClient, app_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S2#3：白名单（== trialable）键由板端看门狗兜底，允许直发排队。"""
+    from industrial_ops_agent.api.dependencies import (
+        get_network_assurance_service as _real_accessor,
+    )
+    from industrial_ops_agent.network_assurance.service import NetworkAssuranceService
+    from industrial_ops_agent.persistence.models import NetworkAssetRecord
+    from industrial_ops_agent.persistence.tenant import TenantContext
+
+    svc = NetworkAssuranceService(database=app_db)
+    with app_db.transaction(TenantContext("tenant-alpha", "setup")) as session:
+        session.add(
+            NetworkAssetRecord(
+                asset_id="radxa-cubie-a7a",
+                tenant_id="tenant-alpha",
+                display_name="radxa",
+                link_type="WIRED_ETHERNET",
+                overall_state="GOOD",
+                display_score=100,
+                connection_status="ONLINE",
+            )
+        )
+
+    monkeypatch.setitem(
+        client.app.dependency_overrides,
+        _real_accessor,
+        lambda: svc,
+    )
+
+    r = client.post(
+        "/api/v1/network/assets/radxa-cubie-a7a/actions",
+        headers=_h("expert-1", "expert"),
+        json={"config_key": "rtt.interval", "config_value": "5s"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "QUEUED"
+    assert body["action_id"].startswith("nact-")

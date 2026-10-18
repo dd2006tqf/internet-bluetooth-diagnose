@@ -189,6 +189,15 @@ class Settings(BaseSettings):
         max_length=128,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
     )
+    #: S1#1 下行签名（板端校验 edge.cloud_public_key_path 时的配对公钥对应
+    #: 的私钥 id）：只决定 ``pending_actions_key_id`` 回显与密钥轮换标签，
+    #: 不参与验签判定（板端以配置的公钥为唯一信任锚）。
+    network_edge_downlink_signing_key_id: str = Field(
+        default="weaknet-edge-downlink-v1",
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+    )
     #: PEM-encoded Ed25519 public key. Loaded from the secret provider; never
     #: a default, because a shared default key would let any deployment's
     #: device sign for any other.

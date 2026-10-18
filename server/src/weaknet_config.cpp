@@ -471,6 +471,8 @@ bool applyEdgeField(WeakNetConfig* cfg, const std::string& field,
     if (field == "token") { cfg->edge.token.set(trim(val)); return true; }
     if (field == "private_key_path") { cfg->edge.private_key_path.set(trim(val)); return true; }
     if (field == "key_id") { cfg->edge.key_id.set(trim(val)); return true; }
+    if (field == "cloud_public_key_path") { cfg->edge.cloud_public_key_path.set(trim(val)); return true; }
+    if (field == "allow_insecure_http") return setBoolField(cfg->edge.allow_insecure_http, val, error);
     if (field == "interval" || field == "interval_ms") {
         uint32_t ms;
         if (!parseDurationMs(val, &ms) || ms < 1000 || ms > 3600000) {
@@ -506,6 +508,43 @@ struct Section {
     int indent;
     std::string name;
 };
+
+/// host 是否为回环（127.0.0.0/8、localhost、[::1]/::1）。
+bool isLoopbackHost(const std::string& host) {
+    if (host == "localhost") return true;
+    if (host == "::1" || host == "[::1]") return true;
+    // IPv4 回环段 127.0.0.0/8：不逐字节解析，前缀 "127." 即可（与 net_ping
+    // 的轻量校验同一取舍——这里只需判定"不是出网地址"，不做地址归一化）
+    return host.rfind("127.", 0) == 0;
+}
+
+/// S1#3：edge.url 为非回环明文 HTTP 时拒绝加载（除非 allow_insecure_http）。
+/// 在**全文件解析完成后**调用一次，保证配置键书写顺序不影响判定。
+bool validateEdgeUrlPolicy(const WeakNetConfig& cfg, std::string* error) {
+    const std::string url = cfg.edge.url.get();
+    const std::string kPrefix = "http://";
+    if (url.compare(0, kPrefix.size(), kPrefix) != 0) return true;  // https/空/其它 scheme 不管
+    std::string rest = url.substr(kPrefix.size());
+    const size_t slash = rest.find('/');
+    if (slash != std::string::npos) rest = rest.substr(0, slash);
+    std::string host;
+    if (!rest.empty() && rest.front() == '[') {
+        // IPv6 字面量：host 到右方括号为止（http://[::1]:8000）
+        const size_t close = rest.find(']');
+        host = (close != std::string::npos) ? rest.substr(0, close + 1) : rest;
+    } else {
+        host = rest;
+        const size_t colon = rest.rfind(':');
+        if (colon != std::string::npos) host = rest.substr(0, colon);  // 去端口
+    }
+    if (isLoopbackHost(host)) return true;
+    if (cfg.edge.allow_insecure_http.load()) return true;
+    if (error) {
+        *error = "edge.url: 明文 http 只允许回环地址；"
+                 "实验环境请显式设置 allow_insecure_http: true";
+    }
+    return false;
+}
 
 }  // namespace
 
@@ -595,6 +634,10 @@ bool loadWeakNetConfig(const std::string& path, WeakNetConfig* out, std::string*
             }
         }
     }
+
+    // 全文件解析完再做 URL 策略校验：与键书写顺序无关（allow_insecure_http
+    // 写在 url 前后都生效）
+    if (!validateEdgeUrlPolicy(*out, error)) return false;
 
     return true;
 }
@@ -1026,8 +1069,8 @@ bool snapshotMonitorParam(const WeakNetConfig& cfg, const std::string& key,
     return snapshotMonitorParamImpl(cfg, key, value_out);
 }
 
-ConfigTransaction::ConfigTransaction(std::string state_path)
-    : state_path_(std::move(state_path)) {}
+ConfigTransaction::ConfigTransaction(std::string state_path, std::chrono::seconds window)
+    : state_path_(std::move(state_path)), window_(window) {}
 
 ConfigState ConfigTransaction::state() const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1066,6 +1109,7 @@ bool ConfigTransaction::startTrial(const WeakNetConfig& cfg, const std::string& 
     const auto now = std::chrono::steady_clock::now();
     trial_.armed_at = now;
     trial_.deadline = now + window_;
+    trial_.deadline_extended = false;  // 每个 trial 的延长配额独立
     trial_.generation = generation;
     trial_.pending_action_id = action_id;
     trial_.pending_keys.clear();
@@ -1177,6 +1221,14 @@ bool ConfigTransaction::forceRollback(WeakNetConfig* cfg, const std::string& rea
 bool ConfigTransaction::deadlineExpired(std::chrono::steady_clock::time_point now) const {
     std::lock_guard<std::mutex> lock(mutex_);
     return state_ == ConfigState::TRIAL && now >= trial_.deadline;
+}
+
+bool ConfigTransaction::extendDeadline() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_ != ConfigState::TRIAL || trial_.deadline_extended) return false;
+    trial_.deadline = std::chrono::steady_clock::now() + window_;
+    trial_.deadline_extended = true;
+    return true;
 }
 
 bool ConfigTransaction::hasCrashRecoveryFile() const {

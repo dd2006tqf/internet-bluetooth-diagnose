@@ -70,7 +70,10 @@ from industrial_ops_agent.network_assurance.automation_subject import (
 )
 from industrial_ops_agent.network_assurance.knowledge_bridge import KnowledgeCaseBridge
 from industrial_ops_agent.network_assurance.service import NetworkAssuranceService
-from industrial_ops_agent.network_assurance.signing import EdgeTelemetryVerifier
+from industrial_ops_agent.network_assurance.signing import (
+    EdgeDownlinkActionSigner,
+    EdgeTelemetryVerifier,
+)
 from industrial_ops_agent.object_store.minio import MinioTenantObjectStore
 from industrial_ops_agent.observability import HttpMetrics
 from industrial_ops_agent.operations import OperationsService, PrometheusHttpReader
@@ -117,7 +120,7 @@ from industrial_ops_agent.search_profiles.reranker import (
     ProductionRerankerResolver,
 )
 from industrial_ops_agent.search_profiles.store import OpenSearchStore
-from industrial_ops_agent.secrets import SecretName, build_secret_provider
+from industrial_ops_agent.secrets import SecretName, SecretReadError, build_secret_provider
 from industrial_ops_agent.security.emergency_access import DatabaseEmergencyGrantPolicy
 from industrial_ops_agent.security_audit import build_persistent_security_auditor
 from industrial_ops_agent.telemetry import configure_telemetry
@@ -184,6 +187,32 @@ def create_runtime_app(settings: Settings | None = None) -> FastAPI:
             device_token=device_token,
             tenant_id=resolved.network_edge_telemetry_tenant_id,
         )
+    # --- S1#1 downlink action signing (optional, migration-aware) -----------
+    #
+    # 未配置密钥 = 响应不带 pending_actions 签名（旧板可继续消费）；
+    # 板端一旦配置 edge.cloud_public_key_path 即 fail-closed 要求签名，
+    # 因此部署要启用板端验签，必须先在这里配好密钥再滚动板端。
+    edge_downlink_signer = None
+    if resolved.network_assurance_enabled:
+        try:
+            encoded_downlink_key = provider.get(
+                SecretName.NETWORK_EDGE_DOWNLINK_SIGNING_PRIVATE_KEY
+            ).reveal()
+        except SecretReadError:
+            edge_downlink_signer = None
+        else:
+            try:
+                downlink_key_pem = b64decode(
+                    encoded_downlink_key, validate=True
+                ).decode("utf-8")
+            except (Base64Error, UnicodeDecodeError) as exc:
+                raise ValueError(
+                    "network downlink signing key must be base64-encoded PEM"
+                ) from exc
+            edge_downlink_signer = EdgeDownlinkActionSigner.from_private_pem(
+                downlink_key_pem,
+                key_id=resolved.network_edge_downlink_signing_key_id,
+            )
     database = Database(database_url.reveal())
     cache = RedisTenantCache.from_url(resolved.redis_url)
     minio_client = Minio(
@@ -647,6 +676,7 @@ def create_runtime_app(settings: Settings | None = None) -> FastAPI:
         edge_pack_signer=edge_pack_signer,
         network_assurance_service=network_assurance_service,
         edge_telemetry_verifier=edge_telemetry_verifier,
+        edge_downlink_signer=edge_downlink_signer,
         http_metrics=http_metrics,
     )
     app.state.network_model_gateway = network_model_gateway

@@ -817,3 +817,51 @@ TEST(SiteIncidentConfigTest, SerializeMonitorJsonEmitsIncidentKeys) {
     EXPECT_NE(json.find("\"incident_quiet_window_ms\""), std::string::npos) << json;
     EXPECT_NE(json.find("\"incident_active_window_ms\""), std::string::npos) << json;
 }
+
+// ---------------------------------------------------------------------------
+// S1#3：非回环明文 HTTP 一律拒绝加载，除非显式 allow_insecure_http
+// ---------------------------------------------------------------------------
+
+TEST(WeakNetConfigTest, RejectsInsecureNonLoopbackEdgeUrl) {
+    // fail-closed：公网/局域网地址走明文 HTTP 时，令牌与签名密钥会在链路上裸奔
+    WeakNetConfig insecure;
+    std::string err;
+    EXPECT_FALSE(parse(
+        "edge:\n"
+        "  url: \"http://example.com:8000/api/v1/network/edge/telemetry\"\n",
+        &insecure, &err));
+
+    // 显式放行开关（仅实验环境）：必须能被识别为合法配置键——
+    // 且允许写在 url **之后**（加载校验在全文件解析完后做一次，不依赖行序）
+    WeakNetConfig cfg;
+    ASSERT_TRUE(parse(
+        "edge:\n"
+        "  url: \"http://example.com:8000/api/v1/network/edge/telemetry\"\n"
+        "  allow_insecure_http: true\n",
+        &cfg, &err)) << err;
+    EXPECT_TRUE(cfg.edge.allow_insecure_http.load());
+
+    // 回环地址的明文 HTTP 是排练/本机开发的常态路径，永远放行
+    WeakNetConfig loopback;
+    ASSERT_TRUE(parse(
+        "edge:\n"
+        "  url: \"http://127.0.0.1:8000/api/v1/network/edge/telemetry\"\n",
+        &loopback, &err)) << err;
+    WeakNetConfig localhost;
+    ASSERT_TRUE(parse(
+        "edge:\n"
+        "  url: \"http://localhost:8000/api/v1/network/edge/telemetry\"\n",
+        &localhost, &err)) << err;
+    WeakNetConfig v6;
+    ASSERT_TRUE(parse(
+        "edge:\n"
+        "  url: \"http://[::1]:8000/api/v1/network/edge/telemetry\"\n",
+        &v6, &err)) << err;
+
+    // https 非回环是正常生产形态，与开关无关
+    WeakNetConfig tls;
+    ASSERT_TRUE(parse(
+        "edge:\n"
+        "  url: \"https://ops.example.com/api/v1/network/edge/telemetry\"\n",
+        &tls, &err)) << err;
+}

@@ -1,4 +1,5 @@
-"""Raw detached-Ed25519 verification for WeakNet edge telemetry.
+"""Raw detached-Ed25519 verification for WeakNet edge telemetry — plus the
+symmetric downlink signing used for ``pending_actions`` (S1#1).
 
 ## Why this is not ``edge/signing.py``
 
@@ -30,7 +31,10 @@ from hashlib import sha256
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 
 #: Key ids are operator-assigned labels, not secrets, but they index into the
 #: trust anchor so they must be bounded and canonical.
@@ -185,3 +189,68 @@ class EdgeTelemetryVerifier:
             key_id=self.key_id,
             token_fingerprint=self.token_fingerprint(presented_token),
         )
+
+
+# ---------------------------------------------------------------------------
+# Downlink signing (S1#1): cloud signs the exact pending_actions array bytes
+# ---------------------------------------------------------------------------
+
+
+def load_ed25519_private_key(pem: str) -> Ed25519PrivateKey:
+    """Load the deployment's downlink signing private key.
+
+    Same fail-loud contract as :func:`load_ed25519_public_key`: anything but
+    an Ed25519 private key raises at startup instead of degrading to an
+    unsigned (board-rejected) response stream.
+    """
+
+    if not pem or len(pem) > MAX_PUBLIC_KEY_BYTES:
+        raise NetworkSignatureError("downlink_private_key_invalid")
+    try:
+        loaded = serialization.load_pem_private_key(pem.encode(), password=None)
+    except (TypeError, ValueError) as exc:
+        raise NetworkSignatureError("downlink_private_key_invalid") from exc
+    if not isinstance(loaded, Ed25519PrivateKey):
+        raise NetworkSignatureError("downlink_private_key_must_be_ed25519")
+    return loaded
+
+
+class EdgeDownlinkActionSigner:
+    """Detached-Ed25519 signer over the exact bytes the wire will carry.
+
+    The invariant mirrors the uplink one (``contracts`` docstring): serialize
+    once, sign those bytes, send them verbatim. The board extracts the
+    ``pending_actions`` array substring straight out of the received body and
+    verifies against it, so this class' ``sign_actions`` output MUST equal
+    ``json.dumps(actions, ensure_ascii=False, separators=(",", ":"))`` — the
+    compact serialization Starlette's JSONResponse uses for the response body.
+    ``tests/test_edge_downlink_trust.py`` locks that byte-equality down.
+    """
+
+    def __init__(self, private_key: Ed25519PrivateKey, *, key_id: str) -> None:
+        if not key_id or len(key_id) > MAX_KEY_ID_LENGTH:
+            raise ValueError("network_edge_downlink_key_id_invalid")
+        self._private_key = private_key
+        self.key_id = key_id
+
+    @classmethod
+    def from_private_pem(cls, value: str, *, key_id: str) -> EdgeDownlinkActionSigner:
+        return cls(load_ed25519_private_key(value), key_id=key_id)
+
+    @staticmethod
+    def actions_bytes(actions: list[dict[str, object]] | tuple[dict[str, object], ...]) -> bytes:
+        """Canonical (wire-identical) serialization of the actions array."""
+
+        import json
+
+        return json.dumps(
+            list(actions), ensure_ascii=False, separators=(",", ":")
+        ).encode()
+
+    def sign_actions(
+        self, actions: list[dict[str, object]] | tuple[dict[str, object], ...]
+    ) -> tuple[str, str]:
+        """Return ``(signature_hex, key_id)`` for the wire-identical bytes."""
+
+        signature = self._private_key.sign(self.actions_bytes(actions))
+        return signature.hex(), self.key_id
