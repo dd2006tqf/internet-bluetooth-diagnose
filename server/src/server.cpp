@@ -1584,6 +1584,10 @@ int start_server(int argc, char** argv) {
         ctx.wireless_uplink.reset();
     }
 
+    // 显式停止上网网卡监听管理器：在 glog 和全局资源关闭前完成线程 join，
+    // 杜绝静态单例析构时后台线程野访问已释放的日志设施。
+    UsingInterfaceManager::getInstance()->stop();
+
     // 停止文件日志（在 glog 关闭之前）
     Logger::stopFileLog();
 

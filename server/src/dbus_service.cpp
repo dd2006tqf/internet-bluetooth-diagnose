@@ -21,8 +21,8 @@
  * 线程安全：
  *   - 所有 handleXxx 在 DBus 主循环线程中串行执行（libdbus 单线程 dispatching）
  *   - 信号发送由 send_mutex_ 保护，可被多线程并发调用
- *   - ServerContext 中各 monitor 指针仅在启动阶段赋值，之后只读；业务方法调用
- *     时通过 monitor->isAvailable() 或 ctx_ 空指针检查兜底
+ *   - ServerContext 中各 monitor 及跨插件事件存储指针运行期受 monitor_pointers_mutex
+ *     保护；业务方法调用时持 shared_lock 读锁现取现用，杜绝 UAF 与指针悬垂
  */
 
 #include <dbus/dbus.h>
@@ -1591,9 +1591,14 @@ bool DbusService::handleQueryDeviceEvents(DBusConnection* conn, DBusMessage* msg
     }
 
     std::string result = "[]";
-    if (ctx_ && ctx_->wireless_event_store) {
-        result = ctx_->wireless_event_store->queryPersisted(
-            device_address, event_type, start_ms, end_ms, limit);
+    if (ctx_) {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        if (ctx_->wireless_event_store) {
+            result = ctx_->wireless_event_store->queryPersisted(
+                device_address, event_type, start_ms, end_ms, limit);
+        } else {
+            result = "{\"error\":\"event store not available\"}";
+        }
     } else {
         result = "{\"error\":\"event store not available\"}";
     }
@@ -1729,8 +1734,13 @@ bool DbusService::handleQuerySiteIncidents(DBusConnection* conn, DBusMessage* ms
     }
 
     std::string result = "[]";
-    if (ctx_ && ctx_->wireless_event_store) {
-        result = ctx_->wireless_event_store->querySiteIncidents(state, start_ms, end_ms, limit);
+    if (ctx_) {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        if (ctx_->wireless_event_store) {
+            result = ctx_->wireless_event_store->querySiteIncidents(state, start_ms, end_ms, limit);
+        } else {
+            result = "[]";
+        }
     } else {
         result = "[]";
     }

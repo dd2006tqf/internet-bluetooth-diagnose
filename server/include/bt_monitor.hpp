@@ -59,6 +59,7 @@ class BtAudioFusion;
 struct BtTrafficStats;
 class BtLinkQualityTracker;
 class WirelessEventStore;
+struct ServerContext;
 }
 
 namespace weaknet_dbus {
@@ -224,10 +225,9 @@ public:
     /// 是否已完成 initialize() 且未 cleanup()
     bool isInitialized() const { return initialized_.load(); }
 
-    /// 设置外部链路质量跟踪器与事件存储（Phase 2）
-    void setQualityTracker(BtLinkQualityTracker* tracker, WirelessEventStore* store) {
-        tracker_ = tracker;
-        eventStore_ = store;
+    /// 注入服务端运行时上下文（消除旧一次性裸指针拷贝与悬垂隐患）
+    void setServerContext(ServerContext* ctx) {
+        ctx_ = ctx;
     }
 
     /// 是否至少存在一个蓝牙适配器（从 adapterState_ 判断）
@@ -497,8 +497,7 @@ private:
     static constexpr const char* BPF_OBJECT_PATH = "build/a2dp_media.bpf.o";
 
     // ---- Phase 2: 链路质量跟踪器与规范化事件存储 ----
-    BtLinkQualityTracker* tracker_ = nullptr;
-    WirelessEventStore* eventStore_ = nullptr;
+    ServerContext* ctx_ = nullptr;
 };
 
 // ============================================================================

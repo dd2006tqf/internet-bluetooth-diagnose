@@ -330,13 +330,13 @@ struct UsingInterfaceManager::Impl {
      * 4. 捕获所有异常，记录日志后退出
      */
     void eventLoop(UsingInterfaceManager* owner) {
+        running.store(true);
         try {
             openSocket();
             dumpInitial();
             // 发布一次初始状态，避免刚启动阶段为空
             publishState(owner, /*printLog=*/true);
             std::vector<char> buf(64 * 1024);
-            running.store(true);
             // 设置 socket 超时，避免 recvmsg 永久阻塞导致无法响应 running=false
             struct timeval tv{};
             tv.tv_sec = 1;
@@ -349,7 +349,10 @@ struct UsingInterfaceManager::Impl {
                 ssize_t len = recvmsg(nlSocket, &msg, 0);
                 if (len < 0) {
                     if (errno == EINTR) continue;
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) { usleep(1000 * 50); continue; }
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                        continue;
+                    }
                     throw std::runtime_error("recvmsg failed");
                 }
                 if (len == 0) continue;
@@ -379,9 +382,9 @@ struct UsingInterfaceManager::Impl {
 // 避免 detached 线程在单例析构后野访问；再释放 Impl。
 #if defined(__linux__)
 UsingInterfaceManager::~UsingInterfaceManager() {
+    stop();
+    std::lock_guard<std::mutex> lk(stateMutex_);
     if (impl_) {
-        impl_->running.store(false);       // 通知事件循环退出
-        if (impl_->worker.joinable()) impl_->worker.join();  // 等待线程结束，避免 use-after-free
         delete impl_;
         impl_ = nullptr;
     }
@@ -389,6 +392,31 @@ UsingInterfaceManager::~UsingInterfaceManager() {
 #else
 UsingInterfaceManager::~UsingInterfaceManager() = default;
 #endif
+
+/**
+ * @brief 显式停止后台 netlink 事件监听线程
+ *
+ * 幂等调用：置 running=false 触发事件循环退出并等待 join；多次调用安全。
+ */
+void UsingInterfaceManager::stop() {
+#if defined(__linux__)
+    std::thread worker_to_join;
+    {
+        std::lock_guard<std::mutex> lk(stateMutex_);
+        if (impl_) {
+            impl_->running.store(false);
+            if (impl_->worker.joinable()) {
+                worker_to_join = std::move(impl_->worker);
+            }
+        }
+    }
+    if (worker_to_join.joinable()) {
+        worker_to_join.join();
+    }
+#else
+    (void)stateMutex_;
+#endif
+}
 
 /**
  * @brief 启动后台 netlink 事件监听线程
@@ -403,6 +431,7 @@ void UsingInterfaceManager::start() {
     if (!impl_->running.load()) {
         // 先 join 旧线程（如果线程退出但未 join，worker 仍 joinable）
         if (impl_->worker.joinable()) impl_->worker.join();
+        impl_->running.store(true);
         impl_->worker = std::thread([this]{ impl_->eventLoop(this); });
         // 不 detach：保持 joinable，析构时 join 等待线程安全退出
     }

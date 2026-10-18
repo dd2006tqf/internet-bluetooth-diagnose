@@ -498,11 +498,9 @@ public:
         store_cfg.site_id = configured_site.empty() ? store_cfg.gateway_id : configured_site;
 
         store_ = std::make_unique<WirelessEventStore>(ctx->db_mgr.get(), std::move(store_cfg));
-        ctx->wireless_event_store = store_.get();
 
         // Phase 2: 初始化链路质量跟踪器，并预热加载历史基线画像
         tracker_ = std::make_unique<BtLinkQualityTracker>();
-        ctx->bt_link_quality_tracker = tracker_.get();
 
         // Phase 3a: 区域级异常关联器——把散落的设备事件聚合成 SiteIncident。
         //
@@ -529,7 +527,6 @@ public:
         incident_cfg.active_device_memory_ms =
             ctx->cfg.bluetooth.incident_active_window_ms.load();
         correlator_ = std::make_unique<SiteIncidentCorrelator>(ctx->db_mgr.get(), incident_cfg);
-        ctx->site_incident_correlator = correlator_.get();
 
         // 回放窗口右沿用当前墙钟：关联器只按事件时间做决策，
         // 这个 now_ms 只用于确定"最近多久的事件值得回放"。
@@ -538,6 +535,14 @@ public:
                 std::chrono::system_clock::now().time_since_epoch()).count());
         correlator_->recoverFromStore(now_ms);
         store_->setIncidentCorrelator(correlator_.get());
+
+        // 持独占锁发布这三个跨插件指针，保证读侧看到完整构造的对象
+        {
+            std::unique_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+            ctx->wireless_event_store = store_.get();
+            ctx->bt_link_quality_tracker = tracker_.get();
+            ctx->site_incident_correlator = correlator_.get();
+        }
 
         monitor_ = std::make_unique<BtEventMonitor>(store_.get(), tracker_.get());
         if (!monitor_->init(ctx->cfg.bluetooth.events_bpf_obj.get(),
@@ -567,12 +572,14 @@ public:
             monitor_->stop();
             monitor_.reset();
         }
-        // 先解绑再销毁：store 在关联器之前构造、之后销毁，
-        // 中间任何时刻 recordEvent 都不能看到一个悬垂的关联器指针。
-        if (store_) {
-            store_->setIncidentCorrelator(nullptr);
-        }
+        // 关键安全设计：在独占锁内原子完成解绑、置空指针与对象析构。
+        // 共享锁读者要么看到完整可用的三对象，要么看到 nullptr 并安全降级，
+        // 绝不产生对正在析构或已析构对象的 use-after-free。
         if (ctx_) {
+            std::unique_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+            if (store_) {
+                store_->setIncidentCorrelator(nullptr);
+            }
             if (ctx_->wireless_event_store == store_.get()) {
                 ctx_->wireless_event_store = nullptr;
             }
@@ -582,10 +589,17 @@ public:
             if (ctx_->site_incident_correlator == correlator_.get()) {
                 ctx_->site_incident_correlator = nullptr;
             }
+            correlator_.reset();
+            tracker_.reset();
+            store_.reset();
+        } else {
+            if (store_) {
+                store_->setIncidentCorrelator(nullptr);
+            }
+            correlator_.reset();
+            tracker_.reset();
+            store_.reset();
         }
-        correlator_.reset();
-        tracker_.reset();
-        store_.reset();
     }
 };
 
@@ -603,6 +617,7 @@ class BtHciTrafficPlugin : public IMonitorPlugin {
 public:
     const char* name() const override { return "bt_hci_traffic"; }
     int order() const override { return 10; }
+    std::vector<std::string> dependencies() const override { return {"bt_events"}; }
     bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
     bool start(ServerContext* ctx) override {
         if (!ctx->cfg.bluetooth.enabled.load()) {
@@ -700,7 +715,8 @@ public:
                                 // 若已绑定具体设备，桥接生成一条规范化设备事件 (LinkDegraded) 注入事件存储。
                                 // 必须赋全局唯一 event_id：device_events.event_id 是 UNIQUE 且
                                 // INSERT OR IGNORE——留空会让第 2 条起全部撞空串被静默吞掉（板端实测）。
-                                if (!anomaly.device_address.empty() && ctx_->wireless_event_store) {
+                                // 在 monitor_pointers_mutex 共享读锁内检查指针并 recordEvent，杜绝 UAF。
+                                if (!anomaly.device_address.empty() && ctx_) {
                                     WirelessDeviceEvent ev;
                                     ev.event_id = "bt_l2_" + std::to_string(now_ms) + "_" +
                                                   std::to_string(++anomaly_seq_);
@@ -712,7 +728,11 @@ public:
                                     ev.suspected_cause = anomaly.description;
                                     ev.timestamp_ms = static_cast<uint64_t>(now_ms);
                                     ev.details_json = anomaly.toJson();
-                                    ctx_->wireless_event_store->recordEvent(ev);
+
+                                    std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+                                    if (ctx_->wireless_event_store) {
+                                        ctx_->wireless_event_store->recordEvent(ev);
+                                    }
                                 }
                             }
                         }
