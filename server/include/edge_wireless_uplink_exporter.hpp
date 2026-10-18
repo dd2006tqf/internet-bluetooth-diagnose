@@ -21,10 +21,14 @@
  *
  * ## 游标与重放
  *
- * `data/wireless-uplink-watermark` 记录"已确认送达的最大事实时间"。
+ * `data/wireless-uplink-state` 记录**三域独立游标**（events_ms /
+ * incidents_ms / baselines_ms）："该域已确认送达的最大事实时间"。三域共用
+ * 单水位曾造成跨域截断丢事实（事故/基线时间戳把水位推过截断在批上限之后
+ * 的未发事件）——每个域只按**本域已发送行**的时间戳推进，谁也不替谁代言。
  * 游标只在 HTTP 2xx 之后前移；失败则原地重试——服务端按 id 幂等，
- * 因此重发是安全且常态的。游标文件损坏/缺失时从 0 重新扫（历史事实会
- * 被判重复，不会重复入库），绝不猜测一个"更靠后"的位置而漏发。
+ * 因此重发是安全且常态的。单键损坏只回退该域（从 0 全量重扫）；旧格式
+ * 文件缺失 incident/baseline 键时同样回退 0 重扫（单水位时代可能截断丢发
+ * 的行靠重扫补回）。绝不猜测一个"更靠后"的位置而漏发。
  *
  * ## 签名与序列化顺序
  *
@@ -66,6 +70,14 @@ constexpr size_t EDGE_WIRELESS_MAX_EVENTS_PER_BATCH = 1000;
 constexpr size_t EDGE_WIRELESS_MAX_INCIDENTS_PER_BATCH = 200;
 constexpr size_t EDGE_WIRELESS_MAX_BASELINES_PER_BATCH = 2000;
 
+/// 三域独立游标（毫秒）：每个域只按**本域已确认送达行**的时间戳推进。
+/// 单水位会被事故/基线的更晚时间戳推过截断在批上限之后的未发事件（C2）。
+struct WirelessUplinkCursors {
+    uint64_t events_ms{0};
+    uint64_t incidents_ms{0};
+    uint64_t baselines_ms{0};
+};
+
 /// 上行器运行统计（日志/健康检查用）。
 struct EdgeWirelessUplinkStats {
     uint64_t rounds{0};            ///< 完成的采集-发送轮次
@@ -84,7 +96,7 @@ struct EdgeWirelessUplinkStats {
  */
 struct WirelessUplinkPayload {
     std::string device_id;
-    uint64_t watermark_ms = 0;   ///< 本批覆盖到的最大事实时间（仅作游标回显）
+    uint64_t watermark_ms = 0;   ///< 采集时三域已确认游标的最大值（仅作游标回显，云端不依赖）
 
     std::vector<weaknet_dbus::WirelessDeviceEvent> events;
     std::vector<weaknet_dbus::SiteIncident> incidents;
@@ -137,16 +149,25 @@ public:
     bool isRunning() const { return running_.load(); }
     EdgeWirelessUplinkStats stats() const;
 
-    /// 当前游标（已确认送达的最大事实时间，毫秒）。
+    /// 三域游标的最大值（健康回显；真实推进语义见 loadCursors）。
     uint64_t watermarkMs() const;
 
     /**
-     * @brief 执行一轮：采集 → 序列化 → 签名 → 发送 → 推进游标。
+     * @brief 执行一轮：采集 → 序列化 → 签名 → 发送 → 三域游标各自推进。
      *
      * 公开以便单测在不启线程的前提下驱动完整流程（网络失败即返回 false
      * 且游标不前移）。生产路径由 run() 循环调用。
      */
     bool runOnce(std::string* error);
+
+    /**
+     * @brief 从 SQLite 采集一批事实（受各组的单批上限约束）。
+     *
+     * 各域严格按**本域游标**取数（事件 ts > events_ms、事故 last_event_ms
+     * >= incidents_ms、基线 updated_at > baselines_ms），互不越界。
+     * 公开以便单测直接覆盖三域游标的独立性（与 runOnce 同一可测性先例）。
+     */
+    bool collect(WirelessUplinkPayload* out, std::string* error);
 
     /**
      * @brief 把一批事实序列化为 network.edge.wireless-events.v1 报文字节。
@@ -160,19 +181,25 @@ public:
     static WirelessUplinkPayload selectSince(const WirelessUplinkPayload& all,
                                              uint64_t watermark_ms);
 
-    /// 读游标；文件缺失/损坏返回 0（宁可重发，绝不跳发）。
-    /// 公开以便单测直接覆盖"损坏即重扫"的分支（与 EdgeTelemetryExporter
-    /// 的 applyPendingActions 同一先例：为可测性开放，语义仍是内部实现）。
-    uint64_t loadWatermark() const;
+    /**
+     * @brief 送达成功后把已发送事实的时间戳**按域**回写到各自游标。
+     *
+     * 纯函数便于单测锁死 C2 语义：事故/基线更晚的时间戳绝不推进事件游标，
+     * 否则截断在批上限之后的未发事件被永久跳过。任何域只增不减。
+     */
+    static WirelessUplinkCursors advanceCursors(const WirelessUplinkCursors& before,
+                                                const WirelessUplinkPayload& sent);
 
-    /// 写游标；失败只记日志（下一轮重发，服务端幂等）。
-    void storeWatermark(uint64_t value);
+    /// 读三域游标；文件缺失或单键损坏时该域回退 0（宁可重扫，绝不跳发）。
+    /// 公开以便单测直接覆盖"缺失/旧格式/损坏即按域重扫"的分支（与
+    /// EdgeTelemetryExporter 的 applyPendingActions 同一先例：为可测性开放）。
+    WirelessUplinkCursors loadCursors() const;
+
+    /// 写三域游标并同步内存游标；文件失败只记日志（下一轮重发，服务端幂等）。
+    void storeCursors(const WirelessUplinkCursors& cursors);
 
 private:
     void run();
-
-    /// 从 SQLite 采集一批事实（受各组的单批上限约束）。
-    bool collect(WirelessUplinkPayload* out, std::string* error);
 
     std::string signBody(const std::string& body, std::string* error) const;
     bool postSigned(const std::string& url, const std::string& body,
@@ -191,7 +218,10 @@ private:
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
-    mutable std::atomic<uint64_t> watermark_ms_{0};
+    /// 三域运行期游标（collect 读、storeCursors 写；重启时由 loadCursors 恢复）
+    mutable std::atomic<uint64_t> events_ms_{0};
+    mutable std::atomic<uint64_t> incidents_ms_{0};
+    mutable std::atomic<uint64_t> baselines_ms_{0};
 
     mutable std::mutex stats_mutex_;
     EdgeWirelessUplinkStats stats_;

@@ -80,6 +80,17 @@ DeviceLinkProfile makeBaseline() {
     return p;
 }
 
+/// 按 WirelessDeviceEvent 结构体整行入库（字段映射与生产 recordEvent 一致）
+void insertEvent(DatabaseManager& db, const WirelessDeviceEvent& ev) {
+    ASSERT_TRUE(db.insertDeviceEvent(ev.event_id, ev.timestamp_ms, ev.site_id, ev.gateway_id,
+                                     toString(ev.protocol), ev.device_address,
+                                     toString(ev.address_type), ev.hci_index,
+                                     toString(ev.event_type), ev.rssi_at_event_dbm,
+                                     ev.raw_reason_code, toString(ev.reason),
+                                     toString(ev.source), ev.source_detail,
+                                     std::nullopt, ev.details_json));
+}
+
 }  // namespace
 
 // ============================================================================
@@ -254,9 +265,9 @@ TEST(EdgeWirelessUplinkSelect, KeepsOnlyFactsStrictlyAfterWatermark) {
     EXPECT_EQ(filtered.events[0].event_id, "new");
 }
 
-TEST(EdgeWirelessUplinkCursor, MissingAndCorruptCursorRescanFromZero) {
-    // 游标文件语义必须真实覆盖实现：用临时 SQLite 库构造上行器（构建廉价，
-    // 且 loadWatermark/storeWatermark 不访问数据库，但构造要求有 db 引用）。
+TEST(EdgeWirelessUplinkCursor, MissingLegacyAndCorruptCursorRescanPerDomain) {
+    // 游标语义必须真实覆盖实现：用临时 SQLite 库构造上行器（构建廉价，
+    // 且 loadCursors/storeCursors 不访问数据库，但构造要求有 db 引用）。
     const std::string db_path = uniqueTempPath("cursor.db");
     const std::string state_path = uniqueTempPath("cursor.state");
     std::remove(db_path.c_str());
@@ -268,22 +279,145 @@ TEST(EdgeWirelessUplinkCursor, MissingAndCorruptCursorRescanFromZero) {
 
     {
         EdgeWirelessUplinkExporter exporter(cfg, db, state_path);
-        // 文件缺失 → 0（宁可重发，绝不跳发）
-        EXPECT_EQ(exporter.loadWatermark(), 0u);
+        // 文件缺失 → 三域全 0（宁可重发，绝不跳发）
+        const auto zero = exporter.loadCursors();
+        EXPECT_EQ(zero.events_ms, 0u);
+        EXPECT_EQ(zero.incidents_ms, 0u);
+        EXPECT_EQ(zero.baselines_ms, 0u);
 
-        exporter.storeWatermark(1'700'000'001'500ULL);
-        EXPECT_EQ(exporter.loadWatermark(), 1'700'000'001'500ULL);
+        exporter.storeCursors({1'700'000'001'500ULL, 1'700'000'002'500ULL, 1'700'000'003'500ULL});
+        const auto c = exporter.loadCursors();
+        EXPECT_EQ(c.events_ms, 1'700'000'001'500ULL);
+        EXPECT_EQ(c.incidents_ms, 1'700'000'002'500ULL);
+        EXPECT_EQ(c.baselines_ms, 1'700'000'003'500ULL);
+        // 运行期原子游标与持久化保持一致（collect 读原子、重启读文件）
+        EXPECT_EQ(exporter.watermarkMs(), 1'700'000'003'500ULL);
     }
 
-    // 损坏内容 → 0 并重新扫描，绝不猜测更靠后的位置
+    // 旧格式（仅 events_ms）→ 另两域回退 0 全量重扫：
+    // 单水位时代的截断丢发只有靠重扫才能被补回，服务端按 id 幂等吸收重发。
     {
-        std::ofstream bad(state_path, std::ios::trunc);
-        bad << "events_ms=not-a-number\n";
+        std::ofstream legacy(state_path, std::ios::trunc);
+        legacy << "events_ms=1700000001500\n";
     }
     {
         EdgeWirelessUplinkExporter exporter(cfg, db, state_path);
-        EXPECT_EQ(exporter.loadWatermark(), 0u);
+        const auto c = exporter.loadCursors();
+        EXPECT_EQ(c.events_ms, 1'700'000'001'500ULL);
+        EXPECT_EQ(c.incidents_ms, 0u);
+        EXPECT_EQ(c.baselines_ms, 0u);
     }
+
+    // 单键损坏只回退该域，不牵连其余两域的已确认位置
+    {
+        std::ofstream bad(state_path, std::ios::trunc);
+        bad << "events_ms=not-a-number\nincidents_ms=7\nbaselines_ms=8\n";
+    }
+    {
+        EdgeWirelessUplinkExporter exporter(cfg, db, state_path);
+        const auto c = exporter.loadCursors();
+        EXPECT_EQ(c.events_ms, 0u);
+        EXPECT_EQ(c.incidents_ms, 7u);
+        EXPECT_EQ(c.baselines_ms, 8u);
+    }
+
+    std::remove(state_path.c_str());
+    std::remove(db_path.c_str());
+}
+
+// ============================================================================
+// 三域独立游标：跨域水位推进不再截断丢事实（C2 回归）
+// ============================================================================
+
+TEST(EdgeWirelessUplinkCursor, AdvanceStaysWithinEachDomain) {
+    // 事故/基线时间更晚也不能推进事件游标——单水位时代正是这里把
+    // 截断在批上限之后的未发事件永久跳过。
+    WirelessUplinkPayload sent;
+    sent.events = {makeEvent("e2", 2'000ULL), makeEvent("e3", 3'000ULL)};
+    auto inc = makeIncident("inc-1");
+    inc.last_event_ms = 9'000ULL;
+    sent.incidents = {inc};
+    auto base = makeBaseline();
+    base.updated_at_ms = 8'000ULL;
+    sent.baselines = {base};
+
+    const auto after =
+        EdgeWirelessUplinkExporter::advanceCursors({1'000ULL, 1'000ULL, 1'000ULL}, sent);
+    EXPECT_EQ(after.events_ms, 3'000ULL);
+    EXPECT_EQ(after.incidents_ms, 9'000ULL);
+    EXPECT_EQ(after.baselines_ms, 8'000ULL);
+
+    // 只有事件域有进展时，其余域原地不动（不回退、不越界）
+    WirelessUplinkPayload only_events;
+    only_events.events = {makeEvent("e4", 5'500ULL)};
+    const auto after2 =
+        EdgeWirelessUplinkExporter::advanceCursors({5'000ULL, 4'000ULL, 6'000ULL}, only_events);
+    EXPECT_EQ(after2.events_ms, 5'500ULL);
+    EXPECT_EQ(after2.incidents_ms, 4'000ULL);
+    EXPECT_EQ(after2.baselines_ms, 6'000ULL);
+
+    // 空批不推进任何域
+    const auto after3 =
+        EdgeWirelessUplinkExporter::advanceCursors({5'000ULL, 4'000ULL, 6'000ULL}, {});
+    EXPECT_EQ(after3.events_ms, 5'000ULL);
+    EXPECT_EQ(after3.incidents_ms, 4'000ULL);
+    EXPECT_EQ(after3.baselines_ms, 6'000ULL);
+}
+
+TEST(EdgeWirelessUplinkCollect, UsesIndependentPerDomainCursors) {
+    const std::string db_path = uniqueTempPath("collect.db");
+    const std::string state_path = uniqueTempPath("collect.state");
+    std::remove(db_path.c_str());
+    std::remove(state_path.c_str());
+
+    WeakNetConfig cfg;
+    DatabaseManager db(db_path);
+    ASSERT_TRUE(db.isOpen());
+
+    // 三域事实：事件 ts=1000/2000，事故 last_event=4000，基线 updated=4500
+    insertEvent(db, makeEvent("e1", 1'000ULL));
+    insertEvent(db, makeEvent("e2", 2'000ULL));
+    auto inc = makeIncident("inc-1");
+    inc.started_at_ms = 3'000ULL;
+    inc.last_event_ms = 4'000ULL;
+    ASSERT_TRUE(db.upsertSiteIncident(inc.incident_id, inc.site_id, inc.gateway_id,
+                                      static_cast<int64_t>(inc.started_at_ms),
+                                      static_cast<int64_t>(inc.last_event_ms),
+                                      std::nullopt, inc.affected_devices,
+                                      toString(inc.state), std::nullopt));
+    auto base = makeBaseline();
+    base.updated_at_ms = 4'500ULL;
+    ASSERT_TRUE(db.upsertDeviceBaseline(
+        base.key.site_id, base.key.gateway_id, base.key.hci_index,
+        toString(base.key.protocol), toString(base.key.address_type),
+        base.key.device_address, base.baseline_rssi_dbm, base.min_seen_rssi_dbm,
+        base.max_seen_rssi_dbm, base.baseline_sample_count,
+        static_cast<int64_t>(base.first_seen_ms), static_cast<int64_t>(base.last_seen_ms),
+        toString(base.state), static_cast<int64_t>(base.updated_at_ms)));
+
+    EdgeWirelessUplinkExporter exporter(cfg, db, state_path);
+
+    // 事件游标落后、事故/基线游标领先：事件仍按自己的游标取，
+    // 不被跨域水位跳过（单水位时代 ts∈(1500,5000] 的事件会被永久丢弃）
+    exporter.storeCursors({1'500ULL, 5'000ULL, 5'000ULL});
+    WirelessUplinkPayload p;
+    std::string error;
+    ASSERT_TRUE(exporter.collect(&p, &error)) << error;
+    ASSERT_EQ(p.events.size(), 1u);
+    EXPECT_EQ(p.events[0].event_id, "e2");
+    EXPECT_TRUE(p.incidents.empty());   // 4000 < 5000：已确认
+    EXPECT_TRUE(p.baselines.empty());   // 4500 < 5000：已确认
+    EXPECT_EQ(p.watermark_ms, 5'000ULL);  // 回显 = 三域已确认水位的最大值
+
+    // 反向：事件域已确认到 5000、事故/基线域从未推进
+    exporter.storeCursors({5'000ULL, 0ULL, 0ULL});
+    WirelessUplinkPayload p2;
+    ASSERT_TRUE(exporter.collect(&p2, &error)) << error;
+    EXPECT_TRUE(p2.events.empty());
+    ASSERT_EQ(p2.incidents.size(), 1u);
+    EXPECT_EQ(p2.incidents[0].incident_id, "inc-1");
+    ASSERT_EQ(p2.baselines.size(), 1u);
+    EXPECT_EQ(p2.watermark_ms, 5'000ULL);
 
     std::remove(state_path.c_str());
     std::remove(db_path.c_str());

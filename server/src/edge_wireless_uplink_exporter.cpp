@@ -5,9 +5,11 @@
  * 关键实现点（与头文件约束一一对应）：
  *   1. buildBody() 是**唯一**序列化入口：签名与发送共用同一段字节；
  *   2. 游标只在 HTTP 2xx 后前移；失败原地重试（服务端按 id 幂等）；
- *   3. 采集顺序固定（事件按 ts、事故按 last_event_ms、基线按 updated_at），
+ *   3. 游标按事件/事故/基线**三域独立**推进（各域只信任自己已发送行的时间戳），
+ *      单水位会把截断在批上限之后的未发事实永久跳过（C2）；
+ *   4. 采集顺序固定（事件按 ts、事故按 last_event_ms、基线按 updated_at），
  *      让"哪些事实已发出"可确定地推进；
- *   4. 环境证据当前恒为 available=false —— 板端尚未采集结构化环境快照，
+ *   5. 环境证据当前恒为 available=false —— 板端尚未采集结构化环境快照，
  *      不用 0/空值冒充"观测过且正常"。
  */
 
@@ -44,9 +46,9 @@ constexpr uint32_t kUplinkIntervalMsDefault = 10000;
 constexpr uint32_t kUplinkIntervalMsMin = 1000;
 constexpr uint32_t kUplinkIntervalMsMax = 3600000;
 
-/// 游标只跟踪事件水位：事故与基线都按"水位之后"近似采集。
-/// 事故按 last_event_ms 过滤、基线按 updated_at 过滤，它们的时间轴与事件
-/// 同域（墙钟毫秒），因此共用一个水位即可；重复发送由云端幂等吸收。
+/// 三域游标各自只信任本域已发送行的时间戳：事故按 last_event_ms、基线按
+/// updated_at 与事件同为墙钟毫秒轴，但推进互不越界（单水位会把截断在批
+/// 上限之后的未发事实永久跳过）。重复发送由云端幂等吸收。
 std::string jsonStr(const std::string& raw) {
     return "\"" + weaknet_utils::escapeJsonString(raw) + "\"";
 }
@@ -85,6 +87,20 @@ std::string readUintField(const std::string& text, const std::string& key) {
     size_t end = text.find('\n', pos);
     if (end == std::string::npos) end = text.size();
     return text.substr(pos, end - pos);
+}
+
+/// 解析单个游标键：缺失 → 0（文件首跑或旧单水位格式，该域全量重扫）；
+/// 损坏 → 警告 + 0。只回退出错的域，不牵连其余已确认位置。
+uint64_t parseCursorField(const std::string& text, const std::string& key) {
+    const std::string raw = readUintField(text, key);
+    if (raw.empty()) return 0;
+    try {
+        return static_cast<uint64_t>(std::stoull(raw));
+    } catch (...) {
+        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                    "无线上行游标键损坏，该域从 0 重扫: " << key);
+        return 0;
+    }
 }
 
 }  // namespace
@@ -342,12 +358,17 @@ bool EdgeWirelessUplinkExporter::start() {
               "无线事实上行需要 libcurl，但本构建未链接，已保持关闭");
     return false;
 #else
-    watermark_ms_.store(loadWatermark());
+    const WirelessUplinkCursors cursors = loadCursors();
+    events_ms_.store(cursors.events_ms);
+    incidents_ms_.store(cursors.incidents_ms);
+    baselines_ms_.store(cursors.baselines_ms);
     stop_requested_.store(false);
     running_.store(true);
     thread_ = std::thread(&EdgeWirelessUplinkExporter::run, this);
     LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
-             "无线事实上行已启动: watermark_ms=" << watermark_ms_.load()
+             "无线事实上行已启动: events_ms=" << cursors.events_ms
+             << " incidents_ms=" << cursors.incidents_ms
+             << " baselines_ms=" << cursors.baselines_ms
              << " state=" << state_path_);
     return true;
 #endif
@@ -367,39 +388,59 @@ EdgeWirelessUplinkStats EdgeWirelessUplinkExporter::stats() const {
     return stats_;
 }
 
-uint64_t EdgeWirelessUplinkExporter::watermarkMs() const { return watermark_ms_.load(); }
+uint64_t EdgeWirelessUplinkExporter::watermarkMs() const {
+    return std::max({events_ms_.load(), incidents_ms_.load(), baselines_ms_.load()});
+}
 
 // ============================================================================
-// 游标
+// 游标（三域独立）
 // ============================================================================
 
-uint64_t EdgeWirelessUplinkExporter::loadWatermark() const {
+WirelessUplinkCursors EdgeWirelessUplinkExporter::loadCursors() const {
     std::ifstream in(state_path_);
-    if (!in) return 0;
+    WirelessUplinkCursors cursors;
+    if (!in) return cursors;
     std::ostringstream oss;
     oss << in.rdbuf();
     const std::string text = oss.str();
 
-    const std::string ev = readUintField(text, "events_ms");
-    if (ev.empty()) return 0;
-    try {
-        return static_cast<uint64_t>(std::stoull(ev));
-    } catch (...) {
-        // 损坏即从 0 重扫：重发由服务端幂等吸收，跳发才会真的丢事实。
-        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
-                    "无线上行游标损坏，从 0 重新扫描: " << state_path_);
-        return 0;
-    }
+    cursors.events_ms = parseCursorField(text, "events_ms");
+    cursors.incidents_ms = parseCursorField(text, "incidents_ms");
+    cursors.baselines_ms = parseCursorField(text, "baselines_ms");
+    return cursors;
 }
 
-void EdgeWirelessUplinkExporter::storeWatermark(uint64_t value) {
+void EdgeWirelessUplinkExporter::storeCursors(const WirelessUplinkCursors& cursors) {
+    // 内存游标无条件跟随（当轮已确认送达）；文件失败只影响重启后的恢复点，
+    // 下一轮重发由云端幂等吸收。
+    events_ms_.store(cursors.events_ms);
+    incidents_ms_.store(cursors.incidents_ms);
+    baselines_ms_.store(cursors.baselines_ms);
+
     std::ofstream out(state_path_, std::ios::trunc);
     if (!out) {
         LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
                     "无线上行游标写入失败（下一轮将重发）: " << state_path_);
         return;
     }
-    out << "events_ms=" << value << "\n";
+    out << "events_ms=" << cursors.events_ms << "\n";
+    out << "incidents_ms=" << cursors.incidents_ms << "\n";
+    out << "baselines_ms=" << cursors.baselines_ms << "\n";
+}
+
+WirelessUplinkCursors EdgeWirelessUplinkExporter::advanceCursors(
+    const WirelessUplinkCursors& before, const WirelessUplinkPayload& sent) {
+    WirelessUplinkCursors after = before;
+    for (const auto& ev : sent.events) {
+        after.events_ms = std::max(after.events_ms, ev.timestamp_ms);
+    }
+    for (const auto& inc : sent.incidents) {
+        after.incidents_ms = std::max(after.incidents_ms, inc.last_event_ms);
+    }
+    for (const auto& b : sent.baselines) {
+        after.baselines_ms = std::max(after.baselines_ms, b.updated_at_ms);
+    }
+    return after;
 }
 
 // ============================================================================
@@ -407,18 +448,20 @@ void EdgeWirelessUplinkExporter::storeWatermark(uint64_t value) {
 // ============================================================================
 
 bool EdgeWirelessUplinkExporter::collect(WirelessUplinkPayload* out, std::string* error) {
-    const uint64_t watermark = watermark_ms_.load();
+    const uint64_t events_ms = events_ms_.load();
+    const uint64_t incidents_ms = incidents_ms_.load();
+    const uint64_t baselines_ms = baselines_ms_.load();
     out->device_id = config_.edge.device_id.get();
-    out->watermark_ms = watermark;
+    // 回显三域已确认水位的最大值（云端不依赖，仅作游标可见性）
+    out->watermark_ms = std::max({events_ms, incidents_ms, baselines_ms});
 
-    const int64_t since = static_cast<int64_t>(watermark);
     const int64_t now_ms = static_cast<int64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch())
             .count());
 
-    // 事件：只取晚于游标的（严格大于，避免重发已确认项）
-    const auto events = db_.loadDeviceEventsForReplay(since + 1, now_ms);
+    // 事件：只取晚于本域游标的（严格大于，避免重发已确认项）
+    const auto events = db_.loadDeviceEventsForReplay(static_cast<int64_t>(events_ms) + 1, now_ms);
     if (events.size() > EDGE_WIRELESS_MAX_EVENTS_PER_BATCH) {
         out->events.assign(events.begin(),
                            events.begin() + EDGE_WIRELESS_MAX_EVENTS_PER_BATCH);
@@ -426,17 +469,19 @@ bool EdgeWirelessUplinkExporter::collect(WirelessUplinkPayload* out, std::string
         out->events = events;
     }
 
-    // 事故：按最近演化时间取（LAST_EVENT 会前进，同一事故被反复 UPSERT）
-    auto incidents = db_.loadSiteIncidentsSince(since, EDGE_WIRELESS_MAX_INCIDENTS_PER_BATCH);
+    // 事故：按最近演化时间取（LAST_EVENT 会前进，同一事故被反复 UPSERT）。
+    // 用事故域自己的游标——不能被事件/基线的时间戳代跑。
+    auto incidents = db_.loadSiteIncidentsSince(static_cast<int64_t>(incidents_ms),
+                                                EDGE_WIRELESS_MAX_INCIDENTS_PER_BATCH);
     out->incident_evidence.reserve(incidents.size());
     for (const auto& inc : incidents) {
         out->incident_evidence.push_back(db_.loadIncidentEvidenceEventIds(inc.incident_id));
     }
     out->incidents = std::move(incidents);
 
-    // 基线：按画像更新时间推进（与事件游标共用同一水位的近似上界即可：
-    // 基线是派生事实，重发代价低，宁可多发不可漏发）
-    auto baselines = db_.loadDeviceBaselinesSince(since, EDGE_WIRELESS_MAX_BASELINES_PER_BATCH);
+    // 基线：按画像更新时间推进，同样只信任基线域自己的游标
+    auto baselines = db_.loadDeviceBaselinesSince(static_cast<int64_t>(baselines_ms),
+                                                  EDGE_WIRELESS_MAX_BASELINES_PER_BATCH);
     out->baselines = std::move(baselines);
 
     // 深度内核快照：进程画像 Top N 与协议栈丢包归因。
@@ -658,19 +703,12 @@ bool EdgeWirelessUplinkExporter::runOnce(std::string* error) {
         return false;
     }
 
-    // 只有确认送达才推进游标：取本批各行事实时间的最大值。
-    uint64_t advanced = watermark_ms_.load();
-    for (const auto& ev : payload.events) {
-        advanced = std::max(advanced, ev.timestamp_ms);
-    }
-    for (const auto& inc : payload.incidents) {
-        advanced = std::max(advanced, inc.last_event_ms);
-    }
-    for (const auto& b : payload.baselines) {
-        advanced = std::max(advanced, b.updated_at_ms);
-    }
-    watermark_ms_.store(advanced);
-    storeWatermark(advanced);
+    // 只有确认送达才推进游标：每个域只取本域已发送行的时间戳最大值。
+    // 事故/基线的更晚时间戳绝不推进事件游标——否则截断在批上限之后、
+    // 时间戳落在其间的未发事件会被永久跳过（C2）。
+    const WirelessUplinkCursors advanced = advanceCursors(
+        {events_ms_.load(), incidents_ms_.load(), baselines_ms_.load()}, payload);
+    storeCursors(advanced);
 
     {
         std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -684,7 +722,9 @@ bool EdgeWirelessUplinkExporter::runOnce(std::string* error) {
              "无线事实上行成功: events=" << payload.events.size()
              << " incidents=" << payload.incidents.size()
              << " baselines=" << payload.baselines.size()
-             << " watermark_ms=" << advanced);
+             << " events_ms=" << advanced.events_ms
+             << " incidents_ms=" << advanced.incidents_ms
+             << " baselines_ms=" << advanced.baselines_ms);
     return true;
 }
 
@@ -706,10 +746,12 @@ void EdgeWirelessUplinkExporter::run() {
                 interval = std::max(interval, 1000u);
             }
         } else {
-            // 成功但可能仍有积压（超过单批上限）：立刻再跑一轮
+            // 成功但可能仍有积压（超过单批上限）：立刻再跑一轮。
+            // 三个域都可能积压——事故/基线同样受各自批上限截断。
             WirelessUplinkPayload probe;
             std::string probe_error;
-            if (collect(&probe, &probe_error) && !probe.events.empty()) {
+            if (collect(&probe, &probe_error) &&
+                (!probe.events.empty() || !probe.incidents.empty() || !probe.baselines.empty())) {
                 continue;
             }
         }
