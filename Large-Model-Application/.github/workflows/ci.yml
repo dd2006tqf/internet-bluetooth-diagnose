@@ -3,13 +3,15 @@
 # GitHub Actions 只注册仓库根目录 .github/workflows/ 下的 workflow，
 # 本文件位于嵌套子目录，从未被触发过。
 #
-# 其中与本仓库日常改动最相关的三道门禁已迁移到根工作流
-# .github/workflows/ci.yml 的 `contract-and-web` 作业：
-#   - scripts/generate_openapi.sh --check
-#   - scripts/generate_openapi_client.sh --check
-#   - pnpm typecheck && pnpm build
+# 其中与本仓库日常改动最相关的门禁已迁移到根工作流
+# .github/workflows/ci.yml：
+#   - scripts/generate_openapi.sh --check        → `contract-and-web` 作业
+#   - scripts/generate_openapi_client.sh --check → `contract-and-web` 作业
+#   - pnpm typecheck && pnpm build              → `contract-and-web` 作业
+#   - gitleaks 仓库扫描                          → `lint-and-check` 作业
+#     （根作业扫描整个 monorepo，覆盖面是原 secret-scan 的超集）
 #
-# 其余步骤（gitleaks / mypy src / terraform / vault / compose-lite 等）
+# 其余步骤（mypy src / terraform / vault / compose-lite 等）
 # 属于完整开发环境专属，暂未迁移，保留本文件作为迁移来源与记录。
 # 修改前请先阅读根工作流，避免两处定义继续漂移。
 name: M1 CI

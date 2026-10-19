@@ -1,10 +1,17 @@
 # AI-assisted analysis - 弱网服务日志分析与向量库RAG系统
 
-> **[已弃用 / DEPRECATED]** 本目录是项目早期的独立 Python RAG 原型（LangChain + FAISS），
-> **当前代码树中没有任何模块导入或执行它**。云端 RAG 职责已由
-> `Large-Model-Application/src/industrial_ops_agent/` 的 `knowledge*` / `graph_rag/` /
-> `search_profiles/` 取代。本 README 与脚本仅作历史学习材料保留，
-> 状态标注以 `docs/架构设计.md` 的「关于 AI-assisted analysis」一节为准。
+> **[已弃用 / DEPRECATED，但含 2 个仍在生产使用的文件]** 本目录是项目早期的
+> 独立 Python RAG 原型（LangChain + FAISS）。**例外（活文件，勿按弃用处理）**：
+> - `edge_network_rag.py` — 由 `tools/ci.sh` 打包进 dist-arm64，被
+>   `edge_ai_scheduler`（默认脚本路径 `/home/radxa/weaknet/edge_network_rag.py`）
+>   与 `weaknet-cli diagnosis --ai` 在板端实际执行；
+> - `network_knowledge_base.py` — 上者的知识库依赖，随其一同打包执行。
+>
+> 除这 2 个文件外，其余原型脚本**当前代码树中没有任何模块导入或执行**，
+> 确属废弃。云端 RAG 职责已由 `Large-Model-Application/src/industrial_ops_agent/`
+> 的 `knowledge*` / `graph_rag/` / `search_profiles/` 取代。本 README 与其余脚本
+> 仅作历史学习材料保留，状态标注以 `docs/架构设计.md` 的
+> 「关于 AI-assisted analysis」一节为准。
 
 ## 概述
 
@@ -27,19 +34,21 @@
 
 ## 文件结构
 
-### 核心功能文件
-- `log_capture.py` - 弱网服务日志截取工具
-- `local_vector_rag_analyzer.py` - **本地向量库RAG分析系统（主要服务）**
-- `interactive_rag.py` - 交互式RAG服务
-- `network_knowledge_base.py` - 网络分析知识库
+### 🟢 仍在生产使用（例外，勿按弃用处理）
+- `edge_network_rag.py` - 板端 AI 诊断脚本：`edge_ai_scheduler` 默认调用、
+  `weaknet-cli diagnosis --ai` 可直接执行，由 `tools/ci.sh` 打包部署
+- `network_knowledge_base.py` - 上者的网络分析知识库依赖（随其打包）
 
-### 其他RAG系统文件
+### 历史原型文件（已弃用，仅作学习材料）
+- `log_capture.py` - 弱网服务日志截取工具
+- `local_vector_rag_analyzer.py` - 本地向量库RAG分析系统（原"主要服务"）
+- `interactive_rag.py` - 交互式RAG服务
 - `vector_rag_analyzer.py` - 云端向量库RAG系统（需要外部嵌入API）
 - `simple_rag_analyzer.py` - 简化版RAG系统（文本匹配）
 - `optimized_network_rag.py` - 优化的RAG分析服务（已弃用）
-
-### 测试与工具文件
-- `test_dashscope_api.py` - 阿里百炼API连接测试
+- `feature_extractor.py` / `true_rag_analyzer.py` / `train_*.py`（3 个）-
+  特征提取、RAG 分析与自动编码器训练实验
+- `test_dashscope_api.py` / `test_bluetooth_rag.py` - 阿里百炼 API 与蓝牙 RAG 测试
 - `install_rag.sh` - RAG系统依赖安装脚本
 - `requirements.txt` - Python依赖包列表
 

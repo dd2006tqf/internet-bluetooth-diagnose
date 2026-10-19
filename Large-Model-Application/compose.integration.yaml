@@ -22,8 +22,8 @@ services:
 
   vault-bootstrap:
     environment:
-      IOAP_LABEL_STUDIO_API_TOKEN: ${M3_LABEL_STUDIO_TOKEN:-m3-label-studio-local-token}
-      IOAP_NEO4J_PASSWORD: ${IOAP_NEO4J_PASSWORD:-local-graphrag-password}
+      IOAP_LABEL_STUDIO_API_TOKEN: ${M3_LABEL_STUDIO_TOKEN:?runtime environment missing M3_LABEL_STUDIO_TOKEN}
+      IOAP_NEO4J_PASSWORD: ${IOAP_NEO4J_PASSWORD:?runtime environment missing IOAP_NEO4J_PASSWORD}
 
   api:
     environment:
@@ -87,13 +87,13 @@ services:
   neo4j:
     image: neo4j:2026.06.0
     environment:
-      NEO4J_AUTH: neo4j/${IOAP_NEO4J_PASSWORD:-local-graphrag-password}
-      IOAP_NEO4J_PASSWORD: ${IOAP_NEO4J_PASSWORD:-local-graphrag-password}
+      NEO4J_AUTH: neo4j/${IOAP_NEO4J_PASSWORD:?runtime environment missing IOAP_NEO4J_PASSWORD}
+      IOAP_NEO4J_PASSWORD: ${IOAP_NEO4J_PASSWORD:?runtime environment missing IOAP_NEO4J_PASSWORD}
       NEO4J_server_memory_heap_initial__size: 256m
       NEO4J_server_memory_heap_max__size: 512m
       NEO4J_server_memory_pagecache_size: 256m
     healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u neo4j -p '$${IOAP_NEO4J_PASSWORD:-local-graphrag-password}' 'RETURN 1' >/dev/null"]
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p '$${IOAP_NEO4J_PASSWORD:?runtime environment missing IOAP_NEO4J_PASSWORD}' 'RETURN 1' >/dev/null"]
       interval: 10s
       timeout: 5s
       retries: 30
@@ -482,8 +482,8 @@ services:
     environment:
       LABEL_STUDIO_DISABLE_SIGNUP_WITHOUT_LINK: "true"
       LABEL_STUDIO_USERNAME: m3-data-steward@local.invalid
-      LABEL_STUDIO_PASSWORD: ${M3_LABEL_STUDIO_PASSWORD:-m3-label-studio-local-password}
-      LABEL_STUDIO_USER_TOKEN: ${M3_LABEL_STUDIO_TOKEN:-m3-label-studio-local-token}
+      LABEL_STUDIO_PASSWORD: ${M3_LABEL_STUDIO_PASSWORD:?runtime environment missing M3_LABEL_STUDIO_PASSWORD}
+      LABEL_STUDIO_USER_TOKEN: ${M3_LABEL_STUDIO_TOKEN:?runtime environment missing M3_LABEL_STUDIO_TOKEN}
       LABEL_STUDIO_ENABLE_LEGACY_API_TOKEN: "true"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/health"]
@@ -526,7 +526,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?runtime environment missing POSTGRES_USER}
       MARQUEZ_DB: marquez
       MARQUEZ_USER: marquez
-      MARQUEZ_PASSWORD: marquez
+      MARQUEZ_PASSWORD: ${MARQUEZ_PASSWORD:?runtime environment missing MARQUEZ_PASSWORD}
     entrypoint: ["/bin/sh", "/bootstrap/init-db.sh"]
     volumes:
       - ./infra/openlineage/init-db.sh:/bootstrap/init-db.sh:ro
@@ -613,7 +613,7 @@ services:
       IOAP_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?runtime environment missing MINIO_ROOT_USER}
       IOAP_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?runtime environment missing MINIO_ROOT_PASSWORD}
       IOAP_LABEL_STUDIO_URL: http://label-studio:8080
-      IOAP_LABEL_STUDIO_API_TOKEN: ${M3_LABEL_STUDIO_TOKEN:-m3-label-studio-local-token}
+      IOAP_LABEL_STUDIO_API_TOKEN: ${M3_LABEL_STUDIO_TOKEN:?runtime environment missing M3_LABEL_STUDIO_TOKEN}
       IOAP_OPENLINEAGE_URL: http://marquez:5000
       IOAP_OPENLINEAGE_NAMESPACE: industrial-ops
       IOAP_DATASET_PIPELINE_ENGINE: spark

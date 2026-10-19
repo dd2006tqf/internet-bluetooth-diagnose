@@ -1,11 +1,71 @@
 # ---- 产物不携带构建机专用路径 ----
 
-# ---- 服务端源文件（自动发现） ----
-file(GLOB SERVER_SOURCES CONFIGURE_DEPENDS src/*.cpp src/utils/*.cpp src/assurance/*.cpp src/metrics/*.cpp)
-list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*\\.bpf\\.c$")
-list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*history_query_tool\\.cpp$")
-list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*main\\.cpp$")
-list(FILTER SERVER_SOURCES EXCLUDE REGEX ".*server\\.cpp$")
+# ---- 服务端源文件（显式清单；CMake GLOB → 显式化，见下） ----
+# 曾是 file(GLOB ... CONFIGURE_DEPENDS)：GLOB 在团队协作/分支切换/临时调试时
+# 静默吞掉新增或删除的 .cpp（未触发重新配置 → 符号未定义或废弃代码误链接），
+# 与仓库其它显式 target 风格不一致。新增源文件必须在此登记（main.cpp /
+# server.cpp 单独进 weaknet-dbus-server target；history_query_tool 独立 target）。
+set(SERVER_SOURCES
+    src/active_connectivity_monitor.cpp
+    src/assurance/action_registry.cpp
+    src/assurance/dns_transaction_tracker.cpp
+    src/assurance/edge_ai_scheduler.cpp
+    src/band_conflict_detector.cpp
+    src/bt_audio_analyzer.cpp
+    src/bt_audio_fusion.cpp
+    src/bt_data_path_analyzer.cpp
+    src/bt_data_path_anomaly_detector.cpp
+    src/bt_event_monitor.cpp
+    src/bt_event_normalizer.cpp
+    src/bt_hci_connection_tracker.cpp
+    src/bt_link_quality_tracker.cpp
+    src/bt_monitor.cpp
+    src/database_manager.cpp
+    src/dbus_service.cpp
+    src/dns_monitor.cpp
+    src/ebpf_monitor_metrics.cpp
+    src/edge_telemetry_exporter.cpp
+    src/edge_wireless_uplink_exporter.cpp
+    src/event_manager.cpp
+    src/http_latency_monitor.cpp
+    src/iface_type.cpp
+    src/logger.cpp
+    src/looper.cpp
+    src/monitor_ebpf_plugins.cpp
+    src/monitor_manager.cpp
+    src/monitor_plugins.cpp
+    src/monitor_registry.cpp
+    src/net_iface.cpp
+    src/net_info.cpp
+    src/net_ping.cpp
+    src/net_tcp.cpp
+    src/net_traffic.cpp
+    src/net_wifiriss.cpp
+    src/network_epoch_store.cpp
+    src/process_net_profiler.cpp
+    src/rssi_monitor.cpp
+    src/rtt_monitor.cpp
+    src/serializer.cpp
+    src/site_incident_correlator.cpp
+    src/site_incident.cpp
+    src/skb_drop_monitor.cpp
+    src/tcp_connect_monitor.cpp
+    src/tcp_conn_monitor.cpp
+    src/tcp_loss_monitor.cpp
+    src/tcp_retransmit_monitor.cpp
+    src/tcp_rtt_monitor.cpp
+    src/tls_probe_client.cpp
+    src/topology_collector.cpp
+    src/traffic_analyzer.cpp
+    src/using_iface.cpp
+    src/utils/bpf_map_sizing.cpp
+    src/utils/json_escape.cpp
+    src/weaknet_config.cpp
+    src/weak_netmgr.cpp
+    src/wifi_packet_loss_monitor.cpp
+    src/wireless_event.cpp
+    src/wireless_event_store.cpp
+)
 
 # ---- 公共代码库（客户端和服务端共享 serializer + logger + json_escape） ----
 add_library(weaknet_common STATIC src/serializer.cpp src/logger.cpp src/utils/json_escape.cpp)

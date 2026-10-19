@@ -98,11 +98,9 @@ public:
     /// 当前窗口聚合统计
     TcpConnectStats stats() const;
 
-    /// 捕获链路诊断（BPF 计数器 + drain 统计）
-    std::string getCaptureDiagnostics();
-
-    /// perf buffer 丢失事件（消费后清零）
-    uint64_t consumeLostEvents();
+    // O7：原 getCaptureDiagnostics() / consumeLostEvents() 零消费者（唯一的
+    // 同名诊断方法属于 DnsMonitor，调用方在 server.cpp 且只取 DNS 的），
+    // 已随评审清理删除；TcpConn 侧的 perf 丢失计数保留在 impl_->drain_stats。
 
 public:
     struct Impl;   // 供 .cpp 内 perf 回调访问（与 DnsMonitor 同构）

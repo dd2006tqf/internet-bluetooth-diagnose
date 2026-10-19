@@ -37,6 +37,8 @@ x-app-environment: &app-environment
   IOAP_OIDC_JWKS_URL: http://keycloak:8080/realms/industrial-ops/protocol/openid-connect/certs
   IOAP_OIDC_AUDIENCE: industrial-ops-web
   IOAP_OPA_DECISION_URL: http://opa:8181/v1/data/industrial_ops/authz/result
+  # S4：与 opa 服务共享的 Bearer 密钥；环境名 OPA_TOKEN 与 OPA 侧一致
+  OPA_TOKEN: ${OPA_TOKEN:?runtime environment missing OPA_TOKEN}
   IOAP_TEMPORAL_ADDRESS: temporal:7233
   IOAP_TEMPORAL_TASK_QUEUE: industrial-ops-m2
   IOAP_MODEL_GATEWAY_REQUIRED_ENVIRONMENT: ${IOAP_MODEL_GATEWAY_REQUIRED_ENVIRONMENT:-STAGING}
@@ -247,8 +249,8 @@ services:
       IOAP_MODEL_GATEWAY_API_KEY: ${IOAP_MODEL_GATEWAY_API_KEY:-}
       IOAP_REALTIME_TURN_SHARED_SECRET: ${IOAP_REALTIME_TURN_SHARED_SECRET:-}
       IOAP_ENTERPRISE_MCP_CLIENT_SECRET: ${IOAP_ENTERPRISE_MCP_CLIENT_SECRET:-}
-      IOAP_SUPPLIER_A2A_CLIENT_SECRET: ${IOAP_SUPPLIER_A2A_CLIENT_SECRET:-disabled-local-a2a-secret}
-      IOAP_NEO4J_PASSWORD: ${IOAP_NEO4J_PASSWORD:-disabled-local-neo4j-password}
+      IOAP_SUPPLIER_A2A_CLIENT_SECRET: ${IOAP_SUPPLIER_A2A_CLIENT_SECRET:?runtime environment missing IOAP_SUPPLIER_A2A_CLIENT_SECRET}
+      IOAP_NEO4J_PASSWORD: ${IOAP_NEO4J_PASSWORD:?runtime environment missing IOAP_NEO4J_PASSWORD}
     entrypoint: ["/bin/sh", "/vault/config/bootstrap.sh"]
     volumes: &vault-runtime-volumes
       - ./infra/vault/bootstrap.sh:/vault/config/bootstrap.sh:ro
@@ -298,14 +300,20 @@ services:
 
   opa:
     image: openpolicyagent/opa:1.8.0-static
-    command: ["run", "--server", "--addr=0.0.0.0:8181", "/policy/policy.rego"]
+    # S4：--authentication=token 只解析 Bearer 头，真正的共享密钥校验在
+    # server_authz.rego 的 system.authz 包（basic 授权求值）；策略目录 /policy
+    # 同时加载业务策略与该鉴权策略。
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "--authentication=token", "--authorization=basic", "/policy"]
+    environment:
+      OPA_TOKEN: ${OPA_TOKEN:?runtime environment missing OPA_TOKEN}
     healthcheck:
-      test: ["CMD", "/opa", "eval", "--fail", "--data", "/policy/policy.rego", "data.industrial_ops.authz.role_actions"]
+      test: ["CMD", "/opa", "eval", "--fail", "--data", "/policy", "data.industrial_ops.authz.role_actions"]
       interval: 5s
       timeout: 3s
       retries: 20
     volumes:
       - ./infra/opa/policy.rego:/policy/policy.rego:ro
+      - ./infra/opa/server_authz.rego:/policy/server_authz.rego:ro
     networks: [backend]
     restart: unless-stopped
     read_only: true

@@ -44,15 +44,26 @@ class PolicyDecisionClient(Protocol):
 class OpaPolicyClient:
     """Bounded HTTP client for the OPA REST decision API."""
 
-    def __init__(self, decision_url: str, *, timeout_seconds: float = 1.5) -> None:
+    def __init__(
+        self,
+        decision_url: str,
+        *,
+        timeout_seconds: float = 1.5,
+        token: str | None = None,
+    ) -> None:
         self._decision_url = decision_url
         self._timeout = httpx.Timeout(timeout_seconds)
+        # S4：OPA 侧以 --authentication=token --authorization=basic 强制
+        # Bearer 校验（infra/opa/server_authz.rego）；token 为空则不带
+        # Authorization 头——仅对未加固的本地实例可行，生产 OPA 会 401。
+        self._headers = {"Authorization": f"Bearer {token}"} if token else None
 
     def decide(self, decision_input: OpaDecisionInput) -> OpaDecision:
         try:
             response = httpx.post(
                 self._decision_url,
                 json={"input": decision_input.as_payload()},
+                headers=self._headers,
                 timeout=self._timeout,
             )
             response.raise_for_status()

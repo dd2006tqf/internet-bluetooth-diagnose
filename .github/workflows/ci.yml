@@ -12,6 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # gitleaks 需要完整历史做 diff 扫描；其余步骤对深度不敏感
+          fetch-depth: 0
 
       - name: 检查行尾与非法字符
         run: |
@@ -35,6 +38,14 @@ jobs:
             echo "❌ 发现受限二进制/日志文件被跟踪提交"
             exit 1
           } || echo "✅ 仓库卫生检查通过"
+
+      # S?/迁移：源自 Large-Model-Application/.github/workflows/ci.yml 的
+      # secret-scan 作业（嵌套工作流 GitHub 不注册，见其文件头 ⚠️ 注记）。
+      # 仓库根从此拥有真正的 gitleaks 门禁，扫描范围是整个 monorepo。
+      - name: gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Edge telemetry contract cross-language check
         run: |

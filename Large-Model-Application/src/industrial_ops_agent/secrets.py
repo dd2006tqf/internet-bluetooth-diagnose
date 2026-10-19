@@ -45,6 +45,10 @@ class SecretName(StrEnum):
     NEO4J_PASSWORD = "neo4j_password"
     OPENSEARCH_PASSWORD = "opensearch_password"
     TAVILY_API_KEY = "tavily_api_key"
+    #: S4：OPA REST API 自身的共享密钥（Bearer）。与 opa 容器环境变量
+    #: OPA_TOKEN 同源同值；Vault 后端若无此键，回退环境变量（见
+    #: LazySecretProvider），保证迁移期 decision 调用不断链。
+    OPA_TOKEN = "opa_token"
 
 
 class SecretSource(StrEnum):
@@ -135,6 +139,8 @@ ENVIRONMENT_VARIABLES: Mapping[SecretName, str] = {
     SecretName.NEO4J_PASSWORD: "IOAP_NEO4J_PASSWORD",
     SecretName.OPENSEARCH_PASSWORD: "IOAP_OPENSEARCH_PASSWORD",
     SecretName.TAVILY_API_KEY: "IOAP_TAVILY_API_KEY",
+    # 与 opa 服务端共用同一环境变量名（compose 插值 OPA_TOKEN）
+    SecretName.OPA_TOKEN: "OPA_TOKEN",
 }
 
 
@@ -366,6 +372,36 @@ def secret_from_file(path: Path) -> SecretValue:
     return SecretValue(value, source=SecretSource.FILE)
 
 
+class LazySecretProvider:
+    """Vault 主查 + 环境变量兜底（仅限显式豁免名单内的键）。
+
+    S4 引入：OPA_TOKEN 需要同时出现在 opa 容器与应用容器，统一由 compose
+    插值环境变量提供；若部署把应用密钥放在 Vault 且尚未写入 opa_token
+    键，直接用 VaultSecretProvider 会在启动时 fail-fast。本包装器让豁免
+    键「Vault 有则用 Vault，没有则回退 ENVIRONMENT_VARIABLES 映射的环境
+    变量」，其余键行为与内层提供器完全一致。回退仅限豁免名单，不做全局
+    静默降级。
+    """
+
+    _ENV_FALLBACK_NAMES: frozenset[SecretName] = frozenset({SecretName.OPA_TOKEN})
+
+    def __init__(self, primary: SecretProvider, fallback: SecretProvider) -> None:
+        self._primary = primary
+        self._fallback = fallback
+
+    def get(self, name: SecretName) -> SecretValue:
+        try:
+            return self._primary.get(name)
+        except SecretReadError:
+            if name not in self._ENV_FALLBACK_NAMES:
+                raise
+            return self._fallback.get(name)
+
+    def refresh(self) -> None:
+        self._primary.refresh()
+        self._fallback.refresh()
+
+
 def build_secret_provider(settings: Any) -> SecretProvider:
     """Build the selected provider without placing credential fields on Settings."""
 
@@ -377,10 +413,13 @@ def build_secret_provider(settings: Any) -> SecretProvider:
         return secret_from_file(settings.vault_token_file)
 
     token = token_loader()
-    return VaultSecretProvider(
-        address=settings.vault_address,
-        mount=settings.vault_mount,
-        path=settings.vault_path,
-        token=token,
-        token_loader=token_loader,
+    return LazySecretProvider(
+        VaultSecretProvider(
+            address=settings.vault_address,
+            mount=settings.vault_mount,
+            path=settings.vault_path,
+            token=token,
+            token_loader=token_loader,
+        ),
+        EnvironmentSecretProvider(),
     )

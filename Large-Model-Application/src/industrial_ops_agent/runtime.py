@@ -230,6 +230,8 @@ def create_runtime_app(settings: Settings | None = None) -> FastAPI:
         OpaPolicyClient(
             resolved.opa_decision_url,
             timeout_seconds=resolved.opa_timeout_seconds,
+            # S4：OPA REST API 强制 Bearer 校验，启动期即取（缺失即 fail-fast）
+            token=provider.get(SecretName.OPA_TOKEN).reveal(),
         ),
         DatabaseEmergencyGrantPolicy(database),
     )

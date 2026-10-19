@@ -384,6 +384,26 @@ make m1-status
 
 应用通过 [SecretProvider](src/industrial_ops_agent/secrets.py)读取秘密。基础 Compose 使用 Vault，运行管理器维护应用令牌和 Web 会话密钥。
 
+**本地口令无默认值（S6）**：所有 Compose 插值口令（含可选覆盖层的
+`IOAP_GRAFANA_ADMIN_PASSWORD`、`MARQUEZ_PASSWORD`、`IOAP_NEO4J_PASSWORD`、
+`M3_LABEL_STUDIO_PASSWORD`/`M3_LABEL_STUDIO_TOKEN`）一律 `${变量:?}` 缺失即失败，
+由 `scripts/dev_lite.sh init` 写入 `.env.m1.local` 随机生成——不再存在
+`industrial-ops-local`、`marquez`、`local-graphrag-password` 等固定演示口令。
+新机器先 `dev_lite.sh init` 再起任何覆盖层。
+
+**OPA 决策接口强制 Bearer 认证（S4）**：`opa` 服务以
+`--authentication=token --authorization=basic` 启动，共享密钥
+`OPA_TOKEN`（dev_lite 生成）经环境注入 opa 容器，服务端校验策略在
+`infra/opa/server_authz.rego`（`system.authz`）；应用侧
+`OpaPolicyClient` 由 `SecretProvider` 读取同名 `OPA_TOKEN` 作为
+`Authorization: Bearer` 携带（Vault 后端缺该键时回退环境变量，见
+`LazySecretProvider` 豁免名单）。无头/错误 token → 401，决策链 fail-closed。
+
+**`/metrics` 暴露面（S9）**：API 主应用与 embedding/reranker/ASR/TTS/VLM 各
+runtime 子进程都提供 `GET /metrics`（多数 `include_in_schema=False`）。它们默认
+只在容器后端网络内可达、未挂端口映射；**若部署时把 API 端口暴露到 localhost
+之外，必须同步加网络策略或 Basic Auth**，不要让裸 `/metrics` 随 API 一起公开。
+
 模型服务的持久化注入实现位于 [model-secret-sync.sh](infra/vault/model-secret-sync.sh)和 [model-secret-entrypoint.py](docker/model-secret-entrypoint.py)：同步器从 Vault 读取 `model_gateway_api_key`，写入受限共享目录，服务入口等待就绪后再启动。交付覆盖层须实际连接同步开关、目录卷、入口命令与 `IOAP_MODEL_GATEWAY_API_KEY_FILE`；**基础真实模型覆盖层的环境型 Compose Secret 本身不等于已接好 Vault 自动注入**。
 
 默认访问地址：

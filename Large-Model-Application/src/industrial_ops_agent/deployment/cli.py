@@ -47,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         OpaPolicyClient(
             settings.opa_decision_url,
             timeout_seconds=settings.opa_timeout_seconds,
+            token=secrets.get(SecretName.OPA_TOKEN).reveal(),
         ),
     )
     kubernetes = KubernetesHttpApi(

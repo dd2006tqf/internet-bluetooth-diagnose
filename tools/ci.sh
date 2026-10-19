@@ -83,11 +83,21 @@ if [ "$DO_COMMIT" = true ]; then
 
     if [ -n "$(git status --porcelain)" ]; then
         cd "$ROOT"
-        git add -A
-        git commit -m "chore: harness 归档后全量提交
+        # S9 残留修复：本机常有多个会话共享同一 worktree，`git add -A` 会把
+        # 其它会话的未跟踪文件（WIP 源码、临时二进制、VERSION 之类）一并扫进
+        # 归档提交。改为两级：-u 只暂存已跟踪文件的改动/删除；新增文件仅放行
+        # openspec/（归档把 changes/<name> 移动为 archive/<name> 时产生的新
+        # 路径都在其下，含 ai_snapshot.json 之外的全部归档产物）。
+        git add -u
+        git add openspec/
+        if ! git diff --cached --quiet; then
+            git commit -m "chore: harness 归档后全量提交
 
 $(git diff --cached --stat | tail -1)"
-        pass "提交完成"
+            pass "提交完成"
+        else
+            info "无已跟踪改动或 openspec 新增文件，无需提交"
+        fi
     else
         info "工作区干净，无需提交"
     fi

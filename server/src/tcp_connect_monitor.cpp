@@ -125,9 +125,8 @@ struct TcpConnectMonitor::Impl {
     struct bpf_link* link = nullptr;
     struct perf_buffer* events = nullptr;
 
-    uint64_t lost_events = 0;
-    DrainStats drain_stats{};
     std::atomic<uint64_t> last_counters[TCP_CONN_STAT_MAX];
+    DrainStats drain_stats{};
 
     /// 进行中的建连尝试（key = 四元组）
     std::unordered_map<TcpConnKey, std::chrono::steady_clock::time_point, TcpConnKeyHash> inflight;
@@ -204,8 +203,9 @@ void on_tcp_lost(void* ctx, int /*cpu*/, __u64 lost) {
     auto* impl = static_cast<TcpConnectMonitor::Impl*>(ctx);
     if (!impl) return;
     std::lock_guard<std::mutex> lock(impl->mutex);
+    // O7：原另有 impl_->lost_events 消费计数（consumeLostEvents），零消费者已删；
+    // 丢失事件仍计入 drain_stats.lost_events 供诊断。
     impl->drain_stats.lost_events += lost;
-    impl->lost_events += lost;
 }
 
 }  // namespace
@@ -384,72 +384,8 @@ TcpConnectStats TcpConnectMonitor::stats() const {
     return s;
 }
 
-uint64_t TcpConnectMonitor::consumeLostEvents() {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    const uint64_t v = impl_->lost_events;
-    impl_->lost_events = 0;
-    return v;
-}
-
-std::string TcpConnectMonitor::getCaptureDiagnostics() {
-#if HAVE_LIBBPF
-    // 读 per-CPU 计数器并求总和
-    uint64_t counters[TCP_CONN_STAT_MAX] = {};
-    if (impl_->counters_fd >= 0) {
-        const __u32 ncpus = libbpf_num_possible_cpus();
-        if (ncpus > 0 && ncpus <= 512) {
-            for (int k = 0; k < TCP_CONN_STAT_MAX; ++k) {
-                std::vector<__u64> per_cpu(ncpus, 0);
-                if (bpf_map_lookup_elem(impl_->counters_fd, &k, per_cpu.data()) == 0) {
-                    uint64_t sum = 0;
-                    for (__u32 c = 0; c < ncpus; ++c) sum += per_cpu[c];
-                    counters[k] = sum;
-                }
-            }
-        }
-    }
-
-    DrainStats ds;
-    TcpConnectStats st;
-    size_t inflight = 0;
-    {
-        std::lock_guard<std::mutex> lock(impl_->mutex);
-        ds = impl_->drain_stats;
-        inflight = impl_->inflight.size();
-        st.attempts = impl_->attempts;
-        st.successes = impl_->successes;
-        st.failures = impl_->failures;
-        st.unmatched_terminal = impl_->unmatched_terminal;
-    }
-
-    std::ostringstream json;
-    json << "{"
-         << "\"capture\":{"
-         << "\"enter\":" << counters[TCP_CONN_STAT_ENTER] << ","
-         << "\"non_ipv4\":" << counters[TCP_CONN_STAT_NON_IPV4] << ","
-         << "\"syn_sent\":" << counters[TCP_CONN_STAT_SYN_SENT] << ","
-         << "\"established\":" << counters[TCP_CONN_STAT_ESTABLISHED] << ","
-         << "\"closed_from_syn_sent\":" << counters[TCP_CONN_STAT_CLOSED_FROM_SYN_SENT] << ","
-         << "\"other_transition\":" << counters[TCP_CONN_STAT_OTHER_TRANSITION] << ","
-         << "\"emitted\":" << counters[TCP_CONN_STAT_EMITTED] << ","
-         << "\"emit_fail\":" << counters[TCP_CONN_STAT_EMIT_FAIL]
-         << "},\"drain\":{"
-         << "\"poll_calls\":" << ds.poll_calls << ","
-         << "\"poll_records\":" << ds.poll_records << ","
-         << "\"poll_errors\":" << ds.poll_errors << ","
-         << "\"sample_callbacks\":" << ds.sample_callbacks << ","
-         << "\"lost_events\":" << ds.lost_events
-         << "},\"window\":{"
-         << "\"attempts\":" << st.attempts << ","
-         << "\"successes\":" << st.successes << ","
-         << "\"failures\":" << st.failures << ","
-         << "\"unmatched_terminal\":" << st.unmatched_terminal << ","
-         << "\"inflight\":" << inflight
-         << "}}";
-    return json.str();
-#else
-    return "{}";
-#endif
-}
+// O7：原 getCaptureDiagnostics()（BPF 计数器 + drain 统计 JSON）与
+// consumeLostEvents()（perf 丢失消费后清零）零消费者，已删除。
+// drain_stats 仍由各排空路径维护，供未来真实诊断消费者使用。
 
 }  // namespace weaknet_dbus

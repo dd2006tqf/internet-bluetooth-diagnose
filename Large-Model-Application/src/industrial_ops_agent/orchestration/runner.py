@@ -147,7 +147,11 @@ async def run() -> None:
     auditor = build_persistent_security_auditor(database, hash_key=audit_key)
     authorizer = Authorizer(
         auditor,
-        OpaPolicyClient(settings.opa_decision_url, timeout_seconds=settings.opa_timeout_seconds),
+        OpaPolicyClient(
+            settings.opa_decision_url,
+            timeout_seconds=settings.opa_timeout_seconds,
+            token=provider.get(SecretName.OPA_TOKEN).reveal(),
+        ),
     )
     tool_registry = default_tool_registry()
     enterprise_adapters = build_enterprise_adapters(settings, provider, tool_registry)

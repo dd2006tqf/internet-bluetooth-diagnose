@@ -93,6 +93,16 @@ for key in (
     "IOAP_SERVICE_QUOTATION_PROVIDER_API_TOKEN",
     "IOAP_SANDBOX_CONTROL_TOKEN",
     "IOAP_MODEL_GATEWAY_API_KEY",
+    # S6：可选覆盖层（observability/integration）此前有本地默认口令
+    # （Grafana industrial-ops-local、Marquez marquez、Neo4J、Label Studio），
+    # compose 已改为 :? fail-fast，口令统一在本生成器产出。
+    "IOAP_GRAFANA_ADMIN_PASSWORD",
+    "MARQUEZ_PASSWORD",
+    "IOAP_NEO4J_PASSWORD",
+    "M3_LABEL_STUDIO_TOKEN",
+    "M3_LABEL_STUDIO_PASSWORD",
+    # S4：OPA REST API 的共享密钥（opa 容器与应用容器同名共用）
+    "OPA_TOKEN",
 ):
     lines.setdefault(key, value())
 
