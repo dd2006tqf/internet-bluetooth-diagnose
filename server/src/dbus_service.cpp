@@ -30,6 +30,7 @@
 #include <cstring>
 #include <utility>
 #include <shared_mutex>
+#include <arpa/inet.h>
 
 #include "wireless_event_store.hpp"
 #include "logger.hpp"
@@ -170,6 +171,14 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetTcpRttStats)) {
         self->handleGetTcpRttStats(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetTcpRetransStats)) {
+        self->handleGetTcpRetransStats(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetTcpConnStats)) {
+        self->handleGetTcpConnStats(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetEbpfMonitorHealth)) {
@@ -1323,6 +1332,133 @@ bool DbusService::handleGetTcpRttStats(DBusConnection* conn, DBusMessage* msg) {
         json << "]}";
     } else {
         json << "{\"total_samples\":0,\"active_connections\":0,\"connections\":[],\"error\":\"tcp_rtt monitor unavailable\"}";
+    }
+
+    std::string result = json.str();
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = result.c_str();
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+/**
+ * @brief 格式化 TCP 连接四元组（网络字节序 → 可读 IP:port）
+ */
+static void formatTcpConnKey(const TcpConnKey& key, char* out, size_t out_size) {
+    struct in_addr sa{key.saddr}, da{key.daddr};
+    char src_buf[INET_ADDRSTRLEN], dst_buf[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &sa, src_buf, sizeof(src_buf));
+    inet_ntop(AF_INET, &da, dst_buf, sizeof(dst_buf));
+    std::snprintf(out, out_size, "%s:%u -> %s:%u",
+                  src_buf, ntohs(key.sport), dst_buf, ntohs(key.dport));
+}
+
+/**
+ * @brief DBus 方法实现：GetTcpRetransStats —— 查询 TCP 连接级重传统计（JSON）
+ */
+bool DbusService::handleGetTcpRetransStats(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetTcpRetransStats called");
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) {
+        LOG_ERROR(LogModule::DBUS, "handleGetTcpRetransStats: failed to create reply");
+        return false;
+    }
+
+    std::ostringstream json;
+    bool has_stats = false;
+    double loss_rate_pct = 0.0;
+    std::vector<std::pair<TcpConnKey, TcpRetransStats>> top_conns;
+    if (ctx_) {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        if (ctx_->tcp_retrans_monitor) {
+            loss_rate_pct = ctx_->tcp_retrans_monitor->computeLossRate();
+            top_conns = ctx_->tcp_retrans_monitor->getTopRetransConnections(10);
+            has_stats = true;
+        }
+    }
+
+    if (has_stats) {
+        json << "{\"loss_rate_pct\":" << loss_rate_pct
+             << ",\"tracked_connections\":" << top_conns.size()
+             << ",\"top_retrans\":[";
+        for (size_t i = 0; i < top_conns.size(); ++i) {
+            if (i > 0) json << ",";
+            char conn_buf[128];
+            formatTcpConnKey(top_conns[i].first, conn_buf, sizeof(conn_buf));
+            const auto& st = top_conns[i].second;
+            json << "{\"conn\":\"" << weaknet_utils::escapeJsonString(conn_buf)
+                 << "\",\"total_retrans\":" << st.totalRetrans
+                 << ",\"total_segs\":" << st.totalSegs
+                 << ",\"loss_rate_pct\":" << st.lossRate()
+                 << ",\"last_state\":" << st.lastState << "}";
+        }
+        json << "]}";
+    } else {
+        json << "{\"loss_rate_pct\":0,\"tracked_connections\":0,\"top_retrans\":[],\"error\":\"tcp_retrans monitor unavailable\"}";
+    }
+
+    std::string result = json.str();
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    const char* s = result.c_str();
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+/**
+ * @brief DBus 方法实现：GetTcpConnStats —— 查询 TCP 连接生命周期统计（JSON）
+ */
+bool DbusService::handleGetTcpConnStats(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetTcpConnStats called");
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) {
+        LOG_ERROR(LogModule::DBUS, "handleGetTcpConnStats: failed to create reply");
+        return false;
+    }
+
+    std::ostringstream json;
+    bool has_stats = false;
+    TcpConnAggStats stats;
+    if (ctx_) {
+        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
+        if (ctx_->tcp_conn_monitor) {
+            stats = ctx_->tcp_conn_monitor->getStats();
+            has_stats = true;
+        }
+    }
+
+    if (has_stats) {
+        json << "{\"total_accepts\":" << stats.totalAccepts
+             << ",\"total_accept_failures\":" << stats.totalAcceptFailures
+             << ",\"accepts_v4\":" << stats.acceptsV4
+             << ",\"accepts_v6\":" << stats.acceptsV6
+             << ",\"total_closes\":" << stats.totalCloses
+             << ",\"active_inbound\":" << stats.activeInbound
+             << ",\"avg_duration_ms\":" << stats.avgDurationMs
+             << ",\"max_duration_ms\":" << stats.maxDurationMs
+             << ",\"duration_count\":" << stats.durationCount
+             << ",\"duration_hist\":{";
+        for (int i = 0; i < kTcpConnHistBuckets; ++i) {
+            if (i > 0) json << ",";
+            json << "\"" << tcpConnHistBucketLabel(i) << "\":" << stats.hist[i];
+        }
+        json << "},\"top_ports\":[";
+        for (size_t i = 0; i < stats.topPorts.size(); ++i) {
+            if (i > 0) json << ",";
+            json << "{\"port\":" << stats.topPorts[i].port
+                 << ",\"accepts\":" << stats.topPorts[i].accepts
+                 << ",\"closes\":" << stats.topPorts[i].closes << "}";
+        }
+        json << "]}";
+    } else {
+        json << "{\"total_accepts\":0,\"total_closes\":0,\"active_inbound\":0,\"error\":\"tcp_conn monitor unavailable\"}";
     }
 
     std::string result = json.str();

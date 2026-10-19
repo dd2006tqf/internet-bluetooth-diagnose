@@ -26,6 +26,8 @@
 #include <iomanip>
 #include <random>
 #include <sstream>
+#include <sys/utsname.h>
+#include <algorithm>
 #include <utility>
 
 #ifdef WEAKNET_HAVE_CURL
@@ -463,6 +465,21 @@ bool EdgeTelemetryExporter::buildRecord(const AssessmentSnapshot& snapshot,
     const auto wall_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         snapshot.wall_timestamp.time_since_epoch()).count();
     body << "\"captured_at\":\"" << formatRfc3339Utc(wall_ms) << "\",";
+
+    // K4 板端补采：location / rtt_interval_seconds / rtt_probe_targets（外层信封），
+    // 与云端 NetworkDeviceTelemetry 契约字段一一对应。
+    // location 取 edge.site_id（留空即回落 device_id，与事件/事故语义一致）；
+    // rtt 周期/目标直接读运行时配置 truth（弱网关闭时 interval 仍输出配值，
+    // 目标恒为 rtt.target 单值数组；禁用状态由 SLE 状态表达，不在此造假）。
+    const std::string k4_location = config_.edge.site_id.get().empty()
+        ? dev_id : config_.edge.site_id.get();
+    // 云端契约 rtt_interval_seconds 要求 gt=0：interval_ms 被配置校验钳制在
+    // [100,600000]，这里再兜底一次，防 0 直发触发云端 422。
+    const double k4_rtt_interval_s =
+        std::max(0.001, static_cast<double>(config_.rtt.interval_ms.load()) / 1000.0);
+    body << "\"location\":\"" << weaknet_utils::escapeJsonString(k4_location) << "\",";
+    body << "\"rtt_interval_seconds\":" << k4_rtt_interval_s << ",";
+    body << "\"rtt_probe_targets\":[\"" << weaknet_utils::escapeJsonString(config_.rtt.target.get()) << "\"],";
 
     // 专用序列化器：直接产出上报契约的嵌套形态。
     // 不复用 toExperienceJsonV2 再改写形状——那等于对刚产出的 JSON 做字符串

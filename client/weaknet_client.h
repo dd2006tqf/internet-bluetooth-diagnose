@@ -622,6 +622,36 @@ bool weaknet_get_skb_drop_stats(char* buffer, size_t buffer_size, char* error_bu
  */
 bool weaknet_get_tcp_rtt_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
 
+/**
+ * @brief 查询 TCP 连接级重传统计（JSON）
+ *
+ * 通过 D-Bus 调用 GetTcpRetransStats 方法，返回全局重传率与
+ * 重传最多的连接 Top-N（连接四元组、累计重传/发送段数、丢包率）。
+ *
+ * @param buffer       结果缓冲区
+ * @param buffer_size  缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size   错误信息缓冲区大小
+ * @return true  - 成功
+ * @return false - D-Bus 调用失败
+ */
+bool weaknet_get_tcp_retrans_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
+/**
+ * @brief 查询 TCP 连接生命周期统计（JSON）
+ *
+ * 通过 D-Bus 调用 GetTcpConnStats 方法，返回入向连接的
+ * accept/close 计数、活跃连接数、连接时长分布与每端口计数。
+ *
+ * @param buffer       结果缓冲区
+ * @param buffer_size  缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size   错误信息缓冲区大小
+ * @return true  - 成功
+ * @return false - D-Bus 调用失败
+ */
+bool weaknet_get_tcp_conn_stats(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
 /* ============================== 运行时配置 API ============================== */
 
 /**

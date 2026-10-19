@@ -25,6 +25,8 @@
 #include "ebpf_monitor_interface.hpp"
 #include "ebpf_monitor_metrics.hpp"
 #include "utils/bpf_map_sizing.hpp"
+#include "utils/per_key_counter_tracker.hpp"
+#include <mutex>
 
 namespace weaknet_dbus {
 
@@ -99,6 +101,17 @@ public:
     /// 读取当前连接生命周期聚合统计（同时更新监控指标）
     TcpConnAggStats getStats();
 
+    /**
+     * @brief 最近一轮 map 扫描的逐 key 差分（驱逐可见性）
+     *
+     * conn_ports map 容量有限，逐 key 追踪可见端口驱逐；
+     * 仅作观测标注，不参与任何判定。线程安全。
+     */
+    weaknet::PerKeyStats keyStatsSnapshot() const override {
+        std::lock_guard<std::mutex> lock(key_stats_mutex_);
+        return key_stats_;
+    }
+
 private:
     struct Impl;                    ///< Pimpl：隐藏 libbpf 实现细节
     std::unique_ptr<Impl> impl_;
@@ -106,6 +119,10 @@ private:
     std::atomic<bool> initialized_{false};
     std::atomic<bool> available_{false};
     EbpfMonitorStateSupport stateSupport_{"TcpConnMonitor"};
+
+    mutable std::mutex key_stats_mutex_;
+    weaknet::PerKeyStats key_stats_{};              ///< 最近一轮差分快照（受 key_stats_mutex_ 保护）
+    weaknet::PerKeyCounterTracker key_tracker_;     ///< 非线程安全；访问须持 key_stats_mutex_
 };
 
 }  // namespace weaknet_dbus

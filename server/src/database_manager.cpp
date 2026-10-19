@@ -48,6 +48,8 @@
 #include "network_quality_result.hpp"
 #include "site_incident.hpp"
 #include "utils/json_escape.hpp"
+#include "metrics/metrics_registry.hpp"
+#include "metrics/metric_sample.hpp"
 #include "wireless_event.hpp"
 #include <sqlite3.h>
 #include <sstream>
@@ -98,6 +100,10 @@ struct HistoryRow {
     bool rssi_estimated = false;
     double jitter_ms = -1, tcp_loss = -1, score = 0;
     int64_t traffic_bps = 0;
+    double tcp_retrans_loss_pct = -1;  ///< -1 = 未观测（JSON 输出 null）
+    int64_t tcp_conn_active = 0;
+    int64_t tcp_conn_accepts = 0;
+    bool tcp_conn_null = true;         ///< 未观测（JSON 输出 null，≠ 0）
 };
 
 struct HistoryCallbackCtx {
@@ -210,7 +216,10 @@ bool DatabaseManager::ensureSchema() {
             rssi_sample_ts INTEGER DEFAULT 0,
             jitter_sample_ts INTEGER DEFAULT 0,
             tcp_loss_sample_ts INTEGER DEFAULT 0,
-            traffic_sample_ts INTEGER DEFAULT 0
+            traffic_sample_ts INTEGER DEFAULT 0,
+            tcp_retrans_loss_pct REAL DEFAULT -1,
+            tcp_conn_active INTEGER DEFAULT 0,
+            tcp_conn_accepts INTEGER DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_history_ts ON network_history(ts);
         CREATE INDEX IF NOT EXISTS idx_history_iface ON network_history(iface);
@@ -400,7 +409,10 @@ bool DatabaseManager::ensureSchema() {
            ensureColumn("tcp_loss_sample_ts", "INTEGER DEFAULT 0") &&
            ensureColumn("traffic_sample_ts", "INTEGER DEFAULT 0") &&
            ensureColumn("score_model", "TEXT DEFAULT 'legacy_weighted_v1'") &&
-           ensureColumn("assessment_profile", "TEXT DEFAULT 'UNSPECIFIED'");
+           ensureColumn("assessment_profile", "TEXT DEFAULT 'UNSPECIFIED'") &&
+           ensureColumn("tcp_retrans_loss_pct", "REAL DEFAULT -1") &&
+           ensureColumn("tcp_conn_active", "INTEGER DEFAULT 0") &&
+           ensureColumn("tcp_conn_accepts", "INTEGER DEFAULT 0");
 }
 
 bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& info,
@@ -416,8 +428,8 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
 
     // 使用参数绑定防止 SQL 注入
     const char* sql = "INSERT INTO network_history (ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, "
-                      "rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts, score_model, assessment_profile) VALUES ("
-                      "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )";
+                      "rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts, score_model, assessment_profile, tcp_retrans_loss_pct, tcp_conn_active, tcp_conn_accepts) VALUES ("
+                      "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )";
 
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -515,6 +527,40 @@ bool DatabaseManager::insertSnapshot(const std::string& iface, const NetInfo& in
     sqlite3_bind_text(stmt, 31,
                       (assessment_profile && *assessment_profile) ? assessment_profile : "UNSPECIFIED",
                       -1, SQLITE_TRANSIENT);
+    // O1-A: 从指标注册中心取 TCP 重传与连接聚合（全局作用域，"未观测"写 NULL）。
+    double tcp_retrans_loss_pct = -1.0;
+    int64_t tcp_conn_active = 0;
+    int64_t tcp_conn_accepts = 0;
+    {
+        // 与其它列同一 stale 纪律：超过 descriptor freshness 的样本视同未观测，
+        // 写 NULL/0 而不是把停更的旧值当当前值（监控线程停摆后尤其重要）。
+        auto fresh = [](weaknet::MetricId id) {
+            return weaknet::getMetricDescriptor(id).freshness;
+        };
+        auto& reg = weaknet::MetricsRegistry::global();
+        auto s_loss = reg.latestGlobal(weaknet::MetricId::TCP_RETRANS_LOSS_PCT);
+        if (s_loss && s_loss->isValid(fresh(weaknet::MetricId::TCP_RETRANS_LOSS_PCT)))
+            tcp_retrans_loss_pct = s_loss->value;
+        auto s_active = reg.latestGlobal(weaknet::MetricId::TCP_CONN_ACTIVE);
+        auto s_accepts = reg.latestGlobal(weaknet::MetricId::TCP_CONN_ACCEPT_RATE);
+        if (s_active && s_accepts &&
+            s_active->isValid(fresh(weaknet::MetricId::TCP_CONN_ACTIVE)) &&
+            s_accepts->isValid(fresh(weaknet::MetricId::TCP_CONN_ACCEPT_RATE))) {
+            tcp_conn_active = static_cast<int64_t>(s_active->value);
+            tcp_conn_accepts = static_cast<int64_t>(s_accepts->value);
+        } else {
+            tcp_conn_active = -1;  // 哨兵 → 绑定 NULL
+        }
+    }
+    // 未观测一律写 NULL（与 rssi/resolved_at 同一纪律：NULL ≠ 0 —— 0 是
+    // "观测到零"，会与监控线程停摆混淆）。
+    const bool tcp_conn_observed = (tcp_conn_active >= 0);
+    if (tcp_retrans_loss_pct >= 0) sqlite3_bind_double(stmt, 32, tcp_retrans_loss_pct);
+    else sqlite3_bind_null(stmt, 32);
+    if (tcp_conn_observed) sqlite3_bind_int64(stmt, 33, tcp_conn_active);
+    else sqlite3_bind_null(stmt, 33);
+    if (tcp_conn_observed) sqlite3_bind_int64(stmt, 34, tcp_conn_accepts);
+    else sqlite3_bind_null(stmt, 34);
     LOG_INFO(LogModule::SYSTEM, "snapshot metadata: generation=" << generation
              << " snapshot_ts=" << snapshot_ts_ms
              << " rtt=" << rtt_sample_ts << " rssi=" << rssi_sample_ts
@@ -540,7 +586,7 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
     std::lock_guard<std::mutex> lock(mutex_);
 
     // 使用参数绑定防止 SQL 注入
-    std::string sql = "SELECT ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts, score_model, assessment_profile "
+    std::string sql = "SELECT ts, iface, rtt_ms, jitter_ms, rssi_dbm, rssi_source, rssi_estimated, rssi_status, rtt_status, jitter_status, tcp_loss_status, traffic_status, tcp_loss, quality, link_quality, overall_quality, overall_score, score, traffic_bps, traffic_pps, flows, snapshot_ts, generation, data_version, rtt_sample_ts, rssi_sample_ts, jitter_sample_ts, tcp_loss_sample_ts, traffic_sample_ts, score_model, assessment_profile, tcp_retrans_loss_pct, tcp_conn_active, tcp_conn_accepts "
                       "FROM network_history WHERE 1=1";
 
     std::vector<std::string> conditions;
@@ -626,6 +672,11 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
         if (sm) row.score_model = sm;
         const char* ap = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 30));
         if (ap) row.assessment_profile = ap;
+        if (sqlite3_column_type(stmt, 31) != SQLITE_NULL)
+            row.tcp_retrans_loss_pct = sqlite3_column_double(stmt, 31);
+        row.tcp_conn_null = sqlite3_column_type(stmt, 32) == SQLITE_NULL;
+        row.tcp_conn_active = sqlite3_column_int64(stmt, 32);
+        row.tcp_conn_accepts = sqlite3_column_int64(stmt, 33);
         ctx.rows.push_back(std::move(row));
         rc = sqlite3_step(stmt);
     }
@@ -682,6 +733,9 @@ std::string DatabaseManager::queryHistory(const std::string& interface,
              << "\"traffic_sample_ts\":" << row.traffic_sample_ts << ","
              << "\"score_model\":\"" << weaknet_utils::escapeJsonString(row.score_model.empty() ? "legacy_weighted_v1" : row.score_model) << "\","
              << "\"assessment_profile\":\"" << weaknet_utils::escapeJsonString(row.assessment_profile.empty() ? "UNSPECIFIED" : row.assessment_profile) << "\","
+             << "\"tcp_retrans_loss_pct\":" << (row.tcp_retrans_loss_pct < 0 ? "null" : std::to_string(row.tcp_retrans_loss_pct)) << ","
+             << "\"tcp_conn_active\":" << (row.tcp_conn_null ? "null" : std::to_string(row.tcp_conn_active)) << ","
+             << "\"tcp_conn_accepts\":" << (row.tcp_conn_null ? "null" : std::to_string(row.tcp_conn_accepts)) << ","
              << "\"rssi_age_ms\":" << rssiAge
              << "}";
     }

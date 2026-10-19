@@ -1,5 +1,9 @@
 #pragma once
 
+#include <functional>
+#include "tcp_retransmit_monitor.hpp"
+#include "tcp_conn_monitor.hpp"
+
 /**
  * @file edge_wireless_uplink_exporter.hpp
  * @brief 边缘无线事实上行器 — 把 device_events / site_incidents / device_baselines
@@ -108,6 +112,11 @@ struct WirelessUplinkPayload {
     std::optional<weaknet_dbus::DropStatsSummary> drop_stats;
     std::optional<weaknet_dbus::TcpRttSummary> tcp_rtt_stats;
 
+    /// TCP 重传/连接聚合（O1-A 边）：全局重传率与连接生命周期计数，
+    /// 为空（monitors 不可用）时诚实缺席，通过 hasTcpLossData() 判定。
+    std::optional<double> tcp_retrans_loss_pct;
+    std::optional<weaknet_dbus::TcpConnAggStats> tcp_conn_stats;
+
     /// 环境窗口（Wi-Fi 侧证据与深度内核快照）。
     uint64_t env_from_ms = 0;
     uint64_t env_to_ms = 0;
@@ -121,6 +130,15 @@ public:
     using ProfilerSampler = std::function<void(std::vector<weaknet_dbus::ProcessNetInfo>*)>;
     using DropSampler = std::function<void(weaknet_dbus::DropStatsSummary*)>;
     using TcpRttSampler = std::function<void(weaknet_dbus::TcpRttSummary*)>;
+    /// 上行侧 TCP 重传率与连接聚合采样：与其它三个 sampler 同构
+    /// （out 指针参数，缺数据时不写），读侧持 monitor_pointers_mutex。
+    struct TcpLossSample {
+        bool has_loss = false;
+        double loss_rate_pct = 0.0;
+        bool has_conn = false;
+        weaknet_dbus::TcpConnAggStats conn{};
+    };
+    using TcpLossSampler = std::function<void(TcpLossSample*)>;
 
     /**
      * @param config     运行时配置（读 edge.* 字段）
@@ -135,7 +153,8 @@ public:
                                std::string state_path,
                                ProfilerSampler profiler_sampler = {},
                                DropSampler drop_sampler = {},
-                               TcpRttSampler tcp_rtt_sampler = {});
+                               TcpRttSampler tcp_rtt_sampler = {},
+                               TcpLossSampler tcp_loss_sampler = {});
     ~EdgeWirelessUplinkExporter();
 
     EdgeWirelessUplinkExporter(const EdgeWirelessUplinkExporter&) = delete;
@@ -214,6 +233,11 @@ private:
     ProfilerSampler profiler_sampler_;
     DropSampler drop_sampler_;
     TcpRttSampler tcp_rtt_sampler_;
+    TcpLossSampler tcp_loss_sampler_;
+
+    bool hasTcpLossData(const WirelessUplinkPayload& p) const {
+        return p.tcp_retrans_loss_pct.has_value() || p.tcp_conn_stats.has_value();
+    }
 
     std::thread thread_;
     std::atomic<bool> running_{false};

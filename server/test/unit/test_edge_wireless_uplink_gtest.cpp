@@ -198,6 +198,46 @@ TEST(EdgeWirelessUplinkBody, OmitsKernelSnapshotsWhenAbsent) {
     EXPECT_EQ(body.find("skb_drop_hist"), std::string::npos);
 }
 
+// O1-A：TCP 重传/连接聚合进 env_window（kind=tcp_loss_agg）。
+// 有数据才 available=true 且带 kind；缺数据诚实缺席，与其它三类同纪律。
+TEST(EdgeWirelessUplinkBody, EmitsTcpLossAggWhenPresent) {
+    WirelessUplinkPayload payload;
+    payload.device_id = "gw";
+    payload.events = {makeEvent("evt-tla", 1'700'000'001'000ULL)};
+    payload.env_to_ms = 1'700'000'010'000ULL;
+    payload.tcp_retrans_loss_pct = 1.25;
+    weaknet_dbus::TcpConnAggStats cs;
+    cs.totalAccepts = 30;
+    cs.totalCloses = 28;
+    cs.activeInbound = 2;
+    cs.totalAcceptFailures = 1;
+    payload.tcp_conn_stats = cs;
+
+    std::string error;
+    const std::string body = EdgeWirelessUplinkExporter::buildBody(payload, &error);
+    ASSERT_FALSE(body.empty()) << error;
+
+    EXPECT_NE(body.find("\"available\":true"), std::string::npos);
+    EXPECT_NE(body.find("\"kind\":\"tcp_loss_agg\""), std::string::npos);
+    EXPECT_NE(body.find("\"loss_rate_pct\":1.25"), std::string::npos);
+    EXPECT_NE(body.find("\"accepts\":30"), std::string::npos);
+    EXPECT_NE(body.find("\"active\":2"), std::string::npos);
+}
+
+TEST(EdgeWirelessUplinkBody, OmitsTcpLossAggWhenAbsent) {
+    WirelessUplinkPayload payload;
+    payload.device_id = "gw";
+    payload.events = {makeEvent("evt-nla", 1'700'000'001'000ULL)};
+    payload.env_to_ms = 1'700'000'010'000ULL;
+
+    std::string error;
+    const std::string body = EdgeWirelessUplinkExporter::buildBody(payload, &error);
+    ASSERT_FALSE(body.empty()) << error;
+
+    EXPECT_EQ(body.find("tcp_loss_agg"), std::string::npos);
+    EXPECT_EQ(body.find("loss_rate_pct"), std::string::npos);
+}
+
 TEST(EdgeWirelessUplinkBody, NullRssiStaysJsonNull) {
     WirelessUplinkPayload payload;
     payload.device_id = "gw";

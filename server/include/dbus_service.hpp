@@ -131,6 +131,8 @@ public:
     bool handleGetProcessProfiling(DBusConnection* conn, DBusMessage* msg);  ///< GetProcessProfiling: 进程画像
     bool handleGetSkbDropStats(DBusConnection* conn, DBusMessage* msg);      ///< GetSkbDropStats: Socket/skb 丢包归因
     bool handleGetTcpRttStats(DBusConnection* conn, DBusMessage* msg);       ///< GetTcpRttStats: 被动 TCP RTT 统计
+    bool handleGetTcpRetransStats(DBusConnection* conn, DBusMessage* msg);   ///< GetTcpRetransStats: TCP 连接级重传统计
+    bool handleGetTcpConnStats(DBusConnection* conn, DBusMessage* msg);      ///< GetTcpConnStats: TCP 连接生命周期统计
     bool handleGetEbpfMonitorHealth(DBusConnection* conn, DBusMessage* msg);  ///< GetEbpfMonitorHealth: 各监控器健康状态
 
     // 历史数据

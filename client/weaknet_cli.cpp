@@ -45,6 +45,7 @@ static void printUsage(const char* prog) {
         "                                 # 查询工业蓝牙 HCI ACL 数据通道流量指标（JSON，只读）\n"
         "  %s diagnosis [--ai]            # 查询网络诊断事实（--ai 联动端侧 RAG + 板载 Qwen 深度分析）\n"
         "  %s experience                  # 查询当前网络体验权威快照（NetworkExperience JSON，只读）\n"
+        "  %s stats <domain>              # 查询 eBPF/观测统计快照（只读：dns, wifi-loss, http, process, skb-drop, tcp-rtt, tcp-retrans, tcp-conn, ebpf-health, history)\n"
         "  sudo %s action <action_id> [<key> <val>] # 执行白名单安全排查动作（仅限 root）\n"
         "\n"
         "事件类型（--type）：LINK_DISCONNECTED, LINK_DEGRADED, DEVICE_APPEARED, ...\n"
@@ -69,7 +70,7 @@ static void printUsage(const char* prog) {
         "  sudo %s action CHECK_RESOLVER_CONFIG\n"
         "  sudo %s action PROBE_PUBLIC_RESOLVER resolver 223.5.5.5\n"
         "  %s list\n",
-        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static bool callSet(const char* key, const char* value) {
@@ -319,6 +320,45 @@ static bool callDiagnosis(bool enable_ai = false) {
     return true;
 }
 
+/// weaknet-cli stats <domain>：eBPF/观测统计统一只读出口（O1-A/O2-A）。
+/// 每个 domain 精确映射一个服务端 D-Bus 方法（GetDnsStats 等），
+/// thin passthrough：不做解析、不做聚合，直接打印服务端 JSON。
+static bool callStats(const char* domain) {
+    std::vector<char> buf(64 * 1024);
+    char err[256];
+    bool ok = false;
+    if (strcmp(domain, "dns") == 0) {
+        ok = weaknet_get_dns_stats(buf.data(), buf.size(), err, sizeof(err));
+    } else if (strcmp(domain, "wifi-loss") == 0) {
+        ok = weaknet_get_wifi_loss_stats(buf.data(), buf.size(), err, sizeof(err));
+    } else if (strcmp(domain, "http") == 0) {
+        ok = weaknet_get_http_latency_stats(buf.data(), buf.size(), err, sizeof(err));
+    } else if (strcmp(domain, "process") == 0) {
+        ok = weaknet_get_process_profiling(buf.data(), buf.size(), err, sizeof(err));
+    } else if (strcmp(domain, "skb-drop") == 0) {
+        ok = weaknet_get_skb_drop_stats(buf.data(), buf.size(), err, sizeof(err));
+    } else if (strcmp(domain, "tcp-rtt") == 0) {
+        ok = weaknet_get_tcp_rtt_stats(buf.data(), buf.size(), err, sizeof(err));
+    } else if (strcmp(domain, "tcp-retrans") == 0) {
+        ok = weaknet_get_tcp_retrans_stats(buf.data(), buf.size(), err, sizeof(err));
+    } else if (strcmp(domain, "tcp-conn") == 0) {
+        ok = weaknet_get_tcp_conn_stats(buf.data(), buf.size(), err, sizeof(err));
+    } else if (strcmp(domain, "ebpf-health") == 0) {
+        ok = weaknet_get_ebpf_monitor_health(buf.data(), buf.size(), err, sizeof(err));
+    } else if (strcmp(domain, "history") == 0) {
+        ok = weaknet_get_history("", "", "", 10, buf.data(), buf.size(), err, sizeof(err));
+    } else {
+        fprintf(stderr, "未知 stats 域: %s（可选: dns, wifi-loss, http, process, skb-drop, tcp-rtt, tcp-retrans, tcp-conn, ebpf-health, history）\n", domain);
+        return false;
+    }
+    if (!ok) {
+        fprintf(stderr, "stats %s 查询失败: %s\n", domain, err);
+        return false;
+    }
+    printf("%s\n", buf.data());
+    return true;
+}
+
 static bool callExperience() {
     std::vector<char> buf(64 * 1024);
     char err[256];
@@ -408,6 +448,12 @@ int main(int argc, char** argv) {
         ok = callDiagnosis(enable_ai);
     } else if (strcmp(cmd, "experience") == 0) {
         ok = callExperience();
+    } else if (strcmp(cmd, "stats") == 0) {
+        if (argc != 3) {
+            printUsage(argv[0]);
+            return 1;
+        }
+        ok = callStats(argv[2]);
     } else if (strcmp(cmd, "action") == 0) {
         ok = callAction(argc, argv);
     } else if (strcmp(cmd, "list") == 0) {

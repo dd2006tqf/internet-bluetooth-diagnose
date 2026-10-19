@@ -1056,6 +1056,17 @@ void start_tcp_retrans_monitor_thread(ServerContext* ctx, std::thread* worker, T
                 LOG_INFO(LogModule::NETWORK, "TCP retransmit tick: connections=" << stats.size()
                     << " lossRate=" << monitor->computeLossRate() << "%");
 
+                // 指标注册：全局 TCP 重传率（eBPF 探针，O1-A 消费者闭环）
+                {
+                    const auto sample = weaknet::MetricSample::valid(monitor->computeLossRate());
+                    if (ctx->metrics_registry) {
+                        ctx->metrics_registry->publishGlobal(
+                            weaknet::MetricId::TCP_RETRANS_LOSS_PCT, sample);
+                    }
+                    weaknet::MetricsRegistry::global().publishGlobal(
+                        weaknet::MetricId::TCP_RETRANS_LOSS_PCT, sample);
+                }
+
                 // 细粒度信号：连接级重传统计 + 驱逐差分，替代轮询。
                 std::ostringstream os;
                 os << "\"connections\":" << stats.size()
@@ -1084,6 +1095,37 @@ void start_tcp_conn_monitor_thread(ServerContext* ctx, std::thread* worker, TcpC
                     << " active=" << stats.activeInbound
                     << " acceptFailures=" << stats.totalAcceptFailures
                     << " avgDur=" << stats.avgDurationMs << "ms");
+
+                // 指标注册：TCP 连接生命周期指标（eBPF 探针，O1-A 消费者闭环）
+                {
+                    const auto s_active = weaknet::MetricSample::valid(
+                        static_cast<double>(stats.activeInbound));
+                    const auto s_accepts = weaknet::MetricSample::valid(
+                        static_cast<double>(stats.totalAccepts));
+                    if (ctx->metrics_registry) {
+                        ctx->metrics_registry->publishGlobal(
+                            weaknet::MetricId::TCP_CONN_ACTIVE, s_active);
+                        ctx->metrics_registry->publishGlobal(
+                            weaknet::MetricId::TCP_CONN_ACCEPT_RATE, s_accepts);
+                    }
+                    weaknet::MetricsRegistry::global().publishGlobal(
+                        weaknet::MetricId::TCP_CONN_ACTIVE, s_active);
+                    weaknet::MetricsRegistry::global().publishGlobal(
+                        weaknet::MetricId::TCP_CONN_ACCEPT_RATE, s_accepts);
+                }
+
+                // 细粒度信号：连接生命周期统计，替代轮询。
+                std::ostringstream os;
+                os << "\"accepts\":" << stats.totalAccepts
+                   << ",\"closes\":" << stats.totalCloses
+                   << ",\"active\":" << stats.activeInbound
+                   << ",\"accept_failures\":" << stats.totalAcceptFailures
+                   << ",\"accepts_v4\":" << stats.acceptsV4
+                   << ",\"accepts_v6\":" << stats.acceptsV6
+                   << ",\"avg_duration_ms\":" << stats.avgDurationMs
+                   << ",\"max_duration_ms\":" << stats.maxDurationMs;
+                appendEvictionJson(os, monitor->keyStatsSnapshot());
+                emitEbpfStats(ctx, "tcp_conn", os.str(), 0);
             }
             for (int i = 0; i < static_cast<int>(ctx->cfg.tcp_conn.interval_ms.load() / 100) && (ctx->running.load() && !ctx->tcp_conn_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
@@ -1530,6 +1572,18 @@ int start_server(int argc, char** argv) {
                     std::shared_lock<std::shared_mutex> lock(ctx.monitor_pointers_mutex);
                     if (ctx.tcp_rtt_monitor && ctx.tcp_rtt_monitor->isAvailable()) {
                         *out = ctx.tcp_rtt_monitor->getStats();
+                    }
+                },
+                [&ctx](weaknet::EdgeWirelessUplinkExporter::TcpLossSample* out) {
+                    if (!out) return;
+                    std::shared_lock<std::shared_mutex> lock(ctx.monitor_pointers_mutex);
+                    if (ctx.tcp_retrans_monitor && ctx.tcp_retrans_monitor->isAvailable()) {
+                        out->has_loss = true;
+                        out->loss_rate_pct = ctx.tcp_retrans_monitor->computeLossRate();
+                    }
+                    if (ctx.tcp_conn_monitor && ctx.tcp_conn_monitor->isAvailable()) {
+                        out->has_conn = true;
+                        out->conn = ctx.tcp_conn_monitor->getStats();
                     }
                 });
             if (ctx.wireless_uplink->start()) {

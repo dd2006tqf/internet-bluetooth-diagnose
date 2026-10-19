@@ -79,6 +79,20 @@ public:
         publish(scopeKey(scope, address), id, sample);
     }
 
+    /// GLOBAL-scoped 便捷重载（无地址维度，如 TCP 重传率/活跃连接数）。
+    void publishScope(MetricScope scope, MetricId id, const MetricSample& sample) {
+        publish(scopeKey(scope, ""), id, sample);
+    }
+
+    /// 进程内全局注册中心：监控线程（发布方）与数据库持久化
+    /// （读取方）经它传递观测，无需跨线程传递 ServerContext。
+    /// ServerContext 自己的 metrics_registry 与此是同一进程内的
+    /// 两个实例——监控线程在向两者都发布（见 server.cpp）。
+    static MetricsRegistry& global() {
+        static MetricsRegistry instance;
+        return instance;
+    }
+
     std::optional<MetricSample> latest(const std::string& iface, MetricId id) const {
         std::lock_guard<std::mutex> lock(registry_mutex_);
         auto it = iface_map_.find(iface);
@@ -108,6 +122,16 @@ public:
             res.push_back(kv.first);
         }
         return res;
+    }
+
+    /// 发布 GLOBAL 作用域指标（无网卡语义，如 TCP 重传率/连接数）
+    void publishGlobal(MetricId id, const MetricSample& sample) {
+        publishScope(MetricScope::GLOBAL, id, sample);
+    }
+
+    /// 读取 GLOBAL 作用域指标
+    std::optional<MetricSample> latestGlobal(MetricId id) const {
+        return latest(scopeKey(MetricScope::GLOBAL, ""), id);
     }
 
 private:

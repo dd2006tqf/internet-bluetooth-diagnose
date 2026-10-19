@@ -282,7 +282,9 @@ TcpConnAggStats TcpConnMonitor::getStats() {
         result.maxDurationMs = stats.max_duration_ns / 1000000;
 
         // 遍历每端口计数表（get_next_key + lookup；上限防御异常返回）
+        // 同时记录逐 key 差分快照，供驱逐可见性观测。
         std::vector<TcpConnPortStats> ports;
+        std::vector<std::pair<std::string, uint64_t>> key_snapshot;
         __u16 port_key = 0, next_key = 0;
         for (int i = 0; i < kPortIterMax; ++i) {
             if (bpf_map_get_next_key(impl_->conn_ports_fd, &port_key, &next_key) != 0)
@@ -290,8 +292,17 @@ TcpConnAggStats TcpConnMonitor::getStats() {
             tcp_conn_port_value pv = {};
             if (bpf_map_lookup_elem(impl_->conn_ports_fd, &next_key, &pv) == 0) {
                 ports.push_back(TcpConnPortStats{next_key, pv.accepts, pv.closes});
+                key_snapshot.emplace_back(
+                    std::string(reinterpret_cast<const char*>(&next_key), sizeof(next_key)),
+                    static_cast<uint64_t>(pv.accepts));
             }
             port_key = next_key;
+        }
+        // 更新驱逐可见性差分的基线快照。
+        // conn_ports 上限由 map_sizing 定标保证，此处取迭代上限作水位基准。
+        {
+            std::lock_guard<std::mutex> lock(key_stats_mutex_);
+            key_stats_ = key_tracker_.update(key_snapshot, kPortIterMax);
         }
         std::sort(ports.begin(), ports.end(),
                   [](const TcpConnPortStats& a, const TcpConnPortStats& b) {

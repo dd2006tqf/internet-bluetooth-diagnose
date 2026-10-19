@@ -217,8 +217,10 @@ std::string EdgeWirelessUplinkExporter::buildBody(const WirelessUplinkPayload& p
     const bool has_process_data = !payload.top_processes.empty();
     const bool has_drop_data = payload.drop_stats.has_value();
     const bool has_tcp_rtt_data = payload.tcp_rtt_stats.has_value();
+    const bool has_tcp_loss_agg = payload.tcp_retrans_loss_pct.has_value() ||
+                                  payload.tcp_conn_stats.has_value();
     body << "\"env_window\":{"
-         << "\"available\":" << ((has_process_data || has_drop_data || has_tcp_rtt_data) ? "true" : "false") << ","
+         << "\"available\":" << ((has_process_data || has_drop_data || has_tcp_rtt_data || has_tcp_loss_agg) ? "true" : "false") << ","
          << "\"link_type\":\"UNKNOWN\","
          << "\"wifi_anomaly\":false,"
          << "\"coexistence_warning\":false,"
@@ -257,6 +259,23 @@ std::string EdgeWirelessUplinkExporter::buildBody(const WirelessUplinkPayload& p
                  << ",\"last_timestamp_ns\":" << r.lastTimestampNs << "}";
         }
         body << "]}";
+        first_snapshot = false;
+    }
+    const bool has_tcp_loss_data = payload.tcp_retrans_loss_pct.has_value() ||
+                                   payload.tcp_conn_stats.has_value();
+    if (has_tcp_loss_data) {
+        if (!first_snapshot) body << ",";
+        body << "{\"kind\":\"tcp_loss_agg\",\"ts_ms\":" << payload.env_to_ms;
+        if (payload.tcp_retrans_loss_pct.has_value())
+            body << ",\"loss_rate_pct\":" << *payload.tcp_retrans_loss_pct;
+        if (payload.tcp_conn_stats.has_value()) {
+            const auto& cs = *payload.tcp_conn_stats;
+            body << ",\"accepts\":" << cs.totalAccepts
+                 << ",\"closes\":" << cs.totalCloses
+                 << ",\"active\":" << cs.activeInbound
+                 << ",\"accept_failures\":" << cs.totalAcceptFailures;
+        }
+        body << "}";
         first_snapshot = false;
     }
     if (has_tcp_rtt_data) {
@@ -308,13 +327,15 @@ EdgeWirelessUplinkExporter::EdgeWirelessUplinkExporter(
     std::string state_path,
     ProfilerSampler profiler_sampler,
     DropSampler drop_sampler,
-    TcpRttSampler tcp_rtt_sampler)
+    TcpRttSampler tcp_rtt_sampler,
+    TcpLossSampler tcp_loss_sampler)
     : config_(config),
       db_(db),
       state_path_(std::move(state_path)),
       profiler_sampler_(std::move(profiler_sampler)),
       drop_sampler_(std::move(drop_sampler)),
-      tcp_rtt_sampler_(std::move(tcp_rtt_sampler)) {}
+      tcp_rtt_sampler_(std::move(tcp_rtt_sampler)),
+      tcp_loss_sampler_(std::move(tcp_loss_sampler)) {}
 
 EdgeWirelessUplinkExporter::~EdgeWirelessUplinkExporter() { stop(); }
 
@@ -508,6 +529,14 @@ bool EdgeWirelessUplinkExporter::collect(WirelessUplinkPayload* out, std::string
             }
             out->tcp_rtt_stats = std::move(rtt_stats);
         }
+    }
+
+    // TCP 重传/连接聚合（O1-A）：sampler 为空或无有效数据时诚实缺席。
+    if (tcp_loss_sampler_) {
+        TcpLossSample sample;
+        tcp_loss_sampler_(&sample);
+        if (sample.has_loss) out->tcp_retrans_loss_pct = sample.loss_rate_pct;
+        if (sample.has_conn) out->tcp_conn_stats = std::move(sample.conn);
     }
 
     // 环境窗口的时间轴：**只由稀疏事实（事件/事故）决定**，不用墙钟，

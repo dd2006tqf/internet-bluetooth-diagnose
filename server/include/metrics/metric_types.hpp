@@ -20,7 +20,10 @@ enum class MetricId {
     DNS_QUERIES,
     DNS_FAILURE_RATIO,
     DNS_LATENCY_P50_MS,
-    DNS_INFLIGHT
+    DNS_INFLIGHT,
+    TCP_RETRANS_LOSS_PCT,
+    TCP_CONN_ACTIVE,
+    TCP_CONN_ACCEPT_RATE
 };
 
 inline const char* metricIdToString(MetricId id) {
@@ -39,6 +42,9 @@ inline const char* metricIdToString(MetricId id) {
         case MetricId::DNS_FAILURE_RATIO: return "dns_failure_ratio";
         case MetricId::DNS_LATENCY_P50_MS: return "dns_latency_p50_ms";
         case MetricId::DNS_INFLIGHT: return "dns_inflight";
+        case MetricId::TCP_RETRANS_LOSS_PCT: return "tcp_retrans_loss_pct";
+        case MetricId::TCP_CONN_ACTIVE: return "tcp_conn_active";
+        case MetricId::TCP_CONN_ACCEPT_RATE: return "tcp_conn_accept_rate";
         default: return "unknown";
     }
 }
@@ -148,6 +154,15 @@ inline MetricDescriptor getMetricDescriptor(MetricId id) {
         case MetricId::DNS_INFLIGHT:
             return {MetricId::DNS_INFLIGHT, "dns_inflight", MetricUnit::COUNT, MetricScope::GLOBAL,
                     SourceSemantics::GAUGE, PublishedSemantics::GAUGE, 10000ms, 30000ms};
+        case MetricId::TCP_RETRANS_LOSS_PCT:
+            return {MetricId::TCP_RETRANS_LOSS_PCT, "tcp_retrans_loss_pct", MetricUnit::PERCENT, MetricScope::GLOBAL,
+                    SourceSemantics::CUMULATIVE_COUNTER, PublishedSemantics::INTERVAL_RATE, 10000ms, 30000ms};
+        case MetricId::TCP_CONN_ACTIVE:
+            return {MetricId::TCP_CONN_ACTIVE, "tcp_conn_active", MetricUnit::COUNT, MetricScope::GLOBAL,
+                    SourceSemantics::GAUGE, PublishedSemantics::GAUGE, 10000ms, 30000ms};
+        case MetricId::TCP_CONN_ACCEPT_RATE:
+            return {MetricId::TCP_CONN_ACCEPT_RATE, "tcp_conn_accept_rate", MetricUnit::COUNT, MetricScope::GLOBAL,
+                    SourceSemantics::CUMULATIVE_COUNTER, PublishedSemantics::INTERVAL_RATE, 10000ms, 30000ms};
         default:
             return {id, "unknown", MetricUnit::COUNT, MetricScope::INTERFACE,
                     SourceSemantics::GAUGE, PublishedSemantics::GAUGE, 10000ms, 30000ms};

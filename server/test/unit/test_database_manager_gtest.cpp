@@ -4,6 +4,9 @@
 
 #include <gtest/gtest.h>
 #include "database_manager.hpp"
+#include "metrics/metrics_registry.hpp"
+#include "metrics/metric_sample.hpp"
+#include "metrics/metric_types.hpp"
 #include "net_info.hpp"
 #include "network_quality_result.hpp"
 #include <cstdio>
@@ -380,5 +383,58 @@ TEST_F(DatabaseManagerTest, InsertAndQueryBtDataPathMetrics) {
     std::string time_filtered = db.queryBtDataPathMetrics("", now_ms + 1000, now_ms + 3000, 10);
     EXPECT_EQ(time_filtered.find("AA:BB:CC:11:22:33"), std::string::npos);
     EXPECT_NE(time_filtered.find("DD:EE:FF:44:55:66"), std::string::npos);
+}
+
+// ============================================================================
+// O1-A：TCP 重传/连接聚合列（tcp_retrans_loss_pct / tcp_conn_active /
+// tcp_conn_accepts）随快照持久化，"未观测"诚实写 NULL（≠ 0）。
+//
+// 缺陷背景：tcp_retrans/tcp_conn 两条 eBPF 管线此前零真实消费——
+// 不进 D-Bus、不进上行、不进 DB。此用例锁死 DB 落库这一环。
+// ============================================================================
+TEST_F(DatabaseManagerTest, PersistsTcpLossAggregateColumns) {
+    DatabaseManager db(dbPath_);
+    ASSERT_TRUE(db.isOpen());
+
+    auto info = makeTestIface("wlan0", 20, 1.0, -50);
+    NetworkQualityResult overall;
+    overall.level = NetworkQualityLevel::GOOD;
+    overall.levelName = "GOOD";
+    overall.score = 80.0;
+
+    // 未发布任何指标时：loss 与 conn 计数都写 NULL（不是 0——0 是"观测到零"）
+    ASSERT_TRUE(insertSimple(db, "wlan0", info));
+    std::string result = db.queryHistory("wlan0", "", "", 1);
+    EXPECT_NE(result.find("\"tcp_retrans_loss_pct\":null"), std::string::npos);
+    EXPECT_NE(result.find("\"tcp_conn_active\":null"), std::string::npos);
+    EXPECT_NE(result.find("\"tcp_conn_accepts\":null"), std::string::npos);
+
+    // 发布全局聚合后：下一行快照携带新值
+    weaknet::MetricsRegistry::global().publishGlobal(
+        weaknet::MetricId::TCP_RETRANS_LOSS_PCT,
+        weaknet::MetricSample::valid(2.5));
+    weaknet::MetricsRegistry::global().publishGlobal(
+        weaknet::MetricId::TCP_CONN_ACTIVE,
+        weaknet::MetricSample::valid(7.0));
+    weaknet::MetricsRegistry::global().publishGlobal(
+        weaknet::MetricId::TCP_CONN_ACCEPT_RATE,
+        weaknet::MetricSample::valid(42.0));
+    auto info2 = makeTestIface("wlan0", 20, 1.0, -50);
+    ASSERT_TRUE(insertSimple(db, "wlan0", info2));
+    result = db.queryHistory("wlan0", "", "", 10);
+    EXPECT_NE(result.find("\"tcp_retrans_loss_pct\":2.5"), std::string::npos);
+    EXPECT_NE(result.find("\"tcp_conn_active\":7"), std::string::npos);
+    EXPECT_NE(result.find("\"tcp_conn_accepts\":42"), std::string::npos);
+
+    // 清理全局注册中心，避免污染其它用例
+    weaknet::MetricsRegistry::global().publishGlobal(
+        weaknet::MetricId::TCP_RETRANS_LOSS_PCT,
+        weaknet::MetricSample::unavailable());
+    weaknet::MetricsRegistry::global().publishGlobal(
+        weaknet::MetricId::TCP_CONN_ACTIVE,
+        weaknet::MetricSample::unavailable());
+    weaknet::MetricsRegistry::global().publishGlobal(
+        weaknet::MetricId::TCP_CONN_ACCEPT_RATE,
+        weaknet::MetricSample::unavailable());
 }
 

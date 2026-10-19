@@ -216,6 +216,34 @@ TEST(EdgeTelemetrySerializer, HandlesEmptyEvidenceGracefully) {
 }
 
 // ---------------------------------------------------------------------------
+// K4 板端补采：hardware_arch / os_kernel 由 uname 实测填充（snapshot 内层），
+// location / rtt_interval_seconds / rtt_probe_targets 由 buildRecord 写入
+// （外层信封，见 tools/verify_telemetry_contract.py 的源码级检查）。
+// ---------------------------------------------------------------------------
+
+TEST(EdgeTelemetrySerializer, EmitsHardwareArchAndOsKernel) {
+    AssessmentSnapshot snap;
+    snap.sequence_id = 1;
+    snap.config_generation = 1;
+    snap.network_epoch = 1;
+    snap.wall_timestamp = std::chrono::system_clock::now();
+    snap.experience.iface = "eth0";
+    snap.experience.overall = HealthState::UNKNOWN;
+    snap.experience.overall_coverage = Coverage::NONE;
+    snap.experience.display_score = 50;
+
+    const std::string json = toEdgeTelemetrySnapshotJson(snap.experience);
+    // uname(machine) 恒有值（如 x86_64/aarch64）——不为空串占位
+    const size_t arch_pos = json.find("\"hardware_arch\":\"");
+    ASSERT_NE(arch_pos, std::string::npos);
+    const size_t arch_val = arch_pos + std::string("\"hardware_arch\":\"").size();
+    EXPECT_GT(json.find('"', arch_val), arch_val);  // 非空字符串
+    // os_kernel 至少含 "Linux <release>"
+    const size_t kern_pos = json.find("\"os_kernel\":\"Linux ");
+    EXPECT_NE(kern_pos, std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
 // Golden SLE key list — must match Python whitelist in contracts.py.
 // tools/verify_telemetry_contract.py is the authoritative check; this is the
 // C++-side smoke test that catches a `dump_sle` typo before it reaches CI.

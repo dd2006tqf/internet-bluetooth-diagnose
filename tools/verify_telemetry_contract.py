@@ -101,8 +101,13 @@ def _extract_sle_keys(serializer_src: str) -> dict[str, set[str]]:
 
 
 def _extract_top_level_keys(serializer_src: str) -> set[str]:
-    """Pull the ``"<field>":`` literals the snapshot writer emits."""
-    return set(re.findall(r'"\\?"([A-Za-z_][A-Za-z0-9_]*)\\?"\s*:', serializer_src))
+    """Pull the ``"<field>":`` literals the snapshot writer emits.
+
+    允许引号前带反斜杠（``\"field\":``，C++ 源里的转义写法）也允许不带
+    （``"field":``）——此前强制先有裸引号导致 ``json << ",\"field\":..."``
+    这种"逗号先行"的写法整段漏抓，K4 字段就是这样从报告里消失的。
+    """
+    return set(re.findall(r'\\?"([A-Za-z_][A-Za-z0-9_]*)\\?"\s*:', serializer_src))
 
 
 def _make_sle(state: str = "GOOD", capability_level_negative: bool = False) -> dict[str, Any]:

@@ -35,6 +35,7 @@
 #include "assurance/health_state.hpp"
 #include "assurance/network_experience.hpp"
 #include "topology_collector.hpp"
+#include <sys/utsname.h>
 #include "utils/json_escape.hpp"
 
 namespace weaknet {
@@ -144,6 +145,26 @@ inline std::string toEdgeTelemetrySnapshotJson(const NetworkExperience& exp, con
     json << ",";
 
     json << "\"link_type\":\"" << edgeLinkTypeToString(exp, topo) << "\"";
+
+    // K4 板端补采：hardware_arch / os_kernel（uname 实测值，非编译期宏）。
+    // uname 在 Linux 上不失败；失败时回落空串（云端字段有默认值，不 422）。
+    {
+        struct utsname un {};
+        const char* arch = "";
+        const char* kern = "";
+        char kern_buf[256] = {0};
+        if (::uname(&un) == 0) {
+            arch = un.machine;
+            std::snprintf(kern_buf, sizeof(kern_buf), "%s %s %s",
+                          un.sysname, un.release, un.version);
+            kern = kern_buf;
+            json << ",\"hardware_arch\":\"" << escapeJsonString(arch) << "\"";
+            json << ",\"os_kernel\":\"" << escapeJsonString(kern) << "\"";
+        } else {
+            json << ",\"hardware_arch\":\"\"";
+            json << ",\"os_kernel\":\"\"";
+        }
+    }
 
     if (topo && topo->collected) {
         if (topo->mac_address) {
