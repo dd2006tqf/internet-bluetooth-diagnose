@@ -145,6 +145,8 @@ industrial-ops-security-exercise-report = "industrial_ops_agent.assurance.report
 industrial-ops-training-image-acceptance = "industrial_ops_agent.training.image_acceptance_cli:run"
 industrial-ops-training-worker = "industrial_ops_agent.training.cli:run"
 industrial-ops-quantization-worker = "industrial_ops_agent.training.quantization_cli:run"
+industrial-ops-recovery-drill-complete = "industrial_ops_agent.recovery.drill_complete_cli:run"
+industrial-ops-experiment-results = "industrial_ops_agent.training.experiment_results_cli:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/industrial_ops_agent"]

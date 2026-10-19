@@ -370,6 +370,9 @@ export type StartRecoveryDrillInput = components["schemas"]["StartRecoveryDrillB
 export type AssuranceOverview = components["schemas"]["AssuranceOverviewResponse"];
 export type SecurityExercise = components["schemas"]["SecurityExerciseResponse"];
 export type ProductionAcceptance = components["schemas"]["ProductionAcceptanceResponse"];
+export type ProductionDefect = components["schemas"]["ProductionDefectResponse"];
+export type CloseProductionDefectInput = components["schemas"]["CloseDefectBody"];
+export type CompleteRecoveryDrillInput = components["schemas"]["CompleteRecoveryDrillBody"];
 export type AttackScenario = components["schemas"]["AttackScenario"];
 export type StartSecurityExerciseInput = components["schemas"]["StartExerciseBody"];
 export type CreateProductionAcceptanceInput = components["schemas"]["CreateAcceptanceBody"];
@@ -5996,6 +5999,26 @@ export async function startRecoveryDrill(
   return { drill: data.data, requestId: data.meta.request_id };
 }
 
+export async function completeRecoveryDrill(
+  drillId: string,
+  version: number,
+  input: CompleteRecoveryDrillInput,
+  client: IndustrialApiClient = industrialApi,
+): Promise<{ drill: RecoveryDrill; requestId: string }> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/recovery/drills/{drill_id}/complete",
+    {
+      params: {
+        path: { drill_id: drillId },
+        header: { "If-Match": String(version) },
+      },
+      body: input,
+    },
+  );
+  if (!data) throw toApiError(response, error);
+  return { drill: data.data, requestId: data.meta.request_id };
+}
+
 export async function getAssuranceOverview(
   client: IndustrialApiClient = industrialApi,
 ): Promise<{
@@ -6056,6 +6079,26 @@ export async function signProductionAcceptance(
   );
   if (!data) throw toApiError(response, error);
   return { acceptance: data.data, requestId: data.meta.request_id };
+}
+
+export async function closeProductionDefect(
+  defectId: string,
+  version: number,
+  input: CloseProductionDefectInput,
+  client: IndustrialApiClient = industrialApi,
+): Promise<{ defect: ProductionDefect; requestId: string }> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/production-defects/{defect_id}/close",
+    {
+      params: {
+        path: { defect_id: defectId },
+        header: { "If-Match": String(version) },
+      },
+      body: input,
+    },
+  );
+  if (!data) throw toApiError(response, error);
+  return { defect: data.data, requestId: data.meta.request_id };
 }
 
 export async function getPredictiveMaintenanceOverview(

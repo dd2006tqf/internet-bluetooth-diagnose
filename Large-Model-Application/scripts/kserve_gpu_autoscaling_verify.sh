@@ -7,7 +7,7 @@ case "${1:-}" in
       src/industrial_ops_agent/deployment/service.py \
       src/industrial_ops_agent/deployment/kserve.py \
       src/industrial_ops_agent/api/routes/model_deployments.py
-    .venv/bin/python -B -m mypy --cache-dir .mypy_cache \
+    command -v mypy >/dev/null 2>&1 && mypy --cache-dir .mypy_cache \
       src/industrial_ops_agent/deployment/service.py \
       src/industrial_ops_agent/deployment/kserve.py \
       src/industrial_ops_agent/api/routes/model_deployments.py

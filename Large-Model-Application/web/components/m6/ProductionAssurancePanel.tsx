@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ErrorState, LoadingState } from "@/components/RequestState";
 import {
+  closeProductionDefect,
   createProductionAcceptance,
   getAssuranceOverview,
   signProductionAcceptance,
@@ -29,6 +30,7 @@ import {
   type AssuranceOverview,
   type CreateProductionAcceptanceInput,
   type ProductionAcceptance,
+  type ProductionDefect,
 } from "@/lib/api/client";
 
 type ExerciseForm = {
@@ -55,6 +57,11 @@ type SignoffForm = {
   evidenceDigest: string;
 };
 
+type CloseDefectForm = {
+  evidenceRef: string;
+  evidenceDigest: string;
+};
+
 const digestRule = /^sha256:[0-9a-f]{64}$/;
 const referenceRule = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 const statusColors: Record<string, string> = {
@@ -76,10 +83,12 @@ export function ProductionAssurancePanel() {
   const [exerciseOpen, setExerciseOpen] = useState(false);
   const [acceptanceOpen, setAcceptanceOpen] = useState(false);
   const [signoffTarget, setSignoffTarget] = useState<ProductionAcceptance>();
+  const [closeDefectTarget, setCloseDefectTarget] = useState<ProductionDefect>();
   const [submitting, setSubmitting] = useState(false);
   const [exerciseForm] = Form.useForm<ExerciseForm>();
   const [acceptanceForm] = Form.useForm<AcceptanceForm>();
   const [signoffForm] = Form.useForm<SignoffForm>();
+  const [closeDefectForm] = Form.useForm<CloseDefectForm>();
 
   const load = useCallback(async () => {
     try {
@@ -221,6 +230,34 @@ export function ProductionAssurancePanel() {
     }
   }
 
+  function openCloseDefect(defect: ProductionDefect) {
+    closeDefectForm.resetFields();
+    setCloseDefectTarget(defect);
+  }
+
+  async function submitCloseDefect() {
+    if (!closeDefectTarget) return;
+    const values = await closeDefectForm.validateFields();
+    setSubmitting(true);
+    try {
+      const result = await closeProductionDefect(
+        closeDefectTarget.defect_id,
+        closeDefectTarget.version,
+        {
+          evidence_ref: values.evidenceRef,
+          evidence_digest: values.evidenceDigest,
+        },
+      );
+      setRequestId(result.requestId);
+      setCloseDefectTarget(undefined);
+      await load();
+    } catch (cause) {
+      setError(cause);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <Card
       title="攻击演练与生产验收"
@@ -317,14 +354,36 @@ export function ProductionAssurancePanel() {
             </Card>
 
             {overview.open_defects.length ? (
-              <Alert
-                showIcon
-                type="error"
-                message="存在阻断生产的安全缺陷"
-                description={overview.open_defects
-                  .map((item) => `${item.severity} ${item.scenario_id}`)
-                  .join("；")}
-              />
+              <Card
+                size="small"
+                title={<span style={{ color: "#cf1322" }}>⚠️ 存在阻断生产的安全缺陷</span>}
+              >
+                <Table
+                  rowKey="defect_id"
+                  size="small"
+                  pagination={false}
+                  dataSource={overview.open_defects}
+                  columns={[
+                    { title: "缺陷 ID", dataIndex: "defect_id", width: 180 },
+                    { title: "严重级别", dataIndex: "severity", width: 110, render: (v: string) => <Tag color="red">{v}</Tag> },
+                    { title: "攻击场景", dataIndex: "scenario_id", width: 220 },
+                    { title: "发现时间", dataIndex: "opened_at", width: 190, render: (v: string) => new Date(v).toLocaleString() },
+                    {
+                      title: "操作",
+                      width: 120,
+                      render: (_, record: ProductionDefect) => (
+                        <Button
+                          size="small"
+                          danger
+                          onClick={() => openCloseDefect(record)}
+                        >
+                          关闭缺陷
+                        </Button>
+                      ),
+                    },
+                  ]}
+                />
+              </Card>
             ) : null}
 
             <Card
@@ -550,6 +609,32 @@ export function ProductionAssurancePanel() {
             <Input placeholder="ticket:acceptance-signoff" />
           </Form.Item>
           <Form.Item name="evidenceDigest" label="签署记录 SHA-256" rules={[{ required: true }, { pattern: digestRule }]}>
+            <Input placeholder="sha256:..." />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={`关闭生产缺陷: ${closeDefectTarget?.defect_id ?? ""}`}
+        open={Boolean(closeDefectTarget)}
+        onCancel={() => setCloseDefectTarget(undefined)}
+        onOk={() => void submitCloseDefect()}
+        confirmLoading={submitting}
+        destroyOnClose
+      >
+        <Form form={closeDefectForm} layout="vertical">
+          <Form.Item
+            name="evidenceRef"
+            label="修复/验收证据引用"
+            rules={[{ required: true }, { pattern: referenceRule }]}
+          >
+            <Input placeholder="ticket:retest-pass-001" />
+          </Form.Item>
+          <Form.Item
+            name="evidenceDigest"
+            label="证据 SHA-256"
+            rules={[{ required: true }, { pattern: digestRule }]}
+          >
             <Input placeholder="sha256:..." />
           </Form.Item>
         </Form>

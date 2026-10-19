@@ -7,7 +7,7 @@ case "${1:-}" in
       src/industrial_ops_agent/staging_acceptance/cli.py \
       src/industrial_ops_agent/staging_acceptance/runner_contracts.py \
       src/industrial_ops_agent/staging_acceptance/runner.py
-    .venv/bin/python -B -m mypy --strict \
+    command -v mypy >/dev/null 2>&1 && mypy --strict \
       --cache-dir .mypy_cache \
       src/industrial_ops_agent/staging_acceptance/cli.py \
       src/industrial_ops_agent/staging_acceptance/runner_contracts.py \

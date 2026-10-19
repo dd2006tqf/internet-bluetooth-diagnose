@@ -562,6 +562,35 @@ PY
       -m industrial_ops_agent.simulation.enterprise_project_adoption_cli adopt \
       --repo-root "$root"
     ;;
+  staging-model-verify)
+    [[ -x scripts/project_staging_model_runtime_verify.sh ]] || fail "missing verify script"
+    ./scripts/project_staging_model_runtime_verify.sh "${@:2}"
+    ;;
+  real-model-acceptance)
+    [[ -x .venv/bin/python ]] || fail "run uv sync before real-model-acceptance"
+    PYTHONPATH=src .venv/bin/python -B \
+      scripts/real_model_business_loop_acceptance.py "${@:2}"
+    ;;
+  gpu-promotion-lab)
+    [[ -x .venv/bin/python ]] || fail "run uv sync before gpu-promotion-lab"
+    PYTHONPATH=src .venv/bin/python -B \
+      -m industrial_ops_agent.training.gpu_promotion_lab_cli "${@:2}"
+    ;;
+  rul-promotion-lab)
+    [[ -x .venv/bin/python ]] || fail "run uv sync before rul-promotion-lab"
+    PYTHONPATH=src .venv/bin/python -B \
+      -m industrial_ops_agent.predictive_maintenance.rul_promotion_lab "${@:2}"
+    ;;
+  grpo-rollout)
+    [[ -x .venv/bin/python ]] || fail "run uv sync before grpo-rollout"
+    PYTHONPATH=src .venv/bin/python -B \
+      -m industrial_ops_agent.simulation.grpo_kserve_rollout_cli "${@:2}"
+    ;;
+  ppo-rollout)
+    [[ -x .venv/bin/python ]] || fail "run uv sync before ppo-rollout"
+    PYTHONPATH=src .venv/bin/python -B \
+      -m industrial_ops_agent.simulation.ppo_kserve_rollout_cli "${@:2}"
+    ;;
   status)
     require_runtime
     validate_runtime_env_path
@@ -587,7 +616,7 @@ PY
     compose down --volumes --remove-orphans
     ;;
   *)
-    echo "usage: scripts/dev_lite.sh <doctor|init|up|verify|verify-rls|sandbox-status|sandbox-reset|sandbox-fault|sandbox-clear-fault|sandbox-complete|sandbox-fulfill|sandbox-verify|supplier-a2a-status|supplier-a2a-reset|supplier-a2a-fault|supplier-a2a-clear-fault|supplier-a2a-verify|supplier-a2a-lab|supplier-a2a-lab-verify|candidate-rollout|simulated-closure|project-assurance|project-assurance-verify|enterprise-adoption|status|logs|down|clean>" >&2
+    echo "usage: scripts/dev_lite.sh <doctor|init|up|verify|verify-rls|sandbox-status|sandbox-reset|sandbox-fault|sandbox-clear-fault|sandbox-complete|sandbox-fulfill|sandbox-verify|supplier-a2a-status|supplier-a2a-reset|supplier-a2a-fault|supplier-a2a-clear-fault|supplier-a2a-verify|supplier-a2a-lab|supplier-a2a-lab-verify|candidate-rollout|simulated-closure|project-assurance|project-assurance-verify|enterprise-adoption|staging-model-verify|real-model-acceptance|gpu-promotion-lab|rul-promotion-lab|grpo-rollout|ppo-rollout|status|logs|down|clean>" >&2
     exit 2
     ;;
 esac

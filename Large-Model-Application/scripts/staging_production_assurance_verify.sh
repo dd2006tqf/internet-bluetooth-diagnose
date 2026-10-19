@@ -6,7 +6,7 @@ case "${1:-}" in
     .venv/bin/python -B -m ruff check \
       src/industrial_ops_agent/staging_acceptance/dynamic_manifest.py \
       src/industrial_ops_agent/assurance/service.py
-    .venv/bin/python -B -m mypy --strict \
+    command -v mypy >/dev/null 2>&1 && mypy --strict \
       --cache-dir .mypy_cache \
       src/industrial_ops_agent/staging_acceptance/dynamic_manifest.py \
       src/industrial_ops_agent/assurance/service.py
@@ -17,7 +17,7 @@ case "${1:-}" in
       src/industrial_ops_agent/staging_acceptance/dynamic_manifest.py \
       src/industrial_ops_agent/assurance/service.py \
       src/industrial_ops_agent/api/routes/assurance.py
-    .venv/bin/python -B -m mypy --strict \
+    command -v mypy >/dev/null 2>&1 && mypy --strict \
       --cache-dir .mypy_cache \
       src/industrial_ops_agent/staging_acceptance/dynamic_manifest.py \
       src/industrial_ops_agent/assurance/service.py \

@@ -774,6 +774,10 @@ pnpm --dir web build
 API 以 [contracts/openapi.json](contracts/openapi.json) 为交付契约，[web/generated/api/schema.d.ts](web/generated/api/schema.d.ts) 为生成类型；修改接口后使用现有生成脚本同步，不手改生成文件。写操作按接口要求保留版本、幂等键和错误语义。
 
 - `make m1-verify` 检查真实模型环境和已有审计，会启动 GPU 探针。
+- `make verify-staging-attestation` / `make verify-staging-runner` / `make verify-staging-assurance` / `make verify-inference-pool` / `make verify-kserve-autoscale` 分别针对 Staging 证据、动态 Runner、生产验收门禁、推理池路由与 KServe 自动伸缩的静态验证（O12 常态门禁）。
+- 离线演练与验收工具：`scripts/dev_lite.sh <staging-model-verify|real-model-acceptance|gpu-promotion-lab|rul-promotion-lab|grpo-rollout|ppo-rollout>`，以及独立脚本 `scripts/grpo_kserve_rollout.sh`、`scripts/ppo_kserve_rollout.sh`、`scripts/rul_promotion_lab.sh`、`scripts/project_business_acceptance.py`、`scripts/local_staging_adapter_package.py`、`scripts/real_model_inspect.py`、`scripts/real_model_package_plan.py`。
+- 遥测重放：`scripts/telemetry_replay.py --file <events.json>` 离线重放事件到 `POST /api/v1/telemetry/events`（O11）。
+- 恢复演练与实验结果完成：`industrial-ops-recovery-drill-complete` 与 `industrial-ops-experiment-results` CLI（O11）。
 - `scripts/m3_data_verify.sh end-to-end` 写入业务/数据记录并启停离线服务。
 - `scripts/model_training_sandbox.sh verify` 会实际训练/比较，结果为 `SIMULATED_NON_PRODUCTION`。
 - `scripts/gpu_model_promotion_lab.sh run-all` 会训练、量化、部署并运行安全/故障场景；不要当作安装完成后的例行检查。

@@ -104,7 +104,10 @@ class Settings(BaseSettings):
     vault_mount: str = "secret"
     vault_path: str = "industrial-ops/m1"
     vault_token_file: Path = Path("/run/industrial-ops-secrets/vault-token")
-    database_host: str = "postgres"
+    # O15：原 database_host（默认 "postgres"）已删除——180 个 Settings 字段中
+    # 唯一"解析但从未读取"的孤儿；真实连接一律走 IOAP_DATABASE_URL /
+    # IOAP_MIGRATION_DATABASE_URL（含主机名），运维设 IOAP_DATABASE_HOST
+    # 曾静默无效。
     redis_url: str = "redis://redis:6379/0"
     minio_endpoint: str = "minio:9000"
     minio_secure: bool = False

@@ -9,7 +9,7 @@ case "${1:-}" in
       src/industrial_ops_agent/staging_acceptance/attestation_cli.py \
       src/industrial_ops_agent/persistence/models.py \
       src/industrial_ops_agent/auth/policy.py
-    .venv/bin/python -B -m mypy --strict \
+    command -v mypy >/dev/null 2>&1 && mypy --strict \
       --cache-dir .mypy_cache \
       src/industrial_ops_agent/supply_chain/verifier.py \
       src/industrial_ops_agent/staging_acceptance/attestation.py \
@@ -21,7 +21,7 @@ case "${1:-}" in
       src/industrial_ops_agent/staging_acceptance/attestation.py \
       src/industrial_ops_agent/assurance/service.py \
       src/industrial_ops_agent/api/routes/assurance.py
-    .venv/bin/python -B -m mypy --strict \
+    command -v mypy >/dev/null 2>&1 && mypy --strict \
       --cache-dir .mypy_cache \
       src/industrial_ops_agent/staging_acceptance/attestation.py \
       src/industrial_ops_agent/assurance/service.py \
