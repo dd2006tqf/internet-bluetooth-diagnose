@@ -181,7 +181,7 @@ DBusConnection* init_dbus(ServerContext* ctx) {
     // 指针已保存至 ctx
 
     ctx->connection = conn;
-    LOG_INFO(LogModule::DBUS, "DBus 服务端已启动，接口 " << kInterface << "，方法 " << kMethodListInterfaces << "，信号 " << kSignalChanged);
+    LOG_INFO(LogModule::DBUS, "DBus 服务端已启动，接口 " << kInterface << "，方法 " << kMethodListInterfaces);
     return conn;
 }
 
@@ -190,7 +190,6 @@ void start_iface_monitor_thread(ServerContext* ctx, std::thread* worker) {
     *worker = std::thread([ctx](){
         LOG_INFO(LogModule::INTERFACE, "monitor thread started");
         std::vector<NetInfo> current;
-        int32_t change_counter = 0;
 
         while ((ctx->running.load() && !ctx->iface_stop.load())) {
             LOG_INFO(LogModule::INTERFACE, "tick: collecting interfaces...");
@@ -235,11 +234,8 @@ void start_iface_monitor_thread(ServerContext* ctx, std::thread* worker) {
                         LOG_INFO(LogModule::INTERFACE, "[using] " << x.ifName() << " is current uplink");
                     }
                 }
-                // 同步发射（内部有锁），不创建 detached 子线程；事件更新经 EventManager 同步
-                if (ctx->service) {
-                    ctx->service->emitChanged(msg, change_counter);
-                    getEventManager().emitInterfaceChanged(msg, "network_manager");
-                }
+                // O3-B：Changed 信号已停发；事件更新经 EventManager 同步分发
+                getEventManager().emitInterfaceChanged(msg, "network_manager");
             } else {
                 LOG_INFO(LogModule::INTERFACE, "no changes detected");
             }
@@ -298,10 +294,8 @@ void start_traffic_analysis_thread(ServerContext* ctx, std::thread* worker) {
                 auto current_interfaces = ctx->weak_mgr->getCurrentInterfaces();
                 LOG_INFO(LogModule::WEAK_MGR, "traffic analysis: current interfaces count=" << current_interfaces.size());
 
-                if (changed && ctx->service) {
-                    LOG_INFO(LogModule::WEAK_MGR, "Traffic analysis updated - emitting signal");
-                    // 同步发射（内部有锁），不创建 detached 子线程
-                    ctx->service->emitChanged("Traffic analysis updated", /*counter*/0);
+                if (changed) {
+                    LOG_INFO(LogModule::WEAK_MGR, "Traffic analysis updated");
                 } else {
                     LOG_INFO(LogModule::WEAK_MGR, "TRAFFIC_ANALYSIS: no changes detected (interfaces: " << current_interfaces.size() << ")");
                 }
@@ -336,7 +330,7 @@ void start_using_iface_thread(ServerContext* ctx, std::thread* worker) {
             auto current_interfaces = ctx->weak_mgr->getCurrentInterfaces();
             LOG_INFO(LogModule::WEAK_MGR, "using iface: current interfaces count=" << current_interfaces.size());
             
-            if (changed && ctx->service) {
+            if (changed) {
                 // 查找当前使用的接口
                 std::string currentIf;
                 for (const auto& net : current_interfaces) {
@@ -345,10 +339,9 @@ void start_using_iface_thread(ServerContext* ctx, std::thread* worker) {
                         break;
                     }
                 }
-                
+
                 std::string msg = std::string("Using iface updated: ") + (currentIf.empty() ? "(none)" : currentIf);
-                // 同步发射（内部有锁），不创建 detached 子线程
-                ctx->service->emitChanged(msg, /*counter*/0);
+                // O3-B：Changed 信号已停发；事件更新经 EventManager 同步分发
                 getEventManager().emitConnectionModeChanged(msg, currentIf.empty() ? "none" : currentIf);
             } else {
                 LOG_INFO(LogModule::WEAK_MGR, "unchanged (interfaces: " << current_interfaces.size() << ")");
@@ -815,30 +808,10 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
 // 将此前孤立的 BPF 监控器纳入 ServerContext 统一生命周期
 // ====================================================================
 
-// 把 PerKeyStats 差分结果以 JSON 字段形式拼进 ostr；仅当监控器启用了
-// 驱逐可见性（max_entries 或 entries 非零）才输出，区分"未启用"与"本轮无变化"。
-static void appendEvictionJson(std::ostringstream& os, const weaknet::PerKeyStats& ks) {
-    if (ks.max_entries == 0 && ks.entries == 0) return;
-    os << ",\"eviction\":{\"new_keys\":" << ks.new_keys
-       << ",\"disappeared_keys\":" << ks.disappeared_keys
-       << ",\"reset_keys\":" << ks.reset_keys
-       << ",\"entries\":" << ks.entries
-       << ",\"max_entries\":" << ks.max_entries
-       << ",\"watermark_pct\":" << ks.watermark_pct
-       << ",\"eviction_limited\":" << (ks.eviction_limited ? "true" : "false")
-       << "}";
-}
-
-// 向 D-Bus 发射一条 eBPF 监控器聚合指标信号。
-// payload 是 JSON 文本（EbpfMonitorStats 信号的契约载体），counter 走全局事件计数器。
-static void emitEbpfStats(ServerContext* ctx, const char* monitor_name,
-                          const std::string& stats_json, int32_t counter) {
-    if (!ctx->service) return;
-    std::ostringstream os;
-    os << "{\"monitor\":\"" << weaknet_utils::escapeJsonString(monitor_name)
-       << "\"," << stats_json << "}";
-    ctx->service->emitSpecificSignal(kSignalEbpfMonitorStats, os.str(), counter);
-}
+// O3-B：appendEvictionJson（EbpfMonitorStats 载荷的 eviction 子对象拼接）与
+// emitEbpfStats（信号发射包装）随 EbpfMonitorStats 信号停发而删除。逐 key
+// 驱逐可见性本身不受影响——它仍经 GetEbpfMonitorHealth 等 D-Bus 方法的
+// keyStatsSnapshot() 路径对外暴露。
 
 void start_dns_monitor_thread(ServerContext* ctx, std::thread* worker, DnsMonitor* monitor) {
     // 监控器由 ServerContext 持有 ownership（unique_ptr），线程仅通过 .get() 使用。
@@ -886,18 +859,8 @@ void start_dns_monitor_thread(ServerContext* ctx, std::thread* worker, DnsMonito
                     LOG_INFO(LogModule::NETWORK, "DNS tick: queries=" << stats.totalQueries
                         << " avgLatency=" << stats.avgLatencyMs << "ms"
                         << " timeoutRate=" << stats.timeoutRate() << "%");
-
-                    // 细粒度信号：订阅方可以拿到聚合指标 + 驱逐差分，替代轮询 GetDnsStats。
-                    std::ostringstream os;
-                    os << "\"total_queries\":" << stats.totalQueries
-                       << ",\"total_responses\":" << stats.totalResponses
-                       << ",\"total_timeouts\":" << stats.totalTimeouts
-                       << ",\"total_errors\":" << stats.totalErrors
-                       << ",\"avg_latency_ms\":" << stats.avgLatencyMs
-                       << ",\"max_latency_ms\":" << stats.maxLatencyMs
-                       << ",\"timeout_rate_pct\":" << stats.timeoutRate();
-                    appendEvictionJson(os, monitor->keyStatsSnapshot());
-                    emitEbpfStats(ctx, "dns", os.str(), 0);
+                    // O3-B：原 EbpfMonitorStats 信号载荷（聚合指标 + 驱逐差分）
+                    // 已随信号停发；轮询出口走 GetDnsStats。
                 }
             }
 
@@ -962,17 +925,8 @@ void start_http_latency_monitor_thread(ServerContext* ctx, std::thread* worker, 
                     << " p50=" << (globalStats.p50Ns / 1000000) << "ms"
                     << " p99=" << (globalStats.p99Ns / 1000000) << "ms"
                     << " analysis=" << globalStats.analysis);
-
-                // 细粒度信号：TTFB 分位数 + 驱逐差分，替代轮询 GetHttpLatencyStats。
-                std::ostringstream os;
-                os << "\"total_txns\":" << globalStats.totalTxns
-                   << ",\"p50_ms\":" << (globalStats.p50Ns / 1000000)
-                   << ",\"p95_ms\":" << (globalStats.p95Ns / 1000000)
-                   << ",\"p99_ms\":" << (globalStats.p99Ns / 1000000)
-                   << ",\"max_ms\":" << (globalStats.maxNs / 1000000)
-                   << ",\"analysis\":\"" << weaknet_utils::escapeJsonString(globalStats.analysis) << "\"";
-                appendEvictionJson(os, monitor->keyStatsSnapshot());
-                emitEbpfStats(ctx, "http_latency", os.str(), 0);
+                // O3-B：原 EbpfMonitorStats 信号载荷（TTFB 分位数 + 驱逐差分）
+                // 已随信号停发；轮询出口走 GetHttpLatencyStats。
             }
             for (int i = 0; i < static_cast<int>(ctx->cfg.http_latency.interval_ms.load() / 100) && (ctx->running.load() && !ctx->http_latency_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
@@ -1006,37 +960,8 @@ void start_process_net_profiler_thread(ServerContext* ctx, std::thread* worker, 
                         << " txBytes=" << p.txBytes);
                 }
             }
-
-            // 细粒度信号：Top N 进程带宽/重传 + 驱逐差分。
-            if (!topBw.empty() || !topRetrans.empty()) {
-                std::ostringstream os;
-                os << "\"top_bandwidth\":[";
-                bool first = true;
-                for (const auto& p : topBw) {
-                    if (p.txBytes == 0) continue;
-                    if (!first) os << ",";
-                    first = false;
-                    os << "{\"pid\":" << p.pid
-                       << ",\"comm\":\"" << weaknet_utils::escapeJsonString(p.comm)
-                       << "\",\"tx_bytes\":" << p.txBytes
-                       << ",\"tx_packets\":" << p.txPackets
-                       << ",\"retrans_count\":" << p.retransCount << "}";
-                }
-                os << "],\"top_retrans\":[";
-                first = true;
-                for (const auto& p : topRetrans) {
-                    if (p.retransCount == 0) continue;
-                    if (!first) os << ",";
-                    first = false;
-                    os << "{\"pid\":" << p.pid
-                       << ",\"comm\":\"" << weaknet_utils::escapeJsonString(p.comm)
-                       << "\",\"retrans_count\":" << p.retransCount
-                       << ",\"tx_bytes\":" << p.txBytes << "}";
-                }
-                os << "]";
-                appendEvictionJson(os, profiler->keyStatsSnapshot());
-                emitEbpfStats(ctx, "process_profiler", os.str(), 0);
-            }
+            // O3-B：原 EbpfMonitorStats 信号载荷（Top N 带宽/重传 + 驱逐差分）
+            // 已随信号停发；轮询出口走 GetProcessProfilerStats。
             for (int i = 0; i < static_cast<int>(ctx->cfg.process_profiler.interval_ms.load() / 100) && (ctx->running.load() && !ctx->process_profiler_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
         }
@@ -1066,13 +991,8 @@ void start_tcp_retrans_monitor_thread(ServerContext* ctx, std::thread* worker, T
                     weaknet::MetricsRegistry::global().publishGlobal(
                         weaknet::MetricId::TCP_RETRANS_LOSS_PCT, sample);
                 }
-
-                // 细粒度信号：连接级重传统计 + 驱逐差分，替代轮询。
-                std::ostringstream os;
-                os << "\"connections\":" << stats.size()
-                   << ",\"loss_rate_pct\":" << monitor->computeLossRate();
-                appendEvictionJson(os, monitor->keyStatsSnapshot());
-                emitEbpfStats(ctx, "tcp_retrans", os.str(), 0);
+                // O3-B：原 EbpfMonitorStats 信号载荷（连接级重传 + 驱逐差分）
+                // 已随信号停发；轮询出口走 GetTcpRetransStats。
             }
             for (int i = 0; i < static_cast<int>(ctx->cfg.tcp_retrans.interval_ms.load() / 100) && (ctx->running.load() && !ctx->tcp_retrans_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
@@ -1113,19 +1033,8 @@ void start_tcp_conn_monitor_thread(ServerContext* ctx, std::thread* worker, TcpC
                     weaknet::MetricsRegistry::global().publishGlobal(
                         weaknet::MetricId::TCP_CONN_ACCEPT_RATE, s_accepts);
                 }
-
-                // 细粒度信号：连接生命周期统计，替代轮询。
-                std::ostringstream os;
-                os << "\"accepts\":" << stats.totalAccepts
-                   << ",\"closes\":" << stats.totalCloses
-                   << ",\"active\":" << stats.activeInbound
-                   << ",\"accept_failures\":" << stats.totalAcceptFailures
-                   << ",\"accepts_v4\":" << stats.acceptsV4
-                   << ",\"accepts_v6\":" << stats.acceptsV6
-                   << ",\"avg_duration_ms\":" << stats.avgDurationMs
-                   << ",\"max_duration_ms\":" << stats.maxDurationMs;
-                appendEvictionJson(os, monitor->keyStatsSnapshot());
-                emitEbpfStats(ctx, "tcp_conn", os.str(), 0);
+                // O3-B：原 EbpfMonitorStats 信号载荷（连接生命周期统计）
+                // 已随信号停发；轮询出口走 GetTcpConnStats。
             }
             for (int i = 0; i < static_cast<int>(ctx->cfg.tcp_conn.interval_ms.load() / 100) && (ctx->running.load() && !ctx->tcp_conn_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);
@@ -1403,8 +1312,8 @@ int start_server(int argc, char** argv) {
 
     if (!init_dbus(&ctx)) return 1;
 
-    // 启动事件监控
-    getEventManager().startEventMonitoring(&ctx);
+    // 启动事件监控（O3-B：不再绑定 ctx，事件只走回调分发）
+    getEventManager().startEventMonitoring();
 
     // 初始化 MetricsRegistry 与 WeakNetMgr (MR-1, MR-2, HR-4)
     ctx.metrics_registry = std::make_unique<weaknet::MetricsRegistry>();
@@ -1478,12 +1387,11 @@ int start_server(int argc, char** argv) {
     const std::string base_dir_for_overrides =
         db_path_for_overrides.substr(0, db_path_for_overrides.size() - std::string("history.db").size());
     ctx.monitor_manager->setOverridePath(base_dir_for_overrides + "runtime-overrides.bin");
-    // 生命周期状态变化 → D-Bus MonitorStateChanged 信号（携带 "name:state"）。
+    // 生命周期状态变化 → 记录日志。（O3-B：原 D-Bus MonitorStateChanged
+    // 信号零订阅者已停发；状态变化的可观测性由本日志保留。）
     ctx.monitor_manager->setStateChangeCallback(
-        [&ctx](const std::string& name, const std::string& state) {
-            if (ctx.service) {
-                ctx.service->emitSpecificSignal(kSignalMonitorStateChanged, name + ":" + state, 0);
-            }
+        [](const std::string& name, const std::string& state) {
+            LOG_INFO(LogModule::SYSTEM, "monitor state changed: " << name << ": " << state);
         });
     if (!ctx.monitor_manager->loadOverrides(nullptr)) {
         LOG_WARNING(LogModule::SYSTEM, "runtime monitor overrides could not be loaded");

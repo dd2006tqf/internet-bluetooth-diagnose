@@ -3,28 +3,25 @@
  * @brief 网络事件管理器实现 —— 观察者模式的事件总线
  *
  * 本文件实现 NetworkEventManager 单例，负责将网卡变更、上网方式切换、
- * 网络质量波动、蓝牙设备变化等事件以「回调分发 + DBus 信号」双通道广播。
+ * 网络质量波动、蓝牙设备变化等事件以「回调分发」广播给注册方。
  *
  * 设计思路：
  *   - 每种 EventType 维护独立的回调 vector，避免互斥事件相互阻塞
- *   - emitEvent() 内部先同步调用回调，再通过 DbusService 发送 DBus 信号
- *   - 回调与 DBus 信号共享一个原子计数器 eventCounter，便于接收方去重/排序
+ *   - emitEvent() 同步调用所有注册回调
+ *
+ * O3-B 说明：此前 emitEvent 在回调之后还会经 DbusService 发射 D-Bus 信号
+ * （Changed/InterfaceChanged/NetworkQualityChanged 等 7 个信号），但这些
+ * 信号零生产订阅者——发射端一直在发、订阅端从未建起来。按"无真实消费者
+ * 的生产接口是孤儿"的纪律停发，发射管线一并删除，本文件只剩回调通道。
  *
  * 线程安全：
  *   - 回调注册/注销与分发通过 cb_mutex_ 保护
- *   - emitEvent 中的 DbusService 发送由 send_mutex_（在 dbus_service.cpp 中）保护
- *   - ServerContext 指针仅在 startEventMonitoring 中赋值一次，之后只读
  */
 
 #include "event_manager.hpp"
-#include "server.hpp"
-#include "dbus_service.hpp"
-#include "common.hpp"
 #include "logger.hpp"
-#include <cstdio>
 #include <chrono>
 #include <thread>
-#include <atomic>
 
 using namespace std::chrono_literals;
 
@@ -37,8 +34,7 @@ NetworkEventManager& getEventManager() {
     return *g_event_manager;
 }
 
-NetworkEventManager::NetworkEventManager()
-    : server_ctx_(nullptr) {
+NetworkEventManager::NetworkEventManager() {
     LOG_INFO(LogModule::EVENT_MGR, "NetworkEventManager initialized");
 }
 
@@ -109,55 +105,15 @@ void NetworkEventManager::unregisterCallback(EventType type) {
 }
 
 /**
- * @brief 将 EventType 映射为对应的 DBus 信号名
- * @param type 事件类型
- * @return DBus 信号名字符串，未知类型回退到通用 kSignalChanged
- */
-std::string NetworkEventManager::getSignalName(EventType type) const {
-    switch (type) {
-        case EventType::InterfaceChanged:
-            return kSignalInterfaceChanged;
-        case EventType::ConnectionModeChanged:
-            return kSignalConnectionModeChanged;
-        case EventType::NetworkQualityChanged:
-            return kSignalNetworkQualityChanged;
-        case EventType::BluetoothDeviceChanged:
-            return kSignalBluetoothDeviceChanged;
-        default:
-            return kSignalChanged; // 默认使用通用信号
-    }
-}
-
-/**
- * @brief 分发事件：先调用所有注册回调，再通过 DBus 发送信号
+ * @brief 分发事件：调用所有注册回调
  * @param event 完整的 NetworkEvent 对象
  *
- * 分发顺序：invokeCallbacks() → emitNetworkQualitySignal()/emitSpecificSignal()
- * 其中 DBus 信号发送自带互斥锁 + 重试逻辑，不会阻塞回调分发
+ * （O3-B 前还会经 ServerContext::service 发射 D-Bus 信号，已停发。）
  */
 void NetworkEventManager::emitEvent(const NetworkEvent& event) {
     LOG_INFO(LogModule::EVENT_MGR, "emitting event: type=" << static_cast<int>(event.type) << ", message='" << event.message << "', source='" << event.source << "'");
 
     invokeCallbacks(event.type, event);
-
-    // 如果有DBus服务，发送信号
-    if (server_ctx_ && server_ctx_->service) {
-        std::string signalName = getSignalName(event.type);
-        // 将 source 前缀格式化进 message，便于接收方日志追踪
-        std::string fullMessage = event.source.empty()
-            ? event.message
-            : "[" + event.source + "] " + event.message;
-
-        // 原子计数器：跨事件类型递增，接收方可用来判断事件先后顺序与去重
-        static std::atomic<int32_t> eventCounter{0};
-
-        // 网络质量事件携带 details 字段，走专用三参数信号；其余走通用两参数信号
-        if (event.type == EventType::NetworkQualityChanged && !event.details.empty()) {
-            server_ctx_->service->emitNetworkQualitySignal(fullMessage, event.details, eventCounter++);
-        } else {
-            server_ctx_->service->emitSpecificSignal(signalName, fullMessage, eventCounter++);
-        }
-    }
 }
 
 /**
@@ -217,13 +173,10 @@ void NetworkEventManager::emitBluetoothDeviceChanged(const std::string& message,
 }
 
 /**
- * @brief 启动事件监控，绑定 ServerContext 并注册日志回调
- * @param ctx 服务器上下文（包含 DbusService 指针）
- * @note  必须在 DbusService 初始化完成后调用
+ * @brief 启动事件监控：注册默认日志回调
+ * （O3-B 后不再需要 ServerContext：绑定仅为发 D-Bus 信号，信号已停发。）
  */
-void NetworkEventManager::startEventMonitoring(struct ServerContext* ctx) {
-    server_ctx_ = ctx;
-
+void NetworkEventManager::startEventMonitoring() {
     LOG_INFO(LogModule::EVENT_MGR, "event monitoring started");
 
     // 注册默认日志回调，保证事件至少被记录到日志，便于问题排查

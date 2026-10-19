@@ -1513,7 +1513,7 @@ void start_bt_monitor_thread(ServerContext* ctx, std::thread* worker, BtMonitor*
                         case BtEvent::Type::DeviceRssiChanged:
                         case BtEvent::Type::DiscoveryStarted:
                         case BtEvent::Type::DiscoveryStopped:
-                            // 所有蓝牙事件统一走 EventManager，发射正确的信号
+                            // 设备级事件统一走 EventManager，分发到注册回调
                             getEventManager().emitBluetoothDeviceChanged(
                                 ev.message,
                                 ev.deviceName.empty() ? ev.deviceMac : ev.deviceName);
@@ -1522,11 +1522,10 @@ void start_bt_monitor_thread(ServerContext* ctx, std::thread* worker, BtMonitor*
                         case BtEvent::Type::AdapterAdded:
                         case BtEvent::Type::AdapterRemoved:
                         case BtEvent::Type::AdapterPowered:
-                            // 适配器事件直接发射 D-Bus 信号
-                            if (ctx->service) {
-                                ctx->service->emitSpecificSignal(
-                                    kSignalBluetoothDeviceChanged, ev.message, 0);
-                            }
+                            // O3-B：适配器事件曾直接发射 BluetoothDeviceChanged
+                            // D-Bus 信号，该信号零生产订阅者已停发——适配器级
+                            // 事件随之不再对外推送（设备级事件仍走 EventManager
+                            // 回调，见上一分支）。
                             break;
                     }
                 }

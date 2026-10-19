@@ -3,40 +3,20 @@
 //
 // Verifies spec Event Routing "band conflict event" scenario:
 //   WHEN band conflict detector outputs detected=true
-//   THEN pushed via EventManager.emitNetworkQualityChanged, signal payload contains "band_conflict" identifier
+//   THEN pushed via EventManager.emitNetworkQualityChanged, payload contains
+//        "band_conflict" identifier
 //
-// This test links multiple real production components (BandConflictDetector + NetworkEventManager + DbusService
-// stub), verifying feed->detect->emit->callback end-to-end chain. DbusService uses mock stub instead of real
-// D-Bus connection, only as signal sink to record counter; emit routing logic is real execution from event_manager.cpp.
+// This test links multiple real production components (BandConflictDetector +
+// NetworkEventManager), verifying feed->detect->emit->callback end-to-end chain
+// on the callback path.（O3-B 前链路末端还有一段 D-Bus 信号发射 + mock 计数
+// 校验；7 个信号零生产订阅者、发射已停发，该段随发射管线一并移除。）
 
 #include <gtest/gtest.h>
 #include "band_conflict_detector.hpp"
 #include "event_manager.hpp"
-#include "server.hpp"
-#include "dbus_service.hpp"
-#include "database_manager.hpp"
-#include "dns_monitor.hpp"
-#include "wifi_packet_loss_monitor.hpp"
-#include "http_latency_monitor.hpp"
-#include "process_net_profiler.hpp"
-#include "tcp_retransmit_monitor.hpp"
-#include "tcp_conn_monitor.hpp"
-#include "tcp_connect_monitor.hpp"
-#include "active_connectivity_monitor.hpp"
-#include "bt_monitor.hpp"
-#include "weak_netmgr.hpp"
 
 #include <atomic>
 #include <string>
-#include <vector>
-#include <cstdint>
-#include <dbus/dbus.h>
-
-// Test counter recorder (defined in mock_dbus_service.cpp) to verify D-Bus emit path
-namespace weaknet_dbus::test_recorder {
-void resetCounters();
-std::vector<int32_t> snapshotCounters();
-}
 
 using namespace weaknet_dbus;
 
@@ -47,23 +27,13 @@ class BtFullLinkTest : public ::testing::Test {
 protected:
     void SetUp() override {
         mgr_ = &getEventManager();
-        ctx_ = std::make_unique<ServerContext>();
-        svc_ = std::make_unique<DbusService>(ctx_.get());
-        ctx_->service = std::make_unique<DbusService>(ctx_.get());
-        mgr_->startEventMonitoring(ctx_.get());
-        test_recorder::resetCounters();
     }
 
     void TearDown() override {
         mgr_->unregisterCallback(EventType::NetworkQualityChanged);
-        ctx_->service.reset();
-        svc_.reset();
-        ctx_.reset();
     }
 
     NetworkEventManager* mgr_;
-    std::unique_ptr<ServerContext> ctx_;
-    std::unique_ptr<DbusService> svc_;
 };
 
 // ============================================================================
@@ -110,9 +80,6 @@ TEST_F(BtFullLinkTest, BandConflictFullLink) {
 
     // Verify details (suggestion) contains band_conflict identifier
     EXPECT_NE(recorded_details.find("band_conflict"), std::string::npos);
-
-    // Verify D-Bus emit path works (mock stub recorded counter)
-    EXPECT_FALSE(test_recorder::snapshotCounters().empty());
 }
 
 // Test 2: No conflict should not emit - verify full link doesn't emit when no conflict
@@ -133,7 +100,6 @@ TEST_F(BtFullLinkTest, NoConflictNoEmit) {
     }
 
     EXPECT_EQ(trigger_count.load(), 0);
-    EXPECT_TRUE(test_recorder::snapshotCounters().empty());
 }
 
 // ============================================================================

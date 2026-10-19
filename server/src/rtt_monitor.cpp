@@ -136,10 +136,9 @@ void start_rtt_monitor_thread(ServerContext* ctx, std::thread* worker,
                 if (eff_window <= 0) eff_window = windowSize;
 
                 // 遍历所有接口：ping 一次 → 更新 RTT + 推入窗口算 jitter。
-                // 仅当 usingNow 接口发生 RTT 变化时才发信号（与原 RTT 行为一致），
                 // jitter 变化通过 NetInfo 的字段对比由 weak_mgr 判断。
-                bool rtt_changed = false;
-                bool jitter_changed = false;
+                // （O3-B 前每轮用 rtt_changed/jitter_changed 触发 Changed 信号，
+                //   信号停发后两标志仅剩消费方消失，已随发射一并移除。）
                 {
                     auto current_interfaces = ctx->weak_mgr->getCurrentInterfaces();
                     for (const auto& net : current_interfaces) {
@@ -150,7 +149,6 @@ void start_rtt_monitor_thread(ServerContext* ctx, std::thread* worker,
 
                         // ---- 1) RTT 更新（复用既有细粒度接口，内部带锁）----
                         bool changed = ctx->weak_mgr->updateRttAndStateForIfaceSafe(ifname, rtt);
-                        if (changed) rtt_changed = true;
 
                         // ---- 2) Jitter：推样本 → 算标准差 → 更新 ----
                         if (eff_window > 0) {
@@ -161,9 +159,7 @@ void start_rtt_monitor_thread(ServerContext* ctx, std::thread* worker,
                             }
                             double jitter = calculateJitter(window);
                             std::string level = classifyJitterLevel(jitter);
-                            if (ctx->weak_mgr->updateJitterSafe(ifname, jitter, level)) {
-                                jitter_changed = true;
-                            }
+                            ctx->weak_mgr->updateJitterSafe(ifname, jitter, level);
                         }
 
                         // 输出 RTT/Jitter 监控信息（仅 usingNow 且变化时输出，减少日志量）
@@ -176,9 +172,7 @@ void start_rtt_monitor_thread(ServerContext* ctx, std::thread* worker,
                     }
                 }
 
-                if ((rtt_changed || jitter_changed) && ctx->service) {
-                    ctx->service->emitChanged("RTT/Jitter updated", /*counter*/0);
-                }
+                // O3-B：Changed 信号已停发（零订阅者）；RTT/Jitter 变化仍在上方日志输出
 
                 for (int i = 0; i < (eff_interval / 100) && (ctx->running.load() && !ctx->rtt_stop.load()); ++i)
                     std::this_thread::sleep_for(100ms);

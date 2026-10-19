@@ -29,14 +29,14 @@ add_executable(test_serializer_gtest
     unit/test_serializer_gtest.cpp)
 target_link_libraries(test_serializer_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+# O3-B 后 EventManager/BtFullLink 测试不再构造 ServerContext/DbusService，
+# 也无需 mock_dbus_service 链接桩（仅 test_bt_events_lifecycle 仍需要）。
 add_executable(test_event_manager_gtest
-    unit/test_event_manager_gtest.cpp
-    unit/mock_dbus_service.cpp)
+    unit/test_event_manager_gtest.cpp)
 target_link_libraries(test_event_manager_gtest PRIVATE ${TEST_COMMON_LIBS})
 
 add_executable(test_bt_full_link_gtest
-    unit/test_bt_full_link_gtest.cpp
-    unit/mock_dbus_service.cpp)
+    unit/test_bt_full_link_gtest.cpp)
 target_link_libraries(test_bt_full_link_gtest PRIVATE ${TEST_COMMON_LIBS})
 
 add_executable(test_bt_monitor

@@ -1,10 +1,14 @@
 // mock_dbus_service.cpp
-// DbusService stub implementation for unit testing only.
+// ServerContext 析构桩（仅用于单元测试链接）。
 //
-// Design purpose:
-//   event_manager.cpp calls DbusService::emitSpecificSignal / emitNetworkQualitySignal
-//   in emitEvent(). This stub satisfies linker symbol requirements and provides
-//   thread-safe counter recorder for concurrency atomicity tests.
+// 设计目的：
+//   ServerContext 的析构函数定义在 server.cpp（不进 server_lib，测试不链接），
+//   而事件/生命周期类测试会构造 ServerContext——本桩仅为链接提供
+//   ServerContext::~ServerContext 空实现（成员仍按声明顺序正常销毁）。
+//
+// O3-B 变更：此前本文件还提供 DbusService 构造桩与 emitSpecificSignal/
+// emitNetworkQualitySignal 的计数桩（供 test_recorder 验证 D-Bus 发射路径）。
+// 信号停发后测试不再构造 DbusService、也不再校验发射计数，相关桩已删除。
 //
 // Note: This file is only for test compilation/linking, should not contain any business logic.
 
@@ -23,57 +27,11 @@
 #include "bt_monitor.hpp"
 #include "weak_netmgr.hpp"
 
-#include <cstdint>
-#include <mutex>
-#include <vector>
-
 namespace weaknet_dbus {
-
-// ============================================================================
-// Test counter recorder (thread-safe)
-// ============================================================================
-namespace test_recorder {
-static std::mutex g_mtx;
-static std::vector<int32_t> g_counters;
-
-void resetCounters() {
-    std::lock_guard<std::mutex> lock(g_mtx);
-    g_counters.clear();
-}
-
-void recordCounter(int32_t counter) {
-    std::lock_guard<std::mutex> lock(g_mtx);
-    g_counters.push_back(counter);
-}
-
-std::vector<int32_t> snapshotCounters() {
-    std::lock_guard<std::mutex> lock(g_mtx);
-    return g_counters;
-}
-}  // namespace test_recorder
 
 // ServerContext destructor stub (simplified, no resource cleanup needed for tests)
 ServerContext::~ServerContext() {
     // Intentionally empty - test stub doesn't manage real resources
-}
-
-// Constructor: only saves context pointer
-DbusService::DbusService(ServerContext* ctx) : ctx_(ctx) {}
-
-// Stub implementation: record counter then return true
-bool DbusService::emitSpecificSignal(const std::string& /*signalName*/,
-                                      const std::string& /*message*/,
-                                       int32_t counter) {
-    test_recorder::recordCounter(counter);
-    return true;
-}
-
-// Stub implementation: record counter then return true
-bool DbusService::emitNetworkQualitySignal(const std::string& /*message*/,
-                                            const std::string& /*details*/,
-                                                   int32_t counter) {
-    test_recorder::recordCounter(counter);
-    return true;
 }
 
 }  // namespace weaknet_dbus

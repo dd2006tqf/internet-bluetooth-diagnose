@@ -1,26 +1,27 @@
 /**
  * @file dbus_service.cpp
- * @brief DBus 服务层实现：方法分发、信号发送、载荷持久化
+ * @brief DBus 服务层实现：方法分发
  *
  * 本文件实现 DbusService 类，作为 WeakNet 服务与外部世界交互的唯一入口。
  * 上层通过它暴露 28 个 DBus 方法（ListInterfaces、HealthCheck、Ping、
  * GetBluetoothDevices、GetEbpfMonitorHealth、GetHistory、SetMonitorParam、
- * EnableMonitor 等），同时向外发送
- * Changed / NetworkQualityChanged 等 DBus 信号。
+ * EnableMonitor 等）。
  *
  * 设计思路：
  *   - MessageHandler 采用「C 回调 → 静态函数 → 对象方法」三段式，规避 libdbus
  *     纯 C 回调签名不能直接绑定 this 指针的问题
  *   - 每个 handleXxx 方法遵循统一模板：日志 → 解析参数 → 获取依赖 → 构造回复 → 发送
- *   - 信号发送统一走 sendSignalInternal，自带 3 次重试（每次间隔 100ms），
- *     由 send_mutex_ 串行化，保证 DBus 连接上发送顺序与调用顺序一致
- *   - ChangedPayload 在成功发信号后同步持久化到文件，供重启或崩溃后恢复
  *   - 所有结构化返回值（蓝牙、DNS、Wi-Fi、HTTP 等）采用 "key:value|key:value"
  *     扁平编码，避免引入 JSON 库依赖
  *
+ * O3-B 说明：此前本文件还实现信号发送管线——sendSignalInternal（3 次重试 +
+ * send_mutex_ 串行化）、emitChanged/emitSpecificSignal/emitNetworkQualitySignal，
+ * 以及 ChangedPayload 的成功后落盘。7 个信号零生产订阅者，发射管线随停发
+ * 决策整段删除（持久化写侧随 emitChanged 一并消失；客户端读侧的
+ * deserializeChangedPayloadFromFile 暂留，随订阅 API 后续批次处置）。
+ *
  * 线程安全：
  *   - 所有 handleXxx 在 DBus 主循环线程中串行执行（libdbus 单线程 dispatching）
- *   - 信号发送由 send_mutex_ 保护，可被多线程并发调用
  *   - ServerContext 中各 monitor 及跨插件事件存储指针运行期受 monitor_pointers_mutex
  *     保护；业务方法调用时持 shared_lock 读锁现取现用，杜绝 UAF 与指针悬垂
  */
@@ -29,6 +30,7 @@
 #include <cstdio>
 #include <cstring>
 #include <utility>
+#include <mutex>
 #include <shared_mutex>
 #include <arpa/inet.h>
 
@@ -238,94 +240,8 @@ bool DbusService::register_on_connection(DBusConnection* conn) {
     return dbus_connection_register_object_path(conn, kObjectPath, &vtable, this);
 }
 
-/**
- * @brief 内部统一信号发送函数（带重试）
- * @param signalName DBus 信号名（如 kSignalChanged、kSignalNetworkQualityChanged）
- * @param args       信号参数列表，每项为 {DBUS_TYPE_*, 值指针}
- * @param counter    事件计数器，便于接收方去重/排序
- * @return true 发送成功；false 三次重试全部失败
- *
- * 重试策略：最多 3 次，失败间隔 100ms。每次迭代：创建 signal → 追加参数 → send → flush。
- * 若 create signal 或 append 参数失败直接返回，不重试（属于编程错误而非网络抖动）。
- */
-bool DbusService::sendSignalInternal(const std::string& signalName,
-                                    const std::vector<std::pair<int, const void*>>& args,
-                                    int32_t counter) {
-    if (!ctx_ || !ctx_->connection) return false;
-
-    const int max_retries = 3;
-    const int retry_delay_ms = 100;
-
-    for (int attempt = 0; attempt < max_retries; ++attempt) {
-        DBusMessage* signal = dbus_message_new_signal(kObjectPath, kInterface, signalName.c_str());
-        if (!signal) {
-            LOG_ERROR(LogModule::DBUS, "sendSignalInternal: failed to create signal " << signalName);
-            return false;
-        }
-
-        DBusMessageIter iter;
-        dbus_message_iter_init_append(signal, &iter);
-
-        // 按顺序逐个追加参数；args 中的指针在调用栈上，生命周期覆盖整个循环迭代
-        for (const auto& [type, value] : args) {
-            if (!dbus_message_iter_append_basic(&iter, type, value)) {
-                LOG_ERROR(LogModule::DBUS, "sendSignalInternal: failed to append argument for " << signalName);
-                dbus_message_unref(signal);
-                return false;
-            }
-        }
-
-        bool ok = dbus_connection_send(ctx_->connection, signal, nullptr);
-        dbus_connection_flush(ctx_->connection);
-        dbus_message_unref(signal);
-
-        if (ok) {
-            LOG_INFO(LogModule::DBUS, "sendSignalInternal: emitted " << signalName << " counter=" << counter);
-            return true;
-        }
-
-        LOG_WARNING(LogModule::DBUS, "sendSignalInternal(" << signalName << "): attempt " << attempt + 1
-                    << " failed, retrying in " << retry_delay_ms << "ms");
-
-        if (attempt < max_retries - 1) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(retry_delay_ms));
-        }
-    }
-
-    LOG_ERROR(LogModule::DBUS, "sendSignalInternal(" << signalName << "): all " << max_retries << " attempts failed");
-    return false;
-}
-
-/**
- * @brief 发送通用 Changed 信号（带持久化）
- * @param message 信号载荷字符串
- * @param counter 事件计数器
- * @return true 发送成功
- *
- * 与 emitSpecificSignal 的区别：成功发送后额外将载荷序列化到文件，供重启恢复。
- * 内部持 send_mutex_，保证与其他信号发送的串行顺序。
- */
-bool DbusService::emitChanged(const std::string& message, int32_t counter) {
-    std::lock_guard<std::mutex> lock(send_mutex_);
-
-    // 构造参数列表
-    const char* s = message.c_str();
-    std::vector<std::pair<int, const void*>> args = {
-        {DBUS_TYPE_STRING, &s},
-        {DBUS_TYPE_INT32, &counter}
-    };
-
-    bool ok = sendSignalInternal(kSignalChanged, args, counter);
-
-    // 仅在信号发送成功时持久化，避免文件与 DBus 状态不一致
-    if (ok) {
-        ChangedPayload payload{message, counter};
-        std::string err;
-        serializeChangedPayloadToFile(payload, kSignalSerializedFile, &err);
-    }
-
-    return ok;
-}
+// O3-B：信号发送管线（sendSignalInternal / emitChanged / emitSpecificSignal /
+// emitNetworkQualitySignal）已随 7 个零订阅者信号停发而删除，见文件头说明。
 
 // MessageHandler 实现已移动到静态自由函数（见文件顶部 MessageHandlerStatic）
 
@@ -639,51 +555,6 @@ bool DbusService::handleExecuteAction(DBusConnection* conn, DBusMessage* msg) {
     dbus_connection_flush(conn);
     dbus_message_unref(reply);
     return true;
-}
-
-/**
- * @brief 发送带计数器的指定 DBus 信号（通用两参数版）
- * @param signalName 具体信号名（如 kSignalInterfaceChanged）
- * @param message    信号消息体
- * @param counter    事件计数器
- * @return true 发送成功
- *
- * 与 emitChanged 的区别：不持久化；与 emitNetworkQualitySignal 的区别：少一个 details 参数。
- * 内部持 send_mutex_，保证发送顺序。
- */
-bool DbusService::emitSpecificSignal(const std::string& signalName, const std::string& message, int32_t counter) {
-    std::lock_guard<std::mutex> lock(send_mutex_);
-
-    // 构造参数列表
-    const char* msg = message.c_str();
-    std::vector<std::pair<int, const void*>> args = {
-        {DBUS_TYPE_STRING, &msg},
-        {DBUS_TYPE_INT32, &counter}
-    };
-
-    return sendSignalInternal(signalName, args, counter);
-}
-
-/**
- * @brief 发送网络质量变更信号（三参数版：message + details + counter）
- * @param message 简短质量描述
- * @param details 详细质量评估（JSON 或长文本）
- * @param counter 事件计数器
- * @return true 发送成功
- */
-bool DbusService::emitNetworkQualitySignal(const std::string& message, const std::string& details, int32_t counter) {
-    std::lock_guard<std::mutex> lock(send_mutex_);
-
-    // 构造参数列表
-    const char* quality = message.c_str();
-    const char* details_str = details.c_str();
-    std::vector<std::pair<int, const void*>> args = {
-        {DBUS_TYPE_STRING, &quality},
-        {DBUS_TYPE_STRING, &details_str},
-        {DBUS_TYPE_INT32, &counter}
-    };
-
-    return sendSignalInternal(kSignalNetworkQualityChanged, args, counter);
 }
 
 /**

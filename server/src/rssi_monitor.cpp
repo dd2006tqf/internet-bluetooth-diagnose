@@ -63,9 +63,7 @@ void start_rssi_monitor_thread(ServerContext* ctx, std::thread* worker, const st
                 }
             }
 
-            if (changed && ctx->service) {
-                ctx->service->emitChanged("WiFi RSSI updated", /*counter*/0);
-            }
+            // O3-B：Changed 信号已停发（零订阅者）；RSSI 变化仍在上方日志输出
             // 以 cfg.rssi.interval_ms 为周期：以 100ms 为单位睡眠，保证 ctx->running 能快速响应退出
             for (int i = 0; i < static_cast<int>(ctx->cfg.rssi.interval_ms.load() / 100) && (ctx->running.load() && !ctx->rssi_stop.load()); ++i)
                 std::this_thread::sleep_for(100ms);

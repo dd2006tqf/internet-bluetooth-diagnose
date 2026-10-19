@@ -1,10 +1,9 @@
 /**
  * @file dbus_service.hpp
- * @brief D-Bus 服务层：方法处理 + 信号发射
+ * @brief D-Bus 服务层：方法处理
  *
  * DbusService 封装了 libdbus-1 C API 的样板代码，提供：
  *   - register_on_connection() 将自身方法表注册到 DBusConnection
- *   - emitChanged() / emitSpecificSignal() 发射主动通知信号
  *   - handleXxx() 系列方法：供静态回调函数转发调用（避免头文件暴露 dbus 类型）
  *
  * 设计模式：
@@ -12,16 +11,17 @@
  *   因此使用静态函数 MessageHandlerStatic → 从 DBusConnection user_data
  *   取回 DbusService* → 调用成员函数 handleXxx。
  *
- * 线程安全：
- *   send_mutex_ 保护对同一 DBusConnection 的并发信号发射写操作
- *   （libdbus-1 的部分内部结构在多线程写入下不安全）
+ * O3-B 说明：此前本类还提供 emitChanged()/emitSpecificSignal()/
+ * emitNetworkQualitySignal()（含 sendSignalInternal 重试底层与 send_mutex_
+ * 串行化），用于发射 Changed 等 7 个信号。它们零生产订阅者，发射管线随
+ * "停发信号"决策一并删除；客户端侧的订阅 API（weaknet_subscribe_*）
+ * 暂留待后续批次处置。
  */
 
 #pragma once
 
 #include <string>
 #include <vector>
-#include <mutex>
 
 struct DBusConnection;
 struct DBusMessage;
@@ -65,45 +65,6 @@ public:
      * @return true 注册成功，false 失败（通常是 conn 为空）
      */
     bool register_on_connection(DBusConnection* conn);
-
-    // ---------- 信号发射接口 ----------
-
-    /**
-     * @brief 发射通用 Changed 信号
-     *
-     * 携带 message（文本）和 counter（单调递增计数器，调试用）。
-     * 这是旧版兼容信号，新功能应使用 emitSpecificSignal 指定更精确的信号名。
-     *
-     * @param message 信号载荷文本
-     * @param counter 计数器值（通常由 EventManager 维护）
-     * @return true 发射成功
-     */
-    bool emitChanged(const std::string& message, int32_t counter);
-
-    /**
-     * @brief 发射指定类型的事件信号
-     *
-     * 支持 kSignalInterfaceChanged / kSignalBluetoothDeviceChanged 等所有具体信号名。
-     * 内部实现带 2 次重试（间隔 10ms），应对 D-Bus daemon 短暂不可用。
-     *
-     * @param signalName 信号名（必须是 common.hpp 中定义的常量之一）
-     * @param message    信号载荷文本
-     * @param counter    事件计数器
-     * @return true 至少一次发射成功
-     */
-    bool emitSpecificSignal(const std::string& signalName, const std::string& message, int32_t counter);
-
-    /**
-     * @brief 发射带详细信息的 NetworkQualityChanged 信号
-     *
-     * 与通用信号不同，此方法携带两个字符串载荷（message + details），
-     * details 为 JSON 格式，包含各维度指标和权重评分。
-     *
-     * @param message 简短描述（如 "Quality changed to GOOD"）
-     * @param details JSON 格式详细信息
-     * @param counter 事件计数器
-     */
-    bool emitNetworkQualitySignal(const std::string& message, const std::string& details, int32_t counter);
 
     // ---------- 方法实现（供静态分发函数调用） ----------
 
@@ -174,21 +135,8 @@ private:
      */
     bool replyStringArray(DBusConnection* conn, DBusMessage* msg, const std::vector<std::string>& arr);
 
-    /**
-     * @brief 发射 D-Bus 信号（带重试的底层实现）
-     *
-     * @param signalName 信号名
-     * @param args       可变载荷（每个 pair 的 first 是 D-Bus 类型字符，second 是指向值的指针）
-     *                   支持 's' (string) / 'i' (int32_t) / 'u' (uint32_t)
-     * @param counter    事件计数器
-     */
-    bool sendSignalInternal(const std::string& signalName,
-                            const std::vector<std::pair<int, const void*>>& args,
-                            int32_t counter);
-
 private:
     ServerContext* ctx_;     ///< 全局上下文非 owning 指针
-    std::mutex send_mutex_; ///< 保护对同一 DBusConnection 的并发信号写（libdbus-1 线程安全边界）
 };
 
 }  // namespace weaknet_dbus

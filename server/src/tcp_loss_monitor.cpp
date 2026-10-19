@@ -99,12 +99,9 @@ void start_tcp_loss_monitor_thread(ServerContext* ctx, std::thread* worker) {
                     }
 
                     // 更新到 weak_mgr 中保存的 NetInfo 列表（线程安全）
-                    bool updated = ctx->weak_mgr->updateTcpLossRateSafe(currentIface, result.ratePercent, result.level);
-                    if (updated && ctx->service) {
-                        std::string msg = std::string("TCP loss rate updated for ") + currentIface +
-                                         ": " + std::to_string(result.ratePercent) + "% (" + result.level + ")";
-                        ctx->service->emitChanged(msg, /*counter*/0);
-                    }
+                    // O3-B：Changed 信号已停发（零订阅者），更新结果不再触发发射；
+                    // 等级变化仍在上方日志输出。
+                    ctx->weak_mgr->updateTcpLossRateSafe(currentIface, result.ratePercent, result.level);
                 }
             }
 

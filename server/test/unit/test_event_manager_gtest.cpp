@@ -1,32 +1,13 @@
 // test_event_manager_gtest.cpp
 // Event Manager unit tests (Google Test version)
 // Module under test: event_manager.cpp (event registration/dispatch/unregistration)
+//
+// O3-B 之后 EventManager 只做「回调分发」单通道——D-Bus 信号发射已停发
+// （7 个信号零生产订阅者），因此本测试不再构造 ServerContext/DbusService，
+// 只验证回调注册/注销/分发语义。
 
 #include <gtest/gtest.h>
 #include "event_manager.hpp"
-#include "server.hpp"
-#include "dbus_service.hpp"
-#include "database_manager.hpp"
-#include "dns_monitor.hpp"
-#include "wifi_packet_loss_monitor.hpp"
-#include "http_latency_monitor.hpp"
-#include "process_net_profiler.hpp"
-#include "tcp_retransmit_monitor.hpp"
-#include "tcp_conn_monitor.hpp"
-#include "tcp_connect_monitor.hpp"
-#include "active_connectivity_monitor.hpp"
-#include "bt_monitor.hpp"
-#include "weak_netmgr.hpp"
-
-#include <atomic>
-#include <thread>
-#include <vector>
-
-// Test counter recorder (defined in mock_dbus_service.cpp) for concurrency atomicity tests
-namespace weaknet_dbus::test_recorder {
-void resetCounters();
-std::vector<int32_t> snapshotCounters();
-}
 
 using namespace weaknet_dbus;
 
@@ -37,10 +18,8 @@ class EventManagerTest : public ::testing::Test {
 protected:
     void SetUp() override {
         mgr_ = &getEventManager();
-        mock_ctx_ = std::make_unique<ServerContext>();
-        // 创建 mock DbusService 并挂到 mock_ctx_ 上，使 emitEvent 能调用 mock
-        mock_ctx_->service = std::make_unique<DbusService>(mock_ctx_.get());
-        mgr_->startEventMonitoring(mock_ctx_.get());
+        // 只绑定默认日志回调；O3-B 后不再需要 ServerContext/DbusService
+        mgr_->startEventMonitoring();
     }
 
     void TearDown() override {
@@ -51,11 +30,8 @@ protected:
         mgr_->unregisterCallback(EventType::RttChanged);
         mgr_->unregisterCallback(EventType::RssiChanged);
         mgr_->unregisterCallback(EventType::BluetoothDeviceChanged);
-        mock_ctx_->service.reset();
-        mock_ctx_.reset();
     }
 
-    std::unique_ptr<ServerContext> mock_ctx_;
     NetworkEventManager* mgr_;
 };
 
@@ -158,34 +134,10 @@ TEST_F(EventManagerTest, MultipleEmits) {
     EXPECT_EQ(count, 5);
 }
 
-// Test 8: Concurrent eventCounter must be unique (atomicity verification)
-//   emitEvent's static eventCounter++ must be atomic, otherwise concurrent
-//   threads will lose increments, causing duplicate counter values.
-//   NOTE: This test uses a simplified approach to avoid ServerContext destructor issues.
-TEST_F(EventManagerTest, EventCounterAtomicUnderConcurrency) {
-    const int N_THREADS = 10;
-    const int N_PER_THREAD = 1000;
-
-    test_recorder::resetCounters();
-
-    auto worker = [this](int /*id*/) {
-        for (int i = 0; i < N_PER_THREAD; ++i) {
-            mgr_->emitRttChanged("concurrent", "test");
-        }
-    };
-
-    std::vector<std::thread> threads;
-    threads.reserve(N_THREADS);
-    for (int i = 0; i < N_THREADS; ++i) {
-        threads.emplace_back(worker, i);
-    }
-    for (auto& t : threads) t.join();
-
-    auto recorded = test_recorder::snapshotCounters();
-
-    // All emits should be recorded (simplified check)
-    EXPECT_GT(static_cast<int>(recorded.size()), 0);
-}
+// Test 8（已随 O3-B 移除）：原 EventCounterAtomicUnderConcurrency 验证的是
+// emitEvent 内部 eventCounter++ 的原子性。该计数器只服务于 D-Bus 信号载荷
+// （接收方去重/排序），而 7 个信号零生产订阅者、发射已全部停发——被测对象
+// 本身不复存在，测试随之删除而非空转。
 
 // ============================================================================
 // main function
