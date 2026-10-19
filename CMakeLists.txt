@@ -1,5 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
-project(weaknet VERSION 1.0.0 LANGUAGES C CXX)
+
+# 版本单一来源：仓库根 VERSION 文件（一行 semver，如 "1.0.0"）。
+# OTA 发布打包与 --version 输出都读这里；缺失或非法时回退 0.0.0。
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" WEAKNET_VERSION_FILE LIMIT_COUNT 1)
+string(STRIP "${WEAKNET_VERSION_FILE}" WEAKNET_VERSION_FILE)
+if(NOT WEAKNET_VERSION_FILE MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    set(WEAKNET_VERSION_FILE "0.0.0")
+endif()
+
+project(weaknet VERSION ${WEAKNET_VERSION_FILE} LANGUAGES C CXX)
 
 # CTest 集成（必须在 add_subdirectory 之前）
 enable_testing()

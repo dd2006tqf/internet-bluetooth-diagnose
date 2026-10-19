@@ -60,6 +60,7 @@ static constexpr const char kMethodEnableMonitor[]            = "EnableMonitor";
 static constexpr const char kMethodDisableMonitor[]           = "DisableMonitor";
 static constexpr const char kMethodRestartMonitor[]           = "RestartMonitor";
 static constexpr const char kMethodSaveMonitorOverrides[]     = "SaveMonitorOverrides";
+static constexpr const char kMethodGetUpdateStatus[]          = "GetUpdateStatus";    ///< OTA 本地升级状态（只读：current 软链接版本 / 布局 / 完整性）
 
 // ==================== 信号名 ====================
 // 服务端主动向订阅客户端推送事件。客户端通过 dbus_bus_add_match 过滤感兴趣的信号

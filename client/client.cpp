@@ -902,6 +902,12 @@ public:
         if (!isConnected()) return fail("客户端未连接", errorMsg);
         return requestStringData(kMethodListMonitors, "监控器列表", result, errorMsg);
     }
+
+    /** @brief 调用 GetUpdateStatus 查询 OTA 本地升级状态（只读 JSON） */
+    bool getUpdateStatus(std::string& result, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+        return requestStringData(kMethodGetUpdateStatus, "升级状态", result, errorMsg);
+    }
     bool getMonitorStatus(const std::string& monitor, std::string& result, std::string& errorMsg) {
         return monitorOperation(kMethodGetMonitorStatus, monitor, result, errorMsg);
     }
@@ -1961,6 +1967,23 @@ extern "C" bool weaknet_get_monitor_param(const char* monitor,
     }
     std::string result, errorMsg;
     if (weaknet_dbus::g_client->getMonitorParam(monitor, result, errorMsg)) {
+        if (buffer && buffer_size > 0) snprintf(buffer, buffer_size, "%s", result.c_str());
+        return true;
+    }
+    if (error_buffer && error_size > 0) snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+    return false;
+}
+
+/** @brief C 接口包装：调用 GetUpdateStatus 查询 OTA 本地升级状态（JSON） */
+extern "C" bool weaknet_get_update_status(char* buffer, size_t buffer_size,
+                                          char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        if (error_buffer && error_size > 0) snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string result, errorMsg;
+    if (weaknet_dbus::g_client->getUpdateStatus(result, errorMsg)) {
         if (buffer && buffer_size > 0) snprintf(buffer, buffer_size, "%s", result.c_str());
         return true;
     }

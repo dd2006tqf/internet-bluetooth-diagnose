@@ -110,6 +110,7 @@ public:
     bool handleDisableMonitor(DBusConnection* conn, DBusMessage* msg);
     bool handleRestartMonitor(DBusConnection* conn, DBusMessage* msg);
     bool handleSaveMonitorOverrides(DBusConnection* conn, DBusMessage* msg);
+    bool handleGetUpdateStatus(DBusConnection* conn, DBusMessage* msg);  ///< GetUpdateStatus: OTA 本地升级状态（只读）
 
     bool handleMonitorOperation(DBusConnection* conn, DBusMessage* msg,
                                 const char* operation);

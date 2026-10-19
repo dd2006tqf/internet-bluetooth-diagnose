@@ -28,6 +28,7 @@
 
 #include <dbus/dbus.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 #include <mutex>
@@ -58,6 +59,7 @@
 #include "skb_drop_monitor.hpp"
 #include "tcp_rtt_monitor.hpp"
 #include "weaknet_config.hpp"
+#include "update_status.hpp"
 #include "utils/json_escape.hpp"
 #include "database_manager.hpp"
 #include "assurance/legacy_adapter.hpp"
@@ -221,6 +223,10 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodSaveMonitorOverrides)) {
         self->handleSaveMonitorOverrides(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetUpdateStatus)) {
+        self->handleGetUpdateStatus(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
@@ -2052,6 +2058,42 @@ bool DbusService::handleSaveMonitorOverrides(DBusConnection* conn, DBusMessage* 
     DBusMessageIter iter;
     dbus_message_iter_init_append(reply, &iter);
     dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &result);
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+bool DbusService::handleGetUpdateStatus(DBusConnection* conn, DBusMessage* msg) {
+    LOG_INFO(LogModule::DBUS, "handleGetUpdateStatus called");
+    // 只读查询：不改状态、不需要 root。升级动作本身走 weaknet-local-update.sh
+    // （apply/rollback 重启服务，无法由被重启的进程自己经 D-Bus 执行）。
+    //
+    // 安装根目录解析：优先 WEAKNET_ROOT 环境变量（升级脚本与测试可覆盖），
+    // 否则取 data_dir 的父目录（板端约定 /home/radxa/weaknet/data →
+    // /home/radxa/weaknet，current/releases 与 data/ 同级）。
+    std::string base_dir;
+    if (const char* env = std::getenv("WEAKNET_ROOT"); env && *env) {
+        base_dir = env;
+    } else {
+        std::string data_dir = ctx_ ? ctx_->cfg.data_dir.get() : std::string();
+        if (data_dir.empty()) {
+            if (const char* denv = std::getenv("WEAKNET_DATA_DIR"); denv && *denv)
+                data_dir = denv;
+            else
+                data_dir = "/home/radxa/weaknet/data";
+        }
+        const size_t slash = data_dir.find_last_of('/');
+        base_dir = (slash == std::string::npos) ? data_dir : data_dir.substr(0, slash);
+    }
+
+    const std::string json = weaknet::update::StatusJson(base_dir);
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+    DBusMessageIter iter;
+    dbus_message_iter_init_append(reply, &iter);
+    const char* value = json.c_str();
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &value);
     dbus_connection_send(conn, reply, nullptr);
     dbus_connection_flush(conn);
     dbus_message_unref(reply);

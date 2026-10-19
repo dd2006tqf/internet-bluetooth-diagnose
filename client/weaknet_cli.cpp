@@ -21,6 +21,9 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <cerrno>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "weaknet_client.h"
@@ -47,6 +50,10 @@ static void printUsage(const char* prog) {
         "  %s experience                  # 查询当前网络体验权威快照（NetworkExperience JSON，只读）\n"
         "  %s stats <domain>              # 查询 eBPF/观测统计快照（只读：dns, wifi-loss, http, process, skb-drop, tcp-rtt, tcp-retrans, tcp-conn, ebpf-health, history)\n"
         "  sudo %s action <action_id> [<key> <val>] # 执行白名单安全排查动作（仅限 root）\n"
+        "  %s update status                # 查询 OTA 本地升级状态（只读，走 D-Bus GetUpdateStatus）\n"
+        "  sudo %s update apply <pkg> [--commit] # 应用升级包（重启服务；--commit 跳过健康窗口）\n"
+        "  sudo %s update rollback         # 回滚到上一版本（服务停摆时也能用）\n"
+        "  sudo %s update verify <release-dir> # 校验已解包 release 目录完整性（只读）\n"
         "\n"
         "事件类型（--type）：LINK_DISCONNECTED, LINK_DEGRADED, DEVICE_APPEARED, ...\n"
         "区域事件状态（--state）：OPEN, ONGOING, RESOLVED\n"
@@ -70,7 +77,7 @@ static void printUsage(const char* prog) {
         "  sudo %s action CHECK_RESOLVER_CONFIG\n"
         "  sudo %s action PROBE_PUBLIC_RESOLVER resolver 223.5.5.5\n"
         "  %s list\n",
-        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static bool callSet(const char* key, const char* value) {
@@ -388,6 +395,68 @@ static bool callAction(int argc, char** argv) {
     return true;
 }
 
+/// weaknet-cli update status：D-Bus 只读查询升级布局状态（需服务在线）
+static bool callUpdateStatus() {
+    std::vector<char> buf(64 * 1024);
+    char err[256];
+    if (!weaknet_get_update_status(buf.data(), buf.size(), err, sizeof(err))) {
+        fprintf(stderr, "GetUpdateStatus 失败: %s\n", err);
+        return false;
+    }
+    printf("%s\n", buf.data());
+    return true;
+}
+
+/// weaknet-cli update apply|rollback|verify：转发到升级脚本。
+///
+/// apply/rollback **不经 D-Bus**——升级会重启服务端自身，由调用方直接
+/// fork+exec 板端脚本（服务停摆时也必须能回滚，所以不能依赖服务在线）。
+/// 无 shell 中转，argv 直传，规避注入面。
+static int runUpdateScript(int argc, char** argv) {
+    const std::vector<std::string> candidates = [] {
+        std::vector<std::string> v;
+        if (const char* env = std::getenv("WEAKNET_UPDATE_SCRIPT"); env && *env)
+            v.emplace_back(env);
+        v.emplace_back("/home/radxa/weaknet/weaknet-local-update.sh");
+        v.emplace_back("./tools/weaknet-local-update.sh");
+        v.emplace_back("../tools/weaknet-local-update.sh");
+        return v;
+    }();
+
+    const std::string* chosen = nullptr;
+    for (const auto& path : candidates) {
+        if (access(path.c_str(), X_OK) == 0) { chosen = &path; break; }
+    }
+    if (!chosen) {
+        fprintf(stderr, "未找到升级脚本 weaknet-local-update.sh（可设 WEAKNET_UPDATE_SCRIPT 指定路径）\n");
+        return 1;
+    }
+
+    std::vector<char*> cargv;
+    cargv.reserve(argc);
+    cargv.push_back(const_cast<char*>(chosen->c_str()));
+    for (int i = 2; i < argc; ++i) cargv.push_back(argv[i]);
+    cargv.push_back(nullptr);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "fork 失败: %s\n", strerror(errno));
+        return 1;
+    }
+    if (pid == 0) {
+        execv(chosen->c_str(), cargv.data());
+        fprintf(stderr, "execv %s 失败: %s\n", chosen->c_str(), strerror(errno));
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        fprintf(stderr, "waitpid 失败: %s\n", strerror(errno));
+        return 1;
+    }
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return 1;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         printUsage(argv[0]);
@@ -456,6 +525,26 @@ int main(int argc, char** argv) {
         ok = callStats(argv[2]);
     } else if (strcmp(cmd, "action") == 0) {
         ok = callAction(argc, argv);
+    } else if (strcmp(cmd, "update") == 0) {
+        if (argc >= 3 && strcmp(argv[2], "status") == 0 && argc == 3) {
+            ok = callUpdateStatus();
+        } else if (argc >= 3 &&
+                   (strcmp(argv[2], "apply") == 0 || strcmp(argv[2], "rollback") == 0 ||
+                    strcmp(argv[2], "verify") == 0)) {
+            // apply/rollback/verify 经由升级脚本执行，不经 D-Bus；
+            // 返回码即脚本退出码（main 直接返回，不走 ok 布尔）。
+            if (geteuid() != 0) {
+                fprintf(stderr, "update %s 需要 root 权限（请用 sudo）\n", argv[2]);
+                weaknet_cleanup();
+                return 1;
+            }
+            int rc = runUpdateScript(argc, argv);
+            weaknet_cleanup();
+            return rc;
+        } else {
+            printUsage(argv[0]);
+            return 1;
+        }
     } else if (strcmp(cmd, "list") == 0) {
         // 必须与 serializers 端的有效名集合保持一致（weaknet_config.cpp 的
         // serializeMonitorJson）。此前这里漏了 skb_drop / tcp_connect /

@@ -816,6 +816,29 @@ bool weaknet_query_bt_data_path(const char* device_address,
                                 char* error_buffer, size_t error_size);
 
 /**
+ * @brief 查询 OTA 本地升级状态（只读）
+ *
+ * 通过 D-Bus 调用 GetUpdateStatus，返回安装根目录的升级布局状态：
+ * 已安装版本（current 软链接目标）、布局类型（releases/flat）、
+ * 待应用的 staging 版本、当前版本是否已通过健康窗口转正（committed）。
+ *
+ * D-Bus 调用：
+ *   - Method: GetUpdateStatus
+ *   - Returns: STRING（JSON）
+ *
+ * 注意：apply/rollback 不经 D-Bus——升级会重启服务端自身，由
+ * weaknet-local-update.sh 在服务外执行（weaknet-cli update 转发）。
+ *
+ * @param buffer       结果缓冲区（JSON）
+ * @param buffer_size  缓冲区大小
+ * @param error_buffer 错误信息缓冲区
+ * @param error_size   错误缓冲区大小
+ * @return true  - 成功
+ * @return false - D-Bus 调用失败
+ */
+bool weaknet_get_update_status(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
+
+/**
  * @brief 查询历史监控数据
  *
  * 通过 D-Bus 调用 GetHistory 方法，服务端从 SQLite 数据库中

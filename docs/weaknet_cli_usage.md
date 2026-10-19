@@ -72,6 +72,10 @@ weaknet-cli <command> [arguments...]
   diagnosis              查询当前网络确定性诊断事实（DiagnosisFacts，JSON）
   experience             查询当前网络体验权威快照（NetworkExperience Schema v2，JSON）
   action <action_id> [<key> <val>] 执行白名单安全排查动作（仅限 root）
+  update status          查询 OTA 本地升级状态（只读，走 D-Bus）
+  update verify <pkg|dir>         校验升级包/release 目录完整性
+  update apply <pkg>     应用升级包（root；原子切换+健康窗口+自动回滚）
+  update rollback        回滚到上一版本（root）
 ```
 
 `events` 的过滤条件全部可选，省略即不限制：
@@ -379,6 +383,51 @@ ok
 
 ---
 
+### 3.10 `weaknet-cli update <sub>`
+
+OTA Phase 1 本地升级（板端闭环，零云端依赖）。布局：`releases/<version>/` + `current` 软链接原子翻转；`data/` 与 `/etc/weaknet/config.yaml` 升级全程只读。
+
+| 子命令 | 权限 | 通道 | 说明 |
+|---|---|---|---|
+| `update status` | 普通用户 | D-Bus `GetUpdateStatus`（只读） | 当前版本、布局、pending/committed 状态 |
+| `update verify <dir-or-pkg>` | 普通用户 | fork+exec 升级脚本 | release 目录/升级包 manifest.sha256 完整性校验 |
+| `update apply <pkg>` | **root**（sudo） | fork+exec 升级脚本 | 解包→版本单调检查→原子翻转→重启→健康窗口→转正，失败自动回滚 |
+| `update rollback` | **root**（sudo） | fork+exec 升级脚本 | 回滚到 `.previous` 记录的上一版（`--to <version>` 可指定） |
+
+```bash
+# 查询升级状态（只读，服务在线即可）
+weaknet-cli update status
+
+# 校验升级包 / 已解包 release 目录
+weaknet-cli update verify /path/to/weaknet-1.1.0.tar.zst
+
+# 应用升级（需 sudo；健康窗口默认 120s、连续 3 次全绿才转正）
+sudo weaknet-cli update apply /path/to/weaknet-1.1.0.tar.zst
+
+# 跳过健康窗口直接转正（不推荐，仅应急）
+sudo weaknet-cli update apply pkg.tar.zst --commit
+
+# 显式允许降级（版本单调检查默认拒绝降级）
+sudo weaknet-cli update apply pkg.tar.zst --allow-downgrade
+
+# 回滚到上一版本
+sudo weaknet-cli update rollback
+```
+
+**执行体**：`tools/weaknet-local-update.sh`（板端安装于 `/home/radxa/weaknet/weaknet-local-update.sh`，随包下发并自更新；开发机可用 `WEAKNET_UPDATE_SCRIPT` 覆盖路径）。apply/rollback 不经 D-Bus——服务端不能在调用中途重启自己，故 CLI 直接 fork+exec 脚本。
+
+**版本策略**：仓库根 `VERSION` 为单一来源；`dpkg --compare-versions` 数字比较，`target >= current` 放行，降级需 `--allow-downgrade`（防回滚攻击的本地版）。
+
+**健康窗口**：服务 `active` + `HealthCheck` + `GetEbpfMonitorHealth` + `GetUpdateStatus.installed_version == 目标版本`（防"健康但跑旧版"假绿灯），连续 3 次通过才写 `.committed` 转正；失败自动回滚上一版。
+
+**签名**：`<pkg>.sig` Ed25519 分离签名。板端未配置公钥时告警放行（Phase 1 本地信任），配置了公钥则 fail-closed（缺签名/验签失败即拒绝）。Phase 2 接云侧发布密钥后转强制。
+
+**注意**：
+- 修改过 `ActionRegistry`/白名单的版本，发布前必须同步云端目录评审（`docs/网关动作目录版本契约.md`，fail-closed 防线）
+- 升级永不触碰：`data/` 下 5 个状态文件、`/etc/weaknet/config.yaml`、`config/` 密钥
+
+---
+
 ## 4. 典型使用场景
 
 ### 4.1 调整采样频率（不重启）
@@ -515,6 +564,7 @@ gcc -o myapp myapp.c -L/path/to/dist-arm64/client/lib -lweaknet -ldbus-1
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v1.1 | 2026-10-19 | 新增 3.10 `update` 子命令（OTA Phase 1 本地升级：status/verify/apply/rollback） |
 | v1.0 | 2026-09-01 | 首个版本：get/set/list、白名单校验、D-Bus 通信 |
 
 ---

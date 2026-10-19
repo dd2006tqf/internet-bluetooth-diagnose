@@ -208,6 +208,10 @@ add_executable(test_per_key_counter_tracker_gtest
     unit/test_per_key_counter_tracker_gtest.cpp)
 target_link_libraries(test_per_key_counter_tracker_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_update_status_gtest
+    unit/test_update_status_gtest.cpp)
+target_link_libraries(test_update_status_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 add_executable(test_action_catalog_version_gtest
     unit/test_action_catalog_version_gtest.cpp)
 target_link_libraries(test_action_catalog_version_gtest PRIVATE ${TEST_COMMON_LIBS})
@@ -292,6 +296,7 @@ foreach(test_target
     test_map_sizing_spec_sync_gtest
     test_per_key_counter_tracker_gtest
     test_action_catalog_version_gtest
+    test_update_status_gtest
     test_edge_ai_scheduler_gtest
     test_bt_hci_traffic_gtest
     test_bt_anomaly_detector_gtest

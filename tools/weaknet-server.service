@@ -5,12 +5,17 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/radxa/weaknet/server
-ExecStart=/home/radxa/weaknet/server/bin/weaknet-dbus-server --config /etc/weaknet/config.yaml
+# 路径经 current 软链接寻址（OTA 布局：current -> releases/<version>）。
+# 翻转 current 是原子的，重启后即运行新版；历史文档路径
+# /home/radxa/weaknet/server/bin/* 由板端兼容软链（server -> current/server）
+# 继续保持有效。bpf_obj 等配置中的相对路径随 WorkingDirectory 解析到新版目录。
+WorkingDirectory=/home/radxa/weaknet/current/server
+ExecStart=/home/radxa/weaknet/current/server/bin/weaknet-dbus-server --config /etc/weaknet/config.yaml
 Restart=on-failure
 RestartSec=5
 Environment=LD_LIBRARY_PATH=/usr/local/lib
 Environment=WEAKNET_DATA_DIR=/home/radxa/weaknet/data
+Environment=WEAKNET_ROOT=/home/radxa/weaknet
 User=root
 Group=root
 # eBPF 探针加载/挂载需要 CAP_BPF + CAP_PERFMON（内核 5.8+），

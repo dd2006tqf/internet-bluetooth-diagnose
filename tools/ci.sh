@@ -69,6 +69,12 @@ mkdir -p "${REPORT_DIR}"
 REPORT="${REPORT_DIR}/ci_${TIMESTAMP}.txt"
 log() { echo "$1" | tee -a "$REPORT"; }
 
+# ---- 版本单一来源（仓库根 VERSION，OTA releases/<version> 与包名都用它） ----
+VERSION="$(tr -d '[:space:]' < "${ROOT}/VERSION" 2>/dev/null || echo "")"
+if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    fail "仓库根 VERSION 缺失或非法（需一行 X.Y.Z）：'${VERSION}'"
+fi
+
 # ============================================================
 log "=============================================="
 log "  WeakNet CI — $(date)"
@@ -155,6 +161,11 @@ info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(npr
     install -m 0644 "AI-assisted analysis/network_knowledge_base.py" dist-arm64/network_knowledge_base.py
     cp -a "${SYSROOT_DIR}/usr/local/lib/libbpf.so"* dist-arm64/lib/ 2>/dev/null || true
 
+    # OTA 发布物：VERSION 与升级脚本随包下发；manifest.sha256 由板端 adopt
+    # 现场按实际落地文件生成（包路径与板端部署内容必然一致）。
+    install -m 0644 "${ROOT}/VERSION" dist-arm64/VERSION
+    install -m 0755 "${ROOT}/tools/weaknet-local-update.sh" dist-arm64/weaknet-local-update.sh
+
     echo "产物: $(find dist-arm64 -type f | wc -l) 个文件"
     file dist-arm64/server/bin/weaknet-dbus-server
 
@@ -186,13 +197,17 @@ if [ "$SKIP_DEPLOY" = false ]; then
         fail "开发板不可达"
     fi
 
-    # 清理板上源码、构建中间文件和旧部署残留；保留持久化 data/ 数据
-    # __pycache__ 必须以 root 删除：root 进程（诊断 RAG 脚本等）会生成 root 属主的
-    # .pyc，radxa 用户无法 unlink，导致后续 rsync --delete 恒失败（实测踩过 3 次）
-    ssh "${BOARD}" "sudo systemctl stop weaknet-server 2>/dev/null || true; sudo killall weaknet-dbus-server 2>/dev/null || true; sudo rm -rf /home/radxa/weaknet/__pycache__ /home/radxa/weaknet/server/src /home/radxa/weaknet/server/include /home/radxa/weaknet/build /home/radxa/weaknet/server/build /home/radxa/weaknet/client/src /home/radxa/weaknet/CMakeFiles /home/radxa/weaknet/logs /home/radxa/weaknet/server/server 2>/dev/null || true"
+    # 停服 + 清理 __pycache__（root 属主 .pyc，radxa 用户无法 unlink，
+    # 曾导致 rsync --delete 恒失败，实测踩过 3 次）。
+    # 不再删除旧扁平布局的 server/client 子目录：首次 adopt 会把整个旧布局
+    # 归档为 releases/legacy-flat——在兼容软链建立后直接 rm server/build
+    # 会经软链误删当前 release 的 .bpf.o（OTA 布局切换期的坑）。
+    ssh "${BOARD}" "sudo systemctl stop weaknet-server 2>/dev/null || true; sudo killall weaknet-dbus-server 2>/dev/null || true; sudo rm -rf /home/radxa/weaknet/__pycache__ 2>/dev/null || true"
 
-    # 只同步 dist-arm64 编译产物，不同步源码和构建目录（保留持久化 data/、config/ 密钥及日志）
-    rsync -az --delete --exclude "data/" --exclude "config/" --exclude "server/logs/" -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/" \
+    # 只同步 dist-arm64 编译产物到暂存目录（不碰 releases/current/data/config），
+    # 由下方 weaknet-local-update.sh adopt 原子迁入 releases/${VERSION}。
+    # 旧版遗留的 data/、config/、日志与本次 rsync 彻底解耦（不再依赖 exclude 保护）。
+    rsync -az --delete -e ssh "${DIST_DIR}/" "${BOARD}:/home/radxa/weaknet/.deploy-staging/" \
         || fail "rsync 部署失败——板端可能仍是旧产物"
 
     # 旧 web-dashboard 已废弃删除：前端统一由 Large-Model-Application（Next.js）承载，
@@ -229,7 +244,18 @@ if [ "$SKIP_DEPLOY" = false ]; then
         sudo cp /tmp/libweaknet.so /usr/local/lib/libweaknet.so && sudo ldconfig && \
         sudo chmod o+rx /home/radxa/weaknet/data 2>/dev/null || true && \
         sudo systemctl daemon-reload && sudo systemctl reload dbus 2>/dev/null || true; \
-        sudo systemctl enable weaknet-server && sudo systemctl restart weaknet-server"
+        sudo systemctl enable weaknet-server"
+    # 注意：此处刻意不 restart——重启由 adopt 在 current 翻转之后执行，
+    # 否则新 unit（current/server 路径）在布局未就位时会拉起失败。
+
+    # OTA 布局迁移/切换（板端重启唯一入口）：暂存产物 → releases/${VERSION}
+    # →（首次）旧扁平布局归档 legacy-flat → 原子翻转 current + 兼容软链
+    # → 重启 → 健康窗口（失败自动回滚上一版）→ .committed 转正。
+    scp "${ROOT}/tools/weaknet-local-update.sh" "${BOARD}:/tmp/weaknet-local-update.sh" 2>/dev/null
+    ssh "${BOARD}" "sudo install -m 0755 /tmp/weaknet-local-update.sh /home/radxa/weaknet/weaknet-local-update.sh && \
+        sudo WEAKNET_ROOT=/home/radxa/weaknet /home/radxa/weaknet/weaknet-local-update.sh adopt /home/radxa/weaknet/.deploy-staging ${VERSION}" \
+        || fail "adopt 失败（布局迁移/健康窗口未通过，已自动回滚）——依据上方输出排查，必要时 sudo weaknet-cli update rollback"
+    pass "部署完成（releases/${VERSION} 已转正）"
 
     scp "${ROOT}/tools/weaknet-test-full.sh" "${BOARD}:/home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null
     ssh "${BOARD}" "chmod +x /home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null
