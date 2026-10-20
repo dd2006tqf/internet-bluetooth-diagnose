@@ -420,7 +420,9 @@ sudo weaknet-cli update rollback
 
 **健康窗口**：服务 `active` + `HealthCheck` + `GetEbpfMonitorHealth` + `GetUpdateStatus.installed_version == 目标版本`（防"健康但跑旧版"假绿灯），连续 3 次通过才写 `.committed` 转正；失败自动回滚上一版。
 
-**签名**：`<pkg>.sig` Ed25519 分离签名。板端未配置公钥时告警放行（Phase 1 本地信任），配置了公钥则 fail-closed（缺签名/验签失败即拒绝）。Phase 2 接云侧发布密钥后转强制。
+**签名（Phase 2 起强制）**：`<pkg>.sig` 为 ECDSA (NIST P-256) + SHA256 分离式签名（`openssl dgst -sha256 -sign/verify`）。板端配置发布公钥（`config/release_pub.pem`，由 `tools/ci.sh` 自动部署）后**强制验签**：缺签名或验签失败直接拒绝（fail-closed）；仅显式 `--insecure` 标志可跳过（仅限无公钥的调试环境）。发布密钥对由 `tools/gen-release-keys.sh` 生成，正式包由 `tools/release.sh` 构建并签名。
+
+> **选型说明**：Phase 1 曾设计为 Ed25519，实测发现板端 Debian Bullseye 自带 OpenSSL 1.1.1 CLI 不支持 Ed25519 的命令行签名/验签（OpenSSL 3.0 起才支持），而 C API 路径成本高；ECDSA P-256 在两代 OpenSSL CLI 上原生可用且安全强度等同，故统一采用 ECDSA P-256（板端上行遥测的 Ed25519 验签走 C API `EVP_DigestVerify`，不受此限制）。
 
 **注意**：
 - 修改过 `ActionRegistry`/白名单的版本，发布前必须同步云端目录评审（`docs/网关动作目录版本契约.md`，fail-closed 防线）

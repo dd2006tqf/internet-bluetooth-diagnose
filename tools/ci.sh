@@ -239,6 +239,12 @@ if [ "$SKIP_DEPLOY" = false ]; then
 
     # 客户端动态库安装到系统路径，供 weaknet-cli 链接（服务端走 unit 内 LD_LIBRARY_PATH）
     scp "${DIST_DIR}/client/lib/libweaknet.so" "${BOARD}:/tmp/libweaknet.so" 2>/dev/null
+    # OTA Phase 2：分发发布公钥到板端 config 目录（供 weaknet-local-update 强制验签）
+    if [ -f "${ROOT}/certs/release_pub.pem" ]; then
+        scp "${ROOT}/certs/release_pub.pem" "${BOARD}:/tmp/release_pub.pem" 2>/dev/null
+        ssh "${BOARD}" "sudo mkdir -p /home/radxa/weaknet/config && sudo cp /tmp/release_pub.pem /home/radxa/weaknet/config/release_pub.pem && sudo chmod 644 /home/radxa/weaknet/config/release_pub.pem"
+        pass "发布公钥已同步到板端 config/release_pub.pem"
+    fi
     ssh "${BOARD}" "sudo cp /tmp/weaknet-server.service /etc/systemd/system/weaknet-server.service && \
         sudo cp /tmp/com.example.WeakNet.conf /etc/dbus-1/system.d/com.example.WeakNet.conf && \
         sudo cp /tmp/libweaknet.so /usr/local/lib/libweaknet.so && sudo ldconfig && \

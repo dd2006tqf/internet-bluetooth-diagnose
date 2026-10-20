@@ -8,7 +8,7 @@
 
 当前板端升级靠 `tools/ci.sh` 从开发机 rsync `--delete` 覆盖：无版本概念、无原子性、无回滚，两块板以上即不可运维。仓库已有可复用地基（`ConfigTransaction` 180s 试用看门狗、`EVP_DigestVerify` 验签模式、`HealthCheck`/`GetEbpfMonitorHealth` 健康判据、ActionRegistry 目录指纹契约），但 OTA 本身零实现。
 
-Phase 1 目标：**板端本地闭环**——解包校验 → 版本单调检查 → 原子切换 → 重启 → 健康窗口 → 转正/自动回滚，零云端依赖。这是后续云侧制品链（Phase 2，Ed25519 发布密钥 + 制品下发）与审批执行链（Phase 3）的前置地基。
+Phase 1 目标：**板端本地闭环**——解包校验 → 版本单调检查 → 原子切换 → 重启 → 健康窗口 → 转正/自动回滚，零云端依赖。这是后续云侧制品链（Phase 2，发布密钥签名链——原拟 Ed25519，实际因板端 OpenSSL 1.1.1 CLI 限制落地为 ECDSA P-256，见 [[2026-10-20-ota-phase2-release-signing]]）与审批执行链（Phase 3）的前置地基。
 
 不走 OpenSpec change 的原因：用户明确选择工作流外实施；改动面为新增文件为主（VERSION、update_status 模块、升级脚本、CLI 子命令）+ 部署路径适配（service/ci.sh），属运维地基建设而非产品行为规格变更。按铁律在本目录留记录。
 
@@ -56,6 +56,6 @@ Phase 1 全闭环完成，本地与开发板真机演练全部通过。
 8. **状态与动作回归**：`data/` 下 5 个状态文件（history.db、network-epoch、wireless-uplink-state、soak 历史日志）在整个演练中持续读写且无破坏；`CHECK_RESOLVER_CONFIG` 等动作执行正常，无目录漂移。
 
 遗留与后续：
-- Ed25519 发布密钥 Phase 2 接入（当前无公钥时告警放行，非强制）。
+- ~~Ed25519 发布密钥 Phase 2 接入（当前无公钥时告警放行，非强制）~~ → 已由 [[2026-10-20-ota-phase2-release-signing]] 完成（落地为 ECDSA P-256 强制验签）。
 - 云侧制品链（Phase 2）与审批执行链（Phase 3）另立项。
 

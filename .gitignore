@@ -88,3 +88,4 @@ ci-reports/
 # 凭据（不入库；tools/ci.sh 部署时读取注入板端）
 secrets/
 build-arm64-native/
+artifacts/

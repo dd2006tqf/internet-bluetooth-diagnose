@@ -19,7 +19,7 @@
 #   WEAKNET_ROOT              安装根（默认 /home/radxa/weaknet）
 #   WEAKNET_UPDATE_DRYRUN=1   跳过 systemctl/busctl（本地沙盒演练用）
 #   WEAKNET_RELEASE_PRIV      发布私钥 PEM（package 时签名；不设则不签）
-#   WEAKNET_RELEASE_PUB       板端验签公钥（apply 时验签；不设则告警放行）
+#   WEAKNET_RELEASE_PUB       板端验签公钥（apply 时验签；不设且未加 --insecure 则拒绝）
 #
 # 板端布局（升级建立后）：
 #   $ROOT/releases/<version>/{server,client,lib,...,VERSION,manifest.sha256,.committed}
@@ -209,25 +209,31 @@ verify_release_dir() {
     echo "$ver"
 }
 
-# 签名验证（占位→真实）：公钥存在才强制；无公钥告警放行（Phase 2 接云侧发布密钥）
-verify_signature() {  # $1=pkg 文件
-    local pkg="$1" pub="${WEAKNET_RELEASE_PUB:-$ROOT/config/release_pub.pem}"
+# 签名验证（Phase 2 生产级强制验签）：
+#   默认 fail-closed：必须存在发布公钥且签名有效
+#   仅当显式指定 allow_unsigned=1 时告警放行
+verify_signature() {  # $1=pkg 文件 $2=allow_unsigned(0/1)
+    local pkg="$1" allow_unsigned="${2:-0}"
+    local pub="${WEAKNET_RELEASE_PUB:-$ROOT/config/release_pub.pem}"
     if [ ! -f "$pub" ]; then
-        warn "未配置发布公钥（$pub），跳过签名校验——Phase 2 接入云侧发布密钥后将强制"
-        return 0
+        if [ "$allow_unsigned" = "1" ]; then
+            warn "未配置发布公钥（$pub），由于 --insecure/--allow-unsigned 标志，跳过验签"
+            return 0
+        else
+            fail "板端未配置发布公钥（$pub），拒绝未授权升级（fail-closed；调试请加 --insecure）"
+        fi
     fi
-    [ -f "$pkg.sig" ] || fail "已配置发布公钥但缺少签名文件 $pkg.sig（fail-closed）"
-    openssl pkeyutl -verify -pubin -inkey "$pub" -rawin \
-        -in "$pkg" -sigfile "$pkg.sig" >/dev/null 2>&1 \
-        || fail "包签名校验失败：$pkg"
-    pass "Ed25519 签名校验通过"
+    [ -f "$pkg.sig" ] || fail "已配置发布公钥但缺少签名文件 $pkg.sig（拒绝未签名包）"
+    openssl dgst -sha256 -verify "$pub" -signature "$pkg.sig" "$pkg" >/dev/null 2>&1 \
+        || fail "数字签名校验失败：$pkg（密钥不匹配或包被篡改）"
+    pass "ECDSA (P-256) 数字签名校验通过"
 }
 
-# 解包 + 校验 + 版本策略 → 输出 staging 目录路径。$1=pkg $2=allow_downgrade
+# 解包 + 校验 + 版本策略 → 输出 staging 目录路径。$1=pkg $2=allow_downgrade $3=allow_unsigned
 stage_package() {
-    local pkg="$1" allow="${2:-0}"
+    local pkg="$1" allow="${2:-0}" allow_unsigned="${3:-0}"
     [ -f "$pkg" ] || fail "升级包不存在：$pkg"
-    verify_signature "$pkg"
+    verify_signature "$pkg" "$allow_unsigned"
     local cur; cur="$(current_version)"
     local staging="$RELEASES/.staging.$$"
     rm -rf "$staging"; mkdir -p "$staging"
@@ -287,15 +293,23 @@ cmd_status() {
     done
 }
 
-cmd_verify() {  # $1=pkg|dir
-    local target="$1"
-    [ -n "$target" ] || fail "用法：verify <pkg.tar.zst|release-dir>"
+cmd_verify() {  # $1=pkg|dir 其余为选项
+    local target="$1"; shift || true
+    local allow_unsigned=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --insecure|--allow-unsigned) allow_unsigned=1 ;;
+            *) fail "verify 未知参数：$1" ;;
+        esac
+        shift
+    done
+    [ -n "$target" ] || fail "用法：verify <pkg.tar.zst|release-dir> [--insecure]"
     if [ -d "$target" ]; then
         verify_release_dir "$target" >/dev/null
         pass "release 目录校验通过：$target"
     else
         local cur; cur="$(current_version)"
-        local staging; staging="$(stage_package "$target" 0)" || exit 1
+        local staging; staging="$(stage_package "$target" 0 "$allow_unsigned")" || exit 1
         local ver; ver="$(tr -d '[:space:]' < "$staging/VERSION")"
         rm -rf "$staging"
         pass "升级包校验通过：version=${ver}（current=${cur:-无}，策略允许）"
@@ -305,21 +319,22 @@ cmd_verify() {  # $1=pkg|dir
 cmd_apply() {  # $1=pkg 其余为选项
     require_root
     local pkg="$1"; shift
-    local allow=0 health=1 htimeout=120
+    local allow=0 health=1 htimeout=120 allow_unsigned=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --allow-downgrade) allow=1 ;;
             --commit|--no-health) health=0 ;;
             --health-timeout) htimeout="$2"; shift ;;
+            --insecure|--allow-unsigned) allow_unsigned=1 ;;
             *) fail "apply 未知参数：$1" ;;
         esac
         shift
     done
-    [ -n "$pkg" ] || fail "用法：apply <pkg.tar.zst> [--allow-downgrade] [--commit] [--health-timeout N]"
+    [ -n "$pkg" ] || fail "用法：apply <pkg.tar.zst> [--allow-downgrade] [--commit] [--health-timeout N] [--insecure]"
 
     local cur; cur="$(current_version)"
     info "current=${cur:-无（首次/未迁移）} → 应用 $pkg"
-    local staging; staging="$(stage_package "$pkg" "$allow")" || exit 1
+    local staging; staging="$(stage_package "$pkg" "$allow" "$allow_unsigned")" || exit 1
     local ver; ver="$(tr -d '[:space:]' < "$staging/VERSION")"
 
     svc_cmd stop "$SERVICE" 2>/dev/null || true
@@ -460,8 +475,8 @@ cmd_package() {  # <dist-dir> <version> <out.tar.zst>
     mkdir -p "$(dirname "$out")"
     tar --zstd --exclude=./.committed -cf "$out" -C "$dist" .
     if [ -n "${WEAKNET_RELEASE_PRIV:-}" ] && [ -f "${WEAKNET_RELEASE_PRIV}" ]; then
-        openssl pkeyutl -sign -rawin -inkey "$WEAKNET_RELEASE_PRIV" \
-            -in "$out" -sigfile "$out.sig"
+        openssl dgst -sha256 -sign "$WEAKNET_RELEASE_PRIV" \
+            -out "$out.sig" "$out"
         pass "已签名：$out.sig"
     else
         warn "未设 WEAKNET_RELEASE_PRIV，包未签名（Phase 1 本地信任可接受）"
