@@ -279,6 +279,16 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 | "板子在线吗" / "检查开发板" | `ping -c 1 -W 2 radxa-cubie-a7a.local && ssh radxa@radxa-cubie-a7a.local 'uname -m'` | 检查连通性 + 架构 |
 | "CI 状态" | `gh run list --limit 5` | 查看 GitHub Actions 运行记录 |
 
+### OTA 固件更新与发布（Phase 1/2/3 已闭环）
+
+| 用户意图 | 执行命令 | 说明 |
+|---------|---------|------|
+| "查 OTA 状态" / "update status" | `ssh board '/home/radxa/weaknet/client/bin/weaknet-cli update status'` | 查询板端当前版本、布局及转正状态（只读） |
+| "OTA 升级" / "本地升级" | `ssh board 'sudo /home/radxa/weaknet/client/bin/weaknet-cli update apply <pkg>'` | 本地或远程 URL 升级（ECDSA 签名校验 + 原子翻转 + 健康窗口） |
+| "OTA 回滚" / "rollback" | `ssh board 'sudo /home/radxa/weaknet/client/bin/weaknet-cli update rollback'` | 回滚至上一版本并重启服务 |
+| "构建发布固件" / "release" | `./tools/release.sh [version]` | 原生编译 + ECDSA P-256 签名 + 生成 `artifacts/` 与 `SHA256SUMS` |
+| "生成发布密钥对" | `./tools/gen-release-keys.sh` | 生成 ECDSA P-256 密钥对（私钥 `secrets/` 不入库，公钥 `certs/` 分发） |
+
 ### 配置化与实时调参（新增）
 
 | 用户意图 | 执行命令 | 说明 |
@@ -317,10 +327,11 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 ### 开发板服务管理
 
 - **只用 systemd 管理服务，不要用 tmux/nohup 手动启动**
-- 服务文件：`tools/weaknet-server.service`
+- 服务文件：`tools/weaknet-server.service`（路径经 `current/server` 软链寻址，支持 OTA 原子切换）
 - 启动服务前必须杀掉所有旧进程，避免数据库锁冲突
 - **开发板只保留 `dist-arm64/` 产物，不复制源码、头文件或构建中间文件**
-- **部署统一使用 `tools/ci.sh`，禁止手工 scp 源码或直接在开发板编译**
+- **部署统一使用 `tools/ci.sh`，禁止手工 scp 源码或直接在开发板编译**（部署自动走 adopt 流程并纳入 releases/<version> 布局）
+- **反向 SSH 隧道保活**：板端部署有 `weaknet-tunnel.service`（开机自启、带 10s 心跳保活探测及 3s 自动重连），避免跨公网 NAT 隧道单向挂死
 - 数据库路径：`/home/radxa/weaknet/data/history.db`（持久化，禁止使用 `/tmp` 存储历史数据）
 - 数据采集间隔：10 秒
 
