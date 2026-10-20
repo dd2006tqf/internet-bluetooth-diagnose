@@ -219,9 +219,53 @@ else
     skip "bpftool 不可用，跳过 eBPF 挂载检查"
 fi
 
-# Phase 14: 服务端日志
+# ==============================================
+# Phase 14: OTA 升级与 ECDSA 签名回归测试
+# ==============================================
 echo ""
-echo "===== Phase 14: 服务端日志（最后 80 行）====="
+echo "===== Phase 14: OTA 升级与签名回归测试 ====="
+UPDATE_SCRIPT="/home/radxa/weaknet/weaknet-local-update.sh"
+if [ -x "$UPDATE_SCRIPT" ]; then
+    echo "  --- 14.1: status 查询 ---"
+    if /home/radxa/weaknet/client/bin/weaknet-cli update status >/dev/null 2>&1; then
+        ok "OTA update status 查询"
+    else
+        fail "OTA update status 查询"
+    fi
+
+    echo "  --- 14.2: 未签名包被拒 (fail-closed) ---"
+    TMP_UNSIGNED="/tmp/test-ota-unsigned.tar.zst"
+    TMP_DIR="/tmp/test-ota-unsigned-dir"
+    rm -rf "$TMP_DIR" "$TMP_UNSIGNED" "${TMP_UNSIGNED}.sig"
+    mkdir -p "$TMP_DIR" && echo "1.0.0" > "$TMP_DIR/VERSION"
+    (cd "$TMP_DIR" && find . -type f ! -name manifest.sha256 -print0 | sed -z "s|^\./||" | sort -z | xargs -0 sha256sum > manifest.sha256)
+    tar --zstd -cf "$TMP_UNSIGNED" -C "$TMP_DIR" .
+    if sudo WEAKNET_ROOT=/home/radxa/weaknet "$UPDATE_SCRIPT" verify "$TMP_UNSIGNED" >/dev/null 2>&1; then
+        fail "未签名包未能成功拦截 (fail-closed 失败)"
+    else
+        ok "未签名包拦截 (fail-closed 有效)"
+    fi
+
+    echo "  --- 14.3: 伪造私钥签名被拒 ---"
+    TMP_ATTACKER_KEY="/tmp/test-attacker-key.pem"
+    openssl ecparam -name prime256v1 -genkey -noout -out "$TMP_ATTACKER_KEY" 2>/dev/null || true
+    if [ -f "$TMP_ATTACKER_KEY" ]; then
+        openssl dgst -sha256 -sign "$TMP_ATTACKER_KEY" -out "${TMP_UNSIGNED}.sig" "$TMP_UNSIGNED" 2>/dev/null || true
+        if sudo WEAKNET_ROOT=/home/radxa/weaknet "$UPDATE_SCRIPT" verify "$TMP_UNSIGNED" >/dev/null 2>&1; then
+            fail "伪造签名包未能成功拦截"
+        else
+            ok "伪造私钥签名拦截成功"
+        fi
+        rm -f "$TMP_ATTACKER_KEY"
+    fi
+    rm -rf "$TMP_DIR" "$TMP_UNSIGNED" "${TMP_UNSIGNED}.sig"
+else
+    skip "weaknet-local-update.sh 不存在，跳过 OTA 测试"
+fi
+
+# Phase 15: 服务端日志
+echo ""
+echo "===== Phase 15: 服务端日志（最后 80 行）====="
 tail -n 80 /tmp/weaknet-server.log
 
 # ==============================================

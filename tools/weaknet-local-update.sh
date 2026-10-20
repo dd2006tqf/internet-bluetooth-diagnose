@@ -87,6 +87,51 @@ version_allowed() {  # $1=current $2=target $3=allow_downgrade(0/1)
     return 1
 }
 
+# 资源回收与历史版本 GC：
+# 1) 清扫历史残留的 .staging.* 目录
+# 2) 保留当前版本、.previous 版本以及最新的 MAX_RETAIN 个历史版本，淘汰过旧版本
+cleanup_staging_and_gc() {
+    local cur_target="${1:-}"
+    local max_keep="${WEAKNET_RELEASES_MAX_KEEP:-3}"
+
+    # 1. 清扫 .staging 临时残留
+    rm -rf "$RELEASES"/.staging.* 2>/dev/null || true
+
+    # 2. GC 历史版本：保留当前激活、previous 以及 legacy-flat
+    local cur; cur="$(current_version)"
+    local prev; prev="$(cat "$RELEASES/.previous" 2>/dev/null || true)"
+
+    local versions=()
+    for d in "$RELEASES"/*/; do
+        [ -d "$d" ] || continue
+        local v; v="$(basename "$d")"
+        if valid_version "$v"; then
+            versions+=("$v")
+        fi
+    done
+
+    # 按 dpkg 版本排序（由新到旧）
+    if [ "${#versions[@]}" -gt "$max_keep" ]; then
+        local sorted_vers=()
+        while IFS= read -r line; do
+            [ -n "$line" ] && sorted_vers+=("$line")
+        done < <(printf '%s\n' "${versions[@]}" | sort -V -r)
+
+        local keep_count=0
+        for v in "${sorted_vers[@]}"; do
+            # 保护白名单：当前版本、前一版本、本次刚升级的目标
+            if [ "$v" = "$cur" ] || [ "$v" = "$prev" ] || [ "$v" = "$cur_target" ]; then
+                continue
+            fi
+            keep_count=$((keep_count + 1))
+            if [ "$keep_count" -ge "$max_keep" ]; then
+                info "OTA GC 自动回收历史版本: releases/$v"
+                rm -rf "$RELEASES/$v" 2>/dev/null || true
+            fi
+        done
+    fi
+}
+
 atomic_symlink() {  # $1=linkname(相对 releases/) $2=linkpath(绝对)
     ln -sfn "$1" "$2.tmp.$$"
     mv -Tf "$2.tmp.$$" "$2"
@@ -167,6 +212,7 @@ flip_restart_commit() {
         touch "$RELEASES/$target/.committed"
         # 转正后才清理同版本旧副本（.$ver.old.*）；其他历史版本保留为回滚目标
         rm -rf "$RELEASES"/."$target".old.* 2>/dev/null || true
+        cleanup_staging_and_gc "$target"
         pass "升级完成并转正：releases/${target}"
         return 0
     fi
@@ -330,12 +376,32 @@ cmd_apply() {  # $1=pkg 其余为选项
         esac
         shift
     done
-    [ -n "$pkg" ] || fail "用法：apply <pkg.tar.zst> [--allow-downgrade] [--commit] [--health-timeout N] [--insecure]"
+    [ -n "$pkg" ] || fail "用法：apply <pkg.tar.zst|http(s)://...> [--allow-downgrade] [--commit] [--health-timeout N] [--insecure]"
+
+    # 支持直接从 URL 下载远程固件包
+    local downloaded_tmp=""
+    if [[ "$pkg" =~ ^https?:// ]]; then
+        info "检测到远程固件 URL: $pkg，正在下载..."
+        downloaded_tmp="$(mktemp /tmp/wn-ota-dl-XXXXXX.tar.zst)"
+        curl -fSL "$pkg" -o "$downloaded_tmp" || {
+            rm -f "$downloaded_tmp"
+            fail "远程固件包下载失败: $pkg"
+        }
+        # 同时尝试下载分离式签名文件 .sig
+        curl -fSL "${pkg}.sig" -o "${downloaded_tmp}.sig" 2>/dev/null || true
+        pkg="$downloaded_tmp"
+        info "远程固件下载完成，进入本地验签与应用流程"
+    fi
 
     local cur; cur="$(current_version)"
     info "current=${cur:-无（首次/未迁移）} → 应用 $pkg"
-    local staging; staging="$(stage_package "$pkg" "$allow" "$allow_unsigned")" || exit 1
+    local staging
+    if ! staging="$(stage_package "$pkg" "$allow" "$allow_unsigned")"; then
+        [ -n "$downloaded_tmp" ] && rm -f "$downloaded_tmp" "${downloaded_tmp}.sig"
+        exit 1
+    fi
     local ver; ver="$(tr -d '[:space:]' < "$staging/VERSION")"
+    [ -n "$downloaded_tmp" ] && rm -f "$downloaded_tmp" "${downloaded_tmp}.sig"
 
     svc_cmd stop "$SERVICE" 2>/dev/null || true
 
@@ -359,6 +425,7 @@ cmd_apply() {  # $1=pkg 其余为选项
         svc_cmd restart "$SERVICE" || warn "restart 返回非零（--commit 模式不看健康窗口）"
         touch "$RELEASES/$ver/.committed"
         [ -n "$old_dir" ] && rm -rf "$old_dir"
+        cleanup_staging_and_gc "$ver"
         warn "--commit：跳过健康窗口，已直接转正 releases/${ver}"
         return 0
     fi
