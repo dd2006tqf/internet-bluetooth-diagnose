@@ -238,7 +238,7 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 |---------|---------|------|
 | "编译一下" / "build" | `cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build-x86 -j$(nproc)` | x86 本地快速编译 |
 | "跑测试" / "test" | `build-x86/server/test/test_database_manager_gtest` | 运行指定测试 |
-| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure` | x86 全量单元测试（48 套件，无需 D-Bus/真机环境） |
+| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure` | x86 全量单元测试（53 套件，无需 D-Bus/真机环境） |
 
 ### 部署到开发板
 
@@ -254,7 +254,7 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
 | "ARM64 编译" / "原生交叉编译" | `cmake -B build-arm64-native -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm64-cross.cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=ON && cmake --build build-arm64-native -j$(nproc)` | 宿主机裸机原生 Clang + Bullseye Sysroot（全量仅需 ~40s，脱离 QEMU 容器） |
-| "编译 eBPF" | `cmake --build build-arm64-native --target ebpf -j$(nproc)` | 单独编译 11 个 eBPF 程序（约 2 秒完成） |
+| "编译 eBPF" | `cmake --build build-arm64-native --target ebpf -j$(nproc)` | 单独编译 12 个 eBPF 程序（约 2 秒完成） |
 | "初始化 Sysroot" | `sudo ./scripts/setup_arm64_sysroot.sh` | 自动化初始化/更新 `/opt/sysroot-bullseye-arm64` |
 
 ### 历史数据查询
