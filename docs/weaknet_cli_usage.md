@@ -390,7 +390,7 @@ OTA Phase 1 本地升级（板端闭环，零云端依赖）。布局：`release
 | 子命令 | 权限 | 通道 | 说明 |
 |---|---|---|---|
 | `update status` | 普通用户 | D-Bus `GetUpdateStatus`（只读） | 当前版本、布局、pending/committed 状态 |
-| `update verify <dir-or-pkg|URL>` | **root**（sudo） | fork+exec 升级脚本 | release 目录/升级包 manifest.sha256 完整性校验；URL 先下载再校验（与 apply 同一拉包路径）。需在 `releases/` 下解包暂存，故要 root |
+| `update verify <dir-or-pkg|URL>` | **root**（sudo） | fork+exec 升级脚本 | release 目录/升级包 manifest.sha256 完整性校验；URL 先下载再校验（与 apply 同一拉包路径）。需在 `releases/` 下解包暂存，故要 root。选项：`--insecure`（跳过验签）、`--allow-downgrade`（放行降级，与 apply 语义一致） |
 | `update apply <pkg>` | **root**（sudo） | fork+exec 升级脚本 | 解包→版本单调检查→原子翻转→重启→健康窗口→转正，失败自动回滚 |
 | `update rollback` | **root**（sudo） | fork+exec 升级脚本 | 回滚到 `.previous` 记录的上一版（`--to <version>` 可指定） |
 
@@ -403,6 +403,9 @@ sudo weaknet-cli update verify /path/to/weaknet-1.1.0.tar.zst
 
 # 也可直接校验远程 URL（与 apply 同一拉包路径，先下载再校验）
 sudo weaknet-cli update verify http://127.0.0.1:8090/weaknet-1.1.0-arm64.tar.zst
+
+# 校验降级包（与 apply 同一策略开关：不给 --allow-downgrade 会被版本策略拒绝）
+sudo weaknet-cli update verify ./old-1.0.0.tar.zst --allow-downgrade
 
 # 应用升级（需 sudo；健康窗口默认 120s、连续 3 次全绿才转正）
 sudo weaknet-cli update apply /path/to/weaknet-1.1.0.tar.zst

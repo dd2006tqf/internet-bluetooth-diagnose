@@ -254,6 +254,23 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # 注意：此处刻意不 restart——重启由 adopt 在 current 翻转之后执行，
     # 否则新 unit（current/server 路径）在布局未就位时会拉起失败。
 
+    # 反向隧道单元：仓库里有唯一权威版本（tools/weaknet-tunnel.service），
+    # 部署时顺手清掉板端历史遗留的 cloud-tunnel.service —— 两个单元都占
+    # 板端 -L 8000 端口，后启动者必报 "Address already in use" 反复重启，
+    # 云端 2222 反向端口随之失效（表现为 ssh board 全面连不上）。
+    if [ -f "${ROOT}/tools/weaknet-tunnel.service" ]; then
+        scp "${ROOT}/tools/weaknet-tunnel.service" "${BOARD}:/tmp/weaknet-tunnel.service" 2>/dev/null
+        ssh "${BOARD}" "sudo cp /tmp/weaknet-tunnel.service /etc/systemd/system/weaknet-tunnel.service && \
+            sudo systemctl daemon-reload && \
+            sudo systemctl disable --now cloud-tunnel.service 2>/dev/null || true; \
+            sudo rm -f /etc/systemd/system/cloud-tunnel.service && \
+            sudo systemctl daemon-reload && \
+            sudo systemctl enable weaknet-tunnel.service && \
+            sudo systemctl restart weaknet-tunnel.service" \
+            || warn "反向隧道单元部署失败（板端 tunnel 可能仍连不上云端）"
+        pass "反向隧道单元已部署（cloud-tunnel 历史单元已清理）"
+    fi
+
     # OTA 布局迁移/切换（板端重启唯一入口）：暂存产物 → releases/${VERSION}
     # →（首次）旧扁平布局归档 legacy-flat → 原子翻转 current + 兼容软链
     # → 重启 → 健康窗口（失败自动回滚上一版）→ .committed 转正。

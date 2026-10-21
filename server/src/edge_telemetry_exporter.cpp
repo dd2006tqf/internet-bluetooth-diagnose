@@ -783,6 +783,10 @@ std::string getOtaReceiptPath(const weaknet_dbus::WeakNetConfig& cfg) {
 /// （被 OOM/信号杀死、exec 失败等），如实上报 REJECTED，绝不无限等待。
 constexpr time_t kOtaReceiptInflightTimeoutSec = 600;
 
+/// OTA 升级诊断日志的单文件上限（256 KiB）。超过即轮转为 .1。
+/// 板子闪存有限，保留"最近一次升级"的完整日志已足够排障。
+constexpr long kOtaUpgradeLogMaxBytes = 256 * 1024;
+
 /// 读取回执文件中的 action_id；无文件/损坏时返回空串。
 std::string readOtaReceiptActionId(const std::string& receipt_file) {
     std::ifstream ifs(receipt_file);
@@ -1263,6 +1267,16 @@ bool EdgeTelemetryExporter::scheduleOtaUpgrade(const std::string& action_id,
             (config_.data_dir.get().empty() ? std::string("/home/radxa/weaknet/data")
                                             : config_.data_dir.get()) +
             "/ota_upgrade.log";
+        // 轮转：超过上限就把旧日志挪到 .1（单份归档，够看最近一次故障即可）。
+        // 不做多份轮转是刻意的——板子闪存空间有限，OTA 诊断日志的价值集中在
+        // "最近一次升级"上，历史多份没有实际用处。
+        struct stat lst{};
+        if (stat(log_path.c_str(), &lst) == 0 &&
+            lst.st_size > static_cast<off_t>(kOtaUpgradeLogMaxBytes)) {
+            const std::string archived = log_path + ".1";
+            std::remove(archived.c_str());
+            ::rename(log_path.c_str(), archived.c_str());
+        }
         int blog = open(log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
         if (blog >= 0) {
             dup2(blog, STDOUT_FILENO);

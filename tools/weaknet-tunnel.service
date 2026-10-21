@@ -1,0 +1,17 @@
+[Unit]
+Description=WeakNet Reverse SSH Tunnel to Cloud Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=radxa
+ExecStart=/usr/bin/ssh -i /home/radxa/.ssh/id_cloud_tunnel -N -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -o TCPKeepAlive=yes -R 2222:localhost:22 -L 8000:127.0.0.1:8000 -L 8090:127.0.0.1:8090 ubuntu@81.71.76.133
+Restart=always
+RestartSec=3
+# KillMode=process：只杀主进程（ssh），不动它可能派生的子进程。
+# 隧道是"连着就能用"的常驻设施，被连上时不应被外部 stop 波及。
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

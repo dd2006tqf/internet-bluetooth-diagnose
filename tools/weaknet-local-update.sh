@@ -125,10 +125,10 @@ escape_service_cgroup() {
 
 # release 目录属主/权限归一化。$1=release 目录
 # 服务内 fork 执行时进程受 unit CapabilityBoundingSet 限制（无 CAP_CHOWN），
-# tar --same-owner 改不了属主；且归档根目录权限随构建机 umask 漂移（踩过
-# 700 的坑）——两层叠加把 radxa 锁在 releases/<ver> 外面（weaknet-cli
-# Permission denied）。chown 尽力而为（手动 ssh 全权 root 下成功，服务子进程
-# 下静默保留 root 属主但功能无碍）；chmod 必成功（root 改自己拥有的文件不需
+# chown 改不了属主；且归档根目录权限随构建机 umask 漂移（踩过 700 的坑）
+# ——两层叠加把 radxa 锁在 releases/<ver> 外面（weaknet-cli Permission
+# denied）。chown 尽力而为（手动 ssh 全权 root 下成功，服务子进程下静默
+# 保留 root 属主但功能无碍）；chmod 必成功（root 改自己拥有的文件不需
 # CAP_FOWNER）。X 语义：目录与本就有执行位的文件保留 x，其余不加。
 normalize_release_perms() {
     local rel="$1" owner
@@ -372,9 +372,13 @@ stage_package() {
     local staging="$RELEASES/.staging.$$"
     rm -rf "$staging"; mkdir -m 0755 -p "$staging"
     case "$pkg" in
-        *.tar.zst|*.tzst) tar --zstd -xf "$pkg" -C "$staging" ;;
-        *.tar.gz|*.tgz)   tar -zxf "$pkg" -C "$staging" ;;
-        *.tar)            tar -xf "$pkg" -C "$staging" ;;
+        # --no-same-owner：解包时按当前用户落属主，不还原归档里的 uid/gid。
+        # 云端下发时升级脚本跑在服务子进程里（无 CAP_CHOWN），保留归档属主会
+        # 每条文件都报 "Cannot change ownership" 并让 tar 以非零码退出（实测
+        # 刷 108 行告警）。属主统一由 normalize_release_perms 归一化。
+        *.tar.zst|*.tzst) tar --no-same-owner --zstd -xf "$pkg" -C "$staging" ;;
+        *.tar.gz|*.tgz)   tar --no-same-owner -zxf "$pkg" -C "$staging" ;;
+        *.tar)            tar --no-same-owner -xf "$pkg" -C "$staging" ;;
         *) rm -rf "$staging"; fail "不支持的包格式：$pkg（需 tar.zst/tar.gz/tar）" ;;
     esac
     local ver
@@ -429,15 +433,18 @@ cmd_status() {
 
 cmd_verify() {  # $1=pkg|dir|URL 其余为选项
     local target="$1"; shift || true
-    local allow_unsigned=0
+    local allow_unsigned=0 allow=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --insecure|--allow-unsigned) allow_unsigned=1 ;;
+            # 降级策略：apply 用 --allow-downgrade 才放行，verify 同样支持，
+            # 否则会出现"verify 说通过、apply 却拒绝降级"的自相矛盾。
+            --allow-downgrade) allow=1 ;;
             *) fail "verify 未知参数：$1" ;;
         esac
         shift
     done
-    [ -n "$target" ] || fail "用法：verify <pkg.tar.zst|release-dir|http(s)://...> [--insecure]"
+    [ -n "$target" ] || fail "用法：verify <pkg.tar.zst|release-dir|http(s)://...> [--insecure] [--allow-downgrade]"
     # 与 apply 同一 URL 拉取路径：URL 入参先下载到临时文件再校验，避免
     # verify 与 apply 行为不一致（verify 只收本地文件、apply 却在线拉包）。
     local downloaded_tmp=""
@@ -459,7 +466,7 @@ cmd_verify() {  # $1=pkg|dir|URL 其余为选项
         pass "release 目录校验通过：$target"
     else
         local cur; cur="$(current_version)"
-        local staging; staging="$(stage_package "$target" 0 "$allow_unsigned")" || {
+        local staging; staging="$(stage_package "$target" "$allow" "$allow_unsigned")" || {
             [ -n "$downloaded_tmp" ] && rm -f "$downloaded_tmp" "${downloaded_tmp}.sig"
             exit 1
         }
@@ -673,7 +680,10 @@ cmd_package() {  # <dist-dir> <version> <out.tar.zst>
     (cd "$dist" && find . -type f ! -name manifest.sha256 ! -name .committed -print0 \
         | sed -z 's|^\./||' | sort -z | xargs -0 sha256sum > manifest.sha256)
     mkdir -p "$(dirname "$out")"
-    tar --zstd --exclude=./.committed -cf "$out" -C "$dist" .
+    # --owner/--group 归一为 0:0：打包机上的构建 uid（如 1000:1001）不该被
+    # 写进制品——板端解包要靠 --no-same-owner + normalize_release_perms 落
+    # 属主，归一化后 tar 元数据在任何机器上都可预期。
+    tar --zstd --owner=0 --group=0 --exclude=./.committed -cf "$out" -C "$dist" .
     if [ -n "${WEAKNET_RELEASE_PRIV:-}" ] && [ -f "${WEAKNET_RELEASE_PRIV}" ]; then
         openssl dgst -sha256 -sign "$WEAKNET_RELEASE_PRIV" \
             -out "$out.sig" "$out"
