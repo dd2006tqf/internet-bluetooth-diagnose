@@ -279,7 +279,7 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 | "板子在线吗" / "检查开发板" | `ping -c 1 -W 2 radxa-cubie-a7a.local && ssh radxa@radxa-cubie-a7a.local 'uname -m'` | 检查连通性 + 架构 |
 | "CI 状态" | `gh run list --limit 5` | 查看 GitHub Actions 运行记录 |
 
-### OTA 固件更新与发布（Phase 1/2/3 已闭环）
+### OTA 固件更新与发布（Phase 1/2/3 已闭环 + 云端下发）
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
@@ -288,6 +288,7 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 | "OTA 回滚" / "rollback" | `ssh board 'sudo /home/radxa/weaknet/client/bin/weaknet-cli update rollback'` | 回滚至上一版本并重启服务 |
 | "构建发布固件" / "release" | `./tools/release.sh [version]` | 原生编译 + ECDSA P-256 签名 + 生成 `artifacts/` 与 `SHA256SUMS` |
 | "生成发布密钥对" | `./tools/gen-release-keys.sh` | 生成 ECDSA P-256 密钥对（私钥 `secrets/` 不入库，公钥 `certs/` 分发） |
+| "云端下发 OTA 升级" | 平台排 `system.ota_upgrade_url` 动作（value=固件 URL） | 板端异步拉包升级并回传 APPLIED/REJECTED；回执两段式（脚本写终态），详见 `docs/OTA固件更新与安全发布指南.md` 3.5 |
 
 ### 配置化与实时调参（新增）
 

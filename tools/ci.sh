@@ -263,8 +263,12 @@ if [ "$SKIP_DEPLOY" = false ]; then
         || fail "adopt 失败（布局迁移/健康窗口未通过，已自动回滚）——依据上方输出排查，必要时 sudo weaknet-cli update rollback"
     pass "部署完成（releases/${VERSION} 已转正）"
 
-    scp "${ROOT}/tools/weaknet-test-full.sh" "${BOARD}:/home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null
-    ssh "${BOARD}" "chmod +x /home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null
+    # 测试脚本上传失败不能让 set -e 在部署收尾处静默杀死整个脚本
+    # （真机踩过：板端残留 root 属主旧文件 → scp EACCES → 后续步骤全没跑）
+    scp "${ROOT}/tools/weaknet-test-full.sh" "${BOARD}:/home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null \
+        || warn "weaknet-test-full.sh 上传失败（板端文件可能属主异常：rm 后重试）"
+    ssh "${BOARD}" "chmod +x /home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null \
+        || warn "weaknet-test-full.sh chmod 失败"
     pass "部署完成"
 else
     info "跳过部署"
@@ -277,9 +281,11 @@ if [ "$SKIP_TEST" = false ]; then
     log ""
     log "===== Step 4: 开发板测试 ====="
 
-    # 上传测试脚本
-    scp "${ROOT}/tools/weaknet-test-full.sh" "${BOARD}:/home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null
-    ssh "${BOARD}" "chmod +x /home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null
+    # 上传测试脚本（失败不致命：下面的运行会因文件缺失显式报错）
+    scp "${ROOT}/tools/weaknet-test-full.sh" "${BOARD}:/home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null \
+        || warn "weaknet-test-full.sh 上传失败（板端文件可能属主异常：rm 后重试）"
+    ssh "${BOARD}" "chmod +x /home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null \
+        || warn "weaknet-test-full.sh chmod 失败"
 
     # 运行测试（weaknet-test-full.sh 以 FAIL 条数作为退出码）
     #  - 完整输出存报告，控制台只显示前 80 行（截断只是显示，不再是取证上限）

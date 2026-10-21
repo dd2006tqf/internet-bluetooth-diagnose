@@ -21,7 +21,9 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <random>
@@ -29,6 +31,10 @@
 #include <sys/utsname.h>
 #include <algorithm>
 #include <utility>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include "update_status.hpp"
 
 #ifdef WEAKNET_HAVE_CURL
 #include <curl/curl.h>
@@ -366,6 +372,8 @@ bool EdgeTelemetryExporter::start() {
 
     stop_requested_.store(false);
     running_.store(true);
+    // 启动时检查是否有上一轮 OTA 升级完成后遗留的回执待上报
+    checkAndEmitPendingOtaReceipt();
     thread_ = std::thread([this]() { run(); });
     LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
              "边缘遥测上报已启动: device=" << config_.edge.device_id.get()
@@ -763,6 +771,31 @@ bool EdgeTelemetryExporter::verifyPendingActionsSignature(const std::string& bod
 #endif
 }
 
+namespace {
+std::string getOtaReceiptPath(const weaknet_dbus::WeakNetConfig& cfg) {
+    const std::string& d = cfg.data_dir.get();
+    return d.empty() ? "/home/radxa/weaknet/data/pending_ota_receipt.json"
+                     : d + "/pending_ota_receipt.json";
+}
+
+/// 升级进程"进行中"的判定时限。脚本下载+验签+安装+健康窗口通常在数分钟内
+/// 完成（健康窗口默认 120s）；超过此时长仍 IN_PROGRESS 视为升级进程已死
+/// （被 OOM/信号杀死、exec 失败等），如实上报 REJECTED，绝不无限等待。
+constexpr time_t kOtaReceiptInflightTimeoutSec = 600;
+
+/// 读取回执文件中的 action_id；无文件/损坏时返回空串。
+std::string readOtaReceiptActionId(const std::string& receipt_file) {
+    std::ifstream ifs(receipt_file);
+    if (!ifs.is_open()) return "";
+    std::string content((std::istreambuf_iterator<char>(ifs)),
+                        std::istreambuf_iterator<char>());
+    ifs.close();
+    std::string action_id;
+    if (!extractStringField(content, "action_id", 0, &action_id, nullptr)) return "";
+    return action_id;
+}
+}  // namespace
+
 void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body) {
     ensureDownlinkKeyLoaded();
     const auto actions = parsePendingActions(response_body);
@@ -789,6 +822,16 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
         // 未生效的配置记成已应用。
         auto it = executed_action_ids_.find(action.action_id);
         if (it != executed_action_ids_.end()) {
+            // OTA 动作在回执文件存续期间（升级进行中/终态待传）不能按"首次结果"
+            // 重放回执——首次记的只是"调度成功"，真正的终态由升级脚本写入回执
+            // 后经 checkAndEmitPendingOtaReceipt 单独上报，此处静默跳过。
+            if (action.key == "system.ota_upgrade_url" &&
+                readOtaReceiptActionId(getOtaReceiptPath(config_)) == action.action_id) {
+                LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                         "OTA 回执尚未定稿（升级中/待传），暂不重放回执: "
+                         << action.action_id);
+                continue;
+            }
             const bool first_ok = it->second;
             LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
                      "云端动作已执行过，直接回执不重放: " << action.action_id
@@ -816,6 +859,23 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
                       "云端动作被拒绝（generation 过期）: " << action.key
                       << " gen=" << action.generation
                       << " last=" << config_txn_->lastAppliedGeneration());
+        } else if (action.key == "system.ota_upgrade_url") {
+            // OTA 固件远程升级专用执行通道：脱离 setMonitorParam，异步启动升级子进程
+            LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                     "收到云端 OTA 升级指令: action=" << action.action_id
+                     << " url=" << action.value);
+            ok = scheduleOtaUpgrade(action.action_id, action.claim_token,
+                                    action.generation, action.value, &error);
+            if (ok) {
+                // OTA 调度成功即推进 generation 防重放；回执暂不发出，等升级重启后发出
+                if (config_txn_ && action.generation > 0) {
+                    config_txn_->markGenerationApplied(action.generation);
+                }
+                executed_action_ids_.emplace(action.action_id, true);
+                LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                         "已成功在后台调度 OTA 升级: " << action.action_id);
+                continue; // 跳过下方统一 queueActionResult，等待新版本拉起后回执
+            }
         } else if (trialable && config_txn_) {
             // TRIAL 路径：先记账（含 prior_values 快照），再落值。
             auto* cfg = const_cast<weaknet_dbus::WeakNetConfig*>(&config_);
@@ -1053,6 +1113,172 @@ std::string EdgeTelemetryExporter::actionResultsUrl() const {
     return url;
 }
 
+void EdgeTelemetryExporter::checkAndEmitPendingOtaReceipt() {
+    const std::string receipt_file = getOtaReceiptPath(config_);
+    std::ifstream ifs(receipt_file);
+    if (!ifs.is_open()) return;
+
+    std::string content((std::istreambuf_iterator<char>(ifs)),
+                        std::istreambuf_iterator<char>());
+    ifs.close();
+
+    std::string action_id, claim_token, target_url, result;
+    uint64_t generation = 0;
+    extractStringField(content, "action_id", 0, &action_id, nullptr);
+    extractStringField(content, "claim_token", 0, &claim_token, nullptr);
+    extractStringField(content, "target_url", 0, &target_url, nullptr);
+    extractStringField(content, "result", 0, &result, nullptr);
+    extractUint64Field(content, "generation", &generation);
+
+    if (action_id.empty()) {
+        std::remove(receipt_file.c_str());
+        return;
+    }
+
+    if (result != "SUCCEEDED" && result != "FAILED") {
+        // 升级尚未结束（服务在健康窗口中途重启、或升级进程仍在跑）。
+        // 只有脚本自己写下的终态才允许触发回执——服务重启本身不是升级成功的证据。
+        struct stat st{};
+        if (stat(receipt_file.c_str(), &st) != 0) return;
+        const time_t age = ::time(nullptr) - st.st_mtime;
+        if (age < kOtaReceiptInflightTimeoutSec) return;  // 还在健康窗口/安装中，等下一轮
+
+        LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                  "OTA 升级进程超时未结束，按失败上报: action=" << action_id
+                  << " age_s=" << age);
+        result = "FAILED";
+    }
+
+    // 读完立即删除，避免重复上报
+    std::remove(receipt_file.c_str());
+
+    if (result == "SUCCEEDED") {
+        // 获取当前系统的真实安装版本（此时脚本已转正，读到的即新版本）
+        std::string root_dir = "/home/radxa/weaknet";
+        const char* env_root = std::getenv("WEAKNET_ROOT");
+        if (env_root && *env_root) root_dir = env_root;
+        std::string cur_ver = weaknet::update::ReadCurrentVersion(root_dir);
+
+        LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                 "OTA 升级成功，排队 APPLIED 回执: action=" << action_id
+                 << " ver=" << cur_ver);
+        queueActionResult(action_id, "APPLIED",
+                          "OTA 升级完成并转正 (当前版本: " + cur_ver + ")",
+                          claim_token, generation, "system.ota_upgrade_url", target_url);
+    } else {
+        LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                  "OTA 升级失败/回滚，排队 REJECTED 回执: action=" << action_id);
+        queueActionResult(action_id, "REJECTED",
+                          "OTA 升级失败，已保持/回滚至原版本",
+                          claim_token, generation, "system.ota_upgrade_url", target_url);
+    }
+
+    // 回执定稿后，把去重表里的"首次结果"纠正为真实终态——此后云端若重放该
+    // action（回执丢失），重放出去的必须是终态而不是当初的"调度成功"。
+    executed_action_ids_[action_id] = (result == "SUCCEEDED");
+}
+
+bool EdgeTelemetryExporter::scheduleOtaUpgrade(const std::string& action_id,
+                                               const std::string& claim_token,
+                                               uint64_t generation,
+                                               const std::string& url,
+                                               std::string* error) {
+    if (url.empty() || (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0)) {
+        *error = "invalid_ota_url";
+        return false;
+    }
+
+    // 1. 暂存回执上下文到 data/pending_ota_receipt.json。result 初始 IN_PROGRESS，
+    //    终态（SUCCEEDED/FAILED）由升级脚本在完成/失败时自己改写——上报器只认
+    //    脚本写下的终态，避免"调度过/服务重启过"被误报成升级成功。
+    const std::string receipt_file = getOtaReceiptPath(config_);
+
+    // 已有回执时先消费再调度：终态回执立即排队上报腾出文件；IN_PROGRESS 说明
+    // 升级仍在飞——同一 action 重放视为幂等成功（不重复 fork），换一个 action
+    // 则拒绝（不允许并发两路升级）。
+    {
+        std::ifstream existing(receipt_file);
+        if (existing.is_open()) {
+            std::string content((std::istreambuf_iterator<char>(existing)),
+                                std::istreambuf_iterator<char>());
+            existing.close();
+            std::string prev_action, prev_result;
+            extractStringField(content, "action_id", 0, &prev_action, nullptr);
+            extractStringField(content, "result", 0, &prev_result, nullptr);
+            if (prev_result != "SUCCEEDED" && prev_result != "FAILED") {
+                if (prev_action == action_id) {
+                    LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                             "OTA 升级已在进行中，幂等跳过重复调度: " << action_id);
+                    return true;
+                }
+                *error = "ota_already_inflight";
+                return false;
+            }
+            // 上一轮终态回执还没被 run() 循环取走：先按正常流程消费掉，
+            // 避免被本次调度覆盖而丢单。
+            checkAndEmitPendingOtaReceipt();
+        }
+    }
+
+    std::ofstream ofs(receipt_file, std::ios::trunc);
+    if (ofs.is_open()) {
+        ofs << "{\"action_id\":\"" << weaknet_utils::escapeJsonString(action_id) << "\","
+            << "\"claim_token\":\"" << weaknet_utils::escapeJsonString(claim_token) << "\","
+            << "\"generation\":" << generation << ","
+            << "\"target_url\":\"" << weaknet_utils::escapeJsonString(url) << "\","
+            << "\"result\":\"IN_PROGRESS\"}\n";
+        ofs.close();
+    } else {
+        LOG_WARNING(weaknet_dbus::LogModule::SYSTEM,
+                    "无法创建 OTA 回执暂存文件: " << receipt_file);
+    }
+
+    // 2. 寻找升级脚本路径
+    std::string script_path = "/home/radxa/weaknet/weaknet-local-update.sh";
+    const char* env_script = std::getenv("WEAKNET_UPDATE_SCRIPT");
+    if (env_script && *env_script) {
+        script_path = env_script;
+    }
+
+    // 3. fork + setsid 独立子进程执行升级
+    pid_t pid = fork();
+    if (pid < 0) {
+        *error = "fork_failed";
+        std::remove(receipt_file.c_str());
+        return false;
+    }
+
+    if (pid == 0) {
+        // 子进程：脱离终端和父进程会话组，绝不受 server 停止信号影响。
+        // stdin → /dev/null；stdout/stderr → data/ota_upgrade.log（追加）——
+        // 升级脚本的下载/验签/回滚诊断必须留痕，全丢 /dev/null 会让真机
+        // 故障只能靠猜（踩过：假 APPLIED 之后完全无从排查脚本死在哪一步）。
+        setsid();
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            close(devnull);
+        }
+        const std::string log_path =
+            (config_.data_dir.get().empty() ? std::string("/home/radxa/weaknet/data")
+                                            : config_.data_dir.get()) +
+            "/ota_upgrade.log";
+        int blog = open(log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (blog >= 0) {
+            dup2(blog, STDOUT_FILENO);
+            dup2(blog, STDERR_FILENO);
+            close(blog);
+        }
+        // 把回执文件路径交给升级脚本：脚本成功转正后写 SUCCEEDED、失败写 FAILED。
+        setenv("WEAKNET_OTA_RECEIPT", receipt_file.c_str(), 1);
+        // 执行 weaknet-local-update.sh apply <url>
+        execl(script_path.c_str(), script_path.c_str(), "apply", url.c_str(), (char*)nullptr);
+        _exit(127);
+    }
+
+    return true;
+}
+
 bool EdgeTelemetryExporter::transmitActionResults(std::string* error) {
     std::deque<EdgeActionResultRecord> pending;
     {
@@ -1127,6 +1353,10 @@ void EdgeTelemetryExporter::run() {
         lock.unlock();
 
         if (stop_requested_.load()) break;
+
+        // 周期检查 OTA 升级回执：升级脚本在完成/失败时改写暂存文件的终态，
+        // 这里轮询拾取并排队回执（不依赖重启——重启场景由 start() 同一函数覆盖）。
+        checkAndEmitPendingOtaReceipt();
 
         // 看门狗：TRIAL 到期即在此评估最新快照并做 commit/rollback。
         // evaluateTrialDeadline 内部 fail-safe：无快照视作不健康。

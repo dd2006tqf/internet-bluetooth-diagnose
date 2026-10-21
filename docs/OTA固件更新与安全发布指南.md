@@ -92,6 +92,79 @@ sudo weaknet-cli update apply https://github.com/dd2006tqf/AI-powered-Network-Di
 sudo weaknet-cli update rollback
 ```
 
+### 3.5 云端下发 OTA 升级（pending_actions 通道）
+
+平台侧可经既有下行动作通道远程触发升级，无需登录开发板。板端把
+`system.ota_upgrade_url` 纳入配置白名单（与云端 `CONFIG_KEYS` 逐位对齐，
+由 12 位金标 `catalog_version` 跨语言测试守护），收到后**异步**调度升级子进程，
+不阻塞遥测/评估主循环。
+
+**端到端链路：**
+
+```
+平台排队动作 (config_key=system.ota_upgrade_url, value=固件 URL)
+  → 遥测响应携带 pending_actions（Ed25519 签名 + generation 防重放）
+  → 板端 exporter 校验签名/防重放 → fork+setsid 执行 weaknet-local-update.sh apply <URL>
+  → 脚本迁出服务 cgroup → 下载+验签+落位+翻转+健康窗口
+  → 脚本把终态写入 data/pending_ota_receipt.json（result: SUCCEEDED/FAILED）
+  → exporter 轮询拾取终态 → queueActionResult 回传 /edge/action-results
+```
+
+**回执生命周期（两段式，防"假 APPLIED"）：**
+
+| 阶段 | result 值 | 写入者 |
+|------|-----------|--------|
+| 调度成功（fork 已启动） | `IN_PROGRESS` | exporter（scheduleOtaUpgrade） |
+| 升级成功转正（`.committed` 落盘） | `SUCCEEDED` | **升级脚本显式写入**（唯一成功出口） |
+| 升级失败/健康窗口回滚/脚本被杀 | `FAILED` | 升级脚本 EXIT 陷阱（不看退出码） |
+| 脚本超时未定稿（>600s stall） | —（按 FAILED 上报） | exporter 超时兜底 |
+
+关键约束（真机踩过的坑，勿回退）：
+- **绝不凭"重启发生了/退出码 0"推断升级成功**——bash 死于 SIGTERM 时 EXIT
+  陷阱里 `$?` 是上一条命令的状态（实测为 0），据此上报会把"服务重启把升级
+  脚本连带杀死"误报成升级成功。`SUCCEEDED` 只能由脚本在 `.committed` 之后
+  显式写入。
+- **升级脚本必须先迁出服务 cgroup**（写 `/sys/fs/cgroup/cgroup.procs`）：
+  脚本由服务 fork 而来，`setsid` 只脱离会话不脱离 cgroup；不迁出则
+  `systemctl stop weaknet-server`（KillMode=control-group）会把升级进程一起
+  SIGTERM，死在翻转之前。
+- **release 目录必须做属主/权限归一化**（`normalize_release_perms`）：服务
+  进程受 unit `CapabilityBoundingSet` 限制（无 CAP_CHOWN），tar 改不了属主；
+  归档根目录权限又随构建机 umask 漂移（踩过 700）——两层叠加会把 radxa
+  锁在 `releases/<ver>` 外（`weaknet-cli` Permission denied）。chown 尽力
+  而为，chmod 755/o=rX 必做。
+- 回执文件 `data/pending_ota_receipt.json` 在调度时落盘（含 action_id/
+  claim_token/generation/target_url/result），服务重启不丢；exporter 在
+  `start()` 与主循环（≤5s 周期）双路轮询。
+- 升级子进程 stdout/stderr 追加写入 `data/ota_upgrade.log`，真机故障先看这里。
+
+**平台侧下发示例（rehearsal 环境直插 DB）：**
+
+```python
+from datetime import UTC, datetime
+from uuid import uuid4
+from sqlalchemy import create_engine, text
+eng = create_engine("postgresql+psycopg://weaknet:<pw>@127.0.0.1:5432/industrial_ops")
+with eng.begin() as c:
+    max_gen = c.execute(text("SELECT coalesce(max(generation),0) FROM network_pending_actions"
+                             " WHERE tenant_id=:t AND asset_id=:a"),
+                        {"t": "tenant-m1-demo", "a": "radxa-cubie-a7a"}).scalar_one()
+    c.execute(text("""INSERT INTO network_pending_actions
+        (action_id, tenant_id, asset_id, generation, nonce, config_key, config_value,
+         status, issued_by, issued_at, version)
+        VALUES (:id,:t,:a,:g,:n,'system.ota_upgrade_url',
+                'http://127.0.0.1:8090/weaknet-1.1.0-arm64.tar.zst',
+                'QUEUED','admin-live-test',:now,1)"""),
+        {"id": f"nact-ota-live-{uuid4().hex[:6]}", "t": "tenant-m1-demo",
+         "a": "radxa-cubie-a7a", "g": int(max_gen) + 1,
+         "n": uuid4().hex, "now": datetime.now(UTC)})
+```
+
+下发后板端 `journalctl -u weaknet-server | grep OTA` 可见调度日志；
+`data/ota_upgrade.log` 有脚本完整诊断；平台侧动作终态 `APPLIED` 的
+`detail` 必须携带真实安装版本号（如 `当前版本: 1.1.0`），版本号对不上
+即为异常。
+
 ---
 
 ## 4. 发布构建流程（Release 流程）

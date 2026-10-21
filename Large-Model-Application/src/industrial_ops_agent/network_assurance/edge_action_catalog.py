@@ -150,6 +150,7 @@ CONFIG_KEYS: Final[frozenset[str]] = frozenset(
         "edge.interval",
         "edge.timeout_ms",
         "edge.timeout",
+        "system.ota_upgrade_url",
     }
 )
 

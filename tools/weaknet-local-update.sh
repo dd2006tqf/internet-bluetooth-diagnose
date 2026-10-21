@@ -20,6 +20,9 @@
 #   WEAKNET_UPDATE_DRYRUN=1   跳过 systemctl/busctl（本地沙盒演练用）
 #   WEAKNET_RELEASE_PRIV      发布私钥 PEM（package 时签名；不设则不签）
 #   WEAKNET_RELEASE_PUB       板端验签公钥（apply 时验签；不设且未加 --insecure 则拒绝）
+#   WEAKNET_OTA_RECEIPT       云端下发升级时的回执文件路径（上报器注入）；
+#                             本脚本在退出时按最终结果改写其中 result 字段
+#                             （0→SUCCEEDED，非 0→FAILED），供上报器回传云端
 #
 # 板端布局（升级建立后）：
 #   $ROOT/releases/<version>/{server,client,lib,...,VERSION,manifest.sha256,.committed}
@@ -59,6 +62,82 @@ DRYRUN="${WEAKNET_UPDATE_DRYRUN:-0}"
 require_root() {
     [ "$DRYRUN" = "1" ] && return 0
     [ "$(id -u)" = "0" ] || fail "此命令需要 root 权限（sudo 执行）"
+    # 真 root 且身处服务 cgroup 时先迁出（apply/rollback/adopt 都会 stop 服务）
+    escape_service_cgroup
+}
+
+# ---- 云端下发 OTA 回执（WEAKNET_OTA_RECEIPT）----------------------------------
+# 云端经 pending_actions 下发升级时，上报器（weaknet-dbus-server）把 action
+# 上下文写进回执文件（result=IN_PROGRESS）并通过环境变量把路径传进来。本脚本
+# 是终态的唯一写入者：
+#   - 成功转正后由 cmd_apply **显式**写 result=SUCCEEDED（唯一成功出口）
+#   - EXIT 陷阱只写 FAILED：任何非正常走到成功出口的退出（fail/健康窗口回滚/
+#     SIGTERM 连带杀死）一律按失败上报
+# 注意：绝不能用"退出码 0"推断成功——bash 死于 SIGTERM 时 EXIT 陷阱里的 $? 是
+# 上一条命令的状态（实测为 0），据此写 SUCCEEDED 会把"服务重启把自己杀了"
+# 误报成升级成功（真机踩过：板子还在 1.0.0，云端已记 APPLIED）。
+OTA_RECEIPT="${WEAKNET_OTA_RECEIPT:-}"
+ota_receipt_result() {  # $1 = SUCCEEDED | FAILED
+    if [ -n "$OTA_RECEIPT" ] && [ -f "$OTA_RECEIPT" ]; then
+        sed -i "s/\"result\":\"IN_PROGRESS\"/\"result\":\"$1\"/" "$OTA_RECEIPT" 2>/dev/null || true
+    fi
+}
+ota_receipt_progress() {  # 重置 stall 计时（上报器按文件 mtime 判定升级进程死活）
+    if [ -n "$OTA_RECEIPT" ] && [ -f "$OTA_RECEIPT" ]; then
+        touch "$OTA_RECEIPT" 2>/dev/null || true
+    fi
+}
+ota_receipt_on_exit() {
+    # 防砖兜底：若死在"已 stop 服务、还没 restart"的窗口内（翻转中途被杀/出错），
+    # 把服务拉回来——否则 systemd 对干净 stop 不做自动重启，板子会一直失联。
+    if [ "${OTA_SERVICE_STOPPED:-0}" = "1" ] && [ "$DRYRUN" != "1" ]; then
+        if [ "$(systemctl is-active "$SERVICE" 2>/dev/null || true)" != "active" ]; then
+            systemctl start "$SERVICE" 2>/dev/null || true
+        fi
+    fi
+    # 走到这里且结果仍是 IN_PROGRESS = 没能抵达显式成功出口 → 按失败上报。
+    # 不看退出码：SIGTERM 死亡时 $? 不可靠（见上方注释）。
+    if [ -n "$OTA_RECEIPT" ] && [ -f "$OTA_RECEIPT" ] && \
+       grep -q '"result":"IN_PROGRESS"' "$OTA_RECEIPT" 2>/dev/null; then
+        ota_receipt_result FAILED
+    fi
+    return 0
+}
+
+# ---- 服务 cgroup 迁出 --------------------------------------------------------
+# 云端下发时升级脚本由 weaknet-dbus-server fork 而来，天然身处
+# weaknet-server.service 的 cgroup（setsid 只能脱离会话，脱离不了 cgroup）。
+# 升级第一步就是 systemctl stop weaknet-server——KillMode 默认 control-group，
+# systemd 会把整个 cgroup（含本脚本）一起 SIGTERM，脚本死在下载完成之后、
+# 翻转之前（真机踩过）。迁到根 cgroup 后 stop 服务不再波及升级进程。
+# 本地手动执行（ssh/sudo）不在服务 cgroup 内，本函数为无害空操作。
+escape_service_cgroup() {
+    case "$(cat /proc/self/cgroup 2>/dev/null || true)" in
+        *weaknet-server.service*)
+            if echo "$$" > /sys/fs/cgroup/cgroup.procs 2>/dev/null; then
+                info "已迁出 weaknet-server 服务 cgroup（升级进程不再受 stop 连带影响）"
+            else
+                fail "无法迁出 weaknet-server 服务 cgroup（cgroup v2 根不可写）——继续执行会在 systemctl stop 时被连带杀死"
+            fi
+            ;;
+    esac
+}
+
+# release 目录属主/权限归一化。$1=release 目录
+# 服务内 fork 执行时进程受 unit CapabilityBoundingSet 限制（无 CAP_CHOWN），
+# tar --same-owner 改不了属主；且归档根目录权限随构建机 umask 漂移（踩过
+# 700 的坑）——两层叠加把 radxa 锁在 releases/<ver> 外面（weaknet-cli
+# Permission denied）。chown 尽力而为（手动 ssh 全权 root 下成功，服务子进程
+# 下静默保留 root 属主但功能无碍）；chmod 必成功（root 改自己拥有的文件不需
+# CAP_FOWNER）。X 语义：目录与本就有执行位的文件保留 x，其余不加。
+normalize_release_perms() {
+    local rel="$1" owner
+    owner="$(stat -c '%u:%g' "$ROOT" 2>/dev/null || echo "")"
+    if [ -n "$owner" ]; then
+        chown -R "$owner" "$rel" 2>/dev/null || true
+    fi
+    find "$rel" -type d -exec chmod 755 {} + 2>/dev/null || true
+    find "$rel" -type f -exec chmod u=rwX,go=rX {} + 2>/dev/null || true
 }
 
 # ---- 通用工具 ---------------------------------------------------------------
@@ -152,9 +231,17 @@ refresh_compat_links() {
     done
 }
 
-svc_cmd() {  # systemctl 包装（DRYRUN 下视为成功）
+svc_cmd() {  # systemctl 包装（DRYRUN 下视为成功）；顺带维护"服务被我停了"标记
     if [ "$DRYRUN" = "1" ]; then return 0; fi
-    systemctl "$@"
+    local rc=0
+    systemctl "$@" || rc=$?
+    if [ "$rc" = "0" ]; then
+        case "$1" in
+            stop)         OTA_SERVICE_STOPPED=1 ;;
+            restart|start) OTA_SERVICE_STOPPED=0 ;;
+        esac
+    fi
+    return "$rc"
 }
 
 bus_call() {  # busctl 只读调用包装；返回 0=成功
@@ -214,6 +301,7 @@ flip_restart_commit() {
         rm -rf "$RELEASES"/."$target".old.* 2>/dev/null || true
         cleanup_staging_and_gc "$target"
         pass "升级完成并转正：releases/${target}"
+        ota_receipt_result SUCCEEDED  # 唯一成功出口：真转正了才写终态
         return 0
     fi
 
@@ -282,7 +370,7 @@ stage_package() {
     verify_signature "$pkg" "$allow_unsigned"
     local cur; cur="$(current_version)"
     local staging="$RELEASES/.staging.$$"
-    rm -rf "$staging"; mkdir -p "$staging"
+    rm -rf "$staging"; mkdir -m 0755 -p "$staging"
     case "$pkg" in
         *.tar.zst|*.tzst) tar --zstd -xf "$pkg" -C "$staging" ;;
         *.tar.gz|*.tgz)   tar -zxf "$pkg" -C "$staging" ;;
@@ -363,6 +451,11 @@ cmd_verify() {  # $1=pkg|dir 其余为选项
 }
 
 cmd_apply() {  # $1=pkg 其余为选项
+    # 回执终态陷阱只在 apply 生命周期内生效（status/rollback 等不写回执）；
+    # 放在 require_root 之前：权限失败也要立刻落 FAILED，不等 600s 超时。
+    if [ -n "$OTA_RECEIPT" ]; then
+        trap ota_receipt_on_exit EXIT
+    fi
     require_root
     local pkg="$1"; shift
     local allow=0 health=1 htimeout=120 allow_unsigned=0
@@ -378,19 +471,35 @@ cmd_apply() {  # $1=pkg 其余为选项
     done
     [ -n "$pkg" ] || fail "用法：apply <pkg.tar.zst|http(s)://...> [--allow-downgrade] [--commit] [--health-timeout N] [--insecure]"
 
+    # 云端下发场景：从现在起维持回执文件的 stall 计时心跳
+    ota_receipt_progress
+
     # 支持直接从 URL 下载远程固件包
     local downloaded_tmp=""
     if [[ "$pkg" =~ ^https?:// ]]; then
         info "检测到远程固件 URL: $pkg，正在下载..."
         downloaded_tmp="$(mktemp /tmp/wn-ota-dl-XXXXXX.tar.zst)"
-        curl -fSL "$pkg" -o "$downloaded_tmp" || {
+        # --speed-limit/--speed-time：真停顿 60s 即中止（弱网断流不无限挂）；
+        # 后台+轮询心跳：活跃但缓慢的下载持续刷新回执 mtime，避免被上报器
+        # 误判为"升级进程已死"。心跳只跟随 curl 进程存活，脚本自身死亡时
+        # 循环一并退出，不会留下孤儿心跳掩盖崩溃。
+        curl -fSL --speed-limit 1024 --speed-time 60 "$pkg" -o "$downloaded_tmp" &
+        local curl_pid=$! curl_rc=0
+        while kill -0 "$curl_pid" 2>/dev/null; do
+            ota_receipt_progress
+            sleep 5   # 短间隔心跳：curl 退出后 5s 内离开循环
+        done
+        wait "$curl_pid" || curl_rc=$?
+        if [ "$curl_rc" -ne 0 ]; then
             rm -f "$downloaded_tmp"
-            fail "远程固件包下载失败: $pkg"
-        }
-        # 同时尝试下载分离式签名文件 .sig
-        curl -fSL "${pkg}.sig" -o "${downloaded_tmp}.sig" 2>/dev/null || true
+            fail "远程固件包下载失败(rc=$curl_rc): $pkg"
+        fi
+        # 同时尝试下载分离式签名文件 .sig（小文件，直接同步拉取）
+        curl -fSL --speed-limit 1024 --speed-time 60 \
+            "${pkg}.sig" -o "${downloaded_tmp}.sig" 2>/dev/null || true
         pkg="$downloaded_tmp"
         info "远程固件下载完成，进入本地验签与应用流程"
+        ota_receipt_progress
     fi
 
     local cur; cur="$(current_version)"
@@ -402,6 +511,7 @@ cmd_apply() {  # $1=pkg 其余为选项
     fi
     local ver; ver="$(tr -d '[:space:]' < "$staging/VERSION")"
     [ -n "$downloaded_tmp" ] && rm -f "$downloaded_tmp" "${downloaded_tmp}.sig"
+    ota_receipt_progress
 
     svc_cmd stop "$SERVICE" 2>/dev/null || true
 
@@ -416,6 +526,7 @@ cmd_apply() {  # $1=pkg 其余为选项
         mv "$RELEASES/$ver" "$old_dir"
     fi
     mv "$staging" "$RELEASES/$ver"
+    normalize_release_perms "$RELEASES/$ver"
     install_self_script "$RELEASES/$ver"
 
     if [ "$health" = "0" ]; then
@@ -427,6 +538,7 @@ cmd_apply() {  # $1=pkg 其余为选项
         [ -n "$old_dir" ] && rm -rf "$old_dir"
         cleanup_staging_and_gc "$ver"
         warn "--commit：跳过健康窗口，已直接转正 releases/${ver}"
+        ota_receipt_result SUCCEEDED  # 唯一成功出口：真转正了才写终态
         return 0
     fi
 
@@ -509,6 +621,7 @@ cmd_adopt() {  # $1=staged-dir $2=version 其余为选项
         mv "$rel" "$old_dir"
     fi
     mv "$staged" "$rel"
+    normalize_release_perms "$rel"
     echo "$ver" > "$rel/VERSION"
     [ -f "$rel/weaknet-local-update.sh" ] || install -m 0755 "$0" "$rel/weaknet-local-update.sh"
     (cd "$rel" && find . -type f ! -name manifest.sha256 ! -name .committed -print0 \

@@ -18,7 +18,13 @@
 #include <gtest/gtest.h>
 
 #include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <fstream>
 #include <string>
+#include <sys/stat.h>
+#include <utime.h>
+#include <unistd.h>
 #include <vector>
 
 #ifdef WEAKNET_HAVE_TLS
@@ -881,4 +887,162 @@ TEST(EdgeTelemetryWatchdog, UnknownExtensionIsSingleShotEvenIfHealthRecoversLate
     exporter.evaluateTrialDeadline(&good);
     EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::STABLE);
     EXPECT_EQ(cfg.rtt.interval_ms.load(), 2000u);  // GOOD → confirm，保留新值
+}
+
+// ---------------------------------------------------------------------------
+// OTA 云端下发回执：两段式终态（IN_PROGRESS → SUCCEEDED/FAILED）
+//
+// 为什么存在：旧实现只要回执文件存在就无条件上报 APPLIED，导致升级脚本
+// 实际失败（下载断流、验签不过、exec 失败）时云端仍记"升级成功"——假成功
+// 比失败更危险（现场以为固件已更新）。新语义：
+//   - schedule 时只写 result=IN_PROGRESS；
+//   - 终态（SUCCEEDED/FAILED）必须由升级脚本自己写；
+//   - 上报器只认脚本写下的终态；IN_PROGRESS 超时（升级进程死亡）如实报 FAILED。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// 写一份与 scheduleOtaUpgrade 同构的回执文件。
+void writeOtaReceipt(const std::string& path, const std::string& result,
+                     const std::string& action_id = "nact-ota-unittest") {
+    std::ofstream ofs(path, std::ios::trunc);
+    ofs << "{\"action_id\":\"" << action_id << "\","
+        << "\"claim_token\":\"claim-1\","
+        << "\"generation\":7,"
+        << "\"target_url\":\"http://example.invalid/weaknet-9.9.9.tar.zst\","
+        << "\"result\":\"" << result << "\"}\n";
+}
+
+/// 把文件 mtime 改为 age_s 秒前（构造"升级进程卡死"的超时场景）。
+void setReceiptMtimeAge(const std::string& path, time_t age_s) {
+    struct utimbuf ut;
+    ut.actime = ::time(nullptr) - age_s;
+    ut.modtime = ut.actime;
+    utime(path.c_str(), &ut);
+}
+
+bool fileExists(const std::string& path) {
+    struct stat st;
+    return stat(path.c_str(), &st) == 0;
+}
+
+/// 测试场景：签名密钥 + 临时 data 目录（回执文件落点）。
+/// WeakNetConfig 含 mutex 不可拷贝，故用 shared_ptr 持有；调用侧保证
+/// cfg 的声明先于 exporter（析构逆序，exporter 不悬垂其内部引用）。
+struct OtaReceiptScenario {
+    std::string key_path;
+    std::string data_dir;
+    std::string receipt_path;
+
+    OtaReceiptScenario() {
+        key_path = makeScopedTempKeyPath();
+        char tmpl[] = "/tmp/gtest_ota_receipt_XXXXXX";
+        char* dir = mkdtemp(tmpl);
+        if (dir) data_dir = dir;
+        if (!data_dir.empty()) receipt_path = data_dir + "/pending_ota_receipt.json";
+    }
+    ~OtaReceiptScenario() {
+        if (!key_path.empty()) unlink(key_path.c_str());
+        if (!data_dir.empty()) {
+            unlink(receipt_path.c_str());
+            unlink((data_dir + "/current").c_str());  // SUCCEEDED 场景的布局残留
+            rmdir(data_dir.c_str());                  // 残留则失败也无妨（临时目录）
+        }
+    }
+    bool ok() const { return !key_path.empty() && !data_dir.empty(); }
+
+    std::shared_ptr<weaknet_dbus::WeakNetConfig> makeConfig() const {
+        auto cfg = std::make_shared<weaknet_dbus::WeakNetConfig>();
+        cfg->data_dir.set(data_dir);
+        cfg->edge.enabled.store(true);
+        cfg->edge.url.set("http://example.invalid/api/v1/network/edge/telemetry");
+        cfg->edge.device_id.set("test-device");
+        cfg->edge.tenant.set("test-tenant");
+        cfg->edge.token.set("test-token");
+        cfg->edge.private_key_path.set(key_path);
+        cfg->edge.key_id.set("test-key");
+        return cfg;
+    }
+};
+
+}  // namespace
+
+TEST(EdgeTelemetryOtaReceipt, InProgressDoesNotEmitAndKeepsFile) {
+    OtaReceiptScenario s;
+    if (!s.ok()) GTEST_SKIP() << "缺少 OpenSSL 临时密钥或临时目录";
+    auto cfg = s.makeConfig();
+    writeOtaReceipt(s.receipt_path, "IN_PROGRESS");
+
+    weaknet::EdgeTelemetryExporter exporter(*cfg, "test-node");
+    exporter.checkAndEmitPendingOtaReceipt();
+
+    // 升级仍在飞：绝不上报任何回执，文件保留等终态
+    EXPECT_EQ(exporter.pendingActionResultCount(), 0u);
+    EXPECT_TRUE(fileExists(s.receipt_path));
+}
+
+TEST(EdgeTelemetryOtaReceipt, StaleInProgressReportsRejected) {
+    OtaReceiptScenario s;
+    if (!s.ok()) GTEST_SKIP() << "缺少 OpenSSL 临时密钥或临时目录";
+    auto cfg = s.makeConfig();
+    writeOtaReceipt(s.receipt_path, "IN_PROGRESS");
+    setReceiptMtimeAge(s.receipt_path, 700);  // > 600s：升级进程已死
+
+    weaknet::EdgeTelemetryExporter exporter(*cfg, "test-node");
+    exporter.checkAndEmitPendingOtaReceipt();
+
+    const auto recs = exporter.pendingActionResultsSnapshot();
+    ASSERT_EQ(recs.size(), 1u);
+    EXPECT_EQ(recs[0].status, "REJECTED");
+    EXPECT_EQ(recs[0].action_id, "nact-ota-unittest");
+    EXPECT_FALSE(fileExists(s.receipt_path));  // 终态已消费，不许重复上报
+}
+
+TEST(EdgeTelemetryOtaReceipt, ScriptSucceededReportsAppliedWithInstalledVersion) {
+    OtaReceiptScenario s;
+    if (!s.ok()) GTEST_SKIP() << "缺少 OpenSSL 临时密钥或临时目录";
+    auto cfg = s.makeConfig();
+    writeOtaReceipt(s.receipt_path, "SUCCEEDED");
+
+    // 脚本已转正的布局：current -> releases/9.9.9；WEAKNET_ROOT 指向临时根
+    ASSERT_EQ(symlink("releases/9.9.9", (s.data_dir + "/current").c_str()), 0);
+    const char* prev_root = getenv("WEAKNET_ROOT");
+    const std::string saved_root = prev_root ? prev_root : "";
+    setenv("WEAKNET_ROOT", s.data_dir.c_str(), 1);
+
+    weaknet::EdgeTelemetryExporter exporter(*cfg, "test-node");
+    exporter.checkAndEmitPendingOtaReceipt();
+
+    const auto recs = exporter.pendingActionResultsSnapshot();
+    ASSERT_EQ(recs.size(), 1u);
+    EXPECT_EQ(recs[0].status, "APPLIED");
+    EXPECT_EQ(recs[0].action_id, "nact-ota-unittest");
+    // detail 必须携带真实安装版本（云端据此核对是否真的升级了）
+    EXPECT_NE(recs[0].detail.find("9.9.9"), std::string::npos);
+    EXPECT_NE(recs[0].body.find("\"claim_token\":\"claim-1\""), std::string::npos);
+    EXPECT_NE(recs[0].body.find("\"generation\":7"), std::string::npos);
+    EXPECT_FALSE(fileExists(s.receipt_path));
+
+    // 消费是幂等的：再次调用不产生第二条回执
+    exporter.checkAndEmitPendingOtaReceipt();
+    EXPECT_EQ(exporter.pendingActionResultCount(), 1u);
+
+    if (saved_root.empty()) unsetenv("WEAKNET_ROOT");
+    else setenv("WEAKNET_ROOT", saved_root.c_str(), 1);
+}
+
+TEST(EdgeTelemetryOtaReceipt, ScriptFailedReportsRejected) {
+    OtaReceiptScenario s;
+    if (!s.ok()) GTEST_SKIP() << "缺少 OpenSSL 临时密钥或临时目录";
+    auto cfg = s.makeConfig();
+    writeOtaReceipt(s.receipt_path, "FAILED");
+
+    weaknet::EdgeTelemetryExporter exporter(*cfg, "test-node");
+    exporter.checkAndEmitPendingOtaReceipt();
+
+    const auto recs = exporter.pendingActionResultsSnapshot();
+    ASSERT_EQ(recs.size(), 1u);
+    EXPECT_EQ(recs[0].status, "REJECTED");
+    EXPECT_EQ(recs[0].action_id, "nact-ota-unittest");
+    EXPECT_FALSE(fileExists(s.receipt_path));
 }

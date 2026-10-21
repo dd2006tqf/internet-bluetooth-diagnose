@@ -178,6 +178,13 @@ public:
     /// 设为 public 方便单测与调试。
     void applyPendingActions(const std::string& response_body);
 
+    /// 消费暂存的 OTA 升级回执并（仅在有终态时）排队上报。回执生命周期两段式：
+    /// schedule 时只写 action 上下文（result="IN_PROGRESS"），终态必须由升级
+    /// 脚本自身写入（成功转正后 "SUCCEEDED"、失败/回滚 "FAILED"）；本方法只
+    /// 如实上报脚本写下的终态，绝不凭"重启发生了"推断升级成功。IN_PROGRESS
+    /// 超时（升级进程死亡）则如实上报 FAILED。设为 public 方便单测与调试。
+    void checkAndEmitPendingOtaReceipt();
+
     /// 把一条 ROLLBACK 回执入队（由 forceRollback 触发后调用方显式发送）。
     void emitRollbackReceipt(const std::string& reason);
 
@@ -231,6 +238,14 @@ public:
         return pending_action_results_.size();
     }
 
+    /// 取待回传动作结果的副本（含 action_id/status/detail）。测试用来断言回执
+    /// 终态语义（如 OTA 的 APPLIED/REJECTED 区分）；生产路径不做观察性消费
+    /// （统计请走 stats()）。
+    std::vector<EdgeActionResultRecord> pendingActionResultsSnapshot() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return {pending_action_results_.begin(), pending_action_results_.end()};
+    }
+
     /**
      * @brief 入队一条端侧 AI 初筛假设（L2 EdgeAIHypothesis），将在匹配对应快照时随信封一同签名上报。
      */
@@ -270,6 +285,13 @@ private:
 
     /// 由 telemetry URL 派生 action-results URL（同主机同前缀，换尾段）。
     std::string actionResultsUrl() const;
+
+    /// 调度后台异步 OTA 升级（fork+exec 独立守护进程执行 weaknet-local-update.sh apply）。
+    /// 成功时把 action 上下文落盘（result="IN_PROGRESS"），fork 失败则立即回滚该文件。
+    /// 升级脚本通过环境变量 WEAKNET_OTA_RECEIPT 拿到该路径，成功转正后写
+    /// "SUCCEEDED"、失败（EXIT 非零）写 "FAILED"；已有 IN_PROGRESS 回执时拒绝新指令。
+    bool scheduleOtaUpgrade(const std::string& action_id, const std::string& claim_token,
+                            uint64_t generation, const std::string& url, std::string* error);
 
     /// 发送单个已签名 body 到指定 URL，返回 HTTP 状态码与响应体。
     bool postSigned(const std::string& url, const std::string& body,
