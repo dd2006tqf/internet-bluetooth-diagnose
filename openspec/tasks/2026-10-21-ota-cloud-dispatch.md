@@ -111,7 +111,30 @@ OTA Phase 1/2/3 打通了板端本地升级、ECDSA 签名链与远程 URL 拉�
 - 板端全量回归（weaknet-test-full.sh）两次部署均 FAIL: 0。
 
 **遗留观察（不阻塞）：**
-- 板端时钟较真实时间慢约 1 天 8 小时，tar 会告警"时间戳在未来"——只影响
-  日志观感，建议后续给板子配 NTP。
 - `releases/<ver>` 下文件属主在服务子进程路径下为 root（无 CAP_CHOWN 改
   不了），权限已归一化、功能无碍；手动 ssh 路径下会正常归主为 radxa。
+- tar 解包时刷 "Cannot change ownership"（服务子进程无 CAP_CHOWN），
+  属预期噪声；日志里该告警出现 108 次属正常计数，不是故障。
+
+**收尾时顺带修好的板端环境问题（2026-10-21 收尾阶段）：**
+- **板端时钟错位一天多**：热点 DHCP 场景下板子拿不到 DNS，NTP 主机名解析
+  不了，系统时间一直停在错误值（tar 报"时间戳在未来"）。修法：改用 IP 直连
+  的 NTP 源（`/etc/systemd/timesyncd.conf.d/ntp.conf`：
+  `NTP=203.107.6.88 120.25.115.20 202.108.22.5`），现 `NTPSynchronized=yes`。
+- **板端 DNS 失效**：DHCP 下发的 resolver 192.168.137.1（热点网关）不响应
+  DNS 查询。修法：NetworkManager 固定公网 DNS
+  `nmcli con mod tan ipv4.dns "223.5.5.5 119.29.29.29" ipv4.ignore-auto-dns yes`，
+  板端外网恢复正常（curl 返回 200）。
+- **隧道双开互抢 8000 端口**：板端同时存在 `cloud-tunnel.service`（旧）与
+  `weaknet-tunnel.service`（新），两者都 `-L 8000:127.0.0.1:8000`，
+  后启动的那个必然因 "Address already in use" 反复重启，云端 2222 反向端口
+  随之失效（本会话开头 ssh board 全面连不上的根因）。修法：
+  `systemctl disable --now cloud-tunnel.service`，只保留 weaknet-tunnel.service。
+  该重复单元是 Phase 3 遗留，建议在板端清理脚本/文档中同步说明。
+
+**最终端到端复验（gen=10，2026-10-21 06:37 板端时钟已修正后）：**
+云端下发 → 板端 06:37:54 收到并调度 → 06:39:04 排队 APPLIED（ver=1.1.0）→
+云端 `status=APPLIED, result_detail="OTA 升级完成并转正 (当前版本: 1.1.0)"`，
+全程 70 秒闭环；板端 `readlink current` → `releases/1.1.0`，
+`weaknet-cli update status` → `installed_version=1.1.0, current_committed=true`，
+无 pending receipt、无 staging 残留。

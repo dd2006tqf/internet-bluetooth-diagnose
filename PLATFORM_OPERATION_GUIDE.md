@@ -25,7 +25,7 @@
 |      - 绑定挂载仓库 → /src                                                       |
 |                                                                                   |
 |   3. 反向隧道落点                                                                 |
-|      - 127.0.0.1:2222  ← 板端 cloud-tunnel.service 主动拨入                        |
+|      - 127.0.0.1:2222  ← 板端 weaknet-tunnel.service 主动拨入                       |
 |      - ssh board 即可登板（~/.ssh/config 已配别名）                                |
 +-----------------------------------------------------------------------------------+
                                       ▲
@@ -43,7 +43,7 @@
 |      - 网络代次持久化 (NetworkEpochStore: 消除重启后上行遥测静默丢弃)                |
 |      - 下行控制回执 (Pull-on-Upload 随路拉取 + 白名单热更新 + 签名回执)              |
 |                                                                                   |
-|   5. 反向隧道服务 (systemd: cloud-tunnel.service)                                |
+|   5. 反向隧道服务 (systemd: weaknet-tunnel.service)                             |
 |      - ssh -R 2222:localhost:22 → 云端，Restart=always 自动重连                    |
 +-----------------------------------------------------------------------------------+
 ```
@@ -59,27 +59,29 @@
 ### 拓扑背景
 - **开发板** 位于家庭局域网（NAT 后），无公网地址，云端无法主动连入。
 - **云端服务器** 是公网可达的轻量云主机（`81.71.76.133`），板子有正常出网能力。
-- **方案**：板端 `cloud-tunnel.service` 主动建立 `ssh -R 2222:localhost:22` 反向隧道，云端通过 `127.0.0.1:2222` 访问板端 SSH。隧道只绑定回环地址，不对公网暴露。
+- **方案**：板端 `weaknet-tunnel.service` 主动建立 `ssh -R 2222:localhost:22` 反向隧道（同时 `-L 8000/8090` 把板端本地制品/排练服务反向暴露给云端），云端通过 `127.0.0.1:2222` 访问板端 SSH。隧道只绑定回环地址，不对公网暴露。
+- **只允许一个隧道服务**：旧的 `cloud-tunnel.service` 与新的 `weaknet-tunnel.service` 若同时存在，会互抢板端 `-L 8000` 端口（`bind: Address already in use`），后启动者反复重启，云端 2222 反向端口随之失效，表现为 `ssh board` 全面连不上。Phase 3 起以 `weaknet-tunnel.service` 为唯一单元，旧单元须 `systemctl disable --now cloud-tunnel.service`。
 
 ### 隧道服务（板端）
 
 ```ini
-# /etc/systemd/system/cloud-tunnel.service
+# /etc/systemd/system/weaknet-tunnel.service
 [Unit]
-Description=Reverse SSH tunnel to cloud dev server (cloud-dev:2222 -> board:22)
+Description=WeakNet Reverse SSH Tunnel to Cloud Server
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=radxa
-ExecStart=/usr/bin/ssh -o BatchMode=yes -o StrictHostKeyChecking=no \
-    -i /home/radxa/.ssh/id_cloud_tunnel \
-    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-    -o ExitOnForwardFailure=yes -o TCPKeepAlive=yes \
-    -N -R 2222:localhost:22 ubuntu@81.71.76.133
+ExecStart=/usr/bin/ssh -i /home/radxa/.ssh/id_cloud_tunnel -N \
+    -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+    -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
+    -o TCPKeepAlive=yes \
+    -R 2222:localhost:22 -L 8000:127.0.0.1:8000 -L 8090:127.0.0.1:8090 \
+    ubuntu@81.71.76.133
 Restart=always
-RestartSec=10
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
@@ -89,8 +91,8 @@ WantedBy=multi-user.target
 
 ```bash
 ssh board                          # ~/.ssh/config 已配 Host board → 127.0.0.1:2222
-ssh board 'systemctl status cloud-tunnel.service'   # 检查隧道服务状态
-ssh board 'sudo systemctl restart cloud-tunnel.service'  # 重启隧道
+ssh board 'systemctl status weaknet-tunnel.service'   # 检查隧道服务状态
+ssh board 'sudo systemctl restart weaknet-tunnel.service'  # 重启隧道
 ```
 
 ---
@@ -204,13 +206,16 @@ curl -X POST http://localhost:8000/api/v1/network/assets/radxa-cubie-a7a/actions
 
 ### 1. `ssh board` 连不上（Connection refused）
 
-**原因**：板端 `cloud-tunnel.service` 反向隧道未建立或已断开。
+**原因**：板端 `weaknet-tunnel.service` 反向隧道未建立或已断开；或旧 `cloud-tunnel.service` 未禁用导致互抢 8000 端口把隧道打挂。
 
 **排查**：
 ```bash
 # 在板子上检查隧道服务
-systemctl status cloud-tunnel.service
-journalctl -u cloud-tunnel.service -n 30
+systemctl status weaknet-tunnel.service
+journalctl -u weaknet-tunnel.service -n 30
+
+# 确认旧隧道单元没有并存（并存 = 互抢 8000 端口）
+systemctl is-enabled cloud-tunnel.service   # 期望：disabled
 
 # 检查板子出网是否正常
 curl -s -o /dev/null -w "%{http_code}" http://81.71.76.133
@@ -218,8 +223,14 @@ curl -s -o /dev/null -w "%{http_code}" http://81.71.76.133
 
 **恢复**：
 ```bash
-sudo systemctl restart cloud-tunnel.service
+sudo systemctl disable --now cloud-tunnel.service   # 旧单元并存时先清掉
+sudo systemctl restart weaknet-tunnel.service
 ```
+
+> 板端 DNS/时钟依赖外网：热点 DHCP 场景下网关往往不做 DNS 解析，板子会同时
+> 出现"域名解析不了"和"系统时间漂移"（NTP 主机名也解析不了）。修法见
+> `openspec/tasks/2026-10-21-ota-cloud-dispatch.md` 结果节（固定公网 DNS +
+> 用 IP 直连的 NTP 源）。
 
 ### 2. 开发板重启后云端数据库没有新数据
 
