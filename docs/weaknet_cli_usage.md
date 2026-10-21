@@ -73,7 +73,7 @@ weaknet-cli <command> [arguments...]
   experience             查询当前网络体验权威快照（NetworkExperience Schema v2，JSON）
   action <action_id> [<key> <val>] 执行白名单安全排查动作（仅限 root）
   update status          查询 OTA 本地升级状态（只读，走 D-Bus）
-  update verify <pkg|dir>         校验升级包/release 目录完整性
+  update verify <pkg|dir|URL>    校验升级包/release 目录完整性（root）
   update apply <pkg>     应用升级包（root；原子切换+健康窗口+自动回滚）
   update rollback        回滚到上一版本（root）
 ```
@@ -390,7 +390,7 @@ OTA Phase 1 本地升级（板端闭环，零云端依赖）。布局：`release
 | 子命令 | 权限 | 通道 | 说明 |
 |---|---|---|---|
 | `update status` | 普通用户 | D-Bus `GetUpdateStatus`（只读） | 当前版本、布局、pending/committed 状态 |
-| `update verify <dir-or-pkg|URL>` | 普通用户 | fork+exec 升级脚本 | release 目录/升级包 manifest.sha256 完整性校验；URL 先下载再校验（与 apply 同一拉包路径） |
+| `update verify <dir-or-pkg|URL>` | **root**（sudo） | fork+exec 升级脚本 | release 目录/升级包 manifest.sha256 完整性校验；URL 先下载再校验（与 apply 同一拉包路径）。需在 `releases/` 下解包暂存，故要 root |
 | `update apply <pkg>` | **root**（sudo） | fork+exec 升级脚本 | 解包→版本单调检查→原子翻转→重启→健康窗口→转正，失败自动回滚 |
 | `update rollback` | **root**（sudo） | fork+exec 升级脚本 | 回滚到 `.previous` 记录的上一版（`--to <version>` 可指定） |
 
@@ -398,8 +398,11 @@ OTA Phase 1 本地升级（板端闭环，零云端依赖）。布局：`release
 # 查询升级状态（只读，服务在线即可）
 weaknet-cli update status
 
-# 校验升级包 / 已解包 release 目录
-weaknet-cli update verify /path/to/weaknet-1.1.0.tar.zst
+# 校验升级包 / 已解包 release 目录（需 root：解包暂存到 releases/ 下）
+sudo weaknet-cli update verify /path/to/weaknet-1.1.0.tar.zst
+
+# 也可直接校验远程 URL（与 apply 同一拉包路径，先下载再校验）
+sudo weaknet-cli update verify http://127.0.0.1:8090/weaknet-1.1.0-arm64.tar.zst
 
 # 应用升级（需 sudo；健康窗口默认 120s、连续 3 次全绿才转正）
 sudo weaknet-cli update apply /path/to/weaknet-1.1.0.tar.zst
