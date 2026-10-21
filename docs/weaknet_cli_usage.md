@@ -390,7 +390,7 @@ OTA Phase 1 本地升级（板端闭环，零云端依赖）。布局：`release
 | 子命令 | 权限 | 通道 | 说明 |
 |---|---|---|---|
 | `update status` | 普通用户 | D-Bus `GetUpdateStatus`（只读） | 当前版本、布局、pending/committed 状态 |
-| `update verify <dir-or-pkg>` | 普通用户 | fork+exec 升级脚本 | release 目录/升级包 manifest.sha256 完整性校验 |
+| `update verify <dir-or-pkg|URL>` | 普通用户 | fork+exec 升级脚本 | release 目录/升级包 manifest.sha256 完整性校验；URL 先下载再校验（与 apply 同一拉包路径） |
 | `update apply <pkg>` | **root**（sudo） | fork+exec 升级脚本 | 解包→版本单调检查→原子翻转→重启→健康窗口→转正，失败自动回滚 |
 | `update rollback` | **root**（sudo） | fork+exec 升级脚本 | 回滚到 `.previous` 记录的上一版（`--to <version>` 可指定） |
 
@@ -415,6 +415,8 @@ sudo weaknet-cli update rollback
 ```
 
 **执行体**：`tools/weaknet-local-update.sh`（板端安装于 `/home/radxa/weaknet/weaknet-local-update.sh`，随包下发并自更新；开发机可用 `WEAKNET_UPDATE_SCRIPT` 覆盖路径）。apply/rollback 不经 D-Bus——服务端不能在调用中途重启自己，故 CLI 直接 fork+exec 脚本。
+
+> **云端下发 OTA 升级**：平台侧经 `pending_actions` 通道下发 `system.ota_upgrade_url` 动作（value=固件 URL），板端异步拉包升级并回传 `APPLIED`/`REJECTED` 终态。回执两段式（调度时 `IN_PROGRESS` → 脚本终态 `SUCCEEDED`/`FAILED`），升级诊断留痕于板端 `data/ota_upgrade.log`。详见《OTA 固件更新与安全发布指南》3.5 节。
 
 **版本策略**：仓库根 `VERSION` 为单一来源；`dpkg --compare-versions` 数字比较，`target >= current` 放行，降级需 `--allow-downgrade`（防回滚攻击的本地版）。
 
@@ -566,6 +568,7 @@ gcc -o myapp myapp.c -L/path/to/dist-arm64/client/lib -lweaknet -ldbus-1
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v1.2 | 2026-10-21 | 3.10 补云端下发 OTA 说明（`system.ota_upgrade_url` 动作通道与回执终态） |
 | v1.1 | 2026-10-19 | 新增 3.10 `update` 子命令（OTA Phase 1 本地升级：status/verify/apply/rollback） |
 | v1.0 | 2026-09-01 | 首个版本：get/set/list、白名单校验、D-Bus 通信 |
 

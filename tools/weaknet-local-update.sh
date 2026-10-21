@@ -427,7 +427,7 @@ cmd_status() {
     done
 }
 
-cmd_verify() {  # $1=pkg|dir 其余为选项
+cmd_verify() {  # $1=pkg|dir|URL 其余为选项
     local target="$1"; shift || true
     local allow_unsigned=0
     while [ $# -gt 0 ]; do
@@ -437,15 +437,35 @@ cmd_verify() {  # $1=pkg|dir 其余为选项
         esac
         shift
     done
-    [ -n "$target" ] || fail "用法：verify <pkg.tar.zst|release-dir> [--insecure]"
+    [ -n "$target" ] || fail "用法：verify <pkg.tar.zst|release-dir|http(s)://...> [--insecure]"
+    # 与 apply 同一 URL 拉取路径：URL 入参先下载到临时文件再校验，避免
+    # verify 与 apply 行为不一致（verify 只收本地文件、apply 却在线拉包）。
+    local downloaded_tmp=""
+    if [[ "$target" =~ ^https?:// ]]; then
+        info "检测到远程固件 URL: $target，正在下载..."
+        downloaded_tmp="$(mktemp /tmp/wn-ota-dl-XXXXXX.tar.zst)"
+        curl -fSL --speed-limit 1024 --speed-time 60 "$target" -o "$downloaded_tmp" || {
+            rm -f "$downloaded_tmp"
+            fail "远程固件包下载失败: $target"
+        }
+        curl -fSL --speed-limit 1024 --speed-time 60 \
+            "${target}.sig" -o "${downloaded_tmp}.sig" 2>/dev/null || true
+        target="$downloaded_tmp"
+        info "远程固件下载完成，进入本地校验"
+    fi
     if [ -d "$target" ]; then
         verify_release_dir "$target" >/dev/null
+        [ -n "$downloaded_tmp" ] && rm -f "$downloaded_tmp" "${downloaded_tmp}.sig"
         pass "release 目录校验通过：$target"
     else
         local cur; cur="$(current_version)"
-        local staging; staging="$(stage_package "$target" 0 "$allow_unsigned")" || exit 1
+        local staging; staging="$(stage_package "$target" 0 "$allow_unsigned")" || {
+            [ -n "$downloaded_tmp" ] && rm -f "$downloaded_tmp" "${downloaded_tmp}.sig"
+            exit 1
+        }
         local ver; ver="$(tr -d '[:space:]' < "$staging/VERSION")"
         rm -rf "$staging"
+        [ -n "$downloaded_tmp" ] && rm -f "$downloaded_tmp" "${downloaded_tmp}.sig"
         pass "升级包校验通过：version=${ver}（current=${cur:-无}，策略允许）"
     fi
 }
