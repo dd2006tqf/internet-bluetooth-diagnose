@@ -110,7 +110,9 @@ perl_download() {
       my ($h, $p) = @_;
       my $s = IO::Socket::INET->new(PeerHost => $h, PeerPort => 80, Timeout => 60)
         or die "connect $h: $!\n";
-      print $s "GET $p HTTP/1.0\r\nHost: $h\r\n\r\n";
+      # User-Agent 必须带：部分镜像（实测 tuna）对无 UA 的裸 HTTP/1.0
+      # 请求直接回 403（"nanomirrors" 策略），带 UA 才放行。
+      print $s "GET $p HTTP/1.0\r\nHost: $h\r\nUser-Agent: curl/8.5.0\r\n\r\n";
       binmode $s;
       my ($hdr, $c) = ("", "");
       while (read($s, $c, 1)) { $hdr .= $c; last if $hdr =~ /\r\n\r\n$/; }
