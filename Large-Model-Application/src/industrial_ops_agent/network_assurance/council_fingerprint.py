@@ -12,7 +12,7 @@
 | `evidence_context` | 专家引用的 L1 事实集合 |
 | `operational_constraints`（含 catalog 版本） | 约束与部署版本漂移会改变可选动作域 |
 | `knowledge_context_fingerprint` | RAG 案例会实际影响建议；不入指纹则知识库更新后永远复用旧会商 |
-| `edge_hypotheses` | 端侧初筛假设进每份 payload 的 ``edge_advisory_context``，是模型实际输入语义的一部分；不入指纹则同一事故在假设刷新后会复用旧会商，新的现场线索永不参与 |
+| `edge_hypotheses` | 端侧初筛假设进 payload 的 ``edge_advisory_context``（模型输入的一部分） |
 | prompt bundle hash | 提示词变了，模型行为就变了 |
 | `COUNCIL_CONTRACT_VERSION` | 契约演化必须可追溯 |
 

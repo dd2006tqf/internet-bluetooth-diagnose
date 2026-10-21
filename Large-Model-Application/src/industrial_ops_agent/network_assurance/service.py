@@ -272,7 +272,9 @@ class NetworkAssuranceService:
                 )
 
             self._advance_asset_headline(session, asset, batch, now=now)
-            self._ingest_edge_hypotheses(session, context, asset.asset_id, batch.edge_ai_hypotheses, now=now)
+            self._ingest_edge_hypotheses(
+                session, context, asset.asset_id, batch.edge_ai_hypotheses, now=now
+            )
             pending = self._claim_pending_actions(session, context, asset.asset_id, now=now)
 
         return IngestResult(

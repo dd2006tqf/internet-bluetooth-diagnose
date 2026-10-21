@@ -390,7 +390,8 @@ class NetworkCopilotService:
                 {
                     "step": str(step),
                     "explanation": (
-                        f"被动 TCP RTT（内核 srtt 观测）为 {tcp_rtt_state}：业务连接的端到端往返时延偏高，"
+                        f"被动 TCP RTT（内核 srtt 观测）为 {tcp_rtt_state}："
+                        "业务连接的端到端往返时延偏高，"
                         "若本机 ICMP 探测延迟正常则指示远端端点或公网中转拥塞（advisory，非否决）。"
                     ),
                 }

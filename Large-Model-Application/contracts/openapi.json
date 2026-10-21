@@ -10055,7 +10055,7 @@
         "type": "object"
       },
       "EdgeTelemetryAcceptedResponse": {
-        "description": "Acknowledgement returned to the device.\n\n``pending_actions`` rides on the response rather than a separate channel\nso a device behind NAT needs only outbound connectivity. The device\napplies them and reports outcomes on its next upload.",
+        "description": "Acknowledgement returned to the device.\n\n``pending_actions`` rides on the response rather than a separate channel\nso a device behind NAT needs only outbound connectivity. The device\napplies them and reports outcomes on its next upload.\n\nS1#1: when a downlink signing key is provisioned the exact bytes of the\n``pending_actions`` array carry an Ed25519 detached signature\n(``pending_actions_signature`` hex + ``pending_actions_key_id`` label).\nUnprovisioned deployments leave both ``null`` (legacy-board compatible);\na board with ``edge.cloud_public_key_path`` set treats null as unsigned\nand rejects the whole batch fail-closed.",
         "properties": {
           "accepted": {
             "title": "Accepted",
@@ -10072,6 +10072,28 @@
             },
             "title": "Pending Actions",
             "type": "array"
+          },
+          "pending_actions_key_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Actions Key Id"
+          },
+          "pending_actions_signature": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Actions Signature"
           }
         },
         "required": [

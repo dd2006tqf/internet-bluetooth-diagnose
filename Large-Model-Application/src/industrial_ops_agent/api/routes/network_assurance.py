@@ -35,8 +35,8 @@ from fastapi import APIRouter, Body, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, Field, ValidationError
 
 from industrial_ops_agent.api.dependencies import (
-    get_edge_downlink_signer,
     get_authorizer,
+    get_edge_downlink_signer,
     get_edge_telemetry_verifier,
     get_identity,
     get_network_action_approval_service,
@@ -60,15 +60,15 @@ from industrial_ops_agent.network_assurance.contracts import (
     SiteSummary,
 )
 from industrial_ops_agent.network_assurance.copilot import NetworkCopilotService
+from industrial_ops_agent.network_assurance.edge_action_catalog import (
+    is_known_config_key,
+)
 from industrial_ops_agent.network_assurance.model_config import (
     CopilotModelConfigRequest,
     CopilotModelConfigResponse,
     CopilotModelTestRequest,
     CopilotModelTestResponse,
     get_model_config_manager,
-)
-from industrial_ops_agent.network_assurance.edge_action_catalog import (
-    is_known_config_key,
 )
 from industrial_ops_agent.network_assurance.service import (
     NetworkAssuranceConflict,
@@ -303,7 +303,6 @@ async def ingest_edge_telemetry(
         # is running an incompatible version, which is worth failing loudly
         # rather than partially accepting.
         import logging
-
         from hashlib import sha256
 
         logging.getLogger("uvicorn.error").error(
@@ -377,7 +376,6 @@ async def ingest_edge_wireless_events(
         batch = WirelessEventUplinkBatch.model_validate_json(raw)
     except ValidationError as exc:
         import logging
-
         from hashlib import sha256
 
         logging.getLogger("uvicorn.error").error(

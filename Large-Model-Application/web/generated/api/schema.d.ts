@@ -9280,6 +9280,13 @@ export interface components {
          *     ``pending_actions`` rides on the response rather than a separate channel
          *     so a device behind NAT needs only outbound connectivity. The device
          *     applies them and reports outcomes on its next upload.
+         *
+         *     S1#1: when a downlink signing key is provisioned the exact bytes of the
+         *     ``pending_actions`` array carry an Ed25519 detached signature
+         *     (``pending_actions_signature`` hex + ``pending_actions_key_id`` label).
+         *     Unprovisioned deployments leave both ``null`` (legacy-board compatible);
+         *     a board with ``edge.cloud_public_key_path`` set treats null as unsigned
+         *     and rejects the whole batch fail-closed.
          */
         EdgeTelemetryAcceptedResponse: {
             /** Accepted */
@@ -9290,6 +9297,10 @@ export interface components {
             pending_actions?: {
                 [key: string]: unknown;
             }[];
+            /** Pending Actions Key Id */
+            pending_actions_key_id?: string | null;
+            /** Pending Actions Signature */
+            pending_actions_signature?: string | null;
         };
         /** EligibilityDecisionBody */
         EligibilityDecisionBody: {
