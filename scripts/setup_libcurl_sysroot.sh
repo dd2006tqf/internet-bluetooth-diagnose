@@ -46,7 +46,11 @@
 
 set -euo pipefail
 
-SNAPSHOT_BASE="https://snapshot.debian.org/archive/debian/20260912T000000Z"
+# 首选不可变快照；snapshot.debian.org 会对频繁访问做限流（实测返回
+# 509 "blocked by administrative policy: abusive network requests"），
+# 因此允许用环境变量指向镜像站——.deb 的 SHA256 是硬编码常量，完整性由
+# 哈希保证而非来源，换镜像只换传输通道。
+SNAPSHOT_BASE="${SNAPSHOT_BASE:-https://snapshot.debian.org/archive/debian/20260912T000000Z}"
 SYSROOT="${SYSROOT:-/opt/weaknet-libcurl}"
 
 # 文件名|SHA256（均取自上述 snapshot 的 bullseye/main/binary-arm64 索引）
@@ -162,14 +166,22 @@ echo "[*] 下载并校验 ${#DEBS[@]} 个 .deb"
 for entry in "${DEBS[@]}"; do
   deb="${entry%%|*}"
   expect="${entry##*|}"
-  url="${SNAPSHOT_BASE}/pool/main/c/curl/${deb}"
-
-  echo "    - ${deb}"
-  if ! download "$url" "${WORK}/${deb}"; then
-    echo "[!] 下载失败: ${url}" >&2
+  # 首选 pool/main（bullseye/main 的包）；安全更新包在 pool/updates/main
+  # （版本更高），两条路径都试，SHA256 常量决定命中哪条。
+  url=""
+  for base in "${SNAPSHOT_BASE}/pool/main/c/curl" \
+              "${SNAPSHOT_BASE}/pool/updates/main/c/curl"; do
+    if download "${base}/${deb}" "${WORK}/${deb}" >/dev/null 2>&1; then
+      url="${base}/${deb}"
+      break
+    fi
+  done
+  if [ -z "$url" ]; then
+    echo "[!] 下载失败: ${deb}（试过 ${SNAPSHOT_BASE}/pool/main 与 pool/updates）" >&2
     exit 1
   fi
 
+  echo "    - ${deb}"
   actual="$(sha256sum "${WORK}/${deb}" | awk '{print $1}')"
   if [ "$actual" != "$expect" ]; then
     echo "[!] SHA256 不匹配: ${deb}" >&2
@@ -191,12 +203,50 @@ done
 # 提供（镜像里 /usr/lib/aarch64-linux-gnu/libcurl.so.4.7.0 已存在）。
 # 从镜像的运行时库补齐软链目标，使 sysroot 内自洽、可独立链接。
 # 这不改变运行时行为：产物 NEEDED 仍是 libcurl.so.4，运行时走系统库。
-if [ ! -e "${SYSROOT}/usr/lib/aarch64-linux-gnu/libcurl.so.4.7.0" ] && \
-   [ -e /usr/lib/aarch64-linux-gnu/libcurl.so.4.7.0 ]; then
-  echo "[*] 从镜像运行时库补齐 libcurl.so.4 / libcurl.so.4.7.0（-dev 包不含运行时文件）"
-  cp /usr/lib/aarch64-linux-gnu/libcurl.so.4.7.0 \
-     "${SYSROOT}/usr/lib/aarch64-linux-gnu/libcurl.so.4.7.0"
-  ln -sf libcurl.so.4.7.0 "${SYSROOT}/usr/lib/aarch64-linux-gnu/libcurl.so.4"
+#
+# 注意：镜像里不一定已装 libcurl4（回退基础镜像 debian:11-slim 就没有），
+# 此时从 .deb 仓库补装一份运行时库到 sysroot 内（同样只解压不 install），
+# 并按 libcurl4 的实际版本修正软链名——否则 sysroot 永远不完整。
+if [ ! -e "${SYSROOT}/usr/lib/aarch64-linux-gnu/libcurl.so.4.7.0" ]; then
+  RUNTIME_DEB=""
+  if [ -e /usr/lib/aarch64-linux-gnu/libcurl.so.4.7.0 ]; then
+    echo "[*] 从镜像运行时库补齐 libcurl.so.4 / libcurl.so.4.7.0（-dev 包不含运行时文件）"
+    cp /usr/lib/aarch64-linux-gnu/libcurl.so.4.7.0 \
+       "${SYSROOT}/usr/lib/aarch64-linux-gnu/libcurl.so.4.7.0"
+  else
+    # 镜像未装 libcurl4：从仓库取运行时包。版本随仓库更新，故按
+    # "libcurl4_*_arm64.deb" 通配下载后由 dpkg-deb 解压，再按实际文件名
+    # 建软链（不硬编码 .4.7.0，避免版本漂移后链错）。
+    echo "[*] 镜像无 libcurl4 运行时库，从仓库取一份补进 sysroot"
+    for entry in "${DEBS[@]}"; do
+      dev="${entry%%|*}"
+      cver="${dev#libcurl4-openssl-dev_}"
+      cver="${cver%%_arm64.deb}"
+      # 同版本号的 libcurl4 运行时包
+      rdeb="libcurl4_${cver}_arm64.deb"
+      rurl=""
+      for base in "${SNAPSHOT_BASE}/pool/main/c/curl" \
+                  "${SNAPSHOT_BASE}/pool/updates/main/c/curl"; do
+        if download "${base}/${rdeb}" "${WORK}/${rdeb}" >/dev/null 2>&1; then
+          rurl="${base}/${rdeb}"
+          break
+        fi
+      done
+      if [ -n "$rurl" ]; then
+        echo "    - ${rdeb}"
+        dpkg-deb -x "${WORK}/${rdeb}" "$SYSROOT"
+        RUNTIME_DEB="$rdeb"
+        break
+      fi
+    done
+  fi
+  # 无论来源如何，按 sysroot 内实际存在的 .so.4.x 修正软链
+  for so in "${SYSROOT}"/usr/lib/aarch64-linux-gnu/libcurl.so.4.*; do
+    [ -e "$so" ] || continue
+    base="$(basename "$so")"
+    ln -sf "$base" "${SYSROOT}/usr/lib/aarch64-linux-gnu/libcurl.so.4"
+    break
+  done
 fi
 
 echo "[*] 校验关键文件"

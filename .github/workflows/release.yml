@@ -41,6 +41,12 @@ jobs:
 
       - name: 启动构建容器编译 ARM64 二进制
         run: |
+          # 构建镜像优先从 GHCR 拉预编译版（省 10+ 分钟依赖构建）。
+          # 回退路径 debian:11-slim **不带** libcurl/libssl 开发头文件，
+          # 必须在本步把私有 sysroot 装好（见下一步），否则编出来的服务端
+          # 会静默降级为"无 TLS / 无边缘遥测"——这两项能力是 fail-closed
+          # 的（缺能力时明确关闭而不是假装有），但发布出去的固件就没有
+          # 上行遥测与 HTTPS 探测能力，等于发布了一个残缺版本。
           IMAGE_NAME="ghcr.io/${{ github.repository_owner }}/weaknet-builder:bullseye-arm64"
           if ! docker pull "$IMAGE_NAME" 2>/dev/null; then
             echo "回退基础镜像 debian:11-slim"
@@ -67,6 +73,17 @@ jobs:
               ldconfig
             '
           fi
+
+          # 私有 sysroot：OpenSSL 1.1 + libcurl 开发头文件与链接名。
+          # 运行时库（libssl.so.1.1 / libcurl.so.4）由板端提供，sysroot 只
+          # 用于编译，不随包分发。SNAPSHOT_BASE 可覆盖为镜像站
+          # （snapshot.debian.org 对频繁访问会返回 509 限流；.deb 的 SHA256
+          # 是硬编码常量，完整性由哈希保证，换镜像只换传输通道）。
+          docker exec arm64-builder bash -c '
+            cd /src
+            bash scripts/setup_openssl_sysroot.sh
+            bash scripts/setup_libcurl_sysroot.sh
+          '
 
           # 写入 VERSION 并编译
           echo "${{ steps.ver.outputs.VERSION }}" > VERSION

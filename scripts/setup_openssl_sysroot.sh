@@ -59,7 +59,11 @@
 
 set -euo pipefail
 
-SNAPSHOT_BASE="https://snapshot.debian.org/archive/debian/20260912T000000Z"
+# 首选不可变快照；snapshot.debian.org 会对频繁访问做限流（实测返回
+# 509 "blocked by administrative policy: abusive network requests"），
+# 因此允许用环境变量指向镜像站——.deb 的 SHA256 是硬编码常量，完整性由
+# 哈希保证而非来源，换镜像只换传输通道。
+SNAPSHOT_BASE="${SNAPSHOT_BASE:-https://snapshot.debian.org/archive/debian/20260912T000000Z}"
 SYSROOT="${SYSROOT:-/opt/weaknet-openssl-1.1}"
 
 # 文件名|SHA256（均取自上述 snapshot 的 bullseye/main/binary-arm64 索引）
@@ -174,14 +178,23 @@ echo "[*] 下载并校验 ${#DEBS[@]} 个 .deb"
 for entry in "${DEBS[@]}"; do
   deb="${entry%%|*}"
   expect="${entry##*|}"
-  url="${SNAPSHOT_BASE}/pool/main/o/openssl/${deb}"
-
-  echo "    - ${deb}"
-  if ! download "$url" "${WORK}/${deb}"; then
-    echo "[!] 下载失败: ${url}" >&2
+  # 首选 pool/main（bullseye/main 的包）；发行版把安全更新包也镜像到
+  # pool/updates/main（版本更高但内容不同——libssl1.1 的 u8 版在 security
+  # 池），因此两条路径都试，SHA256 常量决定命中哪条。
+  url=""
+  for base in "${SNAPSHOT_BASE}/pool/main/o/openssl" \
+              "${SNAPSHOT_BASE}/pool/updates/main/o/openssl"; do
+    if download "${base}/${deb}" "${WORK}/${deb}" >/dev/null 2>&1; then
+      url="${base}/${deb}"
+      break
+    fi
+  done
+  if [ -z "$url" ]; then
+    echo "[!] 下载失败: ${deb}（试过 ${SNAPSHOT_BASE}/pool/main 与 pool/updates）" >&2
     exit 1
   fi
 
+  echo "    - ${deb}"
   actual="$(sha256sum "${WORK}/${deb}" | awk '{print $1}')"
   if [ "$actual" != "$expect" ]; then
     echo "[!] SHA256 不匹配: ${deb}" >&2
