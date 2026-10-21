@@ -67,7 +67,7 @@ jobs:
               apt-get update -qq && apt-get install -y -qq \
                 build-essential g++ make cmake pkg-config clang llvm git ca-certificates \
                 libdbus-1-dev libgoogle-glog-dev libelf-dev zlib1g-dev libcap-dev \
-                libnl-3-dev libnl-genl-3-dev libsqlite3-dev libgtest-dev
+                libnl-3-dev libnl-genl-3-dev libsqlite3-dev libgtest-dev zstd
               git clone --depth 1 --branch v1.3.0 https://github.com/libbpf/libbpf.git /tmp/libbpf
               make -C /tmp/libbpf/src install PREFIX=/usr/local LIBDIR=/usr/local/lib
               ldconfig
@@ -83,6 +83,11 @@ jobs:
             cd /src
             bash scripts/setup_openssl_sysroot.sh
             bash scripts/setup_libcurl_sysroot.sh
+            # 打包用 tar --zstd，需要容器内有 zstd 命令（tar 通过 fork/exec
+            # 调用它，缺了会在打包阶段才炸："zstd: not found"）。预编译镜像
+            # 已含 zstd；回退基础镜像需要补装。
+            command -v zstd >/dev/null 2>&1 || \
+              apt-get update -qq && apt-get install -y -qq zstd
           '
 
           # 写入 VERSION 并编译
@@ -115,6 +120,13 @@ jobs:
         env:
           RELEASE_PRIV_KEY: ${{ secrets.WEAKNET_RELEASE_PRIV_KEY }}
         run: |
+          # 打包用 tar --zstd → 需要 zstd 命令（GNU tar 通过 fork/exec 调它，
+          # 缺了会在打包阶段才炸）。runner 镜像通常自带，但显式校验并给出
+          # 明确报错比让 release.sh 半路失败更好定位。
+          command -v zstd >/dev/null 2>&1 || {
+            echo "::error::缺少 zstd（打包 tar --zstd 依赖它）"
+            sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+          }
           mkdir -p secrets artifacts
           if [ -n "$RELEASE_PRIV_KEY" ]; then
             echo "$RELEASE_PRIV_KEY" > secrets/release_priv.pem
