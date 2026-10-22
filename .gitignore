@@ -46,8 +46,17 @@ CMakeCache.txt
 Testing/
 
 # eBPF 内核头文件（由 bpftool 自动生成）
-vmlinux.h
-server/vmlinux.h
+#
+# 只忽略 bpftool 生成到**仓库根与 server/ 下**的副本；board-assets/ 里那份
+# 是**预置的构建输入**，必须入库。
+#
+# 踩过的坑：写成裸 `vmlinux.h` 会按 gitignore 的任意层级匹配规则，把
+# board-assets/vmlinux.h 一并忽略——于是 `git clone` 拿不到它，CI 里
+# generate_vmlinux.sh 落到 "vmlinux.h not found" 分支写了个占位文件，
+# eBPF 编译随即报 `unknown type name '__u64'`。本地能过是因为开发机上
+# 有这份文件，CI 是全新 clone 所以必然失败。用前导 `/` 锚定层级。
+/vmlinux.h
+/server/vmlinux.h
 
 # 客户端构建副产物
 client/test_client
