@@ -275,9 +275,53 @@ if [ "$SKIP_DEPLOY" = false ]; then
         pass "反向隧道单元已落盘（cloud-tunnel 历史单元已清理）"
     fi
 
+    # OTA 事务控制器（P0-A）：装在 $ROOT 之外的系统路径。
+    #
+    # 为什么不能随 release 走：事务 schema 由它写入，若它随版本升级，
+    # 旧版恢复服务读到的就是新版 schema，语义对不上。控制器必须是不随
+    # OTA 制品变化的那一份——升级的可靠性不能依赖被升级的东西本身。
+    scp "${ROOT}/tools/weaknet-ota-ctl" "${BOARD}:/tmp/weaknet-ota-ctl" 2>/dev/null \
+        || fail "OTA 事务控制器上传失败（升级脚本已改为 fail-closed，缺控制器无法升级）"
+    ssh "${BOARD}" "sudo install -d -m 0755 /usr/local/lib/weaknet && \
+        sudo install -m 0755 /tmp/weaknet-ota-ctl /usr/local/lib/weaknet/weaknet-ota-ctl && \
+        sudo install -d -m 0700 /var/lib/weaknet-ota" \
+        || fail "OTA 事务控制器安装失败"
+    pass "OTA 事务控制器已就位（/usr/local/lib/weaknet/weaknet-ota-ctl）"
+
+    # OTA 开机恢复服务（P0-B）：与控制器同样住在 $ROOT 之外。
+    #
+    # 恢复服务必须比被恢复的对象更"独立"：它不能等 weaknet-server——
+    # 那可能正是起不来的那个。它只读事务状态，做判定与指针操作。
+    scp "${ROOT}/tools/weaknet-ota-recover" "${BOARD}:/tmp/weaknet-ota-recover" 2>/dev/null \
+        || fail "OTA 恢复服务上传失败"
+    scp "${ROOT}/tools/weaknet-ota-recover.service" "${BOARD}:/tmp/weaknet-ota-recover.service" 2>/dev/null \
+        || fail "OTA 恢复服务单元上传失败"
+    ssh "${BOARD}" "sudo install -m 0755 /tmp/weaknet-ota-recover \
+        /usr/local/lib/weaknet/weaknet-ota-recover && \
+        sudo cp /tmp/weaknet-ota-recover.service /etc/systemd/system/weaknet-ota-recover.service && \
+        sudo systemctl daemon-reload && \
+        sudo systemctl enable weaknet-ota-recover.service && \
+        sudo systemctl restart weaknet-ota-recover.service" \
+        || warn "OTA 恢复服务安装/启动失败——升级仍可用，但失去开机自动恢复能力"
+    pass "OTA 开机恢复服务已就位（weaknet-ota-recover.service）"
+
     # OTA 布局迁移/切换（板端重启唯一入口）：暂存产物 → releases/${VERSION}
     # →（首次）旧扁平布局归档 legacy-flat → 原子翻转 current + 兼容软链
     # → 重启 → 健康窗口（失败自动回滚上一版）→ .committed 转正。
+    #
+    # adopt 之前先做一次 bootstrap：老设备没有事务状态文件，控制器需要
+    # 从现有 current + .committed 推断稳定版本，建立 schema v1 记录。
+    # bootstrap 拒绝覆盖已存在的状态，所以只在首次执行（状态文件不存在时）。
+    # 失败不阻断部署：adopt 的 begin 会在空状态上开新事务，但此时
+    # previous_stable_version 未知，回滚退路会退化——所以要显式告警。
+    if ! ssh "${BOARD}" "sudo test -f /var/lib/weaknet-ota/transaction.json" 2>/dev/null; then
+        if ! ssh "${BOARD}" "sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \
+            --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota bootstrap"; then
+            warn "OTA 事务 bootstrap 失败（设备可能缺 .committed 标记）——升级仍可进行，但回滚退路不完整"
+        else
+            pass "OTA 事务状态已建立（bootstrap 接管现有布局）"
+        fi
+    fi
     scp "${ROOT}/tools/weaknet-local-update.sh" "${BOARD}:/tmp/weaknet-local-update.sh" 2>/dev/null
     ssh "${BOARD}" "sudo install -m 0755 /tmp/weaknet-local-update.sh /home/radxa/weaknet/weaknet-local-update.sh && \
         sudo WEAKNET_ROOT=/home/radxa/weaknet /home/radxa/weaknet/weaknet-local-update.sh adopt /home/radxa/weaknet/.deploy-staging ${VERSION}" \

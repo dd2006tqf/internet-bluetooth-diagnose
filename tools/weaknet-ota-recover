@@ -1,0 +1,850 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""weaknet-ota-recover — OTA 开机恢复服务（P0-B）
+
+================================================================================
+为什么需要这个程序
+================================================================================
+
+P0-A 提供了事务状态机与崩溃点**判定**，但判定本身不做事。P0-B 补上"做事"
+的那一半：一个**独立于 weaknet-server** 的开机恢复服务。
+
+三条硬约束（决定了整个设计）：
+
+  1. **即使升级脚本消失也能读取事务**
+     本程序只读 `/var/lib/weaknet-ota/transaction.json`，**从不引用
+     `weaknet-local-update.sh`**。升级脚本住在 `$ROOT` 下，会随 OTA 制品被
+     覆盖/删除；事务状态住在 `/var/lib`，不随版本切换。恢复能力不能绑在
+     一个会被升级掉的文件上。
+
+  2. **即使 weaknet-server 无法启动也能完成回滚决策**
+     健康判据不能只有 D-Bus。D-Bus 不可达时**不能**判为健康（那会把超时
+     降级成成功），但也**不能**立刻判死——允许继续重试，直到尝试次数耗尽。
+     另外用 `systemctl show NRestarts` 抓崩溃循环：试运行版本一启动就崩，
+     重启次数增长本身就是"这版本不行"的硬证据，不必等满窗口。
+     systemd 单元里**不能有**对 weaknet-server 的强依赖——恢复服务不能依赖
+     被恢复的对象。
+
+  3. **即使回滚失败也能保留 SSH 救援入口**
+     自动恢复彻底失败时进入**最小 SSH 救援模式**：停掉 weaknet-server 并
+     mask（杜绝无限重启烧电），保住 sshd 与反向隧道，保留事务记录、失败
+     日志与版本信息，写出 `RESCUE.md` 说明现场与人工恢复步骤。
+
+================================================================================
+与 P0-A 控制器的分工
+================================================================================
+
+* 控制器 `weaknet-ota-ctl` 是**唯一写入口**（指针 + 事务状态）。
+* 本程序**只做判定与编排**：读状态 → 算决策 → 通过控制器执行。
+* 控制器缺失时，本程序退回**直接原子翻链**（symlink + rename + fsync），
+  并显式告警——救援路径不能因为一个文件缺失就彻底失效。但这条路径不受
+  事务保护，所以只在"控制器确实不可用"时使用。
+
+================================================================================
+健康判据（与升级脚本一致，但可独立运行）
+================================================================================
+
+转正（commit）要求**全部**满足：
+
+  1. `systemctl is-active weaknet-server` == active   ← 硬门禁
+  2. D-Bus `HealthCheck` 可达
+  3. D-Bus `GetEbpfMonitorHealth` 可达
+  4. D-Bus `GetUpdateStatus.installed_version` == 期望版本
+
+第 2–4 条不可达时**不算健康**，但允许继续重试；尝试次数耗尽仍不健康就
+回滚。**绝不把超时降级成成功。**
+
+================================================================================
+尝试次数为什么是持久化的
+================================================================================
+
+`boot_attempts` 存在事务状态里，**重启后不归零**。这正是我们要的：
+断电重来的无限重试必须被计数拦住。内存里的计数只在同一次开机内有效，
+所以它只是兜底，权威计数永远是 `boot_attempts`。
+
+================================================================================
+物理持久性说明
+================================================================================
+
+同控制器：`fsync` 保证「内核 → 设备」，不保证设备写缓存已落介质。板端根
+分区是 `/dev/sda3`（SATA/USB）。本程序提供的自愈能力**必须经真实掉电测试**
+确认，不能用 `kill -9` 代替。
+"""
+
+import argparse
+import errno
+import json
+import os
+import subprocess
+import sys
+import time
+
+DEFAULT_ROOT = "/home/radxa/weaknet"
+DEFAULT_STATE_DIR = "/var/lib/weaknet-ota"
+DEFAULT_CTL = "/usr/local/lib/weaknet/weaknet-ota-ctl"
+SERVICE = "weaknet-server"
+BUS_DEST = "com.example.WeakNet"
+BUS_PATH = "/com/example/WeakNet"
+BUS_IFACE = "com.example.WeakNet"
+
+HEALTH_POLL_S = 5
+HEALTH_OK_NEEDED = 3
+HEALTH_TIMEOUT_S = 120
+# 试运行版本崩溃循环多少次就立刻回滚（不必等满窗口）
+MAX_TRIAL_RESTARTS = 3
+# 试运行版本最多试几轮（持久化计数，断电重来不归零）
+MAX_TRIAL_ROUNDS = 3
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+EXIT_RECOVERY = 4
+EXIT_SCHEMA = 5
+# 一次开机内的试运行窗口耗尽、但还有剩余尝试次数 → 用这个退出码请求重启
+EXIT_RETRY = 75
+
+LIVE_PHASES = ("PREPARED", "SWITCH_PENDING", "TRIAL",
+               "ROLLBACK_PENDING", "ROLLBACK_VERIFY")
+TERMINAL_PHASES = ("COMMITTED", "FORCED_COMMITTED", "ABORTED", "ROLLED_BACK")
+
+
+# ============================================================================
+# 小工具
+# ============================================================================
+
+def log(msg):
+    sys.stderr.write("[%s] %s\n" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), msg))
+    sys.stderr.flush()
+
+
+def default_runner(cmd, timeout=15):
+    """执行命令，返回 (rc, stdout)。命令不存在/超时都算失败，不抛异常。"""
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=timeout)
+        return proc.returncode, proc.stdout.decode("utf-8", "replace")
+    except FileNotFoundError:
+        return 127, ""
+    except subprocess.TimeoutExpired:
+        return 124, ""
+
+
+def fsync_dir(path):
+    fd = os.open(path, os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic_symlink(target, linkpath):
+    """symlink + rename 原子替换（与控制器同一套语义）。"""
+    directory = os.path.dirname(linkpath) or "."
+    tmp = "%s.tmp.%d" % (linkpath, os.getpid())
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    os.symlink(target, tmp)
+    os.rename(tmp, linkpath)
+    fsync_dir(directory)
+
+
+# ============================================================================
+# 事务状态读取（不依赖控制器二进制）
+# ============================================================================
+
+class TxState(object):
+    """事务状态的只读视图。字段缺失一律按 None 处理，不猜。"""
+
+    def __init__(self, raw):
+        self.raw = raw or {}
+        tx = self.raw.get("transaction")
+        self.has_tx = isinstance(tx, dict)
+        self.phase = tx.get("phase") if self.has_tx else None
+        self.kind = tx.get("kind") if self.has_tx else None
+        self.from_version = tx.get("from_version") if self.has_tx else None
+        self.to_version = tx.get("to_version") if self.has_tx else None
+        self.rollback_target = tx.get("rollback_target") if self.has_tx else None
+        self.previous_stable_before = tx.get("previous_stable_before") if self.has_tx else None
+        try:
+            self.boot_attempts = int(tx.get("boot_attempts") or 0) if self.has_tx else 0
+        except (TypeError, ValueError):
+            self.boot_attempts = 0
+        self.policy = tx.get("policy") if self.has_tx and isinstance(tx.get("policy"), dict) else {}
+        self.stable_version = self.raw.get("stable_version")
+        self.previous_stable_version = self.raw.get("previous_stable_version")
+        self.transaction_id = tx.get("transaction_id") if self.has_tx else None
+        self.last_error = tx.get("last_error") if self.has_tx else None
+        self.updated_at = tx.get("updated_at") if self.has_tx else None
+
+    # ---- 策略参数（事务里记的优先，取不到用默认值）----
+    def _policy_int(self, key, default):
+        try:
+            return int(self.policy.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    @property
+    def health_timeout(self):
+        return self._policy_int("health_timeout", HEALTH_TIMEOUT_S)
+
+    @property
+    def health_ok_needed(self):
+        return self._policy_int("health_ok_needed", HEALTH_OK_NEEDED)
+
+    @property
+    def health_poll_s(self):
+        return self._policy_int("health_poll_s", HEALTH_POLL_S)
+
+    @property
+    def is_terminal(self):
+        return self.phase in TERMINAL_PHASES
+
+    @property
+    def is_live(self):
+        return self.phase in LIVE_PHASES
+
+
+def load_state(state_dir):
+    """读事务状态。
+
+    缺失 → 空状态（全新设备，无事可做）。
+    损坏 → 抛 ValueError：调用方据此进入救援模式（不能猜）。
+    """
+    path = os.path.join(state_dir, "transaction.json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except IOError as exc:
+        if exc.errno == errno.ENOENT:
+            return TxState(None)
+        raise ValueError("读取事务状态失败：%s" % exc)
+    except ValueError as exc:
+        raise ValueError("事务状态文件损坏，无法解析 JSON：%s" % exc)
+
+    if not isinstance(raw, dict):
+        raise ValueError("事务状态根节点必须是对象")
+    schema = raw.get("schema_version")
+    if schema != 1:
+        # 不认识就 fail-closed：绝不猜测新版本语义
+        raise ValueError("事务状态 schema_version=%r 不受支持（本程序只认 1）" % (schema,))
+    return TxState(raw)
+
+
+def read_current(root):
+    """读 current 软链指向的版本号；不存在或形态异常返回 None。"""
+    link = os.path.join(root, "current")
+    if not os.path.islink(link):
+        return None
+    target = os.readlink(link)
+    name = os.path.basename(target.rstrip("/"))
+    parts = name.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        return None
+    return name
+
+
+# ============================================================================
+# 决策：纯函数，便于单测
+# ============================================================================
+
+def decide(state, current, healthy, elapsed, restarts, attempts,
+           max_rounds=MAX_TRIAL_ROUNDS, max_restarts=MAX_TRIAL_RESTARTS):
+    """算出下一步动作。返回 (action, reason)。
+
+    参数：
+      state     TxState
+      current   current 软链实际指向（None = 没有）
+      healthy   上一次健康探测的结果（bool）
+      elapsed   当前阶段已耗时（秒）
+      restarts  服务自本次启动以来的重启次数（-1 = 未知）
+      attempts  已尝试次数（权威值是 state.boot_attempts）
+
+    action 取值：
+      none | abort | mark_trial | commit | rollback | rollback_flip |
+      rollback_verify | rolled_back | wait_trial | wait_rollback | rescue
+    """
+    if not state.has_tx:
+        return "none", "没有进行中的事务"
+    if state.phase == "RECOVERY_REQUIRED":
+        return "rescue", "事务处于 RECOVERY_REQUIRED，禁止自动动作，转救援模式"
+    if state.is_terminal:
+        return "none", "事务已结束（%s）" % state.phase
+
+    phase = state.phase
+    to_ver = state.to_version
+    from_ver = state.from_version
+    rollback_target = state.rollback_target
+    first_install = (current is None and from_ver == to_ver)
+
+    if phase == "PREPARED":
+        if current == from_ver or first_install:
+            return "abort", "准备阶段指针未切换，保守取消事务"
+        return "rescue", "PREPARED 阶段但 current=%r 非原版本，状态不可信" % current
+
+    if phase == "SWITCH_PENDING":
+        if current == from_ver or first_install:
+            return "abort", "切换意图已落盘但指针未翻转，保守取消事务"
+        if current == to_ver:
+            return "mark_trial", "指针已翻转，推进到 TRIAL 继续验证"
+        return "rescue", "current=%r 既非 %s 也非 %s，状态不可信" % (current, from_ver, to_ver)
+
+    if phase == "TRIAL":
+        if current != to_ver:
+            return "rescue", "TRIAL 但 current=%r 不再指向候选版本，指针被外力改动" % current
+        if healthy:
+            return "commit", "试运行版本健康，转正"
+        # 崩溃循环：重启次数增长本身就是硬证据，不必等满窗口
+        if restarts >= 0 and restarts >= max_restarts:
+            return "rollback", "试运行版本崩溃循环（重启 %d 次），立即回滚" % restarts
+        # attempts 是持久化计数：断电重来不归零，所以它能拦住无限重试。
+        if attempts >= max_rounds:
+            return "rollback", "试运行已尝试 %d 次仍不健康，回滚" % attempts
+        if elapsed >= state.health_timeout:
+            return "wait_trial", ("健康窗口耗尽（%ds），已尝试 %d 次，"
+                                  "尚有剩余尝试次数" % (elapsed, attempts))
+        return "wait_trial", "等待试运行版本通过健康检查"
+
+    if phase == "ROLLBACK_PENDING":
+        if current == to_ver:
+            return "rollback_flip", "回滚意图已落盘但指针未翻，执行回滚"
+        if current == rollback_target:
+            return "rollback_verify", "指针已回滚，进入回滚验证"
+        return "rescue", "回滚中 current=%r 指向第三版本，状态不可信" % current
+
+    if phase == "ROLLBACK_VERIFY":
+        if current != rollback_target:
+            return "rescue", "回滚验证中 current=%r 非回滚目标" % current
+        if healthy:
+            return "rolled_back", "回滚目标健康，确认回滚完成"
+        if restarts >= 0 and restarts >= max_restarts:
+            return "rescue", "回滚目标也崩溃循环（重启 %d 次），转救援模式" % restarts
+        if elapsed >= state.health_timeout:
+            return "rescue", "回滚目标健康窗口耗尽仍不健康，转救援模式"
+        return "wait_rollback", "等待回滚目标通过健康检查"
+
+    return "rescue", "未覆盖的 phase=%r，转救援模式" % phase
+
+
+# ============================================================================
+# 执行器（依赖可注入，便于单测）
+# ============================================================================
+
+class Recoverer(object):
+    """执行恢复动作。所有外部命令都走 self.runner，方便替换成假实现。"""
+
+    def __init__(self, root, state_dir, ctl_path, service=SERVICE,
+                 runner=default_runner, sleeper=time.sleep, clock=time.time):
+        self.root = root
+        self.state_dir = state_dir
+        self.ctl_path = ctl_path
+        self.service = service
+        self.runner = runner
+        self.sleeper = sleeper
+        self.clock = clock
+        self.ctl_broken = False
+        self.actions = []          # 动作轨迹（审计 & 单测断言）
+
+    # ---- 控制器 ----
+    def ctl_available(self):
+        return os.path.isfile(self.ctl_path) and os.access(self.ctl_path, os.X_OK)
+
+    def ctl(self, *argv):
+        """调控制器执行写操作。返回 (rc, stdout)。控制器缺失时返回 127。"""
+        if self.ctl_broken:
+            return 1, ""
+        if not self.ctl_available():
+            self.ctl_broken = True
+            return 127, ""
+        cmd = [sys.executable, self.ctl_path, "--root", self.root,
+               "--state-dir", self.state_dir] + list(argv)
+        self.actions.append("ctl:" + " ".join(argv))
+        return self.runner(cmd, timeout=60)
+
+    # ---- 指针 ----
+    def flip_current(self, version):
+        """把 current 指向 releases/<version>。返回 (ok, detail)。"""
+        rc, _ = self.ctl("do-switch")   # 幂等，且会维护事务阶段
+        if rc == 0:
+            return True, "控制器完成指针切换"
+        target = os.path.join(self.root, "releases", version)
+        if not os.path.isdir(target):
+            return False, "回滚目标目录不存在：releases/%s" % version
+        try:
+            atomic_symlink("releases/" + version, os.path.join(self.root, "current"))
+        except OSError as exc:
+            return False, "指针切换失败：%s" % exc
+        log("警告：控制器不可用（rc=%s），已直接原子翻链——该操作不受事务保护" % rc)
+        self.actions.append("flip:" + version)
+        return True, "直接原子翻链（控制器不可用）"
+
+    # ---- systemd ----
+    def service_restart(self):
+        self.runner(["systemctl", "daemon-reload"], timeout=30)
+        rc = self.runner(["systemctl", "restart", self.service], timeout=60)[0]
+        self.actions.append("restart")
+        return rc
+
+    def service_stop_and_mask(self):
+        """停服并 mask：杜绝无限重启烧电。返回 (masked, detail)。
+
+        mask 失败是常见情形：unit 文件在 /etc/systemd/system/ 下时，
+        `systemctl mask` 会因为"目标已存在"而拒绝（要 --force 才能覆盖，
+        而覆盖会删掉真实 unit —— 那太激进）。所以先做等价但非破坏性的
+        替代：**停服 + 停用**（disable），systemd 就不会自动拉起它。
+
+        两种手段都失败时如实报告，不假装成功。
+        """
+        self.runner(["systemctl", "stop", self.service], timeout=60)
+        rc, _ = self.runner(["systemctl", "mask", self.service], timeout=30)
+        if rc == 0:
+            self.actions.append("stop+mask")
+            return True, "已 stop + mask（systemd 不会拉起该服务）"
+
+        # mask 不可用 → 用 disable 达到同样效果（不拉起）
+        rc2, _ = self.runner(["systemctl", "disable", self.service], timeout=30)
+        if rc2 == 0:
+            self.actions.append("stop+disable")
+            return True, ("已 stop + disable（mask 不可用：unit 文件已存在，"
+                          "systemd 仍不会拉起该服务）")
+        self.actions.append("stop")
+        return False, "stop 成功，但 mask 与 disable 都失败（需人工确认服务不会被拉起）"
+
+    def ensure_rescue_access(self):
+        """保住 SSH 救援入口：sshd 与反向隧道必须活着。"""
+        report = {}
+        for unit in ("ssh", "weaknet-tunnel"):
+            rc, out = self.runner(["systemctl", "is-active", unit], timeout=10)
+            if out.strip() == "active":
+                report[unit] = "active"
+                continue
+            self.runner(["systemctl", "start", unit], timeout=60)
+            rc2, out2 = self.runner(["systemctl", "is-active", unit], timeout=10)
+            report[unit] = out2.strip() or "start-failed"
+            self.actions.append("start:" + unit)
+        return report
+
+    # ---- 救援模式 ----
+    def enter_rescue(self, reason, state, current):
+        """进入最小 SSH 救援模式。返回报告路径。"""
+        log("=" * 70)
+        log("进入救援模式：%s" % reason)
+        masked, mask_detail = self.service_stop_and_mask()
+        log("weaknet-server：%s" % mask_detail)
+
+        access = self.ensure_rescue_access()
+        for unit, text in access.items():
+            log("救援通道 %s：%s" % (unit, text))
+
+        report_path = os.path.join(self.state_dir, "RESCUE.md")
+        try:
+            os.makedirs(self.state_dir, exist_ok=True)
+            body = render_rescue_report(reason, state, current, mask_detail, access)
+            with open(report_path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+                fh.flush()
+                os.fsync(fh.fileno())
+        except IOError as exc:
+            log("写救援报告失败：%s" % exc)
+        log("救援报告：%s" % report_path)
+        log("=" * 70)
+        self.actions.append("rescue")
+        return report_path
+
+
+def render_rescue_report(reason, state, current, mask_detail, access):
+    """救援现场报告（人读 + 机器可 grep）。"""
+    lines = []
+    lines.append("# WeakNet 救援模式现场报告")
+    lines.append("")
+    lines.append("> 生成时间：%s" % time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    lines.append("")
+    lines.append("## 触发原因")
+    lines.append("")
+    lines.append("%s" % reason)
+    lines.append("")
+    lines.append("## 现场信息")
+    lines.append("")
+    lines.append("| 项 | 值 |")
+    lines.append("|----|----|")
+    lines.append("| current 指向 | %s |" % (current or "（无）"))
+    lines.append("| 事务阶段 | %s |" % (state.phase if state else "（无事务）"))
+    lines.append("| 事务 ID | %s |" % (state.transaction_id if state else "—"))
+    lines.append("| 事务类型 | %s |" % (state.kind if state else "—"))
+    lines.append("| 升级方向 | %s → %s |" % (state.from_version if state else "?",
+                                           state.to_version if state else "?"))
+    lines.append("| 回滚目标 | %s |" % (state.rollback_target if state else "—"))
+    lines.append("| 启动尝试次数 | %s |" % (state.boot_attempts if state else "—"))
+    lines.append("| 稳定版本 | %s |" % (state.stable_version if state else "—"))
+    lines.append("| 上一稳定版本 | %s |" % (state.previous_stable_version if state else "—"))
+    lines.append("| 最后错误 | %s |" % (state.last_error if state else "—"))
+    lines.append("| weaknet-server | %s |" % mask_detail)
+    for unit, text in access.items():
+        lines.append("| 救援通道 %s | %s |" % (unit, text))
+    lines.append("")
+    lines.append("## 现场保留物")
+    lines.append("")
+    lines.append("- 事务状态：`/var/lib/weaknet-ota/transaction.json`（未删除、未改写）")
+    lines.append("- 事务历史：`/var/lib/weaknet-ota/history/`")
+    lines.append("- 本报告：`/var/lib/weaknet-ota/RESCUE.md`")
+    lines.append("- 升级日志：`/home/radxa/weaknet/data/ota_upgrade.log`")
+    lines.append("- 历史版本目录：`/home/radxa/weaknet/releases/<version>/`（未被回收）")
+    lines.append("")
+    lines.append("## 人工恢复步骤")
+    lines.append("")
+    lines.append("1. 确认版本目录完整：")
+    lines.append("   ```bash")
+    lines.append("   ls -la /home/radxa/weaknet/releases/")
+    lines.append("   ```")
+    lines.append("2. 解除服务屏蔽并切到已知良好的版本：")
+    lines.append("   ```bash")
+    lines.append("   sudo systemctl unmask weaknet-server")
+    lines.append("   sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \\")
+    lines.append("       --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota \\")
+    lines.append("       recover --accept <known-good-version>")
+    lines.append("   sudo systemctl restart weaknet-server")
+    lines.append("   ```")
+    lines.append("3. 若事务状态已损坏（无法解析），先备份再人工指定：")
+    lines.append("   ```bash")
+    lines.append("   sudo cp /var/lib/weaknet-ota/transaction.json \\")
+    lines.append("       /var/lib/weaknet-ota/transaction.json.corrupt.$(date +%s)")
+    lines.append("   ```")
+    lines.append("")
+    lines.append("## 救援模式下的行为约定")
+    lines.append("")
+    lines.append("- **不做版本切换**：不自动翻 `current`，避免把未知状态传播下去。")
+    lines.append("- **不做无限重启**：weaknet-server 已 mask，systemd 不会拉起它。")
+    lines.append("- **不启动 weaknet-server**：功能暂时不可用，但设备**可达**。")
+    lines.append("- **保留 SSH 与反向隧道**：远程运维通道不受影响。")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+# ============================================================================
+# 健康探测
+# ============================================================================
+
+class Prober(object):
+    """健康探测。命令执行走注入的 runner，便于单测。"""
+
+    def __init__(self, runner=default_runner, service=SERVICE,
+                 bus_dest=BUS_DEST, bus_path=BUS_PATH, bus_iface=BUS_IFACE):
+        self.runner = runner
+        self.service = service
+        self.bus_dest = bus_dest
+        self.bus_path = bus_path
+        self.bus_iface = bus_iface
+
+    def systemd_active(self):
+        rc, out = self.runner(["systemctl", "is-active", self.service], timeout=10)
+        return out.strip() == "active"
+
+    def systemd_restarts(self):
+        """读 NRestarts；读不到返回 -1（未知）。"""
+        rc, out = self.runner(["systemctl", "show", self.service,
+                               "-p", "NRestarts", "--value"], timeout=10)
+        if rc != 0:
+            return -1
+        try:
+            return int(out.strip())
+        except ValueError:
+            return -1
+
+    def bus_call(self, method):
+        rc, out = self.runner(["busctl", "--system", "call", self.bus_dest,
+                               self.bus_path, self.bus_iface, method], timeout=10)
+        return rc == 0, out
+
+    def probe(self, expect_version):
+        """健康探测。返回 (ok, detail)。"""
+        if not self.systemd_active():
+            return False, "systemd is-active != active"
+
+        ok_health, _ = self.bus_call("HealthCheck")
+        if not ok_health:
+            return False, "D-Bus HealthCheck 不可达"
+        ok_ebpf, _ = self.bus_call("GetEbpfMonitorHealth")
+        if not ok_ebpf:
+            return False, "D-Bus GetEbpfMonitorHealth 不可达"
+
+        if expect_version:
+            ok_status, out = self.bus_call("GetUpdateStatus")
+            if not ok_status:
+                return False, "D-Bus GetUpdateStatus 不可达"
+            flat = out.replace("\\", "")
+            if ('"installed_version":"%s"' % expect_version) not in flat:
+                return False, ("GetUpdateStatus 未报告期望版本 %s（实际：%s）"
+                               % (expect_version, flat.strip()[:200]))
+        return True, "全绿"
+
+
+# ============================================================================
+# 主循环
+# ============================================================================
+
+class Watcher(object):
+    """开机恢复编排。
+
+    一次 `run_once` 做完一轮判定并执行。返回 (done, reason)：
+      done=True  → 事务已终结或已进入救援，不再需要继续
+      done=False → 还需要继续（健康窗口内等待 / 阶段推进）
+    """
+
+    def __init__(self, recoverer, prober=None, once=False):
+        self.rec = recoverer
+        self.prober = prober or Prober(runner=recoverer.runner, service=recoverer.service)
+        self.once = once
+        self.bumped = False      # 本次开机是否已 bump 过 boot_attempts
+        self.memory_attempts = 0  # 同一次开机内的兜底计数
+
+    # ---- 状态读取 ----
+    def load(self):
+        try:
+            return load_state(self.rec.state_dir)
+        except ValueError as exc:
+            log("事务状态不可读：%s" % exc)
+            return None
+
+    def phase_started_at(self, state):
+        """当前阶段的开始时间（用事务的 updated_at 近似）。"""
+        if not state.has_tx or not state.updated_at:
+            return self.rec.clock()
+        try:
+            parsed = time.strptime(state.updated_at, "%Y-%m-%dT%H:%M:%SZ")
+        except (ValueError, TypeError):
+            return self.rec.clock()
+        return time.mktime(parsed) - time.timezone
+
+    def elapsed(self, state):
+        return max(0, int(self.rec.clock() - self.phase_started_at(state)))
+
+    def attempts(self, state):
+        """已尝试次数：持久化的 boot_attempts 优先，内存计数兜底。"""
+        return max(int(state.boot_attempts or 0), self.memory_attempts)
+
+    def bump_boot_attempt(self, state):
+        """每次开机试运行前先加一（防止断电无限重试）。
+
+        必须在**启动之前**调用——先启动再计数的话，掉电会漏计。
+
+        boot_id 取 `/proc/sys/kernel/random/boot_id`：它在内核每次启动时
+        重新生成，所以**设备真的重启过**才会换一个值。恢复服务自身被
+        systemd 重启（它退出会请求重启自己）不会换 boot_id，因此不消耗
+        一次试运行机会。
+        """
+        if self.bumped or state.phase != "TRIAL":
+            return state.boot_attempts
+        self.bumped = True
+        boot_id = self.read_boot_id()
+        rc, _ = self.rec.ctl("bump-boot-attempt", "--boot-id", boot_id)
+        if rc == 0:
+            log("boot_attempts 已加一（boot_id=%s）" % boot_id)
+            return state.boot_attempts + 1
+        log("bump-boot-attempt 失败（rc=%d）——控制器不可用时用内存计数兜底" % rc)
+        self.memory_attempts += 1
+        return self.memory_attempts
+
+    @staticmethod
+    def read_boot_id():
+        """读内核 boot_id；读不到就退回时间戳（退化成"每次都算新尝试"）。"""
+        try:
+            with open("/proc/sys/kernel/random/boot_id", "r", encoding="utf-8") as fh:
+                value = fh.read().strip()
+            if value:
+                return value
+        except IOError:
+            pass
+        return "time-%d" % int(time.time())
+
+    # ---- 一轮判定 ----
+    def run_once(self):
+        state = self.load()
+        if state is None:
+            self.rec.enter_rescue("事务状态文件损坏或 schema 不受支持", None, None)
+            return True, "已转救援模式"
+
+        current = read_current(self.rec.root)
+
+        if state.phase == "TRIAL":
+            self.bump_boot_attempt(state)
+            state = self.load() or state
+
+        # 健康探测：只在需要验证的阶段做
+        need_health = state.phase in ("TRIAL", "ROLLBACK_VERIFY")
+        healthy, detail = (False, "当前阶段不需要健康验证")
+        if need_health:
+            expect = state.to_version if state.phase == "TRIAL" else state.rollback_target
+            healthy, detail = self.prober.probe(expect)
+
+        restarts = self.prober.systemd_restarts()
+        action, reason = decide(state, current, healthy, self.elapsed(state),
+                                restarts, self.attempts(state))
+        log("判定：action=%s（%s）healthy=%s detail=%s restarts=%s attempts=%s"
+            % (action, reason, healthy, detail, restarts, self.attempts(state)))
+
+        return self.execute(action, reason, state, current)
+
+    def execute(self, action, reason, state, current):
+        if action == "none":
+            return True, reason
+
+        if action == "abort":
+            rc, _ = self.rec.ctl("abort", "--reason", reason)
+            if rc == 0:
+                log("事务已取消（abort）")
+                return True, reason
+            log("abort 失败（rc=%d）——转救援" % rc)
+            self.rec.enter_rescue("abort 失败：%s" % reason, state, current)
+            return True, "已转救援模式"
+
+        if action == "mark_trial":
+            rc, _ = self.rec.ctl("do-switch")
+            if rc != 0:
+                log("推进 TRIAL 失败（rc=%d）——转救援" % rc)
+                self.rec.enter_rescue("推进 TRIAL 失败：%s" % reason, state, current)
+                return True, "已转救援模式"
+            self.bumped = False
+            return False, reason
+
+        if action == "commit":
+            rc, _ = self.rec.ctl("commit")
+            if rc == 0:
+                log("试运行版本已转正（COMMITTED）")
+                return True, reason
+            log("转正失败（rc=%d）——转救援" % rc)
+            self.rec.enter_rescue("转正失败：%s" % reason, state, current)
+            return True, "已转救援模式"
+
+        if action == "rollback":
+            rc, _ = self.rec.ctl("rollback-arm", "--reason", reason)
+            if rc != 0:
+                log("rollback-arm 失败（rc=%d）——转救援" % rc)
+                self.rec.enter_rescue("无法记录回滚意图：%s" % reason, state, current)
+                return True, "已转救援模式"
+            log("已记录回滚意图：%s" % reason)
+            return False, reason
+
+        if action == "rollback_flip":
+            ok, detail2 = self.rec.flip_current(state.rollback_target)
+            if not ok:
+                log("回滚翻链失败：%s ——转救援" % detail2)
+                self.rec.enter_rescue("回滚翻链失败：%s" % detail2, state, current)
+                return True, "已转救援模式"
+            log("已回滚到 %s（%s）" % (state.rollback_target, detail2))
+            self.rec.service_restart()
+            return False, reason
+
+        if action == "rollback_verify":
+            rc, _ = self.rec.ctl("rollback-do")
+            if rc != 0:
+                log("rollback-do 失败（rc=%d）" % rc)
+            self.rec.service_restart()
+            return False, reason
+
+        if action == "rolled_back":
+            rc, _ = self.rec.ctl("rolled-back")
+            if rc == 0:
+                log("回滚已确认（ROLLED_BACK），设备回到 %s" % state.rollback_target)
+                return True, reason
+            log("标记 ROLLED_BACK 失败（rc=%d）" % rc)
+            return True, reason
+
+        if action in ("wait_trial", "wait_rollback"):
+            # 窗口内继续等；但健康窗口耗尽且还有尝试次数时，本轮结束，
+            # 让上层重启本进程（下次开机重新计数）。
+            if self.elapsed(state) >= state.health_timeout:
+                return False, reason
+            return False, reason
+
+        if action == "rescue":
+            self.rec.enter_rescue(reason, state, current)
+            return True, "已转救援模式"
+
+        return True, "未识别的动作 %s" % action
+
+    def loop(self):
+        """主循环。返回进程退出码。"""
+        log("OTA 开机恢复服务启动（root=%s state=%s）" % (self.rec.root, self.rec.state_dir))
+        if not self.rec.ctl_available():
+            log("警告：控制器缺失（%s）——写操作将退回直接原子翻链" % self.rec.ctl_path)
+
+        while True:
+            done, reason = self.run_once()
+
+            if self.once:
+                return EXIT_OK
+
+            if done:
+                # 事务终结或已转救援：睡一会儿再看（可能有新升级开始）
+                self.rec.sleeper(30)
+                continue
+
+            state = self.load()
+            if state is None:
+                self.rec.sleeper(30)
+                continue
+            elapsed = self.elapsed(state)
+            if elapsed >= state.health_timeout and state.phase == "TRIAL" \
+                    and self.attempts(state) < MAX_TRIAL_ROUNDS:
+                # 本次开机的窗口已耗尽，但还有剩余尝试次数 → 请求重启本进程
+                # （重启后 boot_attempts 会再加一，权威计数不归零）。
+                log("本次开机的健康窗口已耗尽，请求重启恢复进程以计下一次尝试")
+                return EXIT_RETRY
+            interval = state.health_poll_s if state else HEALTH_POLL_S
+            self.rec.sleeper(interval)
+
+
+# ============================================================================
+# 入口
+# ============================================================================
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="weaknet-ota-recover",
+        description="WeakNet OTA 开机恢复服务（P0-B）：独立于 weaknet-server 的恢复决策器")
+    parser.add_argument("--root", default=None)
+    parser.add_argument("--state-dir", default=None)
+    parser.add_argument("--ctl", default=None, help="控制器路径")
+    parser.add_argument("--service", default=SERVICE)
+    parser.add_argument("--once", action="store_true",
+                        help="只跑一轮判定（不常驻），用于测试与手工排障")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="只输出判定，不执行任何动作")
+    args = parser.parse_args(argv)
+
+    root = args.root or os.environ.get("WEAKNET_ROOT") or DEFAULT_ROOT
+    state_dir = args.state_dir or os.environ.get("WEAKNET_OTA_STATE_DIR") or DEFAULT_STATE_DIR
+    ctl_path = args.ctl or os.environ.get("WEAKNET_OTA_CTL") or DEFAULT_CTL
+
+    rec = Recoverer(root, state_dir, ctl_path, service=args.service)
+
+    if args.dry_run:
+        try:
+            state = load_state(state_dir)
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return EXIT_SCHEMA
+        current = read_current(root)
+        prober = Prober(service=args.service)
+        healthy, detail = (False, "dry-run 不做健康探测")
+        if state.phase in ("TRIAL", "ROLLBACK_VERIFY"):
+            healthy, detail = prober.probe(
+                state.to_version if state.phase == "TRIAL" else state.rollback_target)
+        action, reason = decide(state, current, healthy, 0,
+                                prober.systemd_restarts(), state.boot_attempts)
+        print(json.dumps({"ok": True, "action": action, "reason": reason,
+                          "current": current, "phase": state.phase,
+                          "healthy": healthy, "detail": detail,
+                          "attempts": state.boot_attempts,
+                          "stable_version": state.stable_version},
+                         ensure_ascii=False, indent=2, sort_keys=True))
+        return EXIT_OK
+
+    watcher = Watcher(rec, once=args.once)
+    try:
+        return watcher.loop()
+    except KeyboardInterrupt:
+        return EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())

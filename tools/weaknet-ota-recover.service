@@ -1,0 +1,40 @@
+[Unit]
+Description=WeakNet OTA Boot Recovery Service (P0-B)
+# 关键：恢复服务**不能**依赖被恢复的对象。
+#
+# 不写 Requires=weaknet-server.service，也不写 After=weaknet-server.service
+# 的强依赖——那会让 weaknet-server 起不来时恢复服务也起不来，正好把
+# "独立于被升级对象"的设计意图毁掉。
+#
+# 只在网络就绪后启动（隧道与 SSH 救援入口需要网络），但**不**等待
+# weaknet-server：它可能正是起不来的那个。
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 与 weaknet-server 同为 root：需要读 /var/lib/weaknet-ota（0600 root）、
+# 翻 $ROOT/current 软链、systemctl stop/mask 服务。
+User=root
+Group=root
+WorkingDirectory=/
+# 恢复器装在 $ROOT 之外（/usr/local/lib/weaknet/），不随 OTA 制品变化：
+# 升级包被解包失败或版本目录被写坏时，恢复器本身仍然可用。
+ExecStart=/usr/bin/python3 /usr/local/lib/weaknet/weaknet-ota-recover \
+    --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota \
+    --ctl /usr/local/lib/weaknet/weaknet-ota-ctl
+Restart=on-failure
+RestartSec=10
+# 退出码 75 = 本次开机的健康窗口耗尽但还有剩余尝试次数 → 主动重启，
+# 让下一次开机把 boot_attempts 再加一（持久化计数，断电重来不归零）。
+SuccessExitStatus=75
+# 恢复期间不因自身异常拖垮系统
+TimeoutStopSec=30
+KillMode=control-group
+# 不需要 eBPF 能力：恢复器只做指针与事务操作
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_ADMIN
+AmbientCapabilities=CAP_DAC_OVERRIDE CAP_SYS_ADMIN
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

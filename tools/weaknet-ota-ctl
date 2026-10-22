@@ -1,0 +1,1469 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""weaknet-ota-ctl — OTA 升级事务控制器（P0-A）
+
+================================================================================
+为什么需要这个程序
+================================================================================
+
+升级可靠性不能建立在"被升级的服务自己"之上。原实现里，`current` 指针、
+`.previous` 回滚指针、`.committed` 转正标记由多个执行路径各自读写
+（`cmd_apply` / `cmd_rollback` / `cmd_adopt` / legacy 迁移 / `--commit`），
+一旦升级进程在关键窗口被掉电或杀死，**没有任何一方知道这次升级做到哪一步**。
+
+本控制器把三件事收口到一处：
+
+  1. 唯一的持久化事实来源：`/var/lib/weaknet-ota/transaction.json`
+  2. 唯一的版本指针写入口：`current` / `.previous` / `.committed` 只由本程序改
+  3. 可判定的恢复语义：每个崩溃点都能从 (事务状态, current 真实指向) 推出
+     唯一且非破坏性的下一步
+
+P0-A 只解决"可观察、可判定、可显式修复"。**开机自动恢复属于 P0-B**，
+本程序提供 `reconcile --dry-run` 供其调用，但自身不在开机时自动执行任何
+破坏性动作。
+
+================================================================================
+关键设计约束
+================================================================================
+
+* **不随 OTA 制品升级**：本文件必须放在 $ROOT 之外（默认 `/usr/local/lib/`），
+  绝不能被 `install_self_script` 或 release 包覆盖。理由：事务 schema 由它写入，
+  若它随版本变化，则旧版恢复服务可能读到新版 schema。
+* **原子落盘**：写文件用 temp + fsync + rename + fsync(dir)；翻软链用
+  symlink + rename + fsync(dir)。仅 `rename` 原子是不够的，目录项也必须落盘。
+* **单一写者**：所有状态变更走同一把 flock 互斥锁；冲突立即失败，不排队。
+* **fail-closed**：schema 不认识、phase 不认识、指针指向不在版本集合内的值、
+  JSON 损坏 —— 一律不做破坏性动作，转 RECOVERY_REQUIRED 或拒绝执行。
+
+================================================================================
+物理持久性说明（重要）
+================================================================================
+
+`fsync` 保证的是「内核 → 设备」的持久化语义，**不保证**设备写缓存里的数据
+已落到介质。开发板实测根分区在 `/dev/sda3`（SATA/USB 盘），若该盘启用写缓存
+且未走 FUA，掉电仍可能丢失已 fsync 的数据。因此本程序的持久化顺序是**必要
+不充分**条件——真正的断电安全必须由真机掉电测试确认，不能用 `kill -9` 代替。
+"""
+
+import argparse
+import errno
+import fcntl
+import json
+import os
+import re
+import shutil
+import sys
+import time
+
+SCHEMA_VERSION = 1
+
+# ---- 阶段枚举（严格封闭：未知值一律 fail-closed）--------------------------------
+PHASE_PREPARED = "PREPARED"
+PHASE_SWITCH_PENDING = "SWITCH_PENDING"
+PHASE_TRIAL = "TRIAL"
+PHASE_COMMITTED = "COMMITTED"
+PHASE_FORCED_COMMITTED = "FORCED_COMMITTED"   # --commit 人工跳过健康验证
+PHASE_ABORTED = "ABORTED"
+PHASE_ROLLBACK_PENDING = "ROLLBACK_PENDING"
+PHASE_ROLLBACK_VERIFY = "ROLLBACK_VERIFY"
+PHASE_ROLLED_BACK = "ROLLED_BACK"
+PHASE_RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+
+ALL_PHASES = frozenset({
+    PHASE_PREPARED, PHASE_SWITCH_PENDING, PHASE_TRIAL,
+    PHASE_COMMITTED, PHASE_FORCED_COMMITTED, PHASE_ABORTED,
+    PHASE_ROLLBACK_PENDING, PHASE_ROLLBACK_VERIFY, PHASE_ROLLED_BACK,
+    PHASE_RECOVERY_REQUIRED,
+})
+
+# 终态：接受下一笔事务前会先归档到 history/
+TERMINAL_PHASES = frozenset({
+    PHASE_COMMITTED, PHASE_FORCED_COMMITTED, PHASE_ABORTED, PHASE_ROLLED_BACK,
+})
+
+# 非终态：掉电后必须继续处理，绝不能误标成已回滚/已成功
+LIVE_PHASES = frozenset({
+    PHASE_PREPARED, PHASE_SWITCH_PENDING, PHASE_TRIAL,
+    PHASE_ROLLBACK_PENDING, PHASE_ROLLBACK_VERIFY,
+})
+
+# 用 \Z 而不是 $：Python 的 $ 也匹配「结尾换行之前」，于是 "1.0.0\n" 会被
+# 判定为合法。版本号会被拼进路径（releases/<ver>），带换行的值一旦流入
+# 就是路径与日志注入面。\Z 只匹配真正的字符串末尾。
+VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+\Z")
+
+# 退出码（供上层脚本与测试断言）
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+EXIT_CONFLICT = 3        # 非法状态转换 / 并发冲突
+EXIT_RECOVERY = 4        # 需要人工介入
+EXIT_SCHEMA = 5          # schema 不兼容或数据损坏
+
+
+class OtaError(Exception):
+    def __init__(self, message, code=EXIT_ERROR):
+        super().__init__(message)
+        self.code = code
+
+
+class ConflictError(OtaError):
+    def __init__(self, message):
+        super().__init__(message, EXIT_CONFLICT)
+
+
+class SchemaError(OtaError):
+    def __init__(self, message):
+        super().__init__(message, EXIT_SCHEMA)
+
+
+# ============================================================================
+# 路径解析
+# ============================================================================
+
+def resolve_paths(root=None, state_dir=None):
+    """返回 (root, state_dir)。
+
+    root 默认 /home/radxa/weaknet（可用 WEAKNET_ROOT 覆盖，与升级脚本一致）；
+    state_dir 默认 /var/lib/weaknet-ota（可用 WEAKNET_OTA_STATE_DIR 覆盖）。
+
+    注意 state_dir 与 root 在开发板上同属根分区——它们提供的是**生命周期与
+    权限隔离**（不随 release 切换、0600 且仅 root 可写），不是物理隔离。
+    """
+    root = root or os.environ.get("WEAKNET_ROOT") or "/home/radxa/weaknet"
+    state_dir = state_dir or os.environ.get("WEAKNET_OTA_STATE_DIR") or "/var/lib/weaknet-ota"
+    return os.path.abspath(root), os.path.abspath(state_dir)
+
+
+# ============================================================================
+# 原子 IO
+# ============================================================================
+
+def fsync_dir(path):
+    """fsync 一个目录，确保其中的目录项（rename/symlink）真正落盘。
+
+    只 fsync 文件是不够的：rename 改变了父目录的目录项，父目录本身不 fsync
+    的话，掉电后可能看到"旧文件名还在"或"两个都在"。
+    """
+    fd = os.open(path, os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def atomic_write_bytes(path, payload, mode=0o600):
+    """temp(同目录) → 写入 → fsync → rename → fsync(dir)。
+
+    任何一步失败都抛异常，调用方不得据此宣称状态转换成功。
+    """
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        os.write(fd, payload)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+    os.replace(tmp, path)
+    fsync_dir(directory)
+
+
+def atomic_write_json(path, obj):
+    payload = (json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    atomic_write_bytes(path, payload)
+
+
+def atomic_symlink(target, linkpath):
+    """symlink + rename 原子替换。target 是相对路径（如 releases/1.2.0）。
+
+    必须沿用相对路径 —— 现有 `current` 就是 `releases/<ver>` 形式，
+    `weaknet-cli`、C++ 服务端、以及运维脚本都可能依赖这一形态。
+    """
+    directory = os.path.dirname(linkpath) or "."
+    tmp = "%s.tmp.%d" % (linkpath, os.getpid())
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    os.symlink(target, tmp)
+    os.rename(tmp, linkpath)   # rename(2) 覆盖已有软链是原子的
+    fsync_dir(directory)
+
+
+# ============================================================================
+# 互斥锁
+# ============================================================================
+
+class ExclusiveLock(object):
+    """同一时刻只允许一个写者。非阻塞：拿不到锁立即失败。"""
+
+    def __init__(self, state_dir):
+        self.path = os.path.join(state_dir, "lock")
+        self.fd = None
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(self.fd)
+            self.fd = None
+            if exc.errno in (errno.EACCES, errno.EAGAIN):
+                raise ConflictError("另一个 OTA 事务正在进行（%s 已被占用）" % self.path)
+            raise
+        return self
+
+    def __exit__(self, *exc_info):
+        if self.fd is not None:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self.fd)
+                self.fd = None
+        return False
+
+
+# ============================================================================
+# 版本与指针
+# ============================================================================
+
+def check_version(value, field="version"):
+    if not isinstance(value, str) or not VERSION_RE.match(value):
+        raise OtaError("%s 非法：%r（需 X.Y.Z，且不得含路径分隔符）" % (field, value), EXIT_USAGE)
+    return value
+
+
+def read_current(root):
+    """读取 current 软链指向的版本号；不存在或形态异常返回 None。
+
+    现有布局：current -> releases/<ver>（相对路径）。这里只取末段，
+    同时对绝对路径（历史残留）保持兼容，但**不会**接受指向 releases/ 之外的值。
+    """
+    link = os.path.join(root, "current")
+    if not os.path.islink(link):
+        return None
+    target = os.readlink(link)
+    name = os.path.basename(target.rstrip("/"))
+    if not VERSION_RE.match(name):
+        return None
+    return name
+
+
+def release_dir(root, version):
+    return os.path.join(root, "releases", version)
+
+
+def release_exists(root, version):
+    return os.path.isdir(release_dir(root, version))
+
+
+def list_versions(root):
+    releases = os.path.join(root, "releases")
+    if not os.path.isdir(releases):
+        return []
+    out = []
+    for name in os.listdir(releases):
+        if VERSION_RE.match(name) and os.path.isdir(os.path.join(releases, name)):
+            out.append(name)
+    return sorted(out, key=version_key)
+
+
+def version_key(v):
+    return tuple(int(x) for x in v.split("."))
+
+
+# ============================================================================
+# 事务状态
+# ============================================================================
+
+def empty_state():
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "revision": 0,
+        "stable_version": None,
+        "previous_stable_version": None,
+        # 推断来源（可审计）：这两个版本号是怎么来的？
+        #   "current"            —— 由 current 软链确认
+        #   "transaction"        —— 由事务记录的 from/to 推出
+        #   "transaction_history"—— 由归档事务历史推出
+        #   "committed_mtime"    —— 由 .committed 标记的时间顺序推出（次优）
+        #   "manual"             —— 人工指定（--accept-stable / --accept-previous / recover）
+        #   "unknown"            —— 证据不足，明确未知（不猜）
+        "stable_source": None,
+        "previous_source": None,
+        "transaction": None,
+    }
+
+
+def state_path(state_dir):
+    return os.path.join(state_dir, "transaction.json")
+
+
+def load_state(state_dir):
+    """读取并严格校验事务状态。缺失 = 全新设备，返回空状态。"""
+    path = state_path(state_dir)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    except IOError as exc:
+        if exc.errno == errno.ENOENT:
+            return empty_state()
+        raise
+
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise SchemaError("事务状态文件损坏，无法解析 JSON：%s" % exc)
+
+    if not isinstance(data, dict):
+        raise SchemaError("事务状态根节点必须是对象")
+
+    schema = data.get("schema_version")
+    if schema != SCHEMA_VERSION:
+        # 不认识就 fail-closed：绝不猜测新版本语义
+        raise SchemaError(
+            "事务状态 schema_version=%r 不受支持（本程序只认 %d）；拒绝执行任何动作"
+            % (schema, SCHEMA_VERSION))
+
+    for field in ("revision",):
+        if not isinstance(data.get(field), int):
+            raise SchemaError("字段 %s 缺失或类型错误" % field)
+
+    for field in ("stable_version", "previous_stable_version"):
+        value = data.get(field)
+        if value is not None:
+            check_version(value, field)
+
+    # 推断来源字段是**可选**的（schema v1 的早期记录没有）。
+    # 缺它们不影响状态有效性——只是审计信息不全。
+    for field in ("stable_source", "previous_source"):
+        if field in data and data[field] is not None:
+            if not isinstance(data[field], str):
+                raise SchemaError("字段 %s 必须是字符串或 null" % field)
+
+    tx = data.get("transaction")
+    if tx is not None:
+        if not isinstance(tx, dict):
+            raise SchemaError("transaction 必须是对象或 null")
+        phase = tx.get("phase")
+        if phase not in ALL_PHASES:
+            raise SchemaError("未知 phase=%r —— 拒绝在无法判定的状态下执行动作" % (phase,))
+        for field in ("from_version", "to_version", "rollback_target"):
+            check_version(tx.get(field), "transaction." + field)
+        if tx.get("previous_stable_before") is not None:
+            check_version(tx["previous_stable_before"], "transaction.previous_stable_before")
+        if not isinstance(tx.get("boot_attempts"), int):
+            raise SchemaError("transaction.boot_attempts 缺失或类型错误")
+
+    return data
+
+
+def save_state(state_dir, state):
+    """落盘并递增 revision。这是唯一的状态写入口。"""
+    state["revision"] = int(state.get("revision", 0)) + 1
+    atomic_write_json(state_path(state_dir), state)
+    return state
+
+
+def tx_of(state):
+    return state.get("transaction")
+
+
+def require_tx(state, *allowed_phases):
+    tx = tx_of(state)
+    if tx is None:
+        raise ConflictError("当前没有进行中的事务")
+    phase = tx["phase"]
+    if phase not in allowed_phases:
+        raise ConflictError(
+            "当前阶段 %s 不允许该操作（要求：%s）" % (phase, ", ".join(sorted(allowed_phases))))
+    return tx
+
+
+# ============================================================================
+# 兼容投影：.committed 与 .previous
+# ============================================================================
+
+def project_views(root, state):
+    """把权威状态投影到历史兼容视图。
+
+    * `releases/<ver>/.committed` —— C++ `update_status.cpp` 仍以它的存在判断
+      `current_committed`，在 C++ 读路径改造并端到端验证之前不能删。
+    * `.previous` —— 降级为派生视图，表示"上一稳定版本"，供 GC 白名单与
+      旧 `rollback`（无 --to）读取。权威值来自状态文件。
+
+    投影失败不抛异常：它属于兼容层，不能因为投影失败就把权威状态判成失败。
+    """
+    warnings = []
+
+    stable = state.get("stable_version")
+    if stable and release_exists(root, stable):
+        marker = os.path.join(release_dir(root, stable), ".committed")
+        if not os.path.exists(marker):
+            try:
+                atomic_write_bytes(marker, b"", mode=0o644)
+            except OSError as exc:
+                warnings.append("补写 .committed 失败：%s" % exc)
+
+    prev = state.get("previous_stable_version")
+    prev_file = os.path.join(root, "releases", ".previous")
+    try:
+        if prev:
+            atomic_write_bytes(prev_file, (prev + "\n").encode("utf-8"), mode=0o644)
+        elif os.path.exists(prev_file):
+            os.unlink(prev_file)
+            fsync_dir(os.path.dirname(prev_file))
+    except OSError as exc:
+        warnings.append("刷新 .previous 失败：%s" % exc)
+
+    return warnings
+
+
+# ============================================================================
+# GC
+# ============================================================================
+
+def collect_garbage(root, state, max_keep):
+    """保守 GC：只在权威状态合法且处于终态时运行。
+
+    保护集合：current、stable、previous_stable、当前事务引用的全部版本。
+    任何异常（非终态、RECOVERY_REQUIRED、记录不可解析）都整体跳过——
+    GC 不是关键路径，多占几 MB 远比删掉回滚证据安全。
+    """
+    tx = tx_of(state)
+    if tx is not None and tx["phase"] not in TERMINAL_PHASES:
+        return [], "事务处于非终态（%s），整体跳过 GC" % tx["phase"]
+    if tx is not None and tx["phase"] == PHASE_RECOVERY_REQUIRED:
+        return [], "事务处于 RECOVERY_REQUIRED，整体跳过 GC"
+
+    protected = set()
+    cur = read_current(root)
+    if cur:
+        protected.add(cur)
+    for field in ("stable_version", "previous_stable_version"):
+        if state.get(field):
+            protected.add(state[field])
+    if tx:
+        for field in ("from_version", "to_version", "rollback_target"):
+            if tx.get(field):
+                protected.add(tx[field])
+        if tx.get("previous_stable_before"):
+            protected.add(tx["previous_stable_before"])
+
+    versions = list_versions(root)
+    if len(versions) <= max_keep:
+        return [], None
+
+    removed = []
+    keep_count = 0
+    for ver in sorted(versions, key=version_key, reverse=True):
+        if ver in protected:
+            continue
+        keep_count += 1
+        # 保留 max_keep 个**未受保护**的历史版本；超出部分按版本从新到旧淘汰。
+        # 受保护版本（current/stable/previous/事务引用）无论多少都留着——
+        # 少留一个历史版本只是多占几 MB，误删回滚目标是砖化。
+        if keep_count > max_keep:
+            path = release_dir(root, ver)
+            shutil.rmtree(path, ignore_errors=True)
+            removed.append(ver)
+    return removed, None
+
+
+# ============================================================================
+# 状态机动作
+# ============================================================================
+
+def new_transaction(kind, from_version, to_version, rollback_target,
+                    previous_stable_before, policy=None):
+    return {
+        "transaction_id": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-%d" % os.getpid(),
+        "kind": kind,
+        "phase": PHASE_PREPARED,
+        "from_version": from_version,
+        "to_version": to_version,
+        "rollback_target": rollback_target,
+        "previous_stable_before": previous_stable_before,
+        "boot_attempts": 0,
+        "last_trial_boot_id": "",
+        "policy": policy or {},
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "last_error": "",
+    }
+
+
+def set_phase(state, phase, error=None):
+    tx = state["transaction"]
+    tx["phase"] = phase
+    tx["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if error is not None:
+        tx["last_error"] = error
+
+
+def archive_transaction(state_dir, state):
+    """终态事务在接受下一笔事务前归档。归档失败不得静默覆盖历史。"""
+    tx = state.get("transaction")
+    if not tx or tx["phase"] not in TERMINAL_PHASES:
+        return None
+    hist_dir = os.path.join(state_dir, "history")
+    os.makedirs(hist_dir, exist_ok=True)
+    name = "%s-%s.json" % (tx["transaction_id"], tx["phase"])
+    path = os.path.join(hist_dir, name)
+    atomic_write_json(path, tx)
+    return path
+
+
+def read_history(state_dir):
+    """读归档事务历史，按时间从旧到新排序。
+
+    归档文件名是 `<transaction_id>-<phase>.json`，transaction_id 形如
+    `20261022T082625Z-3562182`——时间戳在前，字典序即时间序（UTC，秒级
+    精度；同一秒内的两笔按 pid 排序，不影响"最后一笔"的判断）。
+
+    单个历史文件损坏不应让整份历史失效：跳过它并记录原因。历史是**辅助
+    证据**，主证据是 current 软链；一条坏记录不该把设备卡死。
+    """
+    hist_dir = os.path.join(state_dir, "history")
+    if not os.path.isdir(hist_dir):
+        return []
+    entries = []
+    for name in sorted(os.listdir(hist_dir)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(hist_dir, name)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                tx = json.load(fh)
+        except (IOError, ValueError):
+            continue          # 坏记录：跳过，不猜
+        if not isinstance(tx, dict):
+            continue
+        if tx.get("phase") not in ALL_PHASES:
+            continue
+        entries.append(tx)
+    return entries
+
+
+def infer_from_history(state_dir, root, current):
+    """从归档事务历史推断 (stable, previous, source)。
+
+    这是**最可信**的证据来源：历史记录写下了每一笔事务实际做了什么，
+    而版本目录上的 `.committed` 只是"曾经转正过"的事实——两者在人工回滚
+    之后会分叉。
+
+    典型分叉场景（用户指出的歧义）：
+      1.1.0 转正 → 1.2.0 转正 → 人工回滚到 1.1.0
+    此时 1.2.0 目录仍带 `.committed`（它确实转正过），但当前的稳定版本是
+    1.1.0，"上一稳定版本"按事务语义是 1.2.0（人工回滚放弃的那个，仍是
+    健康的人工确认版本）。**只有事务历史能区分这两种情况**。
+
+    返回 (stable, previous, source)；证据不足时返回 (None, None, "unknown")。
+    """
+    history = read_history(state_dir)
+    if not history:
+        return None, None, "unknown"
+
+    stable = None
+    previous = None
+
+    # 从新到旧扫一遍，找到"最后落定"的那笔终态事务。
+    for tx in reversed(history):
+        phase = tx.get("phase")
+        to_ver = tx.get("to_version")
+        from_ver = tx.get("from_version")
+        rollback_target = tx.get("rollback_target")
+
+        if phase in (PHASE_COMMITTED, PHASE_FORCED_COMMITTED):
+            # 转正：稳定版本 = to_version，上一稳定版本 = from_version
+            if not (isinstance(to_ver, str) and VERSION_RE.match(to_ver)):
+                continue
+            if not release_exists(root, to_ver):
+                continue          # 目录已被 GC/删除，不据历史断言
+            stable = to_ver
+            if (isinstance(from_ver, str) and VERSION_RE.match(from_ver)
+                    and from_ver != to_ver and release_exists(root, from_ver)):
+                previous = from_ver
+            break
+
+        if phase == PHASE_ROLLED_BACK:
+            # 回滚落定：稳定版本 = rollback_target（回滚目标），失败候选绝不进 previous
+            if (isinstance(rollback_target, str) and VERSION_RE.match(rollback_target)
+                    and release_exists(root, rollback_target)):
+                stable = rollback_target
+                # 上一稳定版本要回到"回滚之前"的那一版，用 previous_stable_before
+                psb = tx.get("previous_stable_before")
+                if (isinstance(psb, str) and VERSION_RE.match(psb)
+                        and psb != stable and release_exists(root, psb)):
+                    previous = psb
+                break
+
+    if stable is None:
+        return None, None, "unknown"
+
+    # 历史给出的 stable 必须与 current 一致，否则说明 current 被外力改动过
+    # （或历史来自另一台设备）——此时不猜，返回未知让人工确认。
+    if current is not None and current != stable:
+        return None, None, "unknown"
+
+    source = "transaction_history"
+    return stable, previous, source
+
+
+# ============================================================================
+# 指针切换（唯一入口）
+# ============================================================================
+
+COMPAT_ENTRIES = ("server", "client", "lib",
+                  "edge_network_rag.py", "network_knowledge_base.py")
+
+# RENAME_EXCHANGE：Linux 3.15+ 支持，原子交换两个路径的内容。
+# 同版本幂等重装时必须用它——否则只能「先把旧目录挪走、再把新目录挪进来」，
+# 两步之间 current 会短暂悬空指向一个不存在的目录，此时掉电服务就起不来。
+_AT_FDCWD = -100
+_RENAME_EXCHANGE = 2
+
+
+def _rename_exchange(path_a, path_b):
+    """原子交换两个路径。返回 True=成功，False=内核/文件系统不支持。"""
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        fn = libc.renameat2
+    except (OSError, AttributeError):
+        return False
+    fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    fn.restype = ctypes.c_int
+    rc = fn(_AT_FDCWD, os.fsencode(path_a), _AT_FDCWD, os.fsencode(path_b), _RENAME_EXCHANGE)
+    if rc == 0:
+        return True
+    err = ctypes.get_errno()
+    if err in (errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP):
+        return False
+    raise OSError(err, os.strerror(err), path_a)
+
+
+def materialize_release(root, version, staged_path):
+    """把已校验的 staging 目录落到 releases/<version>。
+
+    跨版本（目标不存在）：直接 rename，原子。
+
+    同版本重装（目标已存在）：**必须**用 RENAME_EXCHANGE 原子交换，旧内容落到
+    staged_path 供失败时恢复。
+
+    为什么不退化成两步 rename：两步之间 current 指向的目录不存在，此时掉电
+    服务就起不来——那正是要消除的砖化场景。文件系统/内核不支持时**拒绝**，
+    由调用方转成 EXIT_RECOVERY，让运维改用版本号递增的升级包。
+
+    返回 (swapped, previous_in_staged)。
+    """
+    target = release_dir(root, version)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+
+    if not os.path.exists(target):
+        os.rename(staged_path, target)
+        fsync_dir(os.path.dirname(target))
+        return True, None
+
+    if _rename_exchange(staged_path, target):
+        fsync_dir(os.path.dirname(target))
+        return True, staged_path      # 旧内容现在在 staged_path
+
+    # 走到这里说明 RENAME_EXCHANGE 不可用。绝不静默退化成两步 rename。
+    raise OtaError(
+        "同一版本重装需要 RENAME_EXCHANGE 支持（renameat2），当前文件系统不支持；"
+        "拒绝使用两步 rename——它会在 current 指向的目录上留下缺失窗口。"
+        "请改用版本号递增的升级包。", EXIT_RECOVERY)
+
+
+def refresh_compat_links(root):
+    """current 翻转后维护兼容软链：$ROOT/{server,client,...} -> current/<name>。
+
+    与 shell 版语义一致：目标真实存在才建链；$ROOT 下同名真目录（旧扁平布局
+    残留）跳过，不擅自删除。
+    """
+    warnings = []
+    current_link = os.path.join(root, "current")
+    for entry in COMPAT_ENTRIES:
+        src = os.path.join(current_link, entry)
+        if not os.path.exists(src):
+            continue
+        dst = os.path.join(root, entry)
+        if os.path.exists(dst) and not os.path.islink(dst):
+            warnings.append("跳过兼容软链 %s：%s 是真实目录（旧布局残留）" % (entry, dst))
+            continue
+        atomic_symlink("current/" + entry, dst)
+    return warnings
+
+
+def switch_current(root, version):
+    """把 current 原子指向 releases/<version>，并刷新兼容软链。
+
+    幂等：已指向目标时直接返回，不重复翻转。指向第三版本视为状态异常，
+    由调用方（reconcile）判定，本函数不做猜测。
+    """
+    if not release_exists(root, version):
+        raise OtaError("目标版本不存在：releases/%s" % version, EXIT_USAGE)
+    link = os.path.join(root, "current")
+    cur = read_current(root)
+    if cur == version:
+        return False
+    atomic_symlink("releases/" + version, link)
+    return True
+
+
+# ============================================================================
+# reconcile：崩溃点恢复判定
+# ============================================================================
+
+def reconcile(root, state):
+    """根据 (事务阶段, current 真实指向) 推出唯一的下一步。
+
+    **不做任何破坏性动作**，只返回判定结果。P0-A 要求它可被 dry-run 调用；
+    P0-B 的恢复服务将执行其中标为安全的动作。
+
+    返回值字典：
+      action: none|abort|mark_trial|continue_trial|continue_rollback|
+              mark_rolled_back|project_views|recovery_required
+      destructive: 该动作是否修改指针（P0-A 的 dry-run 永远不执行）
+    """
+    tx = tx_of(state)
+    cur = read_current(root)
+
+    def result(action, reason, destructive=False):
+        return {"action": action, "reason": reason,
+                "destructive": destructive, "current": cur,
+                "phase": tx["phase"] if tx else None}
+
+    if tx is None:
+        return result("none", "没有进行中的事务")
+
+    phase = tx["phase"]
+    to_ver = tx["to_version"]
+    from_ver = tx["from_version"]
+    rollback_target = tx["rollback_target"]
+
+    if phase in TERMINAL_PHASES:
+        # 终态但投影可能滞后（例如 COMMITTED 落盘后、.committed 未补写时掉电）
+        if phase in (PHASE_COMMITTED, PHASE_FORCED_COMMITTED) and cur == to_ver:
+            marker = os.path.join(release_dir(root, cur), ".committed")
+            if not os.path.exists(marker):
+                return result("project_views", "已提交但兼容投影滞后，补写 .committed")
+        return result("none", "事务已结束（%s）" % phase)
+
+    if phase == PHASE_RECOVERY_REQUIRED:
+        return result("recovery_required", "需要人工介入，禁止任何自动动作")
+
+    # 首次安装例外：设备还没有 current 软链（cur is None），且 from == to
+    # （没有原版本可退）。此时"指针等于原版本"的前提不成立，判定要单独处理。
+    first_install = (cur is None and from_ver == to_ver)
+
+    if phase == PHASE_PREPARED:
+        if cur == from_ver or first_install:
+            return result("abort", "准备阶段未切换指针，保守取消", destructive=True)
+        return result("recovery_required",
+                      "PREPARED 阶段但 current 已非原版本（%r），状态不可信" % cur)
+
+    if phase == PHASE_SWITCH_PENDING:
+        # SWITCH_PENDING 的语义是「切换意图已落盘，指针可能还没翻」
+        if cur == from_ver or first_install:
+            return result("abort", "意图已落盘但指针未翻转，保守取消", destructive=True)
+        if cur == to_ver:
+            return result("mark_trial", "指针已翻转但未标记试运行，推进到 TRIAL",
+                          destructive=True)
+        return result("recovery_required",
+                      "current 指向第三版本（%r），既非 %s 也非 %s" % (cur, from_ver, to_ver))
+
+    if phase == PHASE_TRIAL:
+        if cur == to_ver:
+            return result("continue_trial", "试运行进行中，继续健康验证")
+        return result("recovery_required",
+                      "TRIAL 但 current 不再指向候选版本（%r），指针被外力改动" % cur)
+
+    if phase == PHASE_ROLLBACK_PENDING:
+        if cur == to_ver:
+            return result("continue_rollback", "回滚意图已落盘但指针未翻，继续回滚",
+                          destructive=True)
+        if cur == rollback_target:
+            return result("continue_rollback", "指针已回滚但未进入验证，推进到 ROLLBACK_VERIFY",
+                          destructive=True)
+        return result("recovery_required",
+                      "回滚中 current 指向第三版本（%r），状态不可信" % cur)
+
+    if phase == PHASE_ROLLBACK_VERIFY:
+        if cur == rollback_target:
+            return result("continue_trial", "回滚目标已就位，继续验证旧版健康")
+        return result("recovery_required",
+                      "回滚验证中 current 非回滚目标（%r）" % cur)
+
+    return result("recovery_required", "未覆盖的 phase=%r" % phase)
+
+
+# ============================================================================
+# 命令实现
+# ============================================================================
+
+def cmd_status(args, root, state_dir):
+    state = load_state(state_dir)
+    tx = tx_of(state)
+    payload = {
+        "schema_version": state["schema_version"],
+        "revision": state["revision"],
+        "stable_version": state.get("stable_version"),
+        "previous_stable_version": state.get("previous_stable_version"),
+        "current": read_current(root),
+        "phase": tx["phase"] if tx else None,
+        "transaction_id": tx["transaction_id"] if tx else None,
+        "release_count": len(list_versions(root)),
+    }
+    if tx:
+        payload.update({
+            "kind": tx.get("kind"),
+            "from_version": tx.get("from_version"),
+            "to_version": tx.get("to_version"),
+            "rollback_target": tx.get("rollback_target"),
+            "boot_attempts": tx.get("boot_attempts"),
+            "last_error": tx.get("last_error"),
+            # 同版本重装时旧副本被 RENAME_EXCHANGE 换到 staging 路径，
+            # 调用方（升级脚本）靠它定位待清理的旧内容。
+            "previous_staged": tx.get("previous_staged", ""),
+            "materialized": tx.get("materialized", False),
+        })
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    return EXIT_OK
+
+
+def cmd_begin(args, root, state_dir):
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        tx = tx_of(state)
+        if tx and tx["phase"] not in TERMINAL_PHASES:
+            raise ConflictError("已有进行中的事务（%s），拒绝开始新事务" % tx["phase"])
+        if tx:
+            archive_transaction(state_dir, state)
+
+        to_ver = check_version(args.to_version, "--to")
+        from_ver = check_version(args.from_version, "--from")
+        rollback_to = check_version(args.rollback_target, "--rollback-target")
+        # 目标目录可以尚不存在——apply 流程里它由 materialize 从 staging 落位。
+        # 但必须给出 --staged 证明调用方手上有一个已校验的目录，否则就是
+        # 「指向一个不存在的版本」，必须拒绝。
+        if not release_exists(root, to_ver):
+            if not args.staged:
+                raise OtaError(
+                    "目标版本不存在：releases/%s（若是首次落位请用 --staged 指定已校验的目录）"
+                    % to_ver, EXIT_USAGE)
+            if not os.path.isdir(args.staged):
+                raise OtaError("--staged 目录不存在：%s" % args.staged, EXIT_USAGE)
+        if not release_exists(root, rollback_to) and rollback_to != to_ver:
+            raise OtaError("回滚目标不存在：releases/%s" % rollback_to, EXIT_USAGE)
+        # 失败候选不得成为回滚目标。唯一例外是**同版本幂等重装**
+        # （from == to）：此时"回滚"不是换版本，而是把同版本目录内容恢复成
+        # 升级前的旧副本，版本号前后一致，不构成"失败版本转正"。
+        if rollback_to == to_ver and from_ver != to_ver:
+            raise OtaError("回滚目标不能等于目标版本（失败版本不得成为稳定版本）", EXIT_USAGE)
+
+        tx_new = new_transaction(
+            args.kind, from_ver, to_ver, rollback_to,
+            _previous_stable_before(args, state), _parse_policy(args.policy))
+        tx_new["staged_path"] = os.path.abspath(args.staged) if args.staged else ""
+        tx_new["materialized"] = not args.staged
+        state["transaction"] = tx_new
+        save_state(state_dir, state)
+        print(json.dumps({"ok": True, "phase": PHASE_PREPARED,
+                          "transaction_id": state["transaction"]["transaction_id"]},
+                         ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_materialize(args, root, state_dir):
+    """把 staging 目录落到 releases/<to_version>（PREPARED 阶段）。
+
+    这一步**不改指针**，所以对跨版本升级是安全的：崩溃后 current 仍指旧版，
+    reconcile 直接 abort 即可。
+
+    但同版本幂等重装例外——目标目录已存在，落位等于替换内容，而这正是
+    current 指向的目录。所以必须用 RENAME_EXCHANGE 原子交换，绝不能
+    「先挪走再挪进」（两步之间目录缺失，此时掉电服务直接起不来）。
+    """
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        require_tx(state, PHASE_PREPARED)
+        tx = state["transaction"]
+
+        if tx.get("materialized"):
+            print(json.dumps({"ok": True, "materialized": False,
+                              "note": "已经落位过（幂等）"}, ensure_ascii=False))
+            return EXIT_OK
+
+        staged = tx.get("staged_path") or ""
+        if not staged or not os.path.isdir(staged):
+            raise OtaError("staging 目录不存在：%r" % staged, EXIT_USAGE)
+
+        # materialize_release 内含 RENAME_EXCHANGE 的"支持就用、不支持就拒绝"
+        # 判定，这里不再重复实现一遍（两处实现必然漂移）。
+        _swapped, previous_in_staged = materialize_release(root, tx["to_version"], staged)
+        if previous_in_staged:
+            tx["previous_staged"] = previous_in_staged
+
+        tx["materialized"] = True
+        tx["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        save_state(state_dir, state)
+        print(json.dumps({"ok": True, "materialized": True,
+                          "previous_staged": tx.get("previous_staged", "")},
+                         ensure_ascii=False))
+    return EXIT_OK
+
+
+
+def _parse_policy(raw):
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except ValueError as exc:
+        raise OtaError("--policy 不是合法 JSON：%s" % exc, EXIT_USAGE)
+
+
+def _previous_stable_before(args, state):
+    """本事务开始前的"上一稳定版本"。
+
+    显式传值优先；未传则沿用状态里已有的 previous_stable_version。
+    必须显式回落到状态值：调用方（升级脚本）一旦漏传，回滚结束时
+    rolled-back 会把 previous 写成 None，把"上一稳定版"这个事实丢掉——
+    演练里就是这么暴露出来的。
+    """
+    if args.previous_stable_before:
+        return check_version(args.previous_stable_before, "--previous-stable-before")
+    return state.get("previous_stable_version")
+
+
+def cmd_arm_switch(args, root, state_dir):
+    """PREPARED -> SWITCH_PENDING：先把切换意图落盘，之后才允许翻指针。"""
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        require_tx(state, PHASE_PREPARED)
+        tx = state["transaction"]
+        cur = read_current(root)
+        # 首次安装例外：设备还没有 current 软链（cur is None），此时
+        # from_version == to_version == 目标版本，"指针必须等于原版本"的前提
+        # 不成立——因为根本没有原版本。允许推进。
+        if cur is None and tx["from_version"] == tx["to_version"]:
+            set_phase(state, PHASE_SWITCH_PENDING)
+            save_state(state_dir, state)
+            print(json.dumps({"ok": True, "phase": PHASE_SWITCH_PENDING}, ensure_ascii=False))
+            return EXIT_OK
+        if cur != tx["from_version"]:
+            raise ConflictError("PREPARED 阶段 current 已非原版本，拒绝推进")
+        set_phase(state, PHASE_SWITCH_PENDING)
+        save_state(state_dir, state)
+        print(json.dumps({"ok": True, "phase": PHASE_SWITCH_PENDING}, ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_do_switch(args, root, state_dir):
+    """SWITCH_PENDING -> 翻转 current -> TRIAL。幂等。"""
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        require_tx(state, PHASE_SWITCH_PENDING, PHASE_TRIAL)
+        tx = state["transaction"]
+        flipped = switch_current(root, tx["to_version"])
+        warnings = refresh_compat_links(root)
+        if tx["phase"] == PHASE_SWITCH_PENDING:
+            set_phase(state, PHASE_TRIAL)
+            save_state(state_dir, state)
+        print(json.dumps({"ok": True, "phase": tx["phase"], "flipped": flipped,
+                          "warnings": warnings}, ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_commit(args, root, state_dir):
+    """TRIAL -> COMMITTED（或 --forced 时 FORCED_COMMITTED）。
+
+    稳定版本元数据与 phase 在**同一次写入**中更新，避免出现
+    「phase=COMMITTED 但 stable_version 还是旧的」的中间态。
+    """
+    forced = args.forced
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        if forced:
+            require_tx(state, PHASE_TRIAL, PHASE_PREPARED, PHASE_SWITCH_PENDING)
+        else:
+            require_tx(state, PHASE_TRIAL)
+        tx = state["transaction"]
+
+        cur = read_current(root)
+        if cur != tx["to_version"]:
+            raise ConflictError(
+                "提交时 current=%r 与候选版本 %s 不符，拒绝提交" % (cur, tx["to_version"]))
+
+        # 同一次 save 里完成：phase + stable/previous 元数据
+        #
+        # 同版本幂等重装（from == to）时**不改** previous：那一笔的"上一稳定
+        # 版本"就是它自己，把它写成 previous 会让 .previous == current，
+        # 之后的无参回滚会因"目标与当前相同"而失败——那是一条死路。
+        if tx["from_version"] != tx["to_version"]:
+            state["previous_stable_version"] = tx["from_version"]
+        state["stable_version"] = tx["to_version"]
+        set_phase(state, PHASE_FORCED_COMMITTED if forced else PHASE_COMMITTED)
+        save_state(state_dir, state)
+
+        warnings = project_views(root, state)
+        print(json.dumps({"ok": True, "phase": state["transaction"]["phase"],
+                          "stable_version": state["stable_version"],
+                          "previous_stable_version": state["previous_stable_version"],
+                          "warnings": warnings}, ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_abort(args, root, state_dir):
+    """PREPARED / SWITCH_PENDING -> ABORTED（不触碰稳定版本）。"""
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        require_tx(state, PHASE_PREPARED, PHASE_SWITCH_PENDING)
+        tx = state["transaction"]
+        cur = read_current(root)
+        if cur != tx["from_version"]:
+            raise ConflictError(
+                "中止要求 current 仍为原版本 %s，实际 %r" % (tx["from_version"], cur))
+        set_phase(state, PHASE_ABORTED, error=args.reason or "aborted")
+        save_state(state_dir, state)
+        project_views(root, state)
+        print(json.dumps({"ok": True, "phase": PHASE_ABORTED}, ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_rollback_arm(args, root, state_dir):
+    """TRIAL / SWITCH_PENDING -> ROLLBACK_PENDING：先记意图，再翻指针。"""
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        require_tx(state, PHASE_TRIAL, PHASE_SWITCH_PENDING)
+        tx = state["transaction"]
+        if tx["rollback_target"] == tx["to_version"]:
+            raise ConflictError("回滚目标等于候选版本，状态非法")
+        set_phase(state, PHASE_ROLLBACK_PENDING, error=args.reason or "rollback requested")
+        save_state(state_dir, state)
+        print(json.dumps({"ok": True, "phase": PHASE_ROLLBACK_PENDING,
+                          "rollback_target": tx["rollback_target"]}, ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_rollback_do(args, root, state_dir):
+    """ROLLBACK_PENDING -> 翻回 rollback_target -> ROLLBACK_VERIFY。幂等。"""
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        require_tx(state, PHASE_ROLLBACK_PENDING, PHASE_ROLLBACK_VERIFY)
+        tx = state["transaction"]
+        flipped = switch_current(root, tx["rollback_target"])
+        warnings = refresh_compat_links(root)
+        if tx["phase"] == PHASE_ROLLBACK_PENDING:
+            set_phase(state, PHASE_ROLLBACK_VERIFY)
+            save_state(state_dir, state)
+        print(json.dumps({"ok": True, "phase": tx["phase"], "flipped": flipped,
+                          "warnings": warnings}, ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_rolled_back(args, root, state_dir):
+    """ROLLBACK_VERIFY -> ROLLED_BACK（旧版已验证健康）。
+
+    关键：**绝不**把失败候选写进 previous_stable —— 失败版本不得因为回滚
+    动作而重新获得稳定版本身份。
+    """
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        require_tx(state, PHASE_ROLLBACK_VERIFY)
+        tx = state["transaction"]
+        if read_current(root) != tx["rollback_target"]:
+            raise ConflictError("回滚目标未就位，拒绝标记 ROLLED_BACK")
+
+        state["stable_version"] = tx["rollback_target"]
+        state["previous_stable_version"] = tx["previous_stable_before"]
+        set_phase(state, PHASE_ROLLED_BACK)
+        save_state(state_dir, state)
+        project_views(root, state)
+        print(json.dumps({"ok": True, "phase": PHASE_ROLLED_BACK,
+                          "stable_version": state["stable_version"],
+                          "previous_stable_version": state["previous_stable_version"]},
+                         ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_require_recovery(args, root, state_dir):
+    """任意非终态 -> RECOVERY_REQUIRED（停止一切自动动作）。"""
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        tx = tx_of(state)
+        if tx is None:
+            raise ConflictError("没有进行中的事务")
+        if tx["phase"] == PHASE_RECOVERY_REQUIRED:
+            print(json.dumps({"ok": True, "phase": PHASE_RECOVERY_REQUIRED,
+                              "note": "已是 RECOVERY_REQUIRED"}, ensure_ascii=False))
+            return EXIT_OK
+        set_phase(state, PHASE_RECOVERY_REQUIRED, error=args.reason or "recovery required")
+        save_state(state_dir, state)
+        print(json.dumps({"ok": True, "phase": PHASE_RECOVERY_REQUIRED}, ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_recover(args, root, state_dir):
+    """RECOVERY_REQUIRED 的人工退出通道。
+
+    运维修复现场后必须显式指定一个可信版本（--accept）或显式放弃（--abort），
+    不允许"自动恢复"——那样会把未验证的猜测写回权威状态。
+    """
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        tx = tx_of(state)
+        if tx is None or tx["phase"] != PHASE_RECOVERY_REQUIRED:
+            raise ConflictError("当前不处于 RECOVERY_REQUIRED")
+
+        if args.abort:
+            set_phase(state, PHASE_ABORTED, error="manual abort from recovery")
+            save_state(state_dir, state)
+            project_views(root, state)
+            print(json.dumps({"ok": True, "phase": PHASE_ABORTED}, ensure_ascii=False))
+            return EXIT_OK
+
+        if not args.accept:
+            raise OtaError("必须指定 --accept <version> 或 --abort", EXIT_USAGE)
+
+        accepted = check_version(args.accept, "--accept")
+        if not release_exists(root, accepted):
+            raise OtaError("指定版本不存在：releases/%s" % accepted, EXIT_USAGE)
+
+        switch_current(root, accepted)
+        warnings = refresh_compat_links(root)
+        state["stable_version"] = accepted
+        # 上一稳定版本：优先用事务记录里的 previous_stable_before。
+        # 它为 None 时**不能**把 None 写回去——那会丢掉"上一稳定版本"这个
+        # 事实，设备就少了一条自动退路。此时回落到状态里已有的值。
+        prev = tx.get("previous_stable_before")
+        if prev is None:
+            prev = state.get("previous_stable_version")
+        if prev == accepted:
+            prev = None
+        state["previous_stable_version"] = prev
+        state["stable_source"] = "manual"
+        state["previous_source"] = "manual" if prev else "unknown"
+        set_phase(state, PHASE_COMMITTED, error="manual recovery accepted %s" % accepted)
+        save_state(state_dir, state)
+        warnings += project_views(root, state)
+        print(json.dumps({"ok": True, "phase": PHASE_COMMITTED,
+                          "stable_version": accepted,
+                          "previous_stable_version": prev,
+                          "warnings": warnings},
+                         ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_reconcile(args, root, state_dir):
+    state = load_state(state_dir)
+    verdict = reconcile(root, state)
+    if args.dry_run:
+        verdict["dry_run"] = True
+        print(json.dumps(verdict, ensure_ascii=False, indent=2, sort_keys=True))
+        return EXIT_RECOVERY if verdict["action"] == "recovery_required" else EXIT_OK
+
+    # 非 dry-run：只执行 reconcile 判定为安全的自动动作
+    action = verdict["action"]
+    if action in ("none", "recovery_required"):
+        print(json.dumps(verdict, ensure_ascii=False, indent=2, sort_keys=True))
+        return EXIT_RECOVERY if action == "recovery_required" else EXIT_OK
+
+    argv = [sys.executable, os.path.abspath(__file__)]
+    argv += ["--root", root, "--state-dir", state_dir]
+    if action == "abort":
+        argv += ["abort", "--reason", verdict["reason"]]
+    elif action == "mark_trial":
+        argv += ["do-switch"]
+    elif action == "project_views":
+        argv += ["project-views"]
+    else:
+        # continue_trial / continue_rollback 需要健康判定，属 P0-B 职责
+        print(json.dumps(verdict, ensure_ascii=False, indent=2, sort_keys=True))
+        return EXIT_OK
+    os.execv(sys.executable, argv)
+
+
+def cmd_project_views(args, root, state_dir):
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        warnings = project_views(root, state)
+        print(json.dumps({"ok": True, "warnings": warnings}, ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_gc(args, root, state_dir):
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        removed, skip_reason = collect_garbage(root, state, args.max_keep)
+        print(json.dumps({"ok": True, "removed": removed, "skipped": skip_reason},
+                         ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_bootstrap(args, root, state_dir):
+    """老设备首次接管：建立 schema v1 记录并记录推断来源。
+
+    推断规则（按证据强度排序，**证据不足时明确返回未知，不猜**）：
+
+    1. **事务历史**（最可信）：`history/` 里归档的终态事务写下了每笔升级
+       实际做了什么。人工回滚之后，它与「目录上还带着 .committed」的事实
+       会分叉——只有历史能区分。
+    2. **current 软链**（确认当前稳定版本）：必须存在且带 `.committed`。
+    3. **.committed 的时间顺序**（次优）：仅当没有任何历史可用时使用。
+    4. **人工指定**：`--accept-stable` / `--accept-previous`。
+
+    每个推断出的值都带一个 source 标记（写进状态文件），便于审计。
+    """
+    with ExclusiveLock(state_dir):
+        if os.path.exists(state_path(state_dir)) and not args.force:
+            raise ConflictError("事务状态已存在，bootstrap 拒绝覆盖（需 --force）")
+
+        cur = read_current(root)
+        if cur is None:
+            raise OtaError("current 软链不存在或形态异常，无法自动推断稳定版本", EXIT_USAGE)
+
+        marker = os.path.join(release_dir(root, cur), ".committed")
+        cur_committed = os.path.exists(marker)
+        if not cur_committed and not args.accept_stable:
+            raise OtaError(
+                "current=%s 缺少 .committed，无法确认它是已转正版本；"
+                "请人工确认后用 --accept-stable <version>" % cur, EXIT_RECOVERY)
+
+        # ---- 1. 事务历史优先 ----
+        h_stable, h_previous, h_source = infer_from_history(state_dir, root, cur)
+
+        if h_stable is not None:
+            stable, stable_src = h_stable, h_source
+            previous, previous_src = h_previous, (h_source if h_previous else "unknown")
+        else:
+            # ---- 2. 回落到 current 软链 ----
+            stable = cur
+            stable_src = "current" if cur_committed else "manual"
+
+            # ---- 3. 上一稳定版本：没有历史时用 .committed 的时间顺序 ----
+            previous, previous_src = _infer_previous_by_marker_time(root, cur)
+
+        # ---- 4. 人工指定覆盖 ----
+        if args.accept_stable:
+            stable = check_version(args.accept_stable, "--accept-stable")
+            stable_src = "manual"
+        if args.accept_previous:
+            previous = check_version(args.accept_previous, "--accept-previous")
+            previous_src = "manual"
+        if previous is not None and previous == stable:
+            # 上一稳定版本等于当前稳定版本 = 没有退路。宁可明确未知。
+            previous, previous_src = None, "unknown"
+
+        state = empty_state()
+        state["stable_version"] = stable
+        state["stable_source"] = stable_src
+        state["previous_stable_version"] = previous
+        state["previous_source"] = previous_src
+
+        if args.dry_run:
+            print(json.dumps({"dry_run": True, "stable_version": stable,
+                              "stable_source": stable_src,
+                              "previous_stable_version": previous,
+                              "previous_source": previous_src,
+                              "current": read_current(root)},
+                             ensure_ascii=False, indent=2))
+            return EXIT_OK
+
+        save_state(state_dir, state)
+        warnings = project_views(root, state)
+        print(json.dumps({"ok": True, "stable_version": stable,
+                          "stable_source": stable_src,
+                          "previous_stable_version": previous,
+                          "previous_source": previous_src,
+                          "warnings": warnings},
+                         ensure_ascii=False))
+    return EXIT_OK
+
+
+def _infer_previous_by_marker_time(root, cur):
+    """没有事务历史时的次优推断：按 .committed 的 mtime 找最近的已转正版本。
+
+    比"版本号最高"更接近事实：人工回滚之后，1.2.0 目录仍带 .committed
+    （它确实转正过），但它是**先**转正的，mtime 更早；而当前版本不会被
+    "重新确认"（.committed 不重写），所以排除 current 之后 mtime 最新的
+    那个已转正版本就是最可能的上一稳定版。
+
+    仍然不是铁证：mtime 会被 rsync / tar 之类的操作改写。所以它的 source
+    标为 "committed_mtime"，与 "transaction_history" 明确区分。
+
+    找不到带 .committed 的其他版本时，最后才用旧布局的 `.previous` 文件
+    兜底（source = "previous_file"）。那个文件的语义是「上一次操作之前的
+    版本」，与「上一稳定版本」不完全等价，所以只当最后手段，且必须校验
+    它指向的版本确实存在且不等于 current。
+
+    返回 (previous, source)；证据不足返回 (None, "unknown")。
+    """
+    candidates = []
+    for name in list_versions(root):
+        if name == cur:
+            continue
+        path = os.path.join(release_dir(root, name), ".committed")
+        if not os.path.exists(path):
+            continue
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            continue
+        candidates.append((mtime, name))
+    if candidates:
+        candidates.sort()
+        return candidates[-1][1], "committed_mtime"
+
+    # 最后手段：旧布局的 .previous 文件
+    prev_file = os.path.join(root, "releases", ".previous")
+    if os.path.exists(prev_file):
+        try:
+            with open(prev_file, "r", encoding="utf-8") as fh:
+                candidate = fh.read().strip()
+        except IOError:
+            return None, "unknown"
+        if (VERSION_RE.match(candidate) and candidate != cur
+                and release_exists(root, candidate)):
+            return candidate, "previous_file"
+    return None, "unknown"
+
+
+def cmd_bump_boot_attempt(args, root, state_dir):
+    """P0-B 用：每次**实际启动试运行前**先原子加一，防止断电无限重试。
+
+    必须在启动之前调用——先启动再计数的话，掉电会漏计。
+
+    **按 boot_id 幂等**：同一次开机内重复调用不重复计数。理由是恢复
+    服务本身也可能被 systemd 重启（它退出会请求重启自己），那不是一次新的
+    设备启动，不该消耗一次试运行机会。只有**设备真的重启过**（boot_id 变
+    了）才算新的一次尝试。
+    """
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        require_tx(state, PHASE_TRIAL)
+        tx = state["transaction"]
+        boot_id = args.boot_id or ""
+        if boot_id and tx.get("last_trial_boot_id") == boot_id:
+            # 本次开机已计过数
+            print(json.dumps({"ok": True, "boot_attempts": tx["boot_attempts"],
+                              "note": "本次开机已计数（幂等）"}, ensure_ascii=False))
+            return EXIT_OK
+        tx["boot_attempts"] = int(tx["boot_attempts"]) + 1
+        if boot_id:
+            tx["last_trial_boot_id"] = boot_id
+        save_state(state_dir, state)
+        print(json.dumps({"ok": True, "boot_attempts": tx["boot_attempts"]},
+                         ensure_ascii=False))
+    return EXIT_OK
+
+
+# ============================================================================
+# CLI
+# ============================================================================
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="weaknet-ota-ctl",
+        description="WeakNet OTA 升级事务控制器（P0-A）：唯一的版本指针与事务状态写入口")
+    parser.add_argument("--root", default=None, help="weaknet 安装根（默认 $WEAKNET_ROOT 或 /home/radxa/weaknet）")
+    parser.add_argument("--state-dir", default=None, help="事务状态目录（默认 /var/lib/weaknet-ota）")
+
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("status", help="输出当前状态（JSON）")
+
+    p = sub.add_parser("begin", help="开始一笔事务（PREPARED）")
+    p.add_argument("--kind", default="upgrade", choices=["upgrade", "manual_rollback"])
+    p.add_argument("--from", dest="from_version", required=True)
+    p.add_argument("--to", dest="to_version", required=True)
+    p.add_argument("--rollback-target", required=True)
+    p.add_argument("--previous-stable-before", default=None)
+    p.add_argument("--policy", default=None, help="JSON 字符串，快照保存")
+    p.add_argument("--staged", default=None,
+                   help="已校验的 staging 目录（目标版本尚未落位时必填）")
+
+    sub.add_parser("materialize", help="PREPARED：把 staging 落到 releases/<to>（不改指针）")
+
+    sub.add_parser("arm-switch", help="PREPARED -> SWITCH_PENDING（落盘切换意图）")
+    sub.add_parser("do-switch", help="SWITCH_PENDING -> 翻 current -> TRIAL（幂等）")
+
+    p = sub.add_parser("commit", help="TRIAL -> COMMITTED")
+    p.add_argument("--forced", action="store_true",
+                   help="跳过健康验证直接提交（对应 --commit），落 FORCED_COMMITTED")
+
+    p = sub.add_parser("abort", help="PREPARED/SWITCH_PENDING -> ABORTED")
+    p.add_argument("--reason", default=None)
+
+    p = sub.add_parser("rollback-arm", help="TRIAL/SWITCH_PENDING -> ROLLBACK_PENDING")
+    p.add_argument("--reason", default=None)
+    sub.add_parser("rollback-do", help="ROLLBACK_PENDING -> 翻回 -> ROLLBACK_VERIFY（幂等）")
+    sub.add_parser("rolled-back", help="ROLLBACK_VERIFY -> ROLLED_BACK")
+
+    p = sub.add_parser("require-recovery", help="进入 RECOVERY_REQUIRED（停止自动动作）")
+    p.add_argument("--reason", default=None)
+
+    p = sub.add_parser("recover", help="人工退出 RECOVERY_REQUIRED")
+    p.add_argument("--accept", default=None, help="认定该版本为稳定版本并切到它")
+    p.add_argument("--abort", action="store_true", help="放弃本事务")
+
+    p = sub.add_parser("reconcile", help="按持久事实判定下一步")
+    p.add_argument("--dry-run", action="store_true", help="只输出判定，不执行")
+
+    sub.add_parser("project-views", help="重建 .committed / .previous 兼容视图")
+
+    p = sub.add_parser("gc", help="保守回收历史版本")
+    p.add_argument("--max-keep", type=int, default=3)
+
+    p = sub.add_parser("bootstrap", help="老设备首次接管")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--force", action="store_true")
+    p.add_argument("--accept-stable", default=None)
+    p.add_argument("--accept-previous", default=None,
+                   help="人工指定上一稳定版本（无事务历史时使用）")
+
+    p = sub.add_parser("bump-boot-attempt", help="P0-B：启动试运行前先加一")
+    p.add_argument("--boot-id", default=None)
+
+    return parser
+
+
+HANDLERS = {
+    "status": cmd_status,
+    "begin": cmd_begin,
+    "materialize": cmd_materialize,
+    "arm-switch": cmd_arm_switch,
+    "do-switch": cmd_do_switch,
+    "commit": cmd_commit,
+    "abort": cmd_abort,
+    "rollback-arm": cmd_rollback_arm,
+    "rollback-do": cmd_rollback_do,
+    "rolled-back": cmd_rolled_back,
+    "require-recovery": cmd_require_recovery,
+    "recover": cmd_recover,
+    "reconcile": cmd_reconcile,
+    "project-views": cmd_project_views,
+    "gc": cmd_gc,
+    "bootstrap": cmd_bootstrap,
+    "bump-boot-attempt": cmd_bump_boot_attempt,
+}
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    root, state_dir = resolve_paths(args.root, args.state_dir)
+    try:
+        return HANDLERS[args.command](args, root, state_dir)
+    except OtaError as exc:
+        sys.stderr.write("weaknet-ota-ctl: %s\n" % exc)
+        return exc.code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

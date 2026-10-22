@@ -279,7 +279,7 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 | "板子在线吗" / "检查开发板" | `ping -c 1 -W 2 radxa-cubie-a7a.local && ssh radxa@radxa-cubie-a7a.local 'uname -m'` | 检查连通性 + 架构 |
 | "CI 状态" | `gh run list --limit 5` | 查看 GitHub Actions 运行记录 |
 
-### OTA 固件更新与发布（Phase 1/2/3 已闭环 + 云端下发）
+### OTA 固件更新与发布（Phase 1/2/3 已闭环 + 云端下发 + P0-A 事务 + P0-B 开机恢复）
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
@@ -289,6 +289,16 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 | "构建发布固件" / "release" | `./tools/release.sh [version]` | 原生编译 + ECDSA P-256 签名 + 生成 `artifacts/` 与 `SHA256SUMS` |
 | "生成发布密钥对" | `./tools/gen-release-keys.sh` | 生成 ECDSA P-256 密钥对（私钥 `secrets/` 不入库，公钥 `certs/` 分发） |
 | "云端下发 OTA 升级" | 平台排 `system.ota_upgrade_url` 动作（value=固件 URL） | 板端异步拉包升级并回传 APPLIED/REJECTED；回执两段式（脚本写终态），详见 `docs/OTA固件更新与安全发布指南.md` 3.5 |
+| "查 OTA 事务状态" | `ssh board 'sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota status'` | 升级事务权威状态（JSON）：阶段、from→to、boot_attempts |
+| "判定崩溃点" | `ssh board 'sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota reconcile --dry-run'` | 只读判定下一步动作，**不改任何东西** |
+| "查恢复服务状态" | `ssh board 'systemctl is-active weaknet-ota-recover.service'` + `sudo journalctl -u weaknet-ota-recover.service -n 20 --no-pager` | P0-B 开机自动恢复服务的运行状态与判定日志 |
+| "判定恢复动作" | `ssh board 'sudo python3 /usr/local/lib/weaknet/weaknet-ota-recover --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota --ctl /usr/local/lib/weaknet/weaknet-ota-ctl --dry-run'` | 只判定不执行；手工排障入口 |
+| "OTA 事务自测" | `python3 tools/test_weaknet_ota_ctl.py` + `bash tools/ota_p0a_drill.sh` | P0-A：74 项单元测试 + 44 项沙盒演练断言（不碰真机） |
+| "OTA 恢复自测" | `python3 tools/test_weaknet_ota_recover.py` + `bash tools/ota_p0b_drill.sh` | P0-B：35 项单元测试 + 21 项沙盒演练断言（不碰真机） |
+
+> **边界声明**：P0-A 事务 + P0-B 开机恢复已落地并通过沙盒演练与真机兼容性
+> 验证，但**真正的断电自愈尚未验证**（`fsync` 只保证「内核 → 设备」，板端
+> 根分区 `/dev/sda3` 的写缓存行为未知）。**不得宣称断电自愈已完成**。
 
 ### 配置化与实时调参（新增）
 

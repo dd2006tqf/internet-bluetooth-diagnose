@@ -188,3 +188,17 @@ jobs:
 
       - name: 运行全部单元测试
         run: ctest --test-dir build-x86 --output-on-failure
+
+      # OTA 事务控制器（P0-A）自测：纯 Python3 标准库 + bash 沙盒演练。
+      # 这道门禁挡住"事务状态机被改坏但没人发现"——控制器是升级可靠性的
+      # 唯一支点，它坏了整个 OTA 都会静默退化。
+      - name: OTA 事务控制器单元测试与沙盒演练
+        run: |
+          python3 tools/test_weaknet_ota_ctl.py
+          bash tools/ota_p0a_drill.sh
+
+      # OTA 开机恢复服务（P0-B）自测。
+      - name: OTA 开机恢复服务单元测试与沙盒演练
+        run: |
+          python3 tools/test_weaknet_ota_recover.py
+          bash tools/ota_p0b_drill.sh

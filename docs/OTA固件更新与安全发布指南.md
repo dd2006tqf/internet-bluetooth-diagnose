@@ -1,8 +1,8 @@
 # WeakNet OTA 固件更新与安全发布指南
 
-> **版本**：v1.2 (涵盖 Phase 1 本地闭环 + Phase 2 ECDSA 签名链 + Phase 3 远程拉包与空间 GC)  
+> **版本**：v1.3 (涵盖 Phase 1 本地闭环 + Phase 2 ECDSA 签名链 + Phase 3 远程拉包与空间 GC + P0-A 升级事务状态机)  
 > **适用平台**：Radxa Cubie A7A (ARM64) / x86_64 宿主机交叉编译环境  
-> **核心特性**：A/B 软链接原子翻转、ECDSA NIST P-256 强制验签、180s 健康看门狗、故障自动回滚、状态与配置隔离保护、过旧版本自动 GC
+> **核心特性**：A/B 软链接原子翻转、ECDSA NIST P-256 强制验签、180s 健康看门狗、故障自动回滚、状态与配置隔离保护、过旧版本自动 GC、**升级事务持久化状态机（崩溃点可判定）**
 
 ---
 
@@ -29,7 +29,169 @@ WeakNet 的 OTA 升级采用轻量级软件双槽位（Slot）设计，避免在
 ├── weaknet-local-update.sh       # 本地升级执行体（随包下发并自动自更新）
 ├── data/                         # 【绝对只读隔离】5 个核心状态文件（history.db、epoch 等）升级永不触碰
 └── config/                       # 【绝对只读隔离】release_pub.pem 与 config.yaml
+
+系统路径（不随 OTA 制品变化）：
+├── /usr/local/lib/weaknet/weaknet-ota-ctl   # 升级事务控制器（P0-A，唯一的指针/状态写入口）
+└── /var/lib/weaknet-ota/transaction.json    # 事务状态（schema v1，root 独占 0600）
 ```
+
+### 1.1 为什么需要事务控制器（P0-A）
+
+**升级机制的可靠性不能完全依赖被升级的 weaknet-server 本身。**
+
+原实现里 `current` 指针、`.previous` 回滚指针、`.committed` 转正标记由
+`cmd_apply` / `cmd_rollback` / `cmd_adopt` / legacy 迁移 / `--commit` 多条
+执行路径各自读写。一旦升级进程在关键窗口被掉电或杀死，**没有任何一方知道
+这次升级做到哪一步**：指针翻了但没转正，还是转正了但投影没写？无从判断。
+
+P0-A 把三件事收口到一处：
+
+| 收口项 | 权威位置 | 说明 |
+|--------|---------|------|
+| 版本指针 `current` | 控制器独占写 | 升级脚本不再直接改软链 |
+| 回滚指针 `.previous` | 控制器派生 | 语义固定为「上一稳定版本」 |
+| 转正标记 `.committed` | 控制器派生 | C++ `update_status.cpp` 仍读它（兼容层） |
+| 事务状态 | `/var/lib/weaknet-ota/transaction.json` | 唯一的持久化事实来源 |
+
+控制器装在 `$ROOT` **之外**：事务 schema 由它写入，若它随版本升级，旧版恢复
+服务读到的就是新版 schema，语义对不上。
+
+### 1.2 事务阶段与状态转换
+
+```text
+                    begin
+                     │
+                     ▼
+               ┌───────────┐
+               │ PREPARED  │  目标目录已落位，指针未动
+               └─────┬─────┘
+             arm-switch│
+                     ▼
+           ┌────────────────┐
+           │ SWITCH_PENDING │  切换意图已落盘，指针可能未翻
+           └────┬───────────┘
+        do-switch│
+                 ▼
+            ┌────────┐
+            │ TRIAL  │  指针已翻，等待健康窗口
+            └───┬────┘
+       health OK │        health 失败
+        commit   │         rollback-arm
+                 ▼               ▼
+        ┌────────────┐   ┌────────────────┐
+        │  COMMITTED │   │ ROLLBACK_PENDING│
+        └────────────┘   └────────┬───────┘
+                                   │ rollback-do
+                                   ▼
+                          ┌────────────────┐
+                          │ ROLLBACK_VERIFY│
+                          └────────┬───────┘
+                                   │ rolled-back
+                                   ▼
+                          ┌──────────────┐
+                          │ ROLLED_BACK  │
+                          └──────────────┘
+
+  终态：COMMITTED / FORCED_COMMITTED / ABORTED / ROLLED_BACK
+  任意非终态 → RECOVERY_REQUIRED（停止一切自动动作，等人工介入）
+```
+
+| 阶段 | 含义 | 崩溃后该做什么 |
+|------|------|--------------|
+| `PREPARED` | 目录就位，指针未动 | 保守取消（abort） |
+| `SWITCH_PENDING` | 意图已落盘，指针未翻 | 保守取消（abort） |
+| `SWITCH_PENDING` + 指针已翻 | 翻链完成但状态未推进 | 推进到 `TRIAL` |
+| `TRIAL` | 试运行中 | 继续健康验证 |
+| `ROLLBACK_PENDING` | 回滚意图已落盘 | 继续回滚 |
+| `ROLLBACK_VERIFY` | 指针已回退，待验证旧版 | 继续验证旧版健康 |
+| `RECOVERY_REQUIRED` | 状态不可信 | **禁止任何自动动作** |
+
+判定入口（只读，不改任何东西）：
+
+```bash
+sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \
+    --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota \
+    reconcile --dry-run
+```
+
+输出形如 `{"action": "abort|mark_trial|continue_trial|continue_rollback|project_views|recovery_required", ...}`。
+
+> **P0-A 的边界**：本阶段只做到「可观察、可判定、可显式修复」。
+> 开机自动恢复由 **P0-B**（§1.4）补齐。
+
+### 1.4 开机自动恢复服务（P0-B）
+
+`weaknet-ota-recover` 是一个**独立于 weaknet-server** 的 systemd 服务
+（`weaknet-ota-recover.service`），开机自启。它把 P0-A 的「判定」变成
+「执行」。
+
+```text
+系统路径（不随 OTA 制品变化）：
+├── /usr/local/lib/weaknet/weaknet-ota-recover      # 恢复器本体
+├── /usr/local/lib/weaknet/weaknet-ota-ctl          # 事务控制器（唯一写入口）
+└── /var/lib/weaknet-ota/
+    ├── transaction.json                            # 权威事务状态
+    ├── history/                                    # 归档的终态事务
+    └── RESCUE.md                                   # 救援模式现场报告（仅救援时生成）
+```
+
+**三条硬约束与对应设计：**
+
+| 约束 | 设计 |
+|------|------|
+| 即使升级脚本消失也能读取事务 | 恢复器**从不引用** `weaknet-local-update.sh`（源码级门禁），只读 `/var/lib/weaknet-ota/transaction.json` |
+| 即使 weaknet-server 无法启动也能完成回滚决策 | 决策是纯函数（`decide()`），不依赖服务在线；健康判据里 `systemctl is-active` 是硬门禁，D-Bus 不可达**不算健康但允许继续重试**；`systemctl show NRestarts` 抓崩溃循环作为硬证据 |
+| 即使回滚失败也能保留 SSH 救援入口 | 救援模式：停服 + mask（不可用时退到 disable）+ 保证 `ssh` / `weaknet-tunnel` active + 写 `RESCUE.md`；**不做版本切换、不做无限重启、不启动 weaknet-server** |
+
+**尝试次数是持久化的**：`boot_attempts` 存在事务状态里，**重启后不归零**。
+断电重来的无限重试必须被它拦住。计数按内核 `boot_id` 幂等——恢复服务自身
+被 systemd 重启不算一次新尝试。
+
+**救援模式的行为约定：**
+
+- 不自动翻 `current`（未知状态不能继续传播）
+- `weaknet-server` 已 stop + mask/disable（systemd 不会拉起它）
+- 事务状态、失败日志、历史版本目录**全部保留**（那是排查现场的唯一凭据）
+- `RESCUE.md` 记录现场信息与人工恢复步骤
+
+**人工退出救援模式：**
+
+```bash
+sudo systemctl unmask weaknet-server
+sudo systemctl enable weaknet-server
+sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \
+    --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota \
+    recover --accept <known-good-version>
+sudo systemctl restart weaknet-server
+```
+
+**当前边界**：P0-B 提供的是**开机自动恢复 + 最小 SSH 救援**。
+**真正的断电自愈尚未验证**——`fsync` 保证的是「内核 → 设备」，不保证设备
+写缓存已落到介质；板端根分区是 `/dev/sda3`（SATA/USB）。所有验证都是用
+状态构造与 `kill` 代替的，**不等于掉电验证**。
+
+### 1.3 关键不变量
+
+- **失败候选绝不成为回滚目标**：`begin` 拒绝 `--rollback-target == --to`
+  （同版本幂等重装除外），`rolled-back` 也不会把失败版本写进
+  `previous_stable_version`。
+- **失败候选绝不成为 previous**：自动回滚后 `previous` 仍是回滚**之前**的
+  稳定版本。
+- **同版本重装不把 previous 定成 current 自己**：否则之后的无参回滚会以
+  「目标与当前相同」失败，设备少一条自动退路。
+- **指针写入必须原子**：软链用 `symlink + rename + fsync(dir)`，状态文件用
+  `temp + fsync + rename + fsync(dir)`。只 `rename` 不够，目录项也必须落盘。
+- **同版本重装用 `renameat2(RENAME_EXCHANGE)` 原子交换**：先挪走再挪进会在
+  `current` 指向的目录上留下缺失窗口，此时掉电即砖。文件系统不支持时
+  **拒绝升级**，不退化成两步 rename。
+- **fail-closed**：schema 不认识、phase 不认识、指针指向不在版本集合内的值、
+  JSON 损坏 —— 一律不做破坏性动作。
+- **单一写者**：所有状态变更走同一把 `flock` 互斥锁，冲突立即失败不排队。
+- **推断来源必须可审计**：`stable_version` / `previous_stable_version` 各带
+  一个 `source` 标记（`current` / `transaction_history` / `committed_mtime` /
+  `previous_file` / `manual` / `unknown`）。人工回滚之后，"版本号最高的已
+  转正版本"不等于"上一稳定版本"——**只有事务历史能区分**，历史不足时
+  明确返回未知，不猜。
 
 ---
 
@@ -52,11 +214,65 @@ WeakNet 的 OTA 升级采用轻量级软件双槽位（Slot）设计，避免在
    - **超时或崩溃**：**自动切换回上一版本软链接并重启**，保证无人值守设备不死机。
 5. **历史版本自动垃圾回收 (GC)**：
    - 每次升级转正后自动清理历史残留的 `.staging.*` 临时目录；
-   - 默认保留最新 3 个版本（当前、上一版、次新版），其余过旧版本自动删除，杜绝长期运行挤爆 Flash。
+   - 版本回收委托给事务控制器，**只在事务处于终态时运行**——事务未完成就
+     回收等于删掉回滚证据。保护集合是 `current` / `stable` / `previous` /
+     当前事务引用的全部版本，这些无论多少都留着；
+   - `max_keep`（默认 3）指**额外保留的未受保护版本数**，所以磁盘上的版本
+     总数可能超过它——那是刻意的：误删回滚目标的代价远大于多占几 MB。
+6. **升级事务持久化（P0-A）**：
+   - 状态文件 `/var/lib/weaknet-ota/transaction.json`（0600，仅 root 可写）
+     是唯一的事实来源，`current` / `.previous` / `.committed` 都是它的投影；
+   - 落盘顺序保证「先落意图、再动指针」，所以任何崩溃点都能从
+     `(事务阶段, current 真实指向)` 推出唯一且非破坏性的下一步；
+   - 详见 §1.1–§1.3。
 
 ---
 
 ## 3. 运维操作手册（Agent 指南）
+
+### 3.0 事务状态查询与人工修复（P0-A）
+
+```bash
+# 1. 事务权威状态（JSON）
+sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \
+    --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota status
+
+# 2. 崩溃点判定（只读，绝不改任何东西）
+sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \
+    --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota reconcile --dry-run
+
+# 3. 升级脚本的汇总视图（人读）
+sudo /home/radxa/weaknet/weaknet-local-update.sh status
+```
+
+`reconcile --dry-run` 返回的 `action` 取值与处置：
+
+| action | 含义 | 处置 |
+|--------|------|------|
+| `none` | 无进行中事务 / 事务已结束 | 无需动作 |
+| `abort` | 准备或切换意图阶段，指针未翻 | 保守取消事务 |
+| `mark_trial` | 指针已翻但状态未推进 | 推进到 TRIAL |
+| `continue_trial` | 试运行中 | 继续健康验证 |
+| `continue_rollback` | 回滚未完成 | 继续回滚 |
+| `project_views` | 终态但兼容投影滞后 | 补写 `.committed` |
+| `recovery_required` | 状态不可信 | **停止一切自动动作**，人工介入 |
+
+人工退出 `RECOVERY_REQUIRED`（必须显式选择，不允许"自动恢复"）：
+
+```bash
+# 认定某个版本为稳定版本并切过去
+sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \
+    --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota \
+    recover --accept 1.1.0
+
+# 或显式放弃本事务
+sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \
+    --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota recover --abort
+```
+
+> `reconcile` 判定出 `continue_trial` / `continue_rollback` 时，仍需要健康
+> 验证才能推进，而健康验证需要 `weaknet-server` 在线。这正是 **P0-B**
+> （独立 systemd 恢复服务）要解决的问题——恢复服务不能依赖被恢复的服务本身。
 
 ### 3.1 查询设备 OTA 状态
 ```bash
@@ -212,3 +428,56 @@ ssh board 'sudo /home/radxa/weaknet/weaknet-test-full.sh'
 - `14.1`: `weaknet-cli update status` D-Bus 接口可读性；
 - `14.2`: 未签名升级包拦截（验证 fail-closed 门禁）；
 - `14.3`: 伪造密钥签名拦截（验证 ECDSA 密钥校验完整性）。
+
+### 5.1 P0-A / P0-B 自测
+
+控制器与恢复器各有独立的单元测试与沙盒演练（都不碰真机、不启服务）：
+
+```bash
+# P0-A 控制器单元测试（74 项）：状态机、崩溃矩阵、GC 保守性、投影、
+# bootstrap 推断来源、CLI 行为
+python3 tools/test_weaknet_ota_ctl.py
+
+# P0-A 沙盒演练（44 项断言，8 节）：bootstrap 接管、正常升级、健康失败回滚、
+# 同版本幂等重装、崩溃点判定、GC 跳过、损坏拒绝、首次安装
+bash tools/ota_p0a_drill.sh
+
+# P0-B 恢复器单元测试（35 项）：只读事务、健康判据、救援模式、动作编排
+python3 tools/test_weaknet_ota_recover.py
+
+# P0-B 沙盒演练（21 项断言，8 节）：无事务、健康转正、尝试耗尽回滚、
+# 崩溃循环、控制器缺失兜底、状态损坏救援、救援报告、升级脚本消失仍可恢复
+bash tools/ota_p0b_drill.sh
+```
+
+演练里的「崩溃点判定」一节用 `--dry-run` 走 `reconcile`：它**只判定不执行**，
+所以可以安全地在任意持久事实组合上跑。P0-B 演练用假的 `systemctl` /
+`busctl` 替身（放在 `PATH` 最前）驱动恢复器的完整行为链。
+
+### 5.2 部署新版本到开发板
+
+控制器与升级脚本由 `tools/ci.sh` 统一部署（不要手工 scp）：
+
+```bash
+./tools/ci.sh              # 编译 + 打包 + 部署 + 真机测试
+./tools/ci.sh --local-only # 只编译打包，不碰板子
+```
+
+`ci.sh` 的部署顺序是：装控制器 → 装恢复服务 → 建状态目录 → bootstrap 老设备
+→ 装升级脚本 → `adopt` 布局迁移与版本切换 → 健康窗口。控制器缺失时升级脚本
+**fail-closed 拒绝升级**（不会绕过事务保护裸改指针）；恢复服务缺失只告警，
+因为它影响的是"开机自愈"而不是"能不能升级"。
+
+### 5.3 手工查看板端恢复服务状态
+
+```bash
+ssh board 'systemctl is-active weaknet-ota-recover.service'
+ssh board 'sudo journalctl -u weaknet-ota-recover.service -n 20 --no-pager'
+ssh board 'sudo python3 /usr/local/lib/weaknet/weaknet-ota-recover \
+    --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota \
+    --ctl /usr/local/lib/weaknet/weaknet-ota-ctl --dry-run'
+```
+
+`--dry-run` 只做判定与健康探测，**不执行任何动作**——手工排障时用它。
+
+---

@@ -59,6 +59,35 @@ info()  { echo -e "${CYAN}ℹ️  $1${NC}" >&2; }
 warn()  { echo -e "${YELLOW}⚠️  $1${NC}" >&2; }
 
 DRYRUN="${WEAKNET_UPDATE_DRYRUN:-0}"
+
+# ---- OTA 事务控制器（P0-A）---------------------------------------------------
+# 版本指针（current）、回滚指针（.previous）、转正投影（.committed）与事务状态
+# 的唯一写入口。本脚本不再自行改写这些，一律通过控制器推进。
+#
+# 为什么控制器不在 release 目录里：本脚本会随每次升级自我覆盖
+# （install_self_script），若事务逻辑也住在里面，1.1.0 与 1.2.0 的事务语义
+# 就可能不同，而恢复服务读的是同一个 transaction.json —— schema 必须由
+# 一个不随版本变化的组件写。
+OTA_CTL="${WEAKNET_OTA_CTL:-/usr/local/lib/weaknet/weaknet-ota-ctl}"
+
+ota_ctl() {  # 参数原样透传给控制器；失败直接终止（fail-closed）
+    [ "$DRYRUN" = "1" ] && return 0
+    [ -x "$OTA_CTL" ] || fail "缺少 OTA 事务控制器：${OTA_CTL}
+  升级需要它管理事务状态，拒绝绕过（没有它就没有崩溃点判定，升级即裸改指针）。
+  安装方式：sudo install -m 0755 <仓库>/tools/weaknet-ota-ctl ${OTA_CTL}
+  （该文件不随 OTA 制品下发——它必须是不随版本变化的那一份）"
+    local out rc=0
+    out="$(python3 "$OTA_CTL" --root "$ROOT" "$@" 2>&1)" || rc=$?
+    [ -n "$out" ] && printf '%s\n' "$out" >&2
+    [ "$rc" -eq 0 ] || fail "OTA 控制器拒绝操作（$*，rc=$rc）"
+    return 0
+}
+
+ota_ctl_json() {  # 只读查询：输出 JSON 到 stdout，失败返回非零
+    [ -x "$OTA_CTL" ] || return 1
+    python3 "$OTA_CTL" --root "$ROOT" "$@" 2>/dev/null
+}
+
 require_root() {
     [ "$DRYRUN" = "1" ] && return 0
     [ "$(id -u)" = "0" ] || fail "此命令需要 root 权限（sudo 执行）"
@@ -168,47 +197,33 @@ version_allowed() {  # $1=current $2=target $3=allow_downgrade(0/1)
 
 # 资源回收与历史版本 GC：
 # 1) 清扫历史残留的 .staging.* 目录
-# 2) 保留当前版本、.previous 版本以及最新的 MAX_RETAIN 个历史版本，淘汰过旧版本
+# 2) 历史版本回收：**委托给控制器**
+#
+# P0-A 之后 GC 的白名单不再由脚本自己拼（cur / .previous / cur_target 三处
+# 来源早已不一致）。控制器从权威事务记录推导保护集合（current、stable、
+# previous_stable、事务引用的全部版本），并在以下情况**整体跳过**回收：
+#   事务处于非终态 / RECOVERY_REQUIRED / 记录不可解析
+# 这样"事务进行中把回滚证据删掉"在结构上就不可能发生。
 cleanup_staging_and_gc() {
     local cur_target="${1:-}"
     local max_keep="${WEAKNET_RELEASES_MAX_KEEP:-3}"
 
-    # 1. 清扫 .staging 临时残留
+    # 1. 清扫 .staging 临时残留（这个与事务无关，始终安全）
     rm -rf "$RELEASES"/.staging.* 2>/dev/null || true
 
-    # 2. GC 历史版本：保留当前激活、previous 以及 legacy-flat
-    local cur; cur="$(current_version)"
-    local prev; prev="$(cat "$RELEASES/.previous" 2>/dev/null || true)"
-
-    local versions=()
-    for d in "$RELEASES"/*/; do
-        [ -d "$d" ] || continue
-        local v; v="$(basename "$d")"
-        if valid_version "$v"; then
-            versions+=("$v")
-        fi
-    done
-
-    # 按 dpkg 版本排序（由新到旧）
-    if [ "${#versions[@]}" -gt "$max_keep" ]; then
-        local sorted_vers=()
-        while IFS= read -r line; do
-            [ -n "$line" ] && sorted_vers+=("$line")
-        done < <(printf '%s\n' "${versions[@]}" | sort -V -r)
-
-        local keep_count=0
-        for v in "${sorted_vers[@]}"; do
-            # 保护白名单：当前版本、前一版本、本次刚升级的目标
-            if [ "$v" = "$cur" ] || [ "$v" = "$prev" ] || [ "$v" = "$cur_target" ]; then
-                continue
-            fi
-            keep_count=$((keep_count + 1))
-            if [ "$keep_count" -ge "$max_keep" ]; then
-                info "OTA GC 自动回收历史版本: releases/$v"
-                rm -rf "$RELEASES/$v" 2>/dev/null || true
-            fi
-        done
+    # 2. 委托控制器做版本回收
+    local out
+    out="$(ota_ctl_json gc --max-keep "$max_keep" 2>/dev/null || true)"
+    if [ -z "$out" ]; then
+        warn "GC 委托失败（控制器不可用），跳过历史版本回收以免误删回滚目标"
+        return 0
     fi
+    local removed skip
+    removed="$(printf '%s' "$out" | sed -n 's/.*"removed": *\[\([^]]*\)\].*/\1/p' | tr -d ' "')"
+    skip="$(printf '%s' "$out" | sed -n 's/.*"skipped": *"\([^"]*\)".*/\1/p')"
+    [ -n "$skip" ] && [ "$skip" != "null" ] && info "GC 跳过：${skip}"
+    [ -n "$removed" ] && info "OTA GC 自动回收历史版本: ${removed}"
+    return 0
 }
 
 atomic_symlink() {  # $1=linkname(相对 releases/) $2=linkpath(绝对)
@@ -287,16 +302,21 @@ health_window() {
 # 翻转 + 重启 + 健康 + 转正/回滚。
 # $1=target版本 $2=prev版本(可空) $3=health_timeout $4=同版本旧副本目录(可空，失败时恢复)
 # 成功退出 0；健康失败回滚成功退出 2；回滚失败退出 3
+#
+# P0-A：指针翻转与转正一律经控制器（先落意图再翻指针），本函数不再直接碰
+# current / .committed。
 flip_restart_commit() {
     local target="$1" prev="${2:-}" htimeout="${3:-120}" old_dir="${4:-}"
 
-    atomic_symlink "releases/$target" "$CURRENT_LINK"
-    refresh_compat_links
+    # 先落「切换意图」，再翻指针：任何时刻崩溃都能从 (意图, current 真实值)
+    # 判定该回退还是继续。
+    ota_ctl arm-switch
+    ota_ctl do-switch
     svc_cmd daemon-reload || true
     svc_cmd restart "$SERVICE" || warn "restart 返回非零（继续观察健康窗口）"
 
     if health_window "$htimeout" "$target"; then
-        touch "$RELEASES/$target/.committed"
+        ota_ctl commit
         # 转正后才清理同版本旧副本（.$ver.old.*）；其他历史版本保留为回滚目标
         rm -rf "$RELEASES"/."$target".old.* 2>/dev/null || true
         cleanup_staging_and_gc "$target"
@@ -306,13 +326,29 @@ flip_restart_commit() {
     fi
 
     warn "健康窗口未通过，自动回滚"
-    # 同版本重装失败：先恢复旧副本内容，再把 current 指回去
+    # 同版本重装失败：先恢复旧副本内容，再把 current 指回去。
+    # 注意顺序：old_dir 必须在翻指针之前恢复，否则 rollback_verify 阶段
+    # 新旧内容会混在同一版本号下。
     if [ -n "$old_dir" ] && [ -d "$old_dir" ]; then
         rm -rf "$RELEASES/$target"
         mv "$old_dir" "$RELEASES/$target"
         warn "已恢复同版本旧副本内容"
     fi
+
+    # P0-A：回滚同样走「先落意图、再翻指针」。若控制器已不可用（磁盘损坏等），
+    # 退回到直连软链的兜底路径，但必须显式告警——这条路径不受事务保护。
     if [ -n "$prev" ] && [ -d "$RELEASES/$prev" ]; then
+        if ota_ctl rollback-arm --reason "健康窗口未通过：${target}" 2>/dev/null \
+           && ota_ctl rollback-do 2>/dev/null; then
+            svc_cmd restart "$SERVICE" || true
+            if health_window 60 "$prev"; then
+                ota_ctl rolled-back 2>/dev/null || warn "标记 ROLLED_BACK 失败（事务记录可能停在 ROLLBACK_VERIFY）"
+                fail "新版本 ${target} 健康失败，已回滚到 ${prev}（exit 2，新版本未转正）"
+            fi
+            ota_ctl require-recovery --reason "回滚后 ${prev} 也不健康" 2>/dev/null || true
+            fail "新版本 ${target} 健康失败且回滚后 ${prev} 也不健康（exit 3，需人工介入）"
+        fi
+        warn "控制器回滚失败，退回到无事务保护的直连回滚（事务记录可能与实际不符）"
         atomic_symlink "releases/$prev" "$CURRENT_LINK"
         refresh_compat_links
         svc_cmd restart "$SERVICE" || true
@@ -321,6 +357,8 @@ flip_restart_commit() {
         fi
         fail "新版本 ${target} 健康失败且回滚后 ${prev} 也不健康（exit 3，需人工介入）"
     fi
+    # 无上一版本可回滚：记录到 RECOVERY_REQUIRED，禁止后续自动动作
+    ota_ctl require-recovery --reason "${target} 健康失败且无可回滚版本" 2>/dev/null || true
     fail "新版本 ${target} 健康失败且无可回滚的上一版本（exit 3，需人工介入）"
 }
 
@@ -396,12 +434,24 @@ stage_package() {
 }
 
 install_self_script() {  # $1=新 release 目录：自更新脚本到稳定路径
-    local rel="$1"
-    if [ -f "$rel/weaknet-local-update.sh" ] && [ "$(readlink -f "$rel/weaknet-local-update.sh")" != "$(readlink -f "$0")" ]; then
-        install -m 0755 "$rel/weaknet-local-update.sh" "$ROOT/weaknet-local-update.sh.new"
-        mv -f "$ROOT/weaknet-local-update.sh.new" "$ROOT/weaknet-local-update.sh"
-        info "升级脚本已自更新到 $ROOT/weaknet-local-update.sh"
+    local rel="$1" src="$rel/weaknet-local-update.sh"
+    [ -f "$src" ] || return 0
+    if [ "$(readlink -f "$src")" = "$(readlink -f "$0")" ]; then
+        return 0
     fi
+    # **控制器感知门禁**：只有认识事务控制器的脚本才允许接管稳定路径。
+    #
+    # 原因：OTA 包内可能带着**旧版本**的脚本（包是用哪个 commit 构建的，
+    # 包内脚本就是哪个 commit 的）。旧脚本直接改 current/.previous 软链，
+    # 不受事务保护——让它覆盖稳定路径，等于把 P0-A 的保护静默退回 Phase 1。
+    # 控制器装在 $ROOT 之外不受影响，但脚本这一层会退化，必须挡住。
+    if ! grep -q 'WEAKNET_OTA_CTL' "$src"; then
+        warn "包内升级脚本不认识事务控制器（版本过旧），拒绝覆盖 $ROOT/weaknet-local-update.sh——保留现有控制器感知版"
+        return 0
+    fi
+    install -m 0755 "$src" "$ROOT/weaknet-local-update.sh.new"
+    mv -f "$ROOT/weaknet-local-update.sh.new" "$ROOT/weaknet-local-update.sh"
+    info "升级脚本已自更新到 $ROOT/weaknet-local-update.sh"
 }
 
 # ---- 子命令 -----------------------------------------------------------------
@@ -419,6 +469,29 @@ cmd_status() {
     fi
     local prev; prev="$(cat "$RELEASES/.previous" 2>/dev/null || true)"
     echo "previous:        ${prev:-无}"
+
+    # 事务状态（P0-A）：判据是控制器里的权威记录，不是猜测 .committed。
+    if [ -x "$OTA_CTL" ]; then
+        local tx_phase tx_id tx_from tx_to tx_boot
+        local st; st="$(ota_ctl_json status 2>/dev/null || true)"
+        tx_phase="$(printf '%s' "$st" | sed -n 's/.*"phase": *"\([^"]*\)".*/\1/p')"
+        tx_id="$(printf '%s' "$st" | sed -n 's/.*"transaction_id": *"\([^"]*\)".*/\1/p')"
+        tx_from="$(printf '%s' "$st" | sed -n 's/.*"from_version": *"\([^"]*\)".*/\1/p')"
+        tx_to="$(printf '%s' "$st" | sed -n 's/.*"to_version": *"\([^"]*\)".*/\1/p')"
+        tx_boot="$(printf '%s' "$st" | sed -n 's/.*"boot_attempts": *\([0-9]*\).*/\1/p')"
+        echo "transaction:     ${tx_phase:-无}"
+        if [ -n "$tx_id" ]; then
+            echo "  id:            $tx_id"
+            echo "  from → to:     ${tx_from:-?} → ${tx_to:-?}"
+            echo "  boot_attempts: ${tx_boot:-0}"
+        fi
+        local verdict
+        verdict="$(ota_ctl_json reconcile --dry-run 2>/dev/null | sed -n 's/.*"action": *"\([^"]*\)".*/\1/p')"
+        [ -n "$verdict" ] && echo "  reconcile:     $verdict"
+    else
+        echo "transaction:     控制器缺失（$OTA_CTL），无法读取事务状态"
+    fi
+
     echo "releases:"
     local d
     for d in "$RELEASES"/*/; do
@@ -540,31 +613,44 @@ cmd_apply() {  # $1=pkg 其余为选项
     [ -n "$downloaded_tmp" ] && rm -f "$downloaded_tmp" "${downloaded_tmp}.sig"
     ota_receipt_progress
 
+    # 事务起点：在触碰任何指针之前先把「从哪到哪、失败退回哪」落盘。
+    # 同版本幂等重装时 from==to，此时"回滚"是恢复同版本旧副本，版本号不变。
+    # --staged 把已校验的 staging 目录登记进事务：目标版本尚未落位时，
+    # begin 需要它来证明"手上确实有一个可落位的目录"。
+    #
+    # 首次安装（无 current）时 from/rollback-target 都取 $ver：此时还没有
+    # 任何可回滚的版本，"退回目标"只能是自己，控制器会接受（from == to
+    # 的同版本例外）。
+    mkdir -p "$RELEASES"
+    ota_ctl begin --kind upgrade --from "${cur:-$ver}" --to "$ver" \
+        --rollback-target "${cur:-$ver}" --staged "$staging" \
+        --previous-stable-before "$(ota_ctl_json status | sed -n 's/.*"previous_stable_version": *"\([^"]*\)".*/\1/p')" \
+        --policy "{\"health_timeout\":${htimeout},\"health_ok_needed\":${HEALTH_OK_NEEDED},\"health_poll_s\":${HEALTH_POLL_S}}"
+
     svc_cmd stop "$SERVICE" 2>/dev/null || true
 
-    # 记录回滚指针（首次安装无 prev，写空）
-    if [ -n "$cur" ]; then echo "$cur" > "$RELEASES/.previous"; else rm -f "$RELEASES/.previous"; fi
+    # 目录落位（含同版本重装的原子交换）由控制器执行，不再手工 mv。
+    # 同版本重装时控制器用 RENAME_EXCHANGE 交换内容，旧副本落在 staging
+    # 路径上；不支持该语义的文件系统会被拒绝，而不是退化成两步 rename
+    # （两步 rename 会让 current 短暂指向不存在的目录，此时掉电即砖）。
+    ota_ctl materialize
+    local old_dir
+    old_dir="$(ota_ctl_json status | sed -n 's/.*"previous_staged": *"\([^"]*\)".*/\1/p')"
 
-    # 目标版本目录替换（同版本幂等重装）：旧副本保留到健康窗口通过才清理
-    local old_dir=""
-    if [ -d "$RELEASES/$ver" ]; then
-        old_dir="$RELEASES/.$ver.old.$$"
-        rm -rf "$old_dir"
-        mv "$RELEASES/$ver" "$old_dir"
-    fi
-    mv "$staging" "$RELEASES/$ver"
     normalize_release_perms "$RELEASES/$ver"
     install_self_script "$RELEASES/$ver"
 
     if [ "$health" = "0" ]; then
-        atomic_symlink "releases/$ver" "$CURRENT_LINK"
-        refresh_compat_links
+        # --commit / --no-health：人工跳过健康验证，落 FORCED_COMMITTED，
+        # 使审计上能区分"真的健康验证通过"与"人说了算"。
+        ota_ctl arm-switch
+        ota_ctl do-switch
         svc_cmd daemon-reload || true
         svc_cmd restart "$SERVICE" || warn "restart 返回非零（--commit 模式不看健康窗口）"
-        touch "$RELEASES/$ver/.committed"
+        ota_ctl commit --forced
         [ -n "$old_dir" ] && rm -rf "$old_dir"
         cleanup_staging_and_gc "$ver"
-        warn "--commit：跳过健康窗口，已直接转正 releases/${ver}"
+        warn "--commit：跳过健康窗口，已直接转正 releases/${ver}（FORCED_COMMITTED）"
         ota_receipt_result SUCCEEDED  # 唯一成功出口：真转正了才写终态
         return 0
     fi
@@ -586,6 +672,8 @@ cmd_rollback() {  # [--to <version>]
     local cur; cur="$(current_version)"
     [ -n "$cur" ] || fail "当前无 releases 布局，无法回滚"
     if [ -z "$target" ]; then
+        # .previous 现在是控制器维护的派生视图，语义固定为「上一稳定版本」，
+        # 不再是「上一次操作之前的版本」（后者会来回弹跳）。
         target="$(cat "$RELEASES/.previous" 2>/dev/null || true)"
         [ -n "$target" ] || fail "无 .previous 记录，无法自动回滚；可用 --to <version> 指定"
     fi
@@ -594,8 +682,20 @@ cmd_rollback() {  # [--to <version>]
     [ "$target" = "$cur" ] && fail "回滚目标与当前版本相同：$cur"
 
     info "回滚：${cur} → ${target}"
-    echo "$cur" > "$RELEASES/.previous"   # 回滚后再回滚 = 回到刚放弃的版本
     svc_cmd stop "$SERVICE" 2>/dev/null || true
+
+    # 手工回滚 = 一次「降级安装」：to=target 是期望的新稳定版，
+    # 失败则退回 cur（cur 在回滚前是健康的，作为退路合法）。
+    # kind=manual_rollback 让审计记录与自动回滚区分开。
+    #
+    # 与自动回滚的差别：自动回滚时失败候选**绝不**进 previous（控制器
+    # rolled-back 里写死）；手工回滚放弃的 cur 是人工确认过的健康版本，
+    # 提交后它成为 previous —— 保留"再回滚回去"的人工撤销路径。
+    ota_ctl begin --kind manual_rollback --from "$cur" --to "$target" \
+        --rollback-target "$cur" \
+        --previous-stable-before "$(ota_ctl_json status | sed -n 's/.*"previous_stable_version": *"\([^"]*\)".*/\1/p')" \
+        --policy "{\"health_timeout\":${htimeout},\"health_ok_needed\":${HEALTH_OK_NEEDED},\"health_poll_s\":${HEALTH_POLL_S}}"
+
     flip_restart_commit "$target" "$cur" "$htimeout"
 }
 
@@ -620,10 +720,17 @@ cmd_adopt() {  # $1=staged-dir $2=version 其余为选项
     # 这里先把新版落到 $0 旁边——$0 即 $ROOT/weaknet-local-update.sh（install 后
     # 旧 inode 上运行，mv 替换路径）。否则 $0 内容停留在 scp 之前的旧版，
     # apply/adopt 内 install_self_script "$0" 会把旧版拷进 release 再盖回 $0。
+    #
+    # 同样的控制器感知门禁：不认识 WEAKNET_OTA_CTL 的旧脚本不得接管稳定路径，
+    # 否则升级脚本这一层会从「受事务保护」静默退回「裸改软链」。
     if [ -f "$ROOT/weaknet-local-update.sh" ] && [ "$ROOT/weaknet-local-update.sh" != "$0" ] \
        && [ -f "$0" ] && ! cmp -s "$0" "$ROOT/weaknet-local-update.sh"; then
-        install -m 0755 "$0" "$ROOT/weaknet-local-update.sh.new"
-        mv -f "$ROOT/weaknet-local-update.sh.new" "$ROOT/weaknet-local-update.sh"
+        if grep -q 'WEAKNET_OTA_CTL' "$0"; then
+            install -m 0755 "$0" "$ROOT/weaknet-local-update.sh.new"
+            mv -f "$ROOT/weaknet-local-update.sh.new" "$ROOT/weaknet-local-update.sh"
+        else
+            warn "adopt 传入的脚本不认识事务控制器（版本过旧），拒绝覆盖 $ROOT/weaknet-local-update.sh"
+        fi
     fi
 
     # 首次迁移：旧扁平布局整体归档为 releases/legacy-flat（含 VERSION 占位）
@@ -639,33 +746,40 @@ cmd_adopt() {  # $1=staged-dir $2=version 其余为选项
         touch "$RELEASES/legacy-flat/.committed"
     fi
 
-    # staged → releases/<ver>（补 VERSION/manifest/脚本，供后续 rollback 与校验）；
-    # 同版本已存在时旧副本保留到健康窗口通过才清理
-    local rel="$RELEASES/$ver" old_dir=""
-    if [ -d "$rel" ]; then
-        old_dir="$RELEASES/.$ver.old.$$"
-        rm -rf "$old_dir"
-        mv "$rel" "$old_dir"
-    fi
-    mv "$staged" "$rel"
-    normalize_release_perms "$rel"
-    echo "$ver" > "$rel/VERSION"
-    [ -f "$rel/weaknet-local-update.sh" ] || install -m 0755 "$0" "$rel/weaknet-local-update.sh"
-    (cd "$rel" && find . -type f ! -name manifest.sha256 ! -name .committed -print0 \
+    # staged → releases/<ver>（补 VERSION/manifest/脚本，供后续 rollback 与校验）
+    #
+    # 注意顺序：adopt 的 staging 目录来自 rsync（`ci.sh`），不是 OTA 包。
+    # 它必须在 begin 之前完成"补齐 VERSION/manifest/脚本 + 校验"，因为
+    # begin 需要目标目录可被判定，而 materialize 只做原子落位、不生成清单。
+    local rel="$RELEASES/$ver"
+    normalize_release_perms "$staged"
+    echo "$ver" > "$staged/VERSION"
+    [ -f "$staged/weaknet-local-update.sh" ] || install -m 0755 "$0" "$staged/weaknet-local-update.sh"
+    (cd "$staged" && find . -type f ! -name manifest.sha256 ! -name .committed -print0 \
         | sed -z 's|^\./||' | sort -z | xargs -0 sha256sum > manifest.sha256)
-    verify_release_dir "$rel" >/dev/null
+    verify_release_dir "$staged" >/dev/null
 
-    if [ -n "$cur" ]; then echo "$cur" > "$RELEASES/.previous"; else rm -f "$RELEASES/.previous"; fi
+    # 事务起点：adopt 与 apply 共用同一套状态机
+    # 首次迁移（cur 为空）时 from/rollback-target 都取 $ver：还没有任何可
+    # 回滚的版本，退回目标只能是自己（控制器的同版本例外）。
+    ota_ctl begin --kind upgrade --from "${cur:-$ver}" --to "$ver" \
+        --rollback-target "${cur:-$ver}" --staged "$staged" \
+        --previous-stable-before "$(ota_ctl_json status | sed -n 's/.*"previous_stable_version": *"\([^"]*\)".*/\1/p')" \
+        --policy "{\"health_timeout\":${htimeout},\"health_ok_needed\":${HEALTH_OK_NEEDED},\"health_poll_s\":${HEALTH_POLL_S},\"adopt\":true}"
+    ota_ctl materialize
+    local old_dir
+    old_dir="$(ota_ctl_json status | sed -n 's/.*"previous_staged": *"\([^"]*\)".*/\1/p')"
+    normalize_release_perms "$rel"
     install_self_script "$rel"
 
     if [ "$health" = "0" ]; then
-        atomic_symlink "releases/$ver" "$CURRENT_LINK"
-        refresh_compat_links
+        ota_ctl arm-switch
+        ota_ctl do-switch
         svc_cmd daemon-reload || true
         svc_cmd restart "$SERVICE" || warn "restart 返回非零"
-        touch "$rel/.committed"
+        ota_ctl commit --forced
         [ -n "$old_dir" ] && rm -rf "$old_dir"
-        warn "--no-health：跳过健康窗口直接转正 releases/${ver}"
+        warn "--no-health：跳过健康窗口直接转正 releases/${ver}（FORCED_COMMITTED）"
         return 0
     fi
     flip_restart_commit "$ver" "$cur" "$htimeout" "$old_dir"
