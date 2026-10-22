@@ -59,11 +59,27 @@
 
 set -euo pipefail
 
-# 首选不可变快照；snapshot.debian.org 会对频繁访问做限流（实测返回
-# 509 "blocked by administrative policy: abusive network requests"），
-# 因此允许用环境变量指向镜像站——.deb 的 SHA256 是硬编码常量，完整性由
-# 哈希保证而非来源，换镜像只换传输通道。
-SNAPSHOT_BASE="${SNAPSHOT_BASE:-https://snapshot.debian.org/archive/debian/20260912T000000Z}"
+# 下载源候选（按序尝试，命中即止）。
+#
+# 首选不可变快照（snapshot.debian.org）——但它会对频繁访问做限流（实测返回
+# 509 "blocked by administrative policy: abusive network requests"），CI
+# runner 的出口 IP 段常年被限。因此除快照外还挂了几家镜像站作为回退。
+#
+# 换源不是完整性降级：.deb 的 SHA256 是硬编码常量，下载后在本地逐一比对，
+# 完整性由哈希保证而非来源/传输层。
+#
+# SNAPSHOT_BASE 显式指定时**只**用它（调用方明确指定了唯一可信源，不应被
+# 自动回退覆盖）。
+if [ -n "${SNAPSHOT_BASE:-}" ]; then
+    BASE_URLS=("${SNAPSHOT_BASE}")
+else
+    BASE_URLS=(
+        "https://snapshot.debian.org/archive/debian/20260912T000000Z"
+        "https://mirrors.tuna.tsinghua.edu.cn/debian"
+        "https://mirrors.aliyun.com/debian"
+        "https://mirrors.ustc.edu.cn/debian"
+    )
+fi
 SYSROOT="${SYSROOT:-/opt/weaknet-openssl-1.1}"
 
 # 文件名|SHA256（均取自上述 snapshot 的 bullseye/main/binary-arm64 索引）
@@ -98,6 +114,12 @@ sysroot_complete() {
 # 下载结果的 SHA256 在调用方与固定常量逐一比对，完整性由哈希保证而非
 # 传输层；且 snapshot.debian.org 的 /file/<content-hash>/ 路径本身即
 # 内容寻址。有 curl/wget 的主机不会走到这条路径，仍使用完整 https。
+#
+# 超时纪律（必须有）：snapshot.debian.org 对 CI/容器出口 IP 常年限流，实测
+# 表现为**连接建立后长时间无响应**（不是立刻返回 509）——没有超时的下载
+# 会在这里无限期挂住，整个 sysroot 步骤永远走不到下一个源。因此：
+#   - socket 连接超时 15s
+#   - SIGALRM 兜底 90s（覆盖"连上了但不下数据"的情况）
 perl_download() {
   perl -MIO::Socket::INET -e '
     my ($url, $out) = @ARGV;
@@ -106,10 +128,15 @@ perl_download() {
     my ($host, $path) = $url =~ m{^http://([^/]+)(/.*)$}
       or die "not an http url: $url\n";
 
+    # 全局兜底：90s 内没跑完就 die，让调用方换下一个源。
+    $SIG{ALRM} = sub { die "timeout after 90s: $url\n" };
+    alarm 90;
+
     sub fetch {
       my ($h, $p) = @_;
-      my $s = IO::Socket::INET->new(PeerHost => $h, PeerPort => 80, Timeout => 60)
+      my $s = IO::Socket::INET->new(PeerHost => $h, PeerPort => 80, Timeout => 15)
         or die "connect $h: $!\n";
+      $s->autoflush(1);
       # User-Agent 必须带：部分镜像（实测 tuna）对无 UA 的裸 HTTP/1.0
       # 请求直接回 403（"nanomirrors" 策略），带 UA 才放行。
       print $s "GET $p HTTP/1.0\r\nHost: $h\r\nUser-Agent: curl/8.5.0\r\n\r\n";
@@ -133,14 +160,17 @@ perl_download() {
     my $buf;
     while (read($s, $buf, 65536)) { print $fh $buf; }
     close($fh);
+    alarm 0;
   ' "$1" "$2"
 }
 
 download() {  # $1=url  $2=outfile
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --max-time 300 -o "$2" "$1"
+    # --connect-timeout 15 + --max-time 60：源不可达时快速失败换下一个源，
+    # 不把整个 sysroot 步骤挂死在一个连不上的站点上。
+    curl -fsSL --connect-timeout 15 --max-time 60 -o "$2" "$1"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$2" "$1"
+    wget -q --connect-timeout=15 --timeout=60 -O "$2" "$1"
   elif command -v perl >/dev/null 2>&1; then
     perl_download "$1" "$2"
   else
@@ -157,7 +187,7 @@ show_structure() {
 }
 
 echo "== OpenSSL 1.1 private sysroot =="
-echo "   snapshot: ${SNAPSHOT_BASE}"
+echo "   sources : ${BASE_URLS[*]}"
 echo "   sysroot : ${SYSROOT}"
 
 if ! command -v dpkg-deb >/dev/null 2>&1; then
@@ -182,17 +212,19 @@ for entry in "${DEBS[@]}"; do
   expect="${entry##*|}"
   # 首选 pool/main（bullseye/main 的包）；发行版把安全更新包也镜像到
   # pool/updates/main（版本更高但内容不同——libssl1.1 的 u8 版在 security
-  # 池），因此两条路径都试，SHA256 常量决定命中哪条。
+  # 池），因此每个源下两条路径都试，SHA256 常量决定命中哪条。
   url=""
-  for base in "${SNAPSHOT_BASE}/pool/main/o/openssl" \
-              "${SNAPSHOT_BASE}/pool/updates/main/o/openssl"; do
-    if download "${base}/${deb}" "${WORK}/${deb}" >/dev/null 2>&1; then
-      url="${base}/${deb}"
-      break
-    fi
+  for base in "${BASE_URLS[@]}"; do
+    for pool in "pool/main/o/openssl" "pool/updates/main/o/openssl"; do
+      if download "${base}/${pool}/${deb}" "${WORK}/${deb}" >/dev/null 2>&1; then
+        url="${base}/${pool}/${deb}"
+        break
+      fi
+    done
+    [ -n "$url" ] && break
   done
   if [ -z "$url" ]; then
-    echo "[!] 下载失败: ${deb}（试过 ${SNAPSHOT_BASE}/pool/main 与 pool/updates）" >&2
+    echo "[!] 下载失败: ${deb}（试过 ${#BASE_URLS[@]} 个源 × pool/main 与 pool/updates）" >&2
     exit 1
   fi
 

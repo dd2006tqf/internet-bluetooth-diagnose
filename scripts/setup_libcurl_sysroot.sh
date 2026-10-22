@@ -46,17 +46,42 @@
 
 set -euo pipefail
 
-# 首选不可变快照；snapshot.debian.org 会对频繁访问做限流（实测返回
-# 509 "blocked by administrative policy: abusive network requests"），
-# 因此允许用环境变量指向镜像站——.deb 的 SHA256 是硬编码常量，完整性由
-# 哈希保证而非来源，换镜像只换传输通道。
-SNAPSHOT_BASE="${SNAPSHOT_BASE:-https://snapshot.debian.org/archive/debian/20260912T000000Z}"
+# 下载源候选（按序尝试，命中即止）。
+#
+# 首选不可变快照（snapshot.debian.org）——但它会对频繁访问做限流（实测返回
+# 509 "blocked by administrative policy: abusive network requests"），CI
+# runner 的出口 IP 段常年被限。因此除快照外还挂了几家镜像站作为回退。
+#
+# 换源不是完整性降级：.deb 的 SHA256 是硬编码常量，下载后在本地逐一比对，
+# 完整性由哈希保证而非来源/传输层。
+#
+# SNAPSHOT_BASE 显式指定时**只**用它（调用方明确指定了唯一可信源，不应被
+# 自动回退覆盖）。
+if [ -n "${SNAPSHOT_BASE:-}" ]; then
+    BASE_URLS=("${SNAPSHOT_BASE}")
+else
+    BASE_URLS=(
+        "https://snapshot.debian.org/archive/debian/20260912T000000Z"
+        "https://mirrors.tuna.tsinghua.edu.cn/debian"
+        "https://mirrors.aliyun.com/debian"
+        "https://mirrors.ustc.edu.cn/debian"
+    )
+fi
 SYSROOT="${SYSROOT:-/opt/weaknet-libcurl}"
 
 # 文件名|SHA256（均取自上述 snapshot 的 bullseye/main/binary-arm64 索引）
 DEBS=(
   "libcurl4-openssl-dev_7.74.0-1.3+deb11u13_arm64.deb|5ee4867df77480fbe16220e0a6867d4f9e705491ccaa8ff9b11c22bae2161469"
 )
+
+# 运行时包 libcurl4（与上面 dev 包同版本）的 SHA256。
+#
+# 为什么单独写死常量而不是运行时反查：-dev 包的 libcurl.so → libcurl.so.4.7.0
+# 是悬空软链，真实运行时文件在 libcurl4 包里。镜像缺 libcurl4 时（回退基础
+# 镜像 debian:11-slim 就没有）必须补一份进 sysroot，此时没有任何本地来源
+# 可信——写死 SHA256 才能让"从仓库拿运行时包"与"从镜像拷运行时库"这两条
+# 路径的完整性判据一致。
+RUNTIME_DEB_SHA256="2698696bdd6a3ebecb81e3cb4ad3518580dc138d7f4cf7d3d96a750f7abf1a7f"
 
 # 判定 sysroot 是否已完整（缺任一关键文件即视为不完整）
 #
@@ -95,10 +120,15 @@ perl_download() {
     my ($host, $path) = $url =~ m{^http://([^/]+)(/.*)$}
       or die "not an http url: $url\n";
 
+    # 全局兜底：90s 内没跑完就 die，让调用方换下一个源。
+    $SIG{ALRM} = sub { die "timeout after 90s: $url\n" };
+    alarm 90;
+
     sub fetch {
       my ($h, $p) = @_;
-      my $s = IO::Socket::INET->new(PeerHost => $h, PeerPort => 80, Timeout => 60)
+      my $s = IO::Socket::INET->new(PeerHost => $h, PeerPort => 80, Timeout => 15)
         or die "connect $h: $!\n";
+      $s->autoflush(1);
       # User-Agent 必须带：部分镜像（实测 tuna）对无 UA 的裸 HTTP/1.0
       # 请求直接回 403（"nanomirrors" 策略），带 UA 才放行。
       print $s "GET $p HTTP/1.0\r\nHost: $h\r\nUser-Agent: curl/8.5.0\r\n\r\n";
@@ -122,14 +152,17 @@ perl_download() {
     my $buf;
     while (read($s, $buf, 65536)) { print $fh $buf; }
     close($fh);
+    alarm 0;
   ' "$1" "$2"
 }
 
 download() {  # $1=url  $2=outfile
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --max-time 300 -o "$2" "$1"
+    # --connect-timeout 15 + --max-time 60：源不可达时快速失败换下一个源，
+    # 不把整个 sysroot 步骤挂死在一个连不上的站点上。
+    curl -fsSL --connect-timeout 15 --max-time 60 -o "$2" "$1"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$2" "$1"
+    wget -q --connect-timeout=15 --timeout=60 -O "$2" "$1"
   elif command -v perl >/dev/null 2>&1; then
     perl_download "$1" "$2"
   else
@@ -145,7 +178,7 @@ show_structure() {
 }
 
 echo "== libcurl private sysroot =="
-echo "   snapshot: ${SNAPSHOT_BASE}"
+echo "   sources : ${BASE_URLS[*]}"
 echo "   sysroot : ${SYSROOT}"
 
 if ! command -v dpkg-deb >/dev/null 2>&1; then
@@ -169,17 +202,19 @@ for entry in "${DEBS[@]}"; do
   deb="${entry%%|*}"
   expect="${entry##*|}"
   # 首选 pool/main（bullseye/main 的包）；安全更新包在 pool/updates/main
-  # （版本更高），两条路径都试，SHA256 常量决定命中哪条。
+  # （版本更高），每个源下两条路径都试，SHA256 常量决定命中哪条。
   url=""
-  for base in "${SNAPSHOT_BASE}/pool/main/c/curl" \
-              "${SNAPSHOT_BASE}/pool/updates/main/c/curl"; do
-    if download "${base}/${deb}" "${WORK}/${deb}" >/dev/null 2>&1; then
-      url="${base}/${deb}"
-      break
-    fi
+  for base in "${BASE_URLS[@]}"; do
+    for pool in "pool/main/c/curl" "pool/updates/main/c/curl"; do
+      if download "${base}/${pool}/${deb}" "${WORK}/${deb}" >/dev/null 2>&1; then
+        url="${base}/${pool}/${deb}"
+        break
+      fi
+    done
+    [ -n "$url" ] && break
   done
   if [ -z "$url" ]; then
-    echo "[!] 下载失败: ${deb}（试过 ${SNAPSHOT_BASE}/pool/main 与 pool/updates）" >&2
+    echo "[!] 下载失败: ${deb}（试过 ${#BASE_URLS[@]} 个源 × pool/main 与 pool/updates）" >&2
     exit 1
   fi
 
@@ -224,18 +259,29 @@ if [ ! -e "${SYSROOT}/usr/lib/aarch64-linux-gnu/libcurl.so.4.7.0" ]; then
       dev="${entry%%|*}"
       cver="${dev#libcurl4-openssl-dev_}"
       cver="${cver%%_arm64.deb}"
-      # 同版本号的 libcurl4 运行时包
+      # 同版本号的 libcurl4 运行时包。文件名与 SHA256 都由 dev 包版本号
+      # 唯一确定（RUNTIME_DEB_SHA256 常量），下载后逐一比对——完整性由哈希
+      # 保证而非来源。
       rdeb="libcurl4_${cver}_arm64.deb"
       rurl=""
-      for base in "${SNAPSHOT_BASE}/pool/main/c/curl" \
-                  "${SNAPSHOT_BASE}/pool/updates/main/c/curl"; do
-        if download "${base}/${rdeb}" "${WORK}/${rdeb}" >/dev/null 2>&1; then
-          rurl="${base}/${rdeb}"
-          break
-        fi
+      for base in "${BASE_URLS[@]}"; do
+        for pool in "pool/main/c/curl" "pool/updates/main/c/curl"; do
+          if download "${base}/${pool}/${rdeb}" "${WORK}/${rdeb}" >/dev/null 2>&1; then
+            rurl="${base}/${pool}/${rdeb}"
+            break
+          fi
+        done
+        [ -n "$rurl" ] && break
       done
       if [ -n "$rurl" ]; then
-        echo "    - ${rdeb}"
+        ractual="$(sha256sum "${WORK}/${rdeb}" | awk '{print $1}')"
+        if [ "$ractual" != "$RUNTIME_DEB_SHA256" ]; then
+          echo "[!] SHA256 不匹配: ${rdeb}" >&2
+          echo "      expect=${RUNTIME_DEB_SHA256}" >&2
+          echo "      actual=${ractual}" >&2
+          exit 1
+        fi
+        echo "    - ${rdeb} (sha256 OK)"
         dpkg-deb -x "${WORK}/${rdeb}" "$SYSROOT"
         RUNTIME_DEB="$rdeb"
         break

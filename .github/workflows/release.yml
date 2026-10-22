@@ -16,6 +16,11 @@ jobs:
   release-arm64:
     name: 构建、ECDSA 签名与发布 ARM64 固件包
     runs-on: ubuntu-latest
+    # 发布 Release 需要写仓库内容（创建 tag 对应的 Release 并上传制品）。
+    # 仓库默认工作流权限是 read，不显式声明的话 GITHUB_TOKEN 拿不到写权限，
+    # 表现为发布步骤 403 Resource not accessible by integration。
+    permissions:
+      contents: write
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -63,7 +68,13 @@ jobs:
             "$IMAGE_NAME" sleep infinity
 
           if [ "$NEED_INSTALL" = "true" ]; then
-            docker exec arm64-builder bash -c '
+            # 依赖安装必须以 root 跑：apt 需要 /var/lib/dpkg 锁，libbpf 要装到
+            # /usr/local。容器以 --user $(id -u) 启动是为了让 /src 里的构建
+            # 产物归 runner 用户（否则 checkout 目录被 root 写脏，后续步骤
+            # 读不到），但 docker exec 会**继承**容器的 user —— 不显式加
+            # --user root 就是 uid 1000 跑 apt，实测直接报
+            # "Could not open lock file /var/lib/dpkg/lock-frontend"。
+            docker exec --user root arm64-builder bash -c '
               apt-get update -qq && apt-get install -y -qq \
                 build-essential g++ make cmake pkg-config clang llvm git ca-certificates \
                 libdbus-1-dev libgoogle-glog-dev libelf-dev zlib1g-dev libcap-dev \
@@ -76,18 +87,25 @@ jobs:
 
           # 私有 sysroot：OpenSSL 1.1 + libcurl 开发头文件与链接名。
           # 运行时库（libssl.so.1.1 / libcurl.so.4）由板端提供，sysroot 只
-          # 用于编译，不随包分发。SNAPSHOT_BASE 可覆盖为镜像站
-          # （snapshot.debian.org 对频繁访问会返回 509 限流；.deb 的 SHA256
-          # 是硬编码常量，完整性由哈希保证，换镜像只换传输通道）。
-          docker exec arm64-builder bash -c '
+          # 用于编译，不随包分发。
+          #
+          # 必须以 root 跑：sysroot 落在 /opt/weaknet-openssl-1.1 与
+          # /opt/weaknet-libcurl，uid 1000 在容器里写不了 /opt（实测
+          # "Permission denied"）。sysroot 内容只读，编译阶段以 uid 1000
+          # 访问完全正常。
+          #
+          # 下载源：脚本按 snapshot.debian.org → tuna → aliyun → ustc 依次
+          # 回退（snapshot 对 CI 出口 IP 常年 509 限流）；.deb 的 SHA256 是
+          # 硬编码常量并在本地逐一比对，完整性由哈希保证而非来源。
+          docker exec --user root arm64-builder bash -c '
             cd /src
             bash scripts/setup_openssl_sysroot.sh
             bash scripts/setup_libcurl_sysroot.sh
             # 打包用 tar --zstd，需要容器内有 zstd 命令（tar 通过 fork/exec
             # 调用它，缺了会在打包阶段才炸："zstd: not found"）。预编译镜像
-            # 已含 zstd；回退基础镜像需要补装。
+            # 已含 zstd；回退基础镜像需要补装（同 apt 限制，要 root）。
             command -v zstd >/dev/null 2>&1 || \
-              apt-get update -qq && apt-get install -y -qq zstd
+              { apt-get update -qq && apt-get install -y -qq zstd; }
           '
 
           # 写入 VERSION 并编译
@@ -132,8 +150,14 @@ jobs:
             echo "$RELEASE_PRIV_KEY" > secrets/release_priv.pem
             chmod 0600 secrets/release_priv.pem
           else
-            echo "⚠️  未配置 WEAKNET_RELEASE_PRIV_KEY Secret，生成临时测试私钥用于本次流水线"
-            ./tools/gen-release-keys.sh --force
+            # fail-closed：缺 Secret 就**中止发布**，绝不生成临时私钥顶替。
+            #
+            # 临时密钥签出的包，板端一律验签失败（板端 /home/radxa/weaknet/config/
+            # release_pub.pem 是仓库 certs/release_pub.pem 的分发副本，只有同一
+            # 密钥对才能验过）——发布一个必然被拒的固件，比不发布更糟：运维在
+            # 平台上下发升级后只会看到 REJECTED，且现场多一份误导性的 Release。
+            echo "::error::未配置 WEAKNET_RELEASE_PRIV_KEY Secret，拒绝发布（用临时密钥签出的包板端验签必失败）"
+            exit 1
           fi
 
           ./tools/release.sh "${{ steps.ver.outputs.VERSION }}" --skip-build
@@ -142,6 +166,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
+          fail_on_unmatched_files: true
           files: |
             artifacts/weaknet-${{ steps.ver.outputs.VERSION }}-arm64.tar.zst
             artifacts/weaknet-${{ steps.ver.outputs.VERSION }}-arm64.tar.zst.sig
