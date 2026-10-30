@@ -302,6 +302,29 @@ def state_path(state_dir):
     return os.path.join(state_dir, "transaction.json")
 
 
+def rescue_flag_path(state_dir):
+    """救援门禁标记的路径。
+
+    **它不是第二套权威状态**——权威状态永远是 transaction.json。这个
+    文件只是 transaction.json 的**派生投影**，作用是让 systemd 的
+    `ConditionPathExists=!` 能在 weaknet-server 启动前读到一个普通文件
+    的存在性（systemd 读不了 JSON）。
+
+    派生规则是单向的：
+      * 状态进入 RECOVERY_REQUIRED → 标记**存在**
+      * 状态离开 RECOVERY_REQUIRED（recover/abort/commit）→ 标记**消失**
+
+    标记与权威状态**可能短暂不一致**，但不一致的方向是安全的：
+      * 标记在、状态说不在 → 过度保护（weaknet-server 起不来，但设备可达）
+      * 标记不在、状态说在   → 不安全。所以**进入**救援态时先写标记、
+        **离开**救援态时后清标记（见 set_rescue_flag / clear_rescue_flag）。
+
+    另有一份 `rescue.flag.stale`：标记与状态不一致时写入，它本身不是
+    权威，但能让人一眼看出"这个标记是陈旧的"（例如手改了 transaction.json）。
+    """
+    return os.path.join(state_dir, "rescue.flag")
+
+
 def load_state(state_dir):
     """读取并严格校验事务状态。缺失 = 全新设备，返回空状态。"""
     path = state_path(state_dir)
@@ -366,6 +389,75 @@ def save_state(state_dir, state):
     state["revision"] = int(state.get("revision", 0)) + 1
     atomic_write_json(state_path(state_dir), state)
     return state
+
+
+def set_rescue_flag(state_dir, tx):
+    """写入 rescue.flag（进入救援态）。
+
+    必须在**状态落盘之前**调用。顺序很重要：
+      * 先写标记、后写状态 → 中途失败时标记存在但状态未变，弱net-server
+        被挡住 = 过度保护 = **安全方向**
+      * 先写状态、后写标记 → 中途失败时状态说"救援"但标记缺失，
+        weaknet-server 照样启动 = **不安全方向**
+    """
+    payload = json.dumps({
+        "reason": tx.get("last_error") or "RECOVERY_REQUIRED",
+        "transaction_id": tx.get("transaction_id"),
+        "phase": tx.get("phase"),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }, ensure_ascii=False).encode("utf-8")
+    atomic_write_bytes(rescue_flag_path(state_dir), payload, mode=0o600)
+
+
+def rescue_report_path(state_dir):
+    """救援现场报告路径（由恢复器写出）。
+
+    **它同样是 rescue.flag 的派生视图**：存在即意味着"曾处于救援态"。
+    离开救援态时必须一起清掉，否则下一次真进救援时，这份陈旧报告会被
+    误当作"当前现场"，把运维引向错误的版本与错误的原因。
+    """
+    return os.path.join(state_dir, "RESCUE.md")
+
+
+def clear_rescue_report(state_dir):
+    """清除救援现场报告（离开救援态）。
+
+    与 clear_rescue_flag 同一时序要求：必须在**状态落盘之后**调用。
+    中途失败时报告仍在 = 多一份陈旧现场 = 过度保护，安全方向。
+    """
+    path = rescue_report_path(state_dir)
+    if os.path.exists(path):
+        os.unlink(path)
+        fsync_dir(os.path.dirname(path) or ".")
+
+
+def clear_rescue_flag(state_dir):
+    """清除 rescue.flag 与救援现场报告（离开救援态）。
+
+    必须在**状态落盘之后**调用：中途失败时标记仍在，weaknet-server 被
+    挡住 = 过度保护 = 安全方向。反过来（先清标记）就不安全了。
+    """
+    flag = rescue_flag_path(state_dir)
+    if os.path.exists(flag):
+        os.unlink(flag)
+        fsync_dir(os.path.dirname(flag) or ".")
+    clear_rescue_report(state_dir)
+
+
+def sync_rescue_flag(state_dir, state):
+    """按权威状态同步 rescue.flag。
+
+    恢复服务在启动时调用它，修正任何陈旧标记（标记是派生视图，不是第二套
+    权威状态）。
+
+    返回 True=标记存在（救援中），False=标记已清除。
+    """
+    tx = tx_of(state)
+    if tx and tx.get("phase") == PHASE_RECOVERY_REQUIRED:
+        set_rescue_flag(state_dir, tx)
+        return True
+    clear_rescue_flag(state_dir)
+    return False
 
 
 def tx_of(state):
@@ -1010,6 +1102,8 @@ def cmd_commit(args, root, state_dir):
         state["stable_version"] = tx["to_version"]
         set_phase(state, PHASE_FORCED_COMMITTED if forced else PHASE_COMMITTED)
         save_state(state_dir, state)
+        # 顺序：先落状态，再清门禁标记。中间失败 → 标记仍在 = 过度保护（安全）。
+        clear_rescue_flag(state_dir)
 
         warnings = project_views(root, state)
         print(json.dumps({"ok": True, "phase": state["transaction"]["phase"],
@@ -1031,6 +1125,8 @@ def cmd_abort(args, root, state_dir):
                 "中止要求 current 仍为原版本 %s，实际 %r" % (tx["from_version"], cur))
         set_phase(state, PHASE_ABORTED, error=args.reason or "aborted")
         save_state(state_dir, state)
+        # 顺序：先落状态，再清门禁标记。中间失败 → 标记仍在 = 过度保护（安全）。
+        clear_rescue_flag(state_dir)
         project_views(root, state)
         print(json.dumps({"ok": True, "phase": PHASE_ABORTED}, ensure_ascii=False))
     return EXIT_OK
@@ -1093,17 +1189,24 @@ def cmd_rolled_back(args, root, state_dir):
 
 
 def cmd_require_recovery(args, root, state_dir):
-    """任意非终态 -> RECOVERY_REQUIRED（停止一切自动动作）。"""
+    """任意非终态 -> RECOVERY_REQUIRED（停止一切自动动作）。
+
+    同时落盘 rescue.flag：systemd 靠它阻止 weaknet-server 启动。
+    """
     with ExclusiveLock(state_dir):
         state = load_state(state_dir)
         tx = tx_of(state)
         if tx is None:
             raise ConflictError("没有进行中的事务")
         if tx["phase"] == PHASE_RECOVERY_REQUIRED:
+            # 已是救援态：确保标记存在（可能之前写失败过）
+            set_rescue_flag(state_dir, tx)
             print(json.dumps({"ok": True, "phase": PHASE_RECOVERY_REQUIRED,
                               "note": "已是 RECOVERY_REQUIRED"}, ensure_ascii=False))
             return EXIT_OK
         set_phase(state, PHASE_RECOVERY_REQUIRED, error=args.reason or "recovery required")
+        # 顺序：先写标记，再落状态。写标记失败 → 抛异常 → 状态未变（安全）。
+        set_rescue_flag(state_dir, state["transaction"])
         save_state(state_dir, state)
         print(json.dumps({"ok": True, "phase": PHASE_RECOVERY_REQUIRED}, ensure_ascii=False))
     return EXIT_OK
@@ -1124,6 +1227,8 @@ def cmd_recover(args, root, state_dir):
         if args.abort:
             set_phase(state, PHASE_ABORTED, error="manual abort from recovery")
             save_state(state_dir, state)
+            # 顺序：先落状态，再清标记。中间失败 → 标记仍在 = 过度保护（安全）。
+            clear_rescue_flag(state_dir)
             project_views(root, state)
             print(json.dumps({"ok": True, "phase": PHASE_ABORTED}, ensure_ascii=False))
             return EXIT_OK
@@ -1151,11 +1256,70 @@ def cmd_recover(args, root, state_dir):
         state["previous_source"] = "manual" if prev else "unknown"
         set_phase(state, PHASE_COMMITTED, error="manual recovery accepted %s" % accepted)
         save_state(state_dir, state)
+        # 顺序：先落状态，再清标记。中间失败 → 标记仍在 = 过度保护（安全）。
+        clear_rescue_flag(state_dir)
         warnings += project_views(root, state)
         print(json.dumps({"ok": True, "phase": PHASE_COMMITTED,
                           "stable_version": accepted,
                           "previous_stable_version": prev,
                           "warnings": warnings},
+                         ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_enter_rescue(args, root, state_dir):
+    """显式进入救援模式：事务置为 RECOVERY_REQUIRED + 落 rescue.flag。
+
+    恢复服务在判定为"状态不可信"时调用它，让权威状态与启动门禁一致。
+    """
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        tx = tx_of(state)
+        if tx is None:
+            raise ConflictError("没有进行中的事务，无法进入救援模式")
+        if tx["phase"] != PHASE_RECOVERY_REQUIRED:
+            set_phase(state, PHASE_RECOVERY_REQUIRED,
+                      error=args.reason or "recovery required")
+            # 顺序：先写标记，再落状态（失败方向 = 过度保护 = 安全）
+            set_rescue_flag(state_dir, tx)
+            save_state(state_dir, state)
+        else:
+            set_rescue_flag(state_dir, tx)
+        print(json.dumps({"ok": True, "phase": PHASE_RECOVERY_REQUIRED,
+                          "rescue_flag": rescue_flag_path(state_dir)},
+                         ensure_ascii=False))
+    return EXIT_OK
+
+
+def cmd_sync_rescue_flag(args, root, state_dir):
+    """按权威状态同步 rescue.flag 启动门禁标记。
+
+    恢复服务在启动时调用它：标记是派生投影，可能陈旧（手改过
+    transaction.json，或上次写标记时崩在中间）。
+
+    同步方向永远朝"更安全"：救援态缺标记 → 补写；非救援态有标记 → 删除。
+    """
+    with ExclusiveLock(state_dir):
+        state = load_state(state_dir)
+        tx = tx_of(state)
+        in_rescue = bool(tx) and tx.get("phase") == PHASE_RECOVERY_REQUIRED
+        flag = rescue_flag_path(state_dir)
+        existed = os.path.exists(flag)
+
+        if args.dry_run:
+            print(json.dumps({"dry_run": True, "in_rescue": in_rescue,
+                              "flag_exists": existed,
+                              "flag_path": flag}, ensure_ascii=False))
+            return EXIT_OK
+
+        if in_rescue:
+            set_rescue_flag(state_dir, tx)
+        else:
+            clear_rescue_flag(state_dir)
+
+        print(json.dumps({"ok": True, "in_rescue": in_rescue,
+                          "flag_path": flag,
+                          "repaired": existed != os.path.exists(flag)},
                          ensure_ascii=False))
     return EXIT_OK
 
@@ -1276,6 +1440,9 @@ def cmd_bootstrap(args, root, state_dir):
             return EXIT_OK
 
         save_state(state_dir, state)
+        # bootstrap 建的初始状态不是救援态 → 门禁标记必须不存在。
+        # 老设备上可能残留上一轮的标记（标记是派生视图，状态才是权威）。
+        clear_rescue_flag(state_dir)
         warnings = project_views(root, state)
         print(json.dumps({"ok": True, "stable_version": stable,
                           "stable_source": stable_src,
@@ -1408,6 +1575,12 @@ def build_parser():
     p = sub.add_parser("require-recovery", help="进入 RECOVERY_REQUIRED（停止自动动作）")
     p.add_argument("--reason", default=None)
 
+    p = sub.add_parser("enter-rescue", help="显式进入救援模式（置 RECOVERY_REQUIRED + 落门禁标记）")
+    p.add_argument("--reason", default=None)
+
+    p = sub.add_parser("sync-rescue-flag", help="按权威状态同步 rescue.flag 启动门禁标记")
+    p.add_argument("--dry-run", action="store_true")
+
     p = sub.add_parser("recover", help="人工退出 RECOVERY_REQUIRED")
     p.add_argument("--accept", default=None, help="认定该版本为稳定版本并切到它")
     p.add_argument("--abort", action="store_true", help="放弃本事务")
@@ -1445,6 +1618,8 @@ HANDLERS = {
     "rollback-do": cmd_rollback_do,
     "rolled-back": cmd_rolled_back,
     "require-recovery": cmd_require_recovery,
+    "enter-rescue": cmd_enter_rescue,
+    "sync-rescue-flag": cmd_sync_rescue_flag,
     "recover": cmd_recover,
     "reconcile": cmd_reconcile,
     "project-views": cmd_project_views,

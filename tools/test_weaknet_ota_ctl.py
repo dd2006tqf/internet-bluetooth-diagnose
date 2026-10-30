@@ -436,6 +436,147 @@ class TestStateMachine(unittest.TestCase):
                         "终态事务未归档：%r" % names)
 
 
+class TestRescueFlag(unittest.TestCase):
+    """rescue.flag 是权威状态的**派生投影**，给 systemd 启动门禁用。
+
+    两条硬约束：
+      1. 标记与权威状态**永远一致**（进入救援 → 有；离开救援 → 无）
+      2. 不一致时的失败方向是**过度保护**（标记在、状态说不在），
+         绝不是"标记缺失、状态说在"那种不安全方向
+    """
+
+    def setUp(self):
+        self.sb = Sandbox(versions=("1.0.0", "1.1.0"), current="1.0.0")
+
+    def tearDown(self):
+        self.sb.cleanup()
+
+    def _flag(self):
+        return ctl.rescue_flag_path(self.sb.state_dir)
+
+    def _begin(self, to="1.1.0", frm="1.0.0", rollback="1.0.0"):
+        return self.sb.run("begin", "--from", frm, "--to", to,
+                            "--rollback-target", rollback)
+
+    def test_require_recovery_creates_flag(self):
+        self._begin()
+        self.assertFalse(os.path.exists(self._flag()))
+        self.assertEqual(self.sb.run("require-recovery", "--reason", "disk"),
+                         ctl.EXIT_OK)
+        self.assertTrue(os.path.exists(self._flag()))
+        # 标记内容是 JSON，带原因
+        with open(self._flag(), encoding="utf-8") as fh:
+            payload = json.load(fh)
+        self.assertEqual(payload["phase"], ctl.PHASE_RECOVERY_REQUIRED)
+        self.assertEqual(payload["reason"], "disk")
+
+    def test_recover_accept_clears_flag(self):
+        self._begin()
+        self.sb.run("require-recovery", "--reason", "disk")
+        self.assertTrue(os.path.exists(self._flag()))
+        self.assertEqual(self.sb.run("recover", "--accept", "1.0.0"),
+                         ctl.EXIT_OK)
+        self.assertFalse(os.path.exists(self._flag()))
+
+    def test_recover_abort_clears_flag(self):
+        self._begin()
+        self.sb.run("require-recovery", "--reason", "disk")
+        self.assertTrue(os.path.exists(self._flag()))
+        self.assertEqual(self.sb.run("recover", "--abort"), ctl.EXIT_OK)
+        self.assertFalse(os.path.exists(self._flag()))
+
+    def test_enter_rescue_creates_flag(self):
+        self._begin()
+        self.assertEqual(self.sb.run("enter-rescue", "--reason", "untrusted"),
+                         ctl.EXIT_OK)
+        self.assertTrue(os.path.exists(self._flag()))
+        self.assertEqual(self.sb.load()["transaction"]["phase"],
+                         ctl.PHASE_RECOVERY_REQUIRED)
+
+    # ---- RESCUE.md 也是救援态的派生视图（板端演练暴露的陈旧现场问题）----
+
+    def _report(self):
+        return ctl.rescue_report_path(self.sb.state_dir)
+
+    def test_recover_clears_stale_rescue_report(self):
+        """离开救援态必须连现场报告一起清掉。
+
+        否则下一次真进救援时，日志里重放的是一份"上次"的 RESCUE.md：
+        现场信息与触发原因全是旧的，会把运维引向错误的版本与错误的判断。
+        """
+        self._begin()
+        self.sb.run("require-recovery", "--reason", "disk")
+        with open(self._report(), "w", encoding="utf-8") as fh:
+            fh.write("# 旧现场\n")
+        self.assertEqual(self.sb.run("recover", "--accept", "1.0.0"),
+                         ctl.EXIT_OK)
+        self.assertFalse(os.path.exists(self._report()))
+
+    def test_sync_rescue_flag_clears_stale_report(self):
+        self._begin()
+        self.sb.run("arm-switch")
+        self.sb.run("do-switch")
+        self.sb.run("commit")
+        with open(self._report(), "w", encoding="utf-8") as fh:
+            fh.write("# 旧现场\n")
+        self.assertEqual(self.sb.run("sync-rescue-flag"), ctl.EXIT_OK)
+        self.assertFalse(os.path.exists(self._report()))
+
+    def test_sync_keeps_report_while_still_in_rescue(self):
+        """仍在救援态时报告是**当前现场**，不能删。"""
+        self._begin()
+        self.sb.run("require-recovery", "--reason", "disk")
+        with open(self._report(), "w", encoding="utf-8") as fh:
+            fh.write("# 当前现场\n")
+        self.assertEqual(self.sb.run("sync-rescue-flag"), ctl.EXIT_OK)
+        self.assertTrue(os.path.exists(self._report()))
+
+    def test_sync_rescue_flag_creates_missing_flag(self):
+        """状态在救援态但标记缺失 → 补写（过度保护方向）。"""
+        self._begin()
+        self.sb.run("require-recovery", "--reason", "disk")
+        os.unlink(self._flag())
+        self.assertEqual(self.sb.run("sync-rescue-flag"), ctl.EXIT_OK)
+        self.assertTrue(os.path.exists(self._flag()))
+
+    def test_sync_rescue_flag_removes_stale_flag(self):
+        """状态不在救援态但标记存在 → 删除（陈旧标记）。"""
+        self._begin()
+        self.sb.run("arm-switch")
+        self.sb.run("do-switch")
+        self.sb.run("commit")
+        # 人工塞一个陈旧标记
+        with open(self._flag(), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        self.assertEqual(self.sb.run("sync-rescue-flag"), ctl.EXIT_OK)
+        self.assertFalse(os.path.exists(self._flag()))
+
+    def test_sync_rescue_flag_dry_run_does_not_write(self):
+        self._begin()
+        self.sb.run("require-recovery", "--reason", "disk")
+        os.unlink(self._flag())
+        self.assertEqual(self.sb.run("sync-rescue-flag", "--dry-run"),
+                         ctl.EXIT_OK)
+        self.assertFalse(os.path.exists(self._flag()))
+
+    def test_commit_clears_stale_flag(self):
+        """转正时若标记残留（陈旧），必须清掉——否则业务服务永远起不来。"""
+        self._begin()
+        self.sb.run("arm-switch")
+        self.sb.run("do-switch")
+        with open(self._flag(), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        self.assertEqual(self.sb.run("commit"), ctl.EXIT_OK)
+        self.assertFalse(os.path.exists(self._flag()))
+
+    def test_abort_clears_stale_flag(self):
+        self._begin()
+        with open(self._flag(), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        self.assertEqual(self.sb.run("abort", "--reason", "x"), ctl.EXIT_OK)
+        self.assertFalse(os.path.exists(self._flag()))
+
+
 class TestReconcileMatrix(unittest.TestCase):
     """第 6 节崩溃点矩阵：按持久事实断言 reconcile 的判定。"""
 

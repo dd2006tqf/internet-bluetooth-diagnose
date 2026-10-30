@@ -202,3 +202,14 @@ jobs:
         run: |
           python3 tools/test_weaknet_ota_recover.py
           bash tools/ota_p0b_drill.sh
+
+      # OTA 启动门禁（P0-C1）自测：门禁是最后一道闸，判定错了设备要么起不来
+      # 要么裸奔——两个方向都不能放。
+      #
+      # 门禁单测只覆盖"守卫自己"，覆盖不到"守卫会不会把升级流程掐死"。
+      # 后者正是 P0-C1 第一版翻车的方式（TRIAL 一律拒绝 → 升级 100% 失败），
+      # 所以必须再跑一遍接在真实阶段推进序列上的端到端演练。
+      - name: OTA 启动门禁单元测试与流程兼容演练
+        run: |
+          python3 tools/test_weaknet_ota_gate.py
+          bash tools/ota_p0c1_drill.sh

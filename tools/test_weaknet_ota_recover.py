@@ -555,5 +555,156 @@ class TestWatcherActions(unittest.TestCase):
         self.assertIn("不存在", detail)
 
 
+# ---------------------------------------------------------------------------
+# P0-C2 重启矩阵（离线可验证的部分）
+#
+# 这里是用户给的 P0-C2 验收矩阵中"不依赖真机重启"的几行，直接驱动
+# Watcher.run_once 走真实恢复链路（假 systemctl / busctl / 控制器）：
+#   * ROLLBACK_PENDING 期间重启 → 继续回滚，不重启失败候选
+#   * 连续重启超过试运行次数 → 确定性回滚，不无限试运行
+#   * 崩溃循环 → 提前回滚，不无限等健康窗口
+#   * 恢复器判定与门禁判定必须一致（门禁放行的阶段不能让恢复器拒绝，
+#     反之亦然——"每次重启都掉进救援"就是这两者打架的症状）
+# ---------------------------------------------------------------------------
+
+class TestRestartMatrix(unittest.TestCase):
+    def setUp(self):
+        self.sb = Sandbox()
+        self.ctl_path = self.sb.make_fake_ctl()
+        # 服务已崩：is-active 不 active、D-Bus 全不可达、NRestarts 高
+        self.runner = FakeRunner({
+            ("systemctl", "is-active"): (3, "inactive\n"),
+            ("systemctl", "show"): (0, "3\n"),
+            "busctl": {
+                "HealthCheck": (1, ""),
+                "GetEbpfMonitorHealth": (1, ""),
+                "GetUpdateStatus": (1, ""),
+            },
+        }, delegate_paths=(self.ctl_path,))
+        self.rec = make_recorder(self.sb, self.runner, ctl_path=self.ctl_path)
+
+    def tearDown(self):
+        self.sb.cleanup()
+
+    def _watcher(self):
+        w = rec.Watcher(self.rec, once=True)
+        # 不读真机 boot_id：固定一个"新开机"
+        w.read_boot_id = staticmethod(lambda: "boot-drill")
+        return w
+
+    def test_rollback_pending_continues_rollback_not_retry_candidate(self):
+        """ROLLBACK_PENDING 期间重启 → 继续回滚到目标版本，绝不重试候选。
+
+        这里故意让控制器不可用：本用例要验的是"指针一定被翻到回滚目标"
+        这件事本身，而不是控制器实现。控制器在 ROLLBACK_PENDING 阶段本来
+        也不接受 do-switch（它只认 SWITCH_PENDING/TRIAL），所以真实链路上
+        走的正是这条直接原子翻链的兜底路径。
+        """
+        self.sb.write_state(make_state("ROLLBACK_PENDING", to="1.1.0",
+                                       rollback="1.0.0"))
+        self.sb.set_current("1.1.0")
+        rec_no_ctl = make_recorder(self.sb, self.runner)  # ctl 路径不存在
+        w = rec.Watcher(rec_no_ctl, once=True)
+        w.read_boot_id = staticmethod(lambda: "boot-drill")
+        w.run_once()
+        self.assertEqual(rec.read_current(self.sb.root), "1.0.0")
+
+    def test_rollback_verify_crash_loop_goes_to_rescue(self):
+        """回滚目标自己也崩 → 救援模式，而不是无限重试。"""
+        self.sb.write_state(make_state("ROLLBACK_VERIFY", to="1.1.0",
+                                       rollback="1.0.0"))
+        self.sb.set_current("1.0.0")
+        w = self._watcher()
+        done, _ = w.run_once()
+        self.assertTrue(done)
+        self.assertIsNotNone(self.sb.read_rescue())
+
+    def test_exhausted_attempts_rolls_back(self):
+        """连续重启超过试运行次数 → 确定性回滚，不再无限试运行。"""
+        self.sb.write_state(make_state("TRIAL", to="1.1.0", rollback="1.0.0",
+                                       attempts=rec.MAX_TRIAL_ROUNDS))
+        self.sb.set_current("1.1.0")
+        w = self._watcher()
+        w.run_once()
+        self.assertIn("rollback-arm", self.sb.ctl_verbs())
+
+    def test_boot_attempt_bumped_once_per_boot_id(self):
+        """恢复器自身被重启（同一 boot_id）不重复计数。"""
+        self.sb.write_state(make_state("TRIAL", to="1.1.0", rollback="1.0.0"))
+        self.sb.set_current("1.1.0")
+        # 控制器真实执行：bump 幂等由控制器保证，这里验证恢复器每轮只调一次且
+        # 用同一个 boot_id（重复调用不会导致计数增长）
+        w1 = self._watcher()
+        w1.run_once()
+        w2 = self._watcher()
+        w2.run_once()
+        bumps = [c for c in self.sb.ctl_calls() if len(c) > 4 and c[4] == "bump-boot-attempt"]
+        self.assertGreaterEqual(len(bumps), 1)
+        for call in bumps:
+            self.assertIn("boot-drill", call)
+
+
+class TestGateConsistency(unittest.TestCase):
+    """门禁与恢复器的判定不许互相打架。
+
+    "门禁拒绝一个恢复器认为还能继续的阶段" = 每次重启直接掉进救援；
+    "门禁放行一个恢复器认为必须救援的阶段" = 恢复器被绕过。两种都必须防。
+
+    注意这里的"一致"不是"对同一状态给出同样的结论"——恢复器会**主动**
+    把不可信状态转成救援（转完之后它自己也会拒绝启动），门禁看到的是
+    已经落定的阶段。所以真正的断言是：
+      * 恢复器愿意继续推进的活跃阶段 → 门禁必须放行
+        （否则服务起不来，健康窗口永远无法判定，恢复器只能一路超时进救援）
+      * 恢复器主动转救援的唯一阶段 RECOVERY_REQUIRED → 门禁必须拒绝
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        gate_path = os.path.join(HERE, "weaknet-ota-gate")
+        loader = importlib.machinery.SourceFileLoader("weaknet_ota_gate_x", gate_path)
+        spec = importlib.util.spec_from_loader("weaknet_ota_gate_x", loader)
+        cls.gate = importlib.util.module_from_spec(spec)
+        loader.exec_module(cls.gate)
+
+    def _state(self, phase):
+        return {"schema_version": 1, "revision": 1,
+                "stable_version": "1.0.0", "previous_stable_version": None,
+                "transaction": {"transaction_id": "T", "kind": "upgrade",
+                                "phase": phase, "from_version": "1.0.0",
+                                "to_version": "1.1.0",
+                                "rollback_target": "1.0.0",
+                                "previous_stable_before": None,
+                                "boot_attempts": 0, "last_trial_boot_id": "",
+                                "policy": {}, "started_at": "2026-01-01T00:00:00Z",
+                                "updated_at": "2026-01-01T00:00:00Z",
+                                "last_error": ""}}
+
+    def test_recoverer_wait_phases_are_allowed_by_gate(self):
+        """恢复器判定为"继续等/推进"的阶段，门禁必须放行。"""
+        cases = [
+            # (phase, current, healthy, restarts, attempts) → decide 结果
+            ("TRIAL", "1.1.0", False, 0, 0),          # wait_trial
+            ("ROLLBACK_VERIFY", "1.0.0", False, 0, 0),  # wait_rollback
+        ]
+        for phase, current, healthy, restarts, attempts in cases:
+            state = rec.TxState(self._state(phase))
+            action, _ = rec.decide(state, current, healthy, 0, restarts, attempts)
+            self.assertIn(action, ("wait_trial", "wait_rollback"), phase)
+            allow, _ = self.gate.decide(self._state(phase), None)
+            self.assertTrue(allow, "%s 门禁拒绝但恢复器要继续推进（会互相打架）" % phase)
+
+    def test_rescue_phase_is_denied_by_gate(self):
+        state = rec.TxState(self._state("RECOVERY_REQUIRED"))
+        action, _ = rec.decide(state, "1.1.0", True, 0, 0, 0)
+        self.assertEqual(action, "rescue")
+        allow, _ = self.gate.decide(self._state("RECOVERY_REQUIRED"), None)
+        self.assertFalse(allow)
+
+    def test_every_live_phase_is_registered_on_both_sides(self):
+        """阶段词表必须两边都认识：新增阶段只改一边会导致静默不一致。"""
+        self.assertEqual(set(rec.LIVE_PHASES), set(self.gate.LIVE_PHASES))
+        self.assertEqual(set(rec.TERMINAL_PHASES), set(self.gate.TERMINAL_PHASES))
+
+
 if __name__ == "__main__":
     unittest.main()

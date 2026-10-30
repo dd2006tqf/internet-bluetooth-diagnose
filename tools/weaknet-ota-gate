@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""weaknet-ota-gate — OTA 启动门禁（P0-C1）
+
+================================================================================
+它解决什么
+================================================================================
+
+P0-B 的救援模式有一个缺口：`systemctl stop` / `disable` 只挡住**systemd 自动
+拉起**。运维手动 `systemctl start weaknet-server`、或者别的 unit 用
+`Wants=` 把它拉起来，救援态就被绕过了——设备跑着一个**未经验证的版本**，
+而事务状态还停在 `RECOVERY_REQUIRED`。
+
+本程序是 weaknet-server 的**启动前检查器**，独立成一个 oneshot 单元，
+由 weaknet-server 用 `Requires=` + `After=` 依赖：
+
+  1. 读权威事务状态 `/var/lib/weaknet-ota/transaction.json`
+  2. 判定是否允许启动业务服务
+  3. 不允许 → 退出非零 → 依赖不成立 → 业务服务根本不被执行
+
+================================================================================
+判定规则
+================================================================================
+
+| 权威状态 | 判定 | 理由 |
+|---------|------|------|
+| 事务不存在 | **允许** | 全新设备，没有升级发生过 |
+| 没有进行中的事务 | **允许** | 上次升级已完全结束（事务已归档） |
+| phase 是终态（COMMITTED / FORCED_COMMITTED / ABORTED / ROLLED_BACK） | **允许** | 升级已正常结束 |
+| phase == RECOVERY_REQUIRED | **拒绝** | 救援态，人工确认前不允许跑业务 |
+| 状态文件损坏 / schema 不认识 / 缺 phase | **拒绝** | 不能猜 |
+| phase 是活跃态（PREPARED / SWITCH_PENDING / TRIAL / ROLLBACK_*） | **允许** | 见下 |
+
+**为什么活跃态必须放行（这里曾经写错过一次）：**
+
+升级脚本的流程是 `arm-switch → do-switch(翻指针, 进 TRIAL) → restart →
+health_window`。健康窗口要靠 `systemctl is-active` + D-Bus `HealthCheck` +
+`GetEbpfMonitorHealth` 判定，也就是说**服务必须能起来才谈得上"已验证"**。
+门禁如果在 TRIAL / ROLLBACK_VERIFY 拒绝启动：
+
+  * 健康窗口必然超时 → 自动回滚 → 回滚启动又被拒 → 升级 100% 失败
+  * 回滚验证同样永远无法通过 → 每次回滚都直接进救援
+
+实测复现：`do-switch → TRIAL` 后 `systemctl restart weaknet-server` 直接
+`rc=1 dependency job failed`，gate 日志 `事务处于 TRIAL：…拒绝启动`。
+
+所以门禁的职责边界只有一个：**挡住"已经被判定为不可运行"的状态**，即
+救援态（`RECOVERY_REQUIRED`）与不可信状态。活跃阶段的收敛由 `boot_attempts`
+持久计数 + 恢复器负责（"有限次数内结束"是 P0-B/P0-C2 的职责，不是门禁的）。
+门禁不去猜"这个 TRIAL 会不会自己收敛"——猜错就把设备变成砖。
+
+fail-closed 仍然成立，只是拒绝集合是"不确定能不能跑"，而不是"没跑完"。
+
+================================================================================
+与 rescue.flag 的关系
+================================================================================
+
+`rescue.flag` 是权威状态的**派生投影**，给 systemd 的
+`ConditionPathExists=!` 用（systemd 读不了 JSON）。本程序**不读**它——
+它只读权威状态。
+
+两者的一致性由两处保证：
+  * 控制器在进入/离开救援态时同步写/删标记（顺序保证失败方向是"过度保护"）
+  * 恢复服务每轮判定前调 `sync-rescue-flag` 修正陈旧标记
+
+所以本程序不需要信任标记——它自己看权威状态。标记只负责"在业务服务启动
+之前就把进程挡掉"这一层廉价防线。
+
+================================================================================
+为什么是"独立 oneshot 单元 + Requires"，而不是挂在 weaknet-server 里的钩子
+================================================================================
+
+systemd 247 上实测（板端，逐个试过）：
+
+  * `ExecStartPre=` 失败 → 单元进入 failed，`Restart=on-failure` 触发
+    **重启循环**（NRestarts=3），加 `RestartPreventExitStatus` 也拦不住。
+    门禁失败意味着"状态不可信"，重启循环只会烧电。**弃用。**
+  * `ExecCondition=` 失败 → 单元被跳过、`Result=success`、无风暴；但
+    `Result=success` 让**误判成"没问题"**，且语义是"跳过"而非"禁止"。**未采用。**
+  * `Wants=` + `After=` → 门禁失败时业务服务**照样启动**（实测）。**不是门禁。**
+  * 门禁单元内写 `ConditionPathExists=!flag` → 被 Condition 跳过的单元对
+    `Requires` 而言**不算失败**，业务服务照样起。**单靠 Condition 不是门禁。**
+  * `Requires=` + `After=` + 独立 oneshot 门禁单元（**采用**）→ 门禁非零退出
+    → 业务单元 rc=1 / `Result=dependency` / 进程零次执行 / NRestarts=0。
+
+即：本程序**不在** weaknet-server 的 ExecStart 链上，而是自己作为一个
+`Type=oneshot` 单元（`weaknet-ota-gate.service`）被 weaknet-server
+`Requires=` + `After=` 依赖。门禁每次业务启动（含崩溃后的自动重启）都会
+重跑，因为 oneshot 单元不写 `RemainAfterExit=yes`。
+
+另一层廉价防线是 weaknet-server 自己的 `ConditionPathExists=!/var/lib/weaknet-ota/rescue.flag`：
+systemd 在依赖判定之前先算条件，标记在就直接跳过（同样不进重启循环）。
+它挡不住"标记与状态不一致"，所以只是第二层——真正的判定在本程序。
+"""
+
+import argparse
+import errno
+import json
+import os
+import sys
+import time
+
+DEFAULT_ROOT = "/home/radxa/weaknet"
+DEFAULT_STATE_DIR = "/var/lib/weaknet-ota"
+
+# 终态：升级已正常结束，业务服务可以跑
+TERMINAL_PHASES = ("COMMITTED", "FORCED_COMMITTED", "ABORTED", "ROLLED_BACK")
+
+# 活跃阶段：升级/回滚正在进行。**必须放行**——健康窗口要靠服务在线才有意义，
+# 拒绝它等于让每次升级都必然失败（见模块 docstring 的实测记录）。
+LIVE_PHASES = ("PREPARED", "SWITCH_PENDING", "TRIAL",
+               "ROLLBACK_PENDING", "ROLLBACK_VERIFY")
+
+# 退出码（systemd 只看非零；区分只对排障有用）
+EXIT_ALLOW = 0        # 允许启动
+EXIT_DENY = 1         # 拒绝启动（依赖它的 weaknet-server 根本不会被执行）
+EXIT_USAGE = 2
+EXIT_SCHEMA = 5       # 状态不可读（损坏 / schema 不认识 / 读失败）——同样拒绝
+
+
+def log(msg):
+    sys.stderr.write("[ota-gate %s] %s\n"
+                     % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), msg))
+
+
+def read_state(state_dir):
+    """读权威事务状态。
+
+    返回 (state, error)：
+      * (dict, None)  读到了
+      * (None, None)  文件不存在（全新设备）
+      * (None, str)   读不出来（损坏 / schema 不认识）——调用方必须拒绝
+    """
+    path = os.path.join(state_dir, "transaction.json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    except IOError as exc:
+        if exc.errno == errno.ENOENT:
+            return None, None
+        return None, "读取事务状态失败：%s" % exc
+
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        return None, "事务状态文件损坏，无法解析 JSON：%s" % exc
+
+    if not isinstance(data, dict):
+        return None, "事务状态根节点必须是对象"
+
+    schema = data.get("schema_version")
+    if schema != 1:
+        # 不认识就 fail-closed：绝不猜测新版本语义
+        return None, "事务状态 schema_version=%r 不受支持（本门禁只认 1）" % (schema,)
+
+    return data, None
+
+
+def decide(state, error):
+    """判定是否允许启动业务服务。返回 (allow, reason)。
+
+    state 为 None 且 error 为 None → 事务不存在（全新设备，允许）。
+    """
+    if error is not None:
+        return False, error
+    if state is None:
+        return True, "没有事务记录（全新设备），允许启动"
+
+    tx = state.get("transaction")
+    if not isinstance(tx, dict):
+        # 有状态文件但没有事务 = 上次升级已完全结束（事务被归档）
+        return True, "没有进行中的事务，允许启动"
+
+    phase = tx.get("phase")
+    if phase in TERMINAL_PHASES:
+        return True, "事务已正常结束（%s），允许启动" % phase
+    if phase == "RECOVERY_REQUIRED":
+        return False, ("事务处于 RECOVERY_REQUIRED：需要人工确认版本后才能启动"
+                       "（recover --accept <version>）")
+    if phase in LIVE_PHASES:
+        # 升级/回滚进行中：服务必须能起来，否则健康窗口无法判定，
+        # 每次升级都会失败（回滚也一样）。收敛由 boot_attempts + 恢复器负责。
+        return True, ("事务处于 %s：升级/回滚进行中，允许启动（健康验证依赖服务在线；"
+                      "收敛由 boot_attempts 与恢复器负责）" % phase)
+    if phase is None:
+        return False, "事务记录缺少 phase 字段，状态不可信，拒绝启动"
+    # 未登记的 phase：不认识就不放行（新阶段必须显式登记到上面两张表之一）
+    return False, "事务处于未知阶段 %r，本门禁不认识，拒绝启动" % (phase,)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="weaknet-ota-gate",
+        description="OTA 启动门禁（P0-C1）：weaknet-server 启动前检查事务状态")
+    parser.add_argument("--root", default=None)
+    parser.add_argument("--state-dir", default=None)
+    parser.add_argument("--dry-run", action="store_true",
+                        help="只输出判定，不影响退出码语义（仍会拒绝）")
+    args = parser.parse_args(argv)
+
+    state_dir = args.state_dir or os.environ.get("WEAKNET_OTA_STATE_DIR") or DEFAULT_STATE_DIR
+    root = args.root or os.environ.get("WEAKNET_ROOT") or DEFAULT_ROOT
+
+    state, error = read_state(state_dir)
+    allow, reason = decide(state, error)
+
+    payload = {
+        "allow": allow,
+        "reason": reason,
+        "state_dir": state_dir,
+        "root": root,
+        "phase": (state.get("transaction") or {}).get("phase") if state else None,
+    }
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+    if allow:
+        log("放行：%s" % reason)
+        return EXIT_ALLOW
+
+    log("拒绝启动：%s" % reason)
+    log("业务服务保持停止；SSH 与反向隧道不受影响，设备仍可远程维护。")
+    log("人工恢复：sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl "
+        "--root %s --state-dir %s recover --accept <known-good-version>"
+        % (root, state_dir))
+    # 状态读不出来时给一个更具体的退出码（systemd 行为相同：非零即拒绝），
+    # 排障时一眼能区分"状态不可信"和"状态可信但阶段不允许"。
+    return EXIT_SCHEMA if error is not None else EXIT_DENY
+
+
+if __name__ == "__main__":
+    sys.exit(main())

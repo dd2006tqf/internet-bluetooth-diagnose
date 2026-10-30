@@ -1,0 +1,50 @@
+[Unit]
+Description=WeakNet OTA Startup Gate (P0-C1)
+Documentation=man:systemd.unit(5)
+# 启动门禁：weaknet-server 启动**之前**必须先过这一关。
+#
+# 语义（板端 systemd 247 实测）：
+#   * gate 成功 → weaknet-server 正常启动
+#   * gate 失败 → Requires 依赖不成立，weaknet-server **根本不会被启动**
+#     （实测：start 返回 rc=1，"Job ... failed with result 'dependency'"，
+#      业务进程一次都没跑，NRestarts=0 —— **没有重启风暴**）
+#
+# 为什么用独立单元 + Requires/After，而不是把检查塞进 weaknet-server 的
+# ExecStartPre：
+#   * ExecStartPre 失败 → 单元 Result=exit-code，Restart=on-failure 会
+#     **触发重启循环**（实测 NRestarts=3）。门禁失败意味着"状态不可信"，
+#     重启只会烧电 —— 这是不可接受的。
+#   * 独立 gate 单元失败 → 依赖方直接不启动，无重启循环。
+#
+# gate 是 Type=oneshot 且**没有** RemainAfterExit：所以每次业务服务启动
+# （含崩溃后的自动重启，实测 gate 会重跑）都会重新做一次判定。授权状态
+# 在 gate 之后才变（升级脚本写 COMMITTED 在 gate 之前 → gate 放行）。
+#
+# 顺序要求：
+#   weaknet-server.service
+#     Requires=weaknet-ota-gate.service
+#     After=weaknet-ota-gate.service
+#
+# **绝不能**写成 `Wants=`：实测 Wants + After 在依赖失败时**照样启动**
+# 依赖方（ON-B-RAN）——那就完全失去门禁意义。
+#
+# gate 不依赖 weaknet-server（它可能正是起不来的那个），也不依赖
+# weaknet-ota-recover（恢复服务可能正在工作）。
+
+[Service]
+Type=oneshot
+# 门禁本体装在 $ROOT 之外，不随 OTA 制品变化。
+ExecStart=/usr/bin/python3 /usr/local/lib/weaknet/weaknet-ota-gate \
+    --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota
+# gate 只做一次判定，不常驻。
+RemainAfterExit=no
+TimeoutStartSec=15
+# 门禁失败就是拒绝启动，不需要任何能力。
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/var/lib/weaknet-ota
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

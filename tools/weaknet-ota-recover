@@ -329,6 +329,83 @@ def decide(state, current, healthy, elapsed, restarts, attempts,
 # 执行器（依赖可注入，便于单测）
 # ============================================================================
 
+def rescue_flag_path(state_dir):
+    """救援门禁标记路径（与控制器一致）。"""
+    return os.path.join(state_dir, "rescue.flag")
+
+
+def stale_flag_path(state_dir):
+    """陈旧标记路径：标记与权威状态不一致时的旁证文件。"""
+    return os.path.join(state_dir, "rescue.flag.stale")
+
+
+def read_rescue_flag(state_dir):
+    """读救援标记内容；不存在返回 None。"""
+    path = rescue_flag_path(state_dir)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read()
+    except IOError:
+        return None
+
+
+def sync_rescue_flag(state_dir, state):
+    """按权威状态同步救援标记。
+
+    标记是**派生投影**，权威状态永远是 transaction.json。但派生也可能是
+    陈旧的（有人手改了 transaction.json、或者上次写标记时崩在中间）。
+
+    同步规则（方向永远朝"更安全"）：
+      * 状态在救援态 → 标记必须存在（缺失就补写）
+      * 状态不在救援态 → 标记必须不存在（存在就删掉）
+
+    修正过（说明之前不一致）就写一份 `rescue.flag.stale` 留痕。
+
+    返回 (in_rescue, repaired)。
+    """
+    tx = state.raw.get("transaction") if state.raw else None
+    in_rescue = bool(isinstance(tx, dict) and tx.get("phase") == "RECOVERY_REQUIRED")
+    flag = rescue_flag_path(state_dir)
+    existed = os.path.exists(flag)
+    repaired = False
+
+    if in_rescue and not existed:
+        payload = json.dumps({
+            "reason": state.last_error or "RECOVERY_REQUIRED",
+            "transaction_id": state.transaction_id,
+            "phase": state.phase,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }, ensure_ascii=False)
+        try:
+            os.makedirs(state_dir, exist_ok=True)
+            tmp = flag + ".tmp.%d" % os.getpid()
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, flag)
+            repaired = True
+        except IOError as exc:
+            log("写 rescue.flag 失败：%s（启动门禁会放行 weaknet-server，需人工处理）" % exc)
+
+    elif not in_rescue and existed:
+        try:
+            os.unlink(flag)
+            repaired = True
+        except IOError as exc:
+            log("清 rescue.flag 失败：%s" % exc)
+
+    if repaired:
+        try:
+            with open(stale_flag_path(state_dir), "w", encoding="utf-8") as fh:
+                fh.write("rescue.flag 与权威状态不一致，已于 %s 修正\n"
+                         % time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        except IOError:
+            pass
+
+    return in_rescue, repaired
+
+
 class Recoverer(object):
     """执行恢复动作。所有外部命令都走 self.runner，方便替换成假实现。"""
 
@@ -428,6 +505,22 @@ class Recoverer(object):
         """进入最小 SSH 救援模式。返回报告路径。"""
         log("=" * 70)
         log("进入救援模式：%s" % reason)
+
+        # 先落门禁标记：weaknet-server 必须立刻被挡住（它可能正在崩溃
+        # 重启循环里）。标记是派生投影，真正拦得住的是两层：
+        #   1) weaknet-server 的 ConditionPathExists=!（只认标记，最廉价）
+        #   2) weaknet-ota-gate 读权威状态（下面 enter-rescue 落定后才成立）
+        # 顺序：标记先、状态后 —— 中途失败的方向是"过度保护"（安全）。
+        flag_ok = self.write_rescue_flag(reason, state)
+        log("启动门禁标记：%s" % ("已写入" if flag_ok else "写入失败（依赖权威状态那一层兜底）"))
+
+        # 权威状态也要落成 RECOVERY_REQUIRED（能写就写），这样人工恢复
+        # 走的是标准通道（recover --accept / --abort）。
+        rc, _ = self.ctl("enter-rescue", "--reason", reason)
+        if rc != 0:
+            log("控制器 enter-rescue 失败（rc=%d）——权威状态未标记为救援态，"
+                "但门禁标记已生效" % rc)
+
         masked, mask_detail = self.service_stop_and_mask()
         log("weaknet-server：%s" % mask_detail)
 
@@ -449,6 +542,31 @@ class Recoverer(object):
         log("=" * 70)
         self.actions.append("rescue")
         return report_path
+
+    def write_rescue_flag(self, reason, state):
+        """写启动门禁标记。返回 True=成功。
+
+        标记内容是给人看的（systemd 只看存在性）。
+        """
+        payload = json.dumps({
+            "reason": reason,
+            "transaction_id": state.transaction_id if state else None,
+            "phase": state.phase if state else None,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }, ensure_ascii=False)
+        path = rescue_flag_path(self.state_dir)
+        try:
+            os.makedirs(self.state_dir, exist_ok=True)
+            tmp = path + ".tmp.%d" % os.getpid()
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+            return True
+        except IOError as exc:
+            log("写 rescue.flag 失败：%s" % exc)
+            return False
 
 
 def render_rescue_report(reason, state, current, mask_detail, access):
@@ -481,6 +599,16 @@ def render_rescue_report(reason, state, current, mask_detail, access):
     for unit, text in access.items():
         lines.append("| 救援通道 %s | %s |" % (unit, text))
     lines.append("")
+    lines.append("## 启动门禁状态")
+    lines.append("")
+    lines.append("`weaknet-server` 现在**无法被启动**，包括手动 `systemctl start`：")
+    lines.append("")
+    lines.append("- 第一层：`ConditionPathExists=!` 读到 `/var/lib/weaknet-ota/rescue.flag`，")
+    lines.append("  单元直接被 systemd 跳过（不进重启循环）。")
+    lines.append("- 第二层：`Requires=weaknet-ota-gate.service` 读权威事务状态，当前阶段")
+    lines.append("  不是终态 → 门禁非零退出 → 业务服务根本不被执行。")
+    lines.append("- 门禁**只挡** weaknet-server；`ssh` / `weaknet-tunnel` 不受影响。")
+    lines.append("")
     lines.append("## 现场保留物")
     lines.append("")
     lines.append("- 事务状态：`/var/lib/weaknet-ota/transaction.json`（未删除、未改写）")
@@ -495,13 +623,17 @@ def render_rescue_report(reason, state, current, mask_detail, access):
     lines.append("   ```bash")
     lines.append("   ls -la /home/radxa/weaknet/releases/")
     lines.append("   ```")
-    lines.append("2. 解除服务屏蔽并切到已知良好的版本：")
+    lines.append("2. 解除服务屏蔽/停用，并切到已知良好的版本：")
     lines.append("   ```bash")
-    lines.append("   sudo systemctl unmask weaknet-server")
+    lines.append("   sudo systemctl unmask weaknet-server 2>/dev/null || true")
+    # mask 在 unit 文件位于 /etc/systemd/system/ 时会失败，此时救援走的是
+    # disable —— 不补 enable 的话，recover 之后手动 start 能起来，重启又没了。
+    lines.append("   sudo systemctl enable weaknet-server")
     lines.append("   sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \\")
     lines.append("       --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota \\")
     lines.append("       recover --accept <known-good-version>")
-    lines.append("   sudo systemctl restart weaknet-server")
+    lines.append("   sudo systemctl start weaknet-server")
+    lines.append("   systemctl is-active weaknet-server weaknet-ota-gate.service")
     lines.append("   ```")
     lines.append("3. 若事务状态已损坏（无法解析），先备份再人工指定：")
     lines.append("   ```bash")
@@ -512,7 +644,7 @@ def render_rescue_report(reason, state, current, mask_detail, access):
     lines.append("## 救援模式下的行为约定")
     lines.append("")
     lines.append("- **不做版本切换**：不自动翻 `current`，避免把未知状态传播下去。")
-    lines.append("- **不做无限重启**：weaknet-server 已 mask，systemd 不会拉起它。")
+    lines.append("- **不做无限重启**：weaknet-server 已 mask（不可用时退到 disable），systemd 不会拉起它。")
     lines.append("- **不启动 weaknet-server**：功能暂时不可用，但设备**可达**。")
     lines.append("- **保留 SSH 与反向隧道**：远程运维通道不受影响。")
     lines.append("")
@@ -659,10 +791,19 @@ class Watcher(object):
     def run_once(self):
         state = self.load()
         if state is None:
+            # 状态不可读：无法判定，必须挡住 weaknet-server 启动。
+            # 门禁标记无法从状态推导（状态本身坏了），所以直接写标记 +
+            # 让控制器把状态置为 RECOVERY_REQUIRED（如果还能写）。
             self.rec.enter_rescue("事务状态文件损坏或 schema 不受支持", None, None)
             return True, "已转救援模式"
 
         current = read_current(self.rec.root)
+
+        # 启动门禁同步：标记是派生投影，可能陈旧。修正是单向朝"更安全"，
+        # 必须在任何判定之前完成——否则 rescue 态可能在这一轮里被放行。
+        in_rescue, repaired = sync_rescue_flag(self.rec.state_dir, state)
+        if repaired:
+            log("rescue.flag 与权威状态不一致，已修正（in_rescue=%s）" % in_rescue)
 
         if state.phase == "TRIAL":
             self.bump_boot_attempt(state)

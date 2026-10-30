@@ -245,12 +245,13 @@ if [ "$SKIP_DEPLOY" = false ]; then
         ssh "${BOARD}" "sudo mkdir -p /home/radxa/weaknet/config && sudo cp /tmp/release_pub.pem /home/radxa/weaknet/config/release_pub.pem && sudo chmod 644 /home/radxa/weaknet/config/release_pub.pem"
         pass "发布公钥已同步到板端 config/release_pub.pem"
     fi
-    ssh "${BOARD}" "sudo cp /tmp/weaknet-server.service /etc/systemd/system/weaknet-server.service && \
-        sudo cp /tmp/com.example.WeakNet.conf /etc/dbus-1/system.d/com.example.WeakNet.conf && \
+    # 注意：weaknet-server.service 本身**不在这里**落盘——它的 Unit 段带
+    # `Requires=weaknet-ota-gate.service`，必须等门禁单元先安装（见下方
+    # P0-C1 一段），否则 daemon-reload 后即出现"依赖单元不存在"。
+    ssh "${BOARD}" "sudo cp /tmp/com.example.WeakNet.conf /etc/dbus-1/system.d/com.example.WeakNet.conf && \
         sudo cp /tmp/libweaknet.so /usr/local/lib/libweaknet.so && sudo ldconfig && \
         sudo chmod o+rx /home/radxa/weaknet/data 2>/dev/null || true && \
-        sudo systemctl daemon-reload && sudo systemctl reload dbus 2>/dev/null || true; \
-        sudo systemctl enable weaknet-server"
+        sudo systemctl daemon-reload && sudo systemctl reload dbus 2>/dev/null || true"
     # 注意：此处刻意不 restart——重启由 adopt 在 current 翻转之后执行，
     # 否则新 unit（current/server 路径）在布局未就位时会拉起失败。
 
@@ -304,6 +305,32 @@ if [ "$SKIP_DEPLOY" = false ]; then
         sudo systemctl restart weaknet-ota-recover.service" \
         || warn "OTA 恢复服务安装/启动失败——升级仍可用，但失去开机自动恢复能力"
     pass "OTA 开机恢复服务已就位（weaknet-ota-recover.service）"
+
+    # OTA 启动门禁（P0-C1）：独立 oneshot 单元，weaknet-server 用
+    # Requires+After 依赖它。门禁失败 → 业务服务根本不被启动，且**没有
+    # 重启循环**（实测：Requires 依赖失败 → result=dependency，NRestarts=0）。
+    #
+    # 顺序要求：门禁单元必须先落盘并 enable，再改 weaknet-server 的依赖
+    # ——否则新装的 weaknet-server 会因为找不到 gate 单元而起不来。
+    scp "${ROOT}/tools/weaknet-ota-gate" "${BOARD}:/tmp/weaknet-ota-gate" 2>/dev/null \
+        || fail "OTA 启动门禁上传失败"
+    scp "${ROOT}/tools/weaknet-ota-gate.service" "${BOARD}:/tmp/weaknet-ota-gate.service" 2>/dev/null \
+        || fail "OTA 启动门禁单元上传失败"
+    ssh "${BOARD}" "sudo install -m 0755 /tmp/weaknet-ota-gate \
+        /usr/local/lib/weaknet/weaknet-ota-gate && \
+        sudo cp /tmp/weaknet-ota-gate.service /etc/systemd/system/weaknet-ota-gate.service && \
+        sudo systemctl daemon-reload && \
+        sudo systemctl enable weaknet-ota-gate.service" \
+        || fail "OTA 启动门禁安装失败"
+    pass "OTA 启动门禁已就位（weaknet-ota-gate.service）"
+
+    # 业务服务单元必须在门禁单元之后落盘：新 unit 的 [Unit] 段写着
+    # `Requires=weaknet-ota-gate.service`，先装它会得到一个指向不存在单元的
+    # 依赖，daemon-reload 后 weaknet-server 直接起不来。
+    ssh "${BOARD}" "sudo cp /tmp/weaknet-server.service /etc/systemd/system/weaknet-server.service && \
+        sudo systemctl daemon-reload && \
+        sudo systemctl enable weaknet-server"
+    pass "weaknet-server 单元已落盘（依赖 weaknet-ota-gate.service）"
 
     # OTA 布局迁移/切换（板端重启唯一入口）：暂存产物 → releases/${VERSION}
     # →（首次）旧扁平布局归档 legacy-flat → 原子翻转 current + 兼容软链

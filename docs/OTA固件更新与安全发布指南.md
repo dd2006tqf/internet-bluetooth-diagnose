@@ -1,8 +1,8 @@
 # WeakNet OTA 固件更新与安全发布指南
 
-> **版本**：v1.3 (涵盖 Phase 1 本地闭环 + Phase 2 ECDSA 签名链 + Phase 3 远程拉包与空间 GC + P0-A 升级事务状态机)  
+> **版本**：v1.4 (涵盖 Phase 1 本地闭环 + Phase 2 ECDSA 签名链 + Phase 3 远程拉包与空间 GC + P0-A 升级事务状态机 + P0-B 开机恢复 + P0-C1 启动门禁)  
 > **适用平台**：Radxa Cubie A7A (ARM64) / x86_64 宿主机交叉编译环境  
-> **核心特性**：A/B 软链接原子翻转、ECDSA NIST P-256 强制验签、180s 健康看门狗、故障自动回滚、状态与配置隔离保护、过旧版本自动 GC、**升级事务持久化状态机（崩溃点可判定）**
+> **核心特性**：A/B 软链接原子翻转、ECDSA NIST P-256 强制验签、180s 健康看门狗、故障自动回滚、状态与配置隔离保护、过旧版本自动 GC、**升级事务持久化状态机（崩溃点可判定）、fail-closed 启动门禁**
 
 ---
 
@@ -152,23 +152,120 @@ sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \
 - 不自动翻 `current`（未知状态不能继续传播）
 - `weaknet-server` 已 stop + mask/disable（systemd 不会拉起它）
 - 事务状态、失败日志、历史版本目录**全部保留**（那是排查现场的唯一凭据）
-- `RESCUE.md` 记录现场信息与人工恢复步骤
+- `RESCUE.md` 记录现场信息与人工恢复步骤；**离开救援态时与 `rescue.flag`
+  一起清除**——它同样是救援态的派生视图，留着会让下一次救援读到旧现场
 
 **人工退出救援模式：**
 
 ```bash
-sudo systemctl unmask weaknet-server
+sudo systemctl unmask weaknet-server 2>/dev/null || true
 sudo systemctl enable weaknet-server
 sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \
     --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota \
     recover --accept <known-good-version>
-sudo systemctl restart weaknet-server
+sudo systemctl start weaknet-server
 ```
+
+> 顺序不能反：`recover --accept` 只改事务状态与 `current` 指针，**不动
+> systemd 的 enable/disable 状态**。漏掉 `enable` 会得到"手动 start 能起来、
+> 重启后又没了"的假成功。退出救援后的门禁语义见 §1.5。
 
 **当前边界**：P0-B 提供的是**开机自动恢复 + 最小 SSH 救援**。
 **真正的断电自愈尚未验证**——`fsync` 保证的是「内核 → 设备」，不保证设备
 写缓存已落到介质；板端根分区是 `/dev/sda3`（SATA/USB）。所有验证都是用
 状态构造与 `kill` 代替的，**不等于掉电验证**。
+
+### 1.5 救援模式持久化启动门禁（P0-C1）
+
+P0-B 能进入救援模式，但救援模式原来**可以绕**：任何人手动
+`systemctl start weaknet-server` 就能把一个尚未验证或已被判死刑的版本
+拉起来。P0-C1 补上启动闸门，保证三件事：
+
+1. **救援模式不能被绕过**（正常开机与手动 `systemctl start` 一视同仁）
+2. **恢复器必须先于业务服务完成启动前决策**（门禁 oneshot 每次启动前重跑）
+3. **故障情况下 SSH 救援通道仍然独立可用**（门禁只挡 weaknet-server，不碰
+   ssh / weaknet-tunnel）
+
+```text
+板端 systemd 依赖链：
+weaknet-ota-gate.service（oneshot，fail-closed 判定）
+        ▲ Requires= + After=
+weaknet-server.service（再加第二层：ConditionPathExists=!rescue.flag）
+
+弱依赖（not Require）— 门禁不碰，救援模式照样在线：
+ssh.service / weaknet-tunnel.service / weaknet-ota-recover.service
+```
+
+**判定规则（`tools/weaknet-ota-gate`）：**
+
+| 权威事务状态 | 判定 | 说明 |
+|------|------|------|
+| 无状态文件 / 无进行中事务 | **允许** | 全新设备 / 上次升级已归档 |
+| `COMMITTED` / `FORCED_COMMITTED` / `ABORTED` / `ROLLED_BACK` | **允许** | 事务已正常结束 |
+| `PREPARED` / `SWITCH_PENDING` / `TRIAL` / `ROLLBACK_PENDING` / `ROLLBACK_VERIFY` | **允许** | 升级/回滚进行中，**必须放行**（见下） |
+| `RECOVERY_REQUIRED` | **拒绝** | 救援模式，需人工 `recover --accept` |
+| phase 缺失 / 状态文件损坏 / schema 不认识 / 未登记阶段 | **拒绝** | 状态不可信——宁可不启动，不猜 |
+
+**为什么活跃阶段必须放行（这里走过一次弯路）：**
+
+升级脚本的流程是 `arm-switch → do-switch（翻指针，进 TRIAL）→ restart →
+健康窗口`。健康窗口的判据是 `systemctl is-active` + D-Bus `HealthCheck` +
+`GetEbpfMonitorHealth` + `GetUpdateStatus.installed_version`——**服务不在线就
+无法判定"已验证"**。若门禁在 `TRIAL` / `ROLLBACK_VERIFY` 拒绝启动：
+
+- 健康窗口必然超时 → 自动回滚 → 回滚的 restart 又被拒 → 升级 100% 失败
+- 回滚验证同样永远无法通过 → 每次回滚直接掉进救援
+
+板端实测复现：`do-switch → TRIAL` 后 `systemctl restart weaknet-server` 返回
+`rc=1`、`A dependency job ... failed`，gate 日志
+`事务处于 TRIAL：升级尚未结束，版本未经验证，拒绝启动`。
+
+所以门禁的职责边界只有一条：**挡住"已被判定为不可运行"的状态**——救援态
+与不可信状态。活跃阶段的收敛由 `boot_attempts` 持久计数 + 恢复器负责，
+"有限次数内结束"是 P0-B / P0-C2 的职责，不是门禁的。门禁不去猜"这个 TRIAL
+会不会自己收敛"——猜错就是把设备变砖。
+
+fail-closed 仍然成立，只是拒绝集合是"**不确定能不能跑**"，而不是"没跑完"。
+
+**`rescue.flag` 只是派生投影，不是第二套权威。**
+
+- 控制器写状态时的顺序：进入救援 → **先写 flag 再落状态**；离开救援 →
+  **先落状态再清 flag**。任何中途失败都落在"多挡一次"的方向上。
+- 门禁本体**不读 flag**，只读 `transaction.json`（权威状态）。flag 由
+  `weaknet-server.service` 的 `ConditionPathExists=!` 使用——systemd 在
+  依赖判定之前先算条件，标记在就直接跳过，连门禁都不跑，且**没有重启
+  风暴**（实测 NRestarts=0）。
+- flag 与权威状态矛盾时以状态为准：`sync_rescue_flag()` 会按状态修复
+  投影（缺了补、多了删，并留 `rescue.flag.stale` 痕迹）。
+
+**为什么选"独立 oneshot 单元 + Requires"而不是别的**（systemd 247 实测）：
+
+| 方案 | 实测行为 | 结论 |
+|------|------|------|
+| `ExecStartPre=` 检查脚本 | 失败 → **重启循环**（NRestarts=3），`RestartPreventExitStatus` 也拦不住 | ❌ 重启风暴 |
+| `ExecCondition=` | 跳过执行、result=success、无风暴；但每次自动重启会**重跑** | △ 可用但语义是"跳过"不是"禁止"，且无独立审计单元 |
+| `Wants=` + `After=` | 门禁失败时业务服务**照样启动** | ❌ 完全没门 |
+| `Requires=` + `After=` + oneshot 门禁（选中） | 门禁失败 → rc=1 / result=dependency / 进程零次执行 / NRestarts=0 | ✅ 真闸门 |
+| 门禁单元内 `ConditionPathExists=!flag` | 被 Condition 跳过的单元对 `Requires` 视为"未失败"→ 业务照样起 | ❌ Condition 不是闸门 |
+
+**人工通过救援门禁**（唯一合法出口是 `recover --accept`，不是删 flag）：
+
+```bash
+# 1) 先解除 systemd 侧封锁（恢复器用 mask 或 disable 之一，两条都执行才稳妥）
+sudo systemctl unmask weaknet-server 2>/dev/null || true
+sudo systemctl enable weaknet-server
+# 2) 再用控制器落终态（它先落状态、再清 rescue.flag）
+sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \
+    --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota \
+    recover --accept <known-good-version>
+# 3) 启动并确认门禁放行
+sudo systemctl start weaknet-server
+systemctl is-active weaknet-server weaknet-ota-gate.service
+```
+
+> **第 1 步最容易漏**：`recover --accept` 只改事务状态与 `current` 指针，
+> **不动 systemd 的 enable/disable 状态**（控制器是状态机，不该越界管引导）。
+> 只做第 2 步会得到"手动 start 能起来、重启后又没了"的假成功。
 
 ### 1.3 关键不变量
 
@@ -429,30 +526,49 @@ ssh board 'sudo /home/radxa/weaknet/weaknet-test-full.sh'
 - `14.2`: 未签名升级包拦截（验证 fail-closed 门禁）；
 - `14.3`: 伪造密钥签名拦截（验证 ECDSA 密钥校验完整性）。
 
-### 5.1 P0-A / P0-B 自测
+### 5.1 P0-A / P0-B / P0-C1 自测
 
-控制器与恢复器各有独立的单元测试与沙盒演练（都不碰真机、不启服务）：
+控制器、恢复器与启动门禁各有独立的单元测试与沙盒演练（都不碰真机、不启
+systemd）：
 
 ```bash
-# P0-A 控制器单元测试（74 项）：状态机、崩溃矩阵、GC 保守性、投影、
-# bootstrap 推断来源、CLI 行为
+# P0-A 控制器单元测试（86 项）：状态机、崩溃矩阵、GC 保守性、投影、
+# bootstrap 推断来源、rescue.flag / RESCUE.md 生命周期、CLI 行为
 python3 tools/test_weaknet_ota_ctl.py
 
 # P0-A 沙盒演练（44 项断言，8 节）：bootstrap 接管、正常升级、健康失败回滚、
 # 同版本幂等重装、崩溃点判定、GC 跳过、损坏拒绝、首次安装
 bash tools/ota_p0a_drill.sh
 
-# P0-B 恢复器单元测试（35 项）：只读事务、健康判据、救援模式、动作编排
+# P0-B 恢复器单元测试（42 项）：只读事务、健康判据、救援模式、动作编排、
+# P0-C2 重启矩阵（回滚续跑 / 崩溃循环救援 / 尝试耗尽回滚 / 同 boot_id 不重复计数）、
+# 门禁与恢复器判定一致性
 python3 tools/test_weaknet_ota_recover.py
 
 # P0-B 沙盒演练（21 项断言，8 节）：无事务、健康转正、尝试耗尽回滚、
 # 崩溃循环、控制器缺失兜底、状态损坏救援、救援报告、升级脚本消失仍可恢复
 bash tools/ota_p0b_drill.sh
+
+# P0-C1 启动门禁单元测试（28 项）：decide() 判定矩阵、状态读取错误路径、
+# "门禁不读 rescue.flag"两个方向、systemd 接线（Requires 而非 Wants、
+# 门禁 oneshot 无 RemainAfterExit、门禁不依赖 weaknet-server）
+python3 tools/test_weaknet_ota_gate.py
+
+# P0-C1 流程兼容演练（36 项断言，3 节）：阶段矩阵、升级全流程重放
+# （bootstrap→PREPARED→SWITCH_PENDING→TRIAL→COMMITTED 全程门禁必须放行）、
+# 回滚链全流程、救援链（进入拒绝 / 删标记仍拒绝 / accept 后放行）
+bash tools/ota_p0c1_drill.sh
 ```
 
 演练里的「崩溃点判定」一节用 `--dry-run` 走 `reconcile`：它**只判定不执行**，
 所以可以安全地在任意持久事实组合上跑。P0-B 演练用假的 `systemctl` /
 `busctl` 替身（放在 `PATH` 最前）驱动恢复器的完整行为链。
+
+**P0-C1 演练为什么必须存在**：门禁单元测试曾全绿，但板端每次升级都失败——
+因为测试把"TRIAL 阶段拒绝启动"写成了期望值。只测守卫本身覆盖不到"守卫会不会
+把正常流程掐死"，所以 `ota_p0c1_drill.sh` 把门禁接到真实的阶段推进序列上再跑
+一遍。可用 `OTA_GATE_BIN=<故意改坏的副本> bash tools/ota_p0c1_drill.sh` 验证
+演练本身有效（必须报红并退出非零）。
 
 ### 5.2 部署新版本到开发板
 
@@ -464,9 +580,12 @@ bash tools/ota_p0b_drill.sh
 ```
 
 `ci.sh` 的部署顺序是：装控制器 → 装恢复服务 → 建状态目录 → bootstrap 老设备
-→ 装升级脚本 → `adopt` 布局迁移与版本切换 → 健康窗口。控制器缺失时升级脚本
+→ **装启动门禁（gate 二进制 + 单元，且 enable）** → 落盘新 weaknet-server
+单元（其 `Requires=` 依赖门禁）→ 装升级脚本 → `adopt` 布局迁移与版本切换 →
+健康窗口。控制器缺失时升级脚本
 **fail-closed 拒绝升级**（不会绕过事务保护裸改指针）；恢复服务缺失只告警，
-因为它影响的是"开机自愈"而不是"能不能升级"。
+因为它影响的是"开机自愈"而不是"能不能升级"；**门禁单元必须先于带依赖的
+weaknet-server 单元落盘**，否则新 unit 因找不到 gate 单元而起不来。
 
 ### 5.3 手工查看板端恢复服务状态
 

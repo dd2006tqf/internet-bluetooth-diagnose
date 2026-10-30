@@ -2,6 +2,28 @@
 Description=WeakNet Network Monitor Server
 After=network-online.target dbus.service
 Wants=network-online.target
+# OTA 启动门禁（P0-C1）：救援态 / 状态不可信时**不启动**业务服务。
+#
+# 门禁是**独立单元** weaknet-ota-gate.service：
+#   Requires=  门禁失败 → 本单元根本不被启动（实测 rc=1 / result=dependency /
+#               业务进程零次执行 / NRestarts=0，**没有重启风暴**）
+#   After=    保证先做判定再启动业务
+#
+# 必须是 Requires 而不是 Wants：实测 Wants + After 在依赖失败时**照样启动**
+# 依赖方（ON-B-RAN）——那就完全没有门禁意义。
+#
+# 门禁只挡"已被判定为不可运行"的状态（RECOVERY_REQUIRED、状态损坏/schema
+# 不认识/phase 缺失/未登记阶段）。升级与回滚的活跃阶段（TRIAL、
+# ROLLBACK_VERIFY 等）**必须放行**——健康窗口要靠服务在线才能判定，挡了就是
+# 每次升级必然失败（实测踩过）。
+#
+# 门禁本体读权威事务状态 /var/lib/weaknet-ota/transaction.json，不读
+# rescue.flag（后者只是派生投影，给更廉价的防线用）。
+Requires=weaknet-ota-gate.service
+After=weaknet-ota-gate.service
+# 第二层廉价防线：救援标记存在时 systemd 直接跳过本单元，同样不进重启循环。
+# 标记是权威状态的派生投影，由控制器与恢复服务同步。
+ConditionPathExists=!/var/lib/weaknet-ota/rescue.flag
 
 [Service]
 Type=simple
