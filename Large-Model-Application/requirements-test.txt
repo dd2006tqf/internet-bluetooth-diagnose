@@ -26,6 +26,15 @@ opentelemetry-exporter-otlp-proto-http>=1.44,<2
 
 # [app-graph] create_app 链路
 fastapi>=0.116,<1
+# starlette 必须锁定：fastapi 只声明 `starlette>=X`，不设上限，pip 会装到最新版。
+# 2026-11-01 CI 突然变红（run 138 / 137）就是这个原因——代码和 uv.lock 都没变，
+# 但全新安装拿到了 starlette 1.10.0，其 `_exception_handler` 里给
+# `exc.__traceback__ = None` 赋值会让 AppError 抛
+# `TypeError: super(type, obj): obj must be an instance or subtype of type`，
+# tests/test_e2e_http_smoke.py 全军覆没（11 failed）。
+# 实测对照：starlette==1.10.0 → 11 failed；starlette==1.4.0 → 299 passed。
+# 这里锁成与 uv.lock 一致的版本，让 CI（读本文件）与本地（读 uv.lock）走同一条路。
+starlette==1.4.0
 a2a-sdk==1.1.2
 # a2a 的 jsonrpc adapter 在模块级 import sse_starlette，但 1.1.2 未把它列为
 # 运行时依赖——少了它，构造 app 时会在 a2a 上炸。uv.lock 里锁的是 3.4.8。
