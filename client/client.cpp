@@ -1398,25 +1398,6 @@ extern "C" bool weaknet_get_interfaces(char* buffer, size_t buffer_size, char* e
     }
 }
 
-/** @brief C 接口包装：非阻塞检查 Changed 信号 */
-extern "C" bool weaknet_check_changes(char* message_buffer, size_t message_size, int32_t* counter, char* error_buffer, size_t error_size) {
-    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-    if (!g_client || !g_client->isConnected()) {
-        LOG_ERROR(LogModule::CLIENT, "weaknet_check_changes: client not connected");
-        snprintf(error_buffer, error_size, "客户端未连接");
-        return false;
-    }
-
-    std::string message;
-    if (g_client->checkForChanges(message, *counter)) {
-        LOG_INFO(LogModule::CLIENT, "weaknet_check_changes: change detected");
-        snprintf(message_buffer, message_size, "%s", message.c_str());
-        return true;
-    }
-
-    snprintf(error_buffer, error_size, "无新的状态变化");
-    return false;
-}
 
 /** @brief C 接口包装：调用 HealthCheck 方法 */
 extern "C" bool weaknet_health_check(char* result_buffer, size_t result_size, char* error_buffer, size_t error_size) {
@@ -1472,68 +1453,9 @@ extern "C" bool weaknet_ping_host(const char* hostname, char* result_buffer, siz
 
 using namespace weaknet_dbus;
 
-/**
- * @brief C 接口包装：订阅指定 D-Bus 事件（只添加 match，不阻塞）
- *
- * @param event_type 信号成员名（如 "InterfaceChanged"）
- * @param callback   事件回调（当前 C 接口只注册 D-Bus 订阅，回调暂未在内部触发）
- */
-extern "C" bool weaknet_subscribe_event(const char* event_type, weaknet_event_callback_t callback) {
-    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-    if (!event_type) return false;
-    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
-        LOG_ERROR(LogModule::CLIENT, "weaknet_subscribe_event: client not connected");
-        return false;
-    }
-    LOG_INFO(LogModule::CLIENT, "weaknet_subscribe_event: subscribing to " << event_type);
-    return weaknet_dbus::g_client->subscribeToEvent(std::string(event_type));
-}
 
-/** @brief C 接口：取消订阅事件（简化实现，当前固定返回 true） */
-extern "C" bool weaknet_unsubscribe_event(const char* event_type) {
-    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-    // 注意：这个简化实现只是返回成功，实际项目中可能需要更复杂的去订阅逻辑
-    // 简化实现，不记录日志
-    return true;
-}
 
-/** @brief C 接口：获取支持的事件类型列表（本地拼接，不发起 D-Bus 调用） */
-extern "C" bool weaknet_get_event_types(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size) {
-    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-    snprintf(buffer, buffer_size, "%s,%s,%s,%s,%s,%s",
-             weaknet_dbus::kSignalInterfaceChanged,
-             weaknet_dbus::kSignalConnectionModeChanged,
-             weaknet_dbus::kSignalNetworkQualityChanged,
-             weaknet_dbus::kSignalBluetoothDeviceChanged,
-             weaknet_dbus::kSignalMonitorStateChanged,
-             weaknet_dbus::kSignalEbpfMonitorStats);
-    return true;
-}
 
-/** @brief C 接口包装：非阻塞检查多类事件信号 */
-extern "C" bool weaknet_check_events(char* event_type_buffer, size_t event_type_size,
-                                   char* message_buffer, size_t message_size,
-                                   int32_t* counter, char* source_buffer, size_t source_size,
-                                   char* error_buffer, size_t error_size) {
-    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
-        LOG_ERROR(LogModule::CLIENT, "weaknet_check_events: client not connected");
-        snprintf(error_buffer, error_size, "客户端未连接");
-        return false;
-    }
-
-    std::string eventType, message, source;
-    if (weaknet_dbus::g_client->checkForEvents(eventType, message, *counter, source)) {
-        LOG_INFO(LogModule::CLIENT, "weaknet_check_events: event detected: " << eventType);
-        snprintf(event_type_buffer, event_type_size, "%s", eventType.c_str());
-        snprintf(message_buffer, message_size, "%s", message.c_str());
-        snprintf(source_buffer, source_size, "%s", source.c_str());
-        return true;
-    }
-
-    snprintf(error_buffer, error_size, "没有检测到事件");
-    return false;
-}
 
 /** @brief C 接口：检查客户端连接状态 */
 extern "C" bool weaknet_is_connected() {
@@ -1555,89 +1477,7 @@ extern "C" bool weaknet_get_build_info(char* buffer, size_t buffer_size) {
     return true;
 }
 
-/**
- * @brief C 接口包装：阻塞订阅 NetworkQualityChanged 信号
- *
- * 内部通过静态变量保存用户回调指针，构造 C++ lambda 包装器
- * 传给 WeakNetClient::subscribeToNetworkQuality()。
- */
-extern "C" bool weaknet_subscribe_network_quality(weaknet_network_quality_callback_t callback) {
-    // 这个接口是**阻塞**的：整段监听循环都在本函数内，直到回调返回 false。
-    // 因此绝不能持有 g_client_mutex —— 否则订阅期间其他线程的任何 weaknet_*
-    // 调用都会阻塞；更严重的是回调内若再调 weaknet_* API，会重入同一把非递归
-    // 锁而自死锁。这里改为只持 shared_ptr 副本保活（对象在循环期间不会被
-    // weaknet_cleanup 释放），然后释放锁再进入监听循环。
-    std::shared_ptr<weaknet_dbus::WeakNetClient> client;
-    {
-        std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-        client = weaknet_dbus::g_client;
-    }
-    if (!client || !client->isConnected()) {
-        LOG_ERROR(LogModule::CLIENT, "weaknet_subscribe_network_quality: client not connected");
-        return false;
-    }
-    LOG_INFO(LogModule::CLIENT, "weaknet_subscribe_network_quality: subscribing");
 
-    // 用静态变量保存用户回调指针（注意：这只支持一次订阅，多次调用会覆盖）
-    static weaknet_network_quality_callback_t s_callback = nullptr;
-    s_callback = callback;
-
-    // 构造 C++ lambda，把 std::string 转换回 const char* 后调用用户 C 回调
-    auto cpp_callback = [](const std::string& quality, const std::string& details, int32_t counter) -> bool {
-        if (s_callback) {
-            return s_callback(quality.c_str(), details.c_str(), counter);
-        }
-        return false;
-    };
-
-    return client->subscribeToNetworkQuality(cpp_callback);
-}
-
-/**
- * @brief C 接口包装：非阻塞检查 NetworkQualityChanged 信号
- *
- * 直接访问底层 D-Bus 连接，手动执行 read_write + pop_message + parse，
- * 与 WeakNetClient 类的 checkForEvents 类似但只处理 NetworkQualityChanged 信号。
- */
-extern "C" bool weaknet_check_network_quality(char* quality_buffer, size_t quality_size,
-                                             char* details_buffer, size_t details_size, 
-                                                     int32_t* counter, char* error_buffer, size_t error_size) {
-    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
-        snprintf(error_buffer, error_size, "客户端未连接");
-        return false;
-    }
-
-    if (!weaknet_dbus::g_client->isConnected()) return false;
-
-    // 非阻塞轮询 D-Bus 队列
-    dbus_connection_read_write(weaknet_dbus::g_client->getConnection(), 0);
-    DBusMessage* msg = dbus_connection_pop_message(weaknet_dbus::g_client->getConnection());
-    if (!msg) return false;
-
-    // 检查是否为 NetworkQualityChanged 信号，并解析其三个参数
-    if (dbus_message_is_signal(msg, weaknet_dbus::kInterface, weaknet_dbus::kSignalNetworkQualityChanged)) {
-        const char* quality = nullptr;
-        const char* details = nullptr;
-        DBusError e;
-        dbus_error_init(&e);
-        
-        // 解析：STRING quality + STRING details + INT32 counter
-        if (dbus_message_get_args(msg, &e, DBUS_TYPE_STRING, &quality, DBUS_TYPE_STRING, &details, DBUS_TYPE_INT32, counter, DBUS_TYPE_INVALID)) {
-            snprintf(quality_buffer, quality_size, "%s", quality ? quality : "");
-            snprintf(details_buffer, details_size, "%s", details ? details : "");
-            dbus_message_unref(msg);
-            return true;
-        } else if (dbus_error_is_set(&e)) {
-            snprintf(error_buffer, error_size, "解析网络质量信号失败: %s", e.message);
-            dbus_error_free(&e);
-        }
-    }
-
-    dbus_message_unref(msg);
-    snprintf(error_buffer, error_size, "没有检测到网络质量事件");
-    return false;
-}
 
 // ============== 蓝牙设备 C API 实现 ==============
 
@@ -1766,21 +1606,6 @@ extern "C" bool weaknet_execute_action(const char* action_id, const char* param_
     }
 }
 
-/**
- * @brief C 接口包装：订阅 BluetoothDeviceChanged 信号
- *
- * 当前实现只添加 D-Bus match 规则，不进入阻塞监听循环。
- * 实际事件需通过 weaknet_check_events() 轮询。
- */
-extern "C" bool weaknet_subscribe_bluetooth_events(weaknet_event_callback_t callback) {
-    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
-        return false;
-    }
-    // 先添加 D-Bus 信号订阅
-    weaknet_dbus::g_client->subscribeToEvent(weaknet_dbus::kSignalBluetoothDeviceChanged);
-    return true;
-}
 
 // ============== eBPF 监控数据 C API 实现 ==============
 

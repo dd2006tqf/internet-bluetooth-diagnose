@@ -44,10 +44,8 @@ set_target_properties(ping_example PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin
     EXCLUDE_FROM_ALL TRUE)
 
-add_executable(test_network_quality test_network_quality.cpp)
-target_link_libraries(test_network_quality PRIVATE weaknet PkgConfig::DBUS1 glog pthread)
-set_target_properties(test_network_quality PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin
-    EXCLUDE_FROM_ALL TRUE)
+# test_network_quality 已删除（2026-11-01）：该程序唯一用途是演示
+# NetworkQualityChanged 信号的订阅/轮询，而服务端自 2026-10-19 起停发
+# 全部 D-Bus 信号，客户端订阅族于 2026-11-01 一并删除。留着它只能编译失败。
 
 add_test(NAME test_lifecycle_api COMMAND test_lifecycle_api)

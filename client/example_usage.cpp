@@ -16,11 +16,9 @@
  * ⚠️ 本示例**不再演示事件订阅**（2026-11-01）：
  *   服务端自 2026-10-19 起停发了全部 D-Bus 信号——停发时它们没有任何生产
  *   订阅者（决策与证据见 openspec/tasks/2026-10-19-stop-unsubscribed-dbus-signals.md）。
- *   于是 weaknet_subscribe_event() / weaknet_check_events() 这类 API 成了空转：
- *   订阅会成功（本地加了 match 规则），但**永远等不到事件**。
- *   示例程序若继续演示它，等于把"抄这个就能用"的错误信号传给集成方——
- *   而这正是当初那条"信号替代轮询"的消费路径从未建出来的原因之一。
- *   要拿当前状态请直接调用对应的 get_* / *_stats 查询方法。
+ *   那些订阅 API 已于 2026-11-01 **删除**（返回成功却永不产生事件，
+ *   对集成方是静默的谎）。要拿当前状态请直接调用对应的 get_* / *_stats
+ *   查询方法——本示例演示的就是这条唯一有效的路径。
  *
  * 依赖：
  *   - WeakNet 服务端必须已启动并在 D-Bus Session 总线上注册
@@ -36,29 +34,9 @@
 #include "weaknet_client.h"
 
 /**
- * @brief 事件回调函数 —— 打印收到的事件信息
- *
- * 用于 weaknet_subscribe_event() 的 C 回调签名。
- * 注意：当前版本中，订阅函数只添加 D-Bus match 规则，
- * 回调通过 weaknet_check_events() 轮询在外部触发。
- *
- * @param event_type 事件类型字符串（如 "InterfaceChanged"）
- * @param message    事件描述文本
- * @param counter    服务端单调递增的事件计数器
- * @param source     事件来源标识
- */
-void onNetworkChange(const char* event_type, const char* message, int32_t counter, const char* source) {
-    std::cout << "🔄 收到事件: type=" << event_type 
-              << " counter=" << counter 
-              << " source=" << source 
-              << " message=" << message << std::endl;
-}
-
-/**
  * @brief 主函数 —— 按步骤演示 WeakNet 动态库的完整使用流程
  *
- * 无命令行参数。运行后会持续监控 30 秒的事件，
- * 期间可以在另一个终端插拔网络设备来触发 D-Bus 信号。
+ * 无命令行参数。运行后依次演示查询路径：健康检查、接口列表、版本信息等。
  */
 int main() {
     std::cout << "=== WeakNet 动态库使用示例 ===" << std::endl;
@@ -120,8 +98,8 @@ int main() {
     // ===== 步骤 6：查询当前状态（事件订阅的替代路径） =====
     //
     // 这里刻意演示**查询**而不是订阅：服务端已停发全部 D-Bus 信号
-    // （2026-10-19），weaknet_subscribe_event() / weaknet_check_events()
-    // 现在订得上但永远等不到事件。生产集成应当按需轮询 get_* 方法。
+    // （2026-10-19），客户端订阅族已于 2026-11-01 删除。
+    // 生产集成应当按需轮询 get_* / *_stats 方法（唯一有效路径）。
     std::cout << "\n6. 查询当前网络状态..." << std::endl;
 
     char query_buffer[2048];

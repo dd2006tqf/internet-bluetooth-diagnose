@@ -3,7 +3,7 @@
  * @brief WeakNet 客户端动态库完整接口验证工具（CLI 测试框架）
  *
  * 本程序用于全面验证 weaknet_client.h 中所有 C API 的正确性，
- * 同时也是一个可用的命令行工具，支持多种单次查询和持续监听模式。
+ * 同时也是一个可用的命令行工具，支持多种单次查询模式。
  *
  * 程序分为两种运行模式：
  *
@@ -12,8 +12,6 @@
  *
  *   2. 指定子命令 —— 单次执行某一操作
  *      示例：./test_client ping 8.8.8.8
- *           ./test_client events
- *           ./test_client subscribe
  *
  * D-Bus 通信基础：
  *   - Bus Name:   com.example.WeakNet
@@ -28,12 +26,9 @@
  *   - GetBluetoothAdapter      蓝牙适配器状态
  *   - GetEbpfMonitorHealth     eBPF 监控器健康快照
  *
- * 支持的 D-Bus 信号（本程序中订阅/检查的）：
- *   - Changed                  通用变化信号
- *   - InterfaceChanged         网卡变化
- *   - ConnectionModeChanged    上网网卡切换
- *   - NetworkQualityChanged    网络质量变化
- *   - BluetoothDeviceChanged   蓝牙设备变化
+ * 注意：服务端自 2026-10-19 起停发全部 D-Bus 信号，客户端的订阅/检查族
+ * 已于 2026-11-01 删除（详见 weaknet_client.h 文件头）。本程序只覆盖
+ * 真实可用的查询路径（get_* / *_stats 方法）。
  *
  * 运行依赖：
  *   - WeakNet 服务端已启动并在 D-Bus Session 总线上注册
@@ -215,174 +210,6 @@ bool testPingFunction() {
 }
 
 /**
- * @brief 事件系统测试
- *
- * 测试流程：
- *   1. weaknet_get_event_types —— 本地拼接 4 种事件类型字符串
- *   2. weaknet_subscribe_event —— 通过 dbus_bus_add_match 注册 D-Bus 信号匹配规则
- *   3. weaknet_check_events —— 每秒钟非阻塞检查一次 D-Bus 信号队列（持续 5 秒）
- *   4. weaknet_unsubscribe_event —— 取消订阅（简化版本，固定返回 true）
- *
- * D-Bus 匹配规则示例：type='signal',interface='com.example.WeakNet',member='InterfaceChanged'
- */
-bool testEventSystem() {
-    TEST_CASE("事件系统测试");
-    
-    char buffer[512], error[256];
-    
-    // 获取事件类型列表 —— 本地拼接字符串
-    TEST_API_CALL(weaknet_get_event_types, buffer, sizeof(buffer), error, sizeof(error));
-    printf("   📋 支持的事件类型: %s\n", buffer);
-    
-    // 订阅三类事件 —— 添加 D-Bus match 规则
-    std::vector<std::string> eventTypes = {
-        "InterfaceChanged",           // 网卡添加/删除
-        "ConnectionModeChanged",      // 当前上网网卡切换
-        "NetworkQualityChanged"      // 综合网络质量变化
-    };
-    
-    for (const auto& eventType : eventTypes) {
-        printf("   🔔 订阅事件: %s\n", eventType.c_str());
-        TEST_API_CALL(weaknet_subscribe_event, eventType.c_str(), nullptr);
-    }
-    
-    // 持续 5 秒每秒检查一次事件队列
-    // weaknet_check_events 内部执行 dbus_connection_read_write(conn, 0) + pop_message
-    // 检查四类信号：InterfaceChanged / ConnectionModeChanged / NetworkQualityChanged / BluetoothDeviceChanged
-    printf("   🔍 检查事件 (5秒)...\n");
-    char eventType[64], message[512], source[64];
-    int32_t counter;
-    
-    for (int i = 0; i < 5; i++) {
-        if (weaknet_check_events(eventType, sizeof(eventType), message, sizeof(message),
-                                 &counter, source, sizeof(source), error, sizeof(error))) {
-            printf("     🎯 检测到事件: type=%s counter=%d source=%s message=%s\n", 
-                   eventType, counter, source, message);
-        } else {
-            printf("     ⏳ 第%d秒: 无事件\n", i+1);
-        }
-        sleep(1);
-    }
-    
-    // 取消订阅 —— 当前实现简化，固定返回 true
-    for (const auto& eventType : eventTypes) {
-        printf("   🔕 取消订阅: %s\n", eventType.c_str());
-        TEST_API_CALL(weaknet_unsubscribe_event, eventType.c_str());
-    }
-    
-    return true;
-}
-
-/**
- * @brief 网络质量事件监听测试（非阻塞轮询）
- *
- * 通过 weaknet_check_network_quality() 每秒钟检查一次
- * NetworkQualityChanged 信号队列（持续 10 秒）。
- *
- * D-Bus 信号 Payload:
- *   STRING quality + STRING details + INT32 counter
- */
-bool testNetworkQualityEvents() {
-    TEST_CASE("网络质量事件监听测试");
-    
-    char quality[256], details[1024], error[256];
-    int32_t counter;
-    
-    // 先通过 weaknet_subscribe_event 添加 NetworkQualityChanged 的 D-Bus 订阅
-    printf("   🔔 订阅网络质量事件...\n");
-    if (weaknet_subscribe_event("NetworkQualityChanged", nullptr)) {
-        printf("     ✅ 网络质量事件订阅成功\n");
-    } else {
-        printf("     ❌ 网络质量事件订阅失败\n");
-        return false;
-    }
-    
-    // 非阻塞检查网络质量事件（持续 10 秒）
-    printf("   🔍 检查网络质量事件 (10秒)...\n");
-    for (int i = 0; i < 10; i++) {
-        // weaknet_check_network_quality 内部：
-        //   dbus_connection_read_write(conn, 0) + pop_message + 解析 NetworkQualityChanged 信号的三个参数
-        if (weaknet_check_network_quality(quality, sizeof(quality), details, sizeof(details),
-                                             &counter, error, sizeof(error))) {
-            printf("     🎯 检测到网络质量事件:\n");
-            printf("       质量等级: %s\n", quality);
-            printf("       详细信息: %s\n", details);
-            printf("       事件计数: %d\n", counter);
-        } else {
-            printf("     ⏳ 第%d秒: 无网络质量事件 (%s)\n", i+1, error);
-        }
-        sleep(1);
-    }
-    
-    return true;
-}
-
-/**
- * @brief 网络质量事件回调测试（阻塞模式）
- *
- * 通过 weaknet_subscribe_network_quality(callback) 进入阻塞监听循环。
- * 回调函数使用静态变量计数，收到 3 个事件后返回 false 停止监听。
- *
- * 注意：subscribe_to_network_quality 内部会进入 while(true) 循环，
- * 只有当 callback 返回 false 时才会退出。
- */
-bool testNetworkQualityCallback() {
-    TEST_CASE("网络质量事件回调测试");
-    
-    // 定义回调函数（使用 lambda 转换为 weaknet_network_quality_callback_t）
-    static int callback_count = 0;
-    auto quality_callback = [](const char* quality, const char* details, int32_t counter) -> bool {
-        callback_count++;
-        printf("     🎯 回调收到网络质量事件 #%d:\n", callback_count);
-        printf("       质量等级: %s\n", quality);
-        printf("       详细信息: %s\n", details);
-        printf("       事件计数: %d\n", counter);
-        
-        // 收到 3 个事件后停止监听（返回 false）
-        return callback_count < 3;
-    };
-    
-    printf("   🔔 订阅网络质量事件回调 (最多3个事件)...\n");
-    // weaknet_subscribe_network_quality 内部会：
-    //   1. dbus_bus_add_match("...NetworkQualityChanged")
-    //   2. 进入 while(true) { read_write(100ms); pop_message; 解析三个参数; 调用 callback; }
-    if (weaknet_subscribe_network_quality(quality_callback)) {
-        printf("     ✅ 网络质量事件订阅成功\n");
-    } else {
-        printf("     ❌ 网络质量事件订阅失败\n");
-        return false;
-    }
-    
-    return true;
-}
-
-/**
- * @brief 状态变化监控测试（Changed 信号）
- *
- * 每秒钟调用 weaknet_check_changes() 非阻塞检查 Changed 信号（持续 3 秒）。
- * Changed 是旧版通用变化信号，Payload 为 STRING text + INT32 counter。
- */
-bool testChangeMonitoring() {
-    TEST_CASE("状态变化监控");
-    
-    char message[512], error[256];
-    int32_t counter;
-    
-    printf("   🔍 检查状态变化 (3秒)...\n");
-    for (int i = 0; i < 3; i++) {
-        // weaknet_check_changes 内部：dbus_connection_read_write(conn, 0) + pop_message + 检查 Changed 信号
-        if (weaknet_check_changes(message, sizeof(message), &counter, error, sizeof(error))) {
-            printf("     🎯 检测到变化: %s (counter=%d)\n", message, counter);
-        } else {
-            printf("     ⏳ 第%d秒: 无变化\n", i+1);
-        }
-        sleep(1);
-    }
-    
-    return true;
-}
-
-/**
  * @brief 错误处理测试
  *
  * 验证 weaknet_ping_host 对非法输入的校验：
@@ -437,84 +264,6 @@ bool testBluetoothAdapter() {
     // GetBluetoothAdapter → STRING（"Powered:1|Name:xxx|Address:xx:xx:..."）
     TEST_API_CALL(weaknet_get_bluetooth_adapter, buffer, sizeof(buffer), error, sizeof(error));
     printf("   📡 蓝牙适配器: %s\n", buffer);
-
-    return true;
-}
-
-/**
- * @brief 蓝牙事件监听测试
- *
- * 订阅 BluetoothDeviceChanged 信号后，
- * 每秒钟调用 weaknet_check_events() 非阻塞检查（持续 15 秒）。
- *
- * D-Bus 信号 Payload: STRING text + INT32 counter
- */
-bool testBluetoothEvents() {
-    TEST_CASE("蓝牙事件监听测试");
-
-    char buffer[512], error[256];
-
-    // 订阅 BluetoothDeviceChanged —— dbus_bus_add_match 注册 D-Bus 匹配规则
-    printf("   🔔 订阅蓝牙设备变化事件...\n");
-    if (weaknet_subscribe_bluetooth_events(nullptr)) {
-        printf("     ✅ 蓝牙事件订阅成功\n");
-    } else {
-        printf("     ❌ 蓝牙事件订阅失败\n");
-        return false;
-    }
-
-    // 监听蓝牙事件（持续 15 秒）
-    printf("   🔍 监听蓝牙事件 (15秒)...\n");
-    char eventType[64], message[512], source[64];
-    int32_t counter;
-
-    for (int i = 0; i < 15; i++) {
-        // 检查四类信号队列（包括 BluetoothDeviceChanged）
-        if (weaknet_check_events(eventType, sizeof(eventType), message, sizeof(message),
-                                 &counter, source, sizeof(source), error, sizeof(error))) {
-            printf("     🎯 检测到事件: type=%s counter=%d source=%s message=%s\n",
-                   eventType, counter, source, message);
-        } else {
-            printf("     ⏳ 第%d秒: 无蓝牙事件\n", i+1);
-        }
-        sleep(1);
-    }
-
-    return true;
-}
-
-/**
- * @brief 蓝牙事件回调测试（阻塞模式，持续 30 秒）
- *
- * 注意：subscribe_bluetooth_events 当前只添加 D-Bus match，
- * 不进入阻塞监听循环。本测试实际上是一个 30 秒的被动等待。
- */
-bool testBluetoothCallback() {
-    TEST_CASE("蓝牙事件回调测试");
-
-    static int bt_callback_count = 0;
-    auto bt_callback = [](const char* event_type, const char* message, int32_t counter, const char* source) {
-        bt_callback_count++;
-        printf("     🎯 回调收到蓝牙事件 #%d:\n", bt_callback_count);
-        printf("       事件类型: %s\n", event_type);
-        printf("       消息内容: %s\n", message);
-        printf("       事件计数: %d\n", counter);
-        printf("       事件来源: %s\n", source);
-    };
-
-    printf("   🔔 订阅蓝牙事件回调（按Ctrl+C停止）...\n");
-    if (weaknet_subscribe_bluetooth_events(bt_callback)) {
-        printf("     ✅ 蓝牙事件回调订阅成功\n");
-    } else {
-        printf("     ❌ 蓝牙事件回调订阅失败\n");
-        return false;
-    }
-
-    // 保持运行 30 秒（被动等待）
-    printf("   🔍 等待蓝牙事件 (30秒)...\n");
-    for (int i = 0; i < 30; i++) {
-        sleep(1);
-    }
 
     return true;
 }
@@ -591,14 +340,8 @@ void runAllTests() {
     testBasicFunctions();
     testNetworkInfo();
     testPingFunction();
-    testEventSystem();
     testBluetoothDevices();
     testBluetoothAdapter();
-    testBluetoothEvents();
-    testBluetoothCallback();
-    testNetworkQualityEvents();
-    testNetworkQualityCallback();
-    testChangeMonitoring();
     testHistoryQuery();
     testErrorHandling();
     testPerformance();
@@ -615,7 +358,7 @@ void runAllTests() {
 /**
  * @brief 执行单个命令（CLI 单次查询模式）
  *
- * 所有命令在执行前都会先 weaknet_init()，执行完后 weaknet_cleanup()（subscribe/quality-sub/bt-events 等持续监听命令除外）。
+ * 所有命令在执行前都会先 weaknet_init()，执行完后 weaknet_cleanup()。
  *
  * @param command 子命令字符串（argv[1]）
  * @param argc    原始命令行参数个数
@@ -761,92 +504,6 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
             return false;
         }
     }
-    // ===== check =====
-    // 单次非阻塞检查 Changed 信号（旧版通用变化信号）
-    else if (command == "check") {
-        if (weaknet_check_changes(buffer, sizeof(buffer), &counter, error, sizeof(error))) {
-            printf("✅ 检测到变化: %s (counter=%d)\n", buffer, counter);
-        } else {
-            printf("ℹ️  没有检测到新变化: %s\n", error);
-        }
-    }
-    // ===== events =====
-    // 单次非阻塞检查多类事件信号（InterfaceChanged / ConnectionModeChanged / NetworkQualityChanged / BluetoothDeviceChanged）
-    else if (command == "events") {
-        char eventType[64], message[512], source[64];
-        if (weaknet_check_events(eventType, sizeof(eventType), message, sizeof(message),
-                                  &counter, source, sizeof(source), error, sizeof(error))) {
-            printf("✅ 检测到事件: type=%s counter=%d source=%s message=%s\n", 
-                        eventType, counter, source, message);
-        } else {
-            printf("ℹ️  没有检测到事件: %s\n", error);
-        }
-    }
-    // ===== quality =====
-    // 单次非阻塞检查 NetworkQualityChanged 信号
-    // Payload: STRING quality + STRING details + INT32 counter
-    else if (command == "quality") {
-        char quality[256], details[1024];
-        if (weaknet_check_network_quality(quality, sizeof(quality), details, sizeof(details),
-                                             &counter, error, sizeof(error))) {
-            printf("✅ 检测到网络质量事件:\n");
-            printf("   质量等级: %s\n", quality);
-            printf("   详细信息: %s\n", details);
-            printf("   事件计数: %d\n", counter);
-        } else {
-            printf("ℹ️  没有检测到网络质量事件: %s\n", error);
-        }
-    }
-    // ===== quality-sub =====
-    // 持续监听 NetworkQualityChanged 信号（最多 60 秒，每秒轮询一次）
-    else if (command == "quality-sub") {
-        printf("🔄 开始监听网络质量事件（按Ctrl+C停止）...\n");
-        char quality[256], details[1024];
-        int count = 0;
-        while (count < 60) { // 最多运行 1 分钟
-            if (weaknet_check_network_quality(quality, sizeof(quality), details, sizeof(details),
-                                                     &counter, error, sizeof(error))) {
-                printf("📊 网络质量事件: %s (分数: %s, 计数: %d)\n", quality, details, counter);
-            }
-            usleep(1000000); // 等待 1 秒
-            count++;
-        }
-    }
-    // ===== event-types =====
-    // 本地拼接 "InterfaceChanged,ConnectionModeChanged,NetworkQualityChanged,BluetoothDeviceChanged"
-    else if (command == "event-types") {
-        if (weaknet_get_event_types(buffer, sizeof(buffer), error, sizeof(error))) {
-            printf("✅ 支持的事件类型: %s\n", buffer);
-        } else {
-            printf("❌ 获取事件类型失败: %s\n", error);
-            return false;
-        }
-    }
-    // ===== event-sub EVENT_TYPE =====
-    // 通过 dbus_bus_add_match 订阅指定事件类型的 D-Bus 信号
-    // 需要 argc >= 3，argv[2] 为事件类型名称
-    else if (command == "event-sub" && argc >= 3) {
-        std::string eventType = argv[2];
-        if (weaknet_subscribe_event(eventType.c_str(), nullptr)) {
-            printf("✅ 成功订阅事件类型: %s\n", eventType.c_str());
-        } else {
-            printf("❌ 订阅事件失败: %s\n", eventType.c_str());
-            return false;
-        }
-    }
-    // ===== subscribe =====
-    // 持续监听 Changed 信号（最多 5 分钟，每秒轮询一次）
-    else if (command == "subscribe") {
-        printf("🔄 开始持续监听网络变化（按Ctrl+C停止）...\n");
-        int count = 0;
-        while (count < 300) { // 最多运行 5 分钟
-            if (weaknet_check_changes(buffer, sizeof(buffer), &counter, error, sizeof(error))) {
-                printf("📢 收到网络变化: %s (counter=%d)\n", buffer, counter);
-            }
-            usleep(1000000); // 等待 1 秒
-            count++;
-        }
-    }
     // ===== bt-devices =====
     // D-Bus Method: GetBluetoothDevices → ARRAY of STRING
     else if (command == "bt-devices") {
@@ -888,41 +545,12 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
             return false;
         }
     }
-    // ===== bt-events =====
-    // 订阅 BluetoothDeviceChanged 信号后持续监听（最多 60 秒）
-    else if (command == "bt-events") {
-        printf("🔄 开始监听蓝牙设备变化（按Ctrl+C停止）...\n");
-        // 订阅 BluetoothDeviceChanged —— 添加 D-Bus match 规则
-        if (!weaknet_subscribe_bluetooth_events(nullptr)) {
-            printf("❌ 订阅蓝牙事件失败\n");
-            return false;
-        }
-        printf("✅ 蓝牙事件订阅成功\n");
-        int count = 0;
-        while (count < 60) {
-            char eventType[64], message[512], source[64];
-            // 每秒检查一次四类信号队列（包括 BluetoothDeviceChanged）
-            if (weaknet_check_events(eventType, sizeof(eventType), message, sizeof(message),
-                                     &counter, source, sizeof(source), error, sizeof(error))) {
-                printf("📢 蓝牙设备变化: type=%s counter=%d source=%s message=%s\n",
-                       eventType, counter, source, message);
-            }
-            usleep(1000000);
-            count++;
-        }
-    }
     // ===== test-bt =====
-    // 依次执行蓝牙相关测试（设备列表、适配器、事件监听）
+    // 依次执行蓝牙相关查询测试（设备列表、适配器）
     else if (command == "test-bt") {
         testBluetoothDevices();
         testBluetoothAdapter();
-        testBluetoothEvents();
         return true;
-    }
-    // ===== test-bt-callback =====
-    // 蓝牙事件回调测试（阻塞/被动等待 30 秒）
-    else if (command == "test-bt-callback") {
-        return testBluetoothCallback();
     }
     // ===== test-basic =====
     // 基础功能测试
@@ -939,11 +567,6 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
     else if (command == "test-ping") {
         return testPingFunction();
     }
-    // ===== test-events =====
-    // 事件系统测试（subscribe → check → unsubscribe）
-    else if (command == "test-events") {
-        return testEventSystem();
-    }
     // ===== test-errors =====
     // 错误处理测试（空指针、空字符串校验）
     else if (command == "test-errors") {
@@ -954,23 +577,13 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
     else if (command == "test-performance") {
         return testPerformance();
     }
-    // ===== test-quality =====
-    // 网络质量事件非阻塞监听测试（持续 10 秒）
-    else if (command == "test-quality") {
-        return testNetworkQualityEvents();
-    }
-    // ===== test-quality-callback =====
-    // 网络质量事件阻塞回调测试（收到 3 个事件后退出）
-    else if (command == "test-quality-callback") {
-        return testNetworkQualityCallback();
-    }
     // ===== 未知命令 =====
     else {
         printf("❌ 未知命令: %s\n", command.c_str());
         return false;
     }
     
-    // 正常退出前清理资源（subscribe/quality-sub/bt-events 等持续监听命令会先返回）
+    // 正常退出前清理资源
     weaknet_cleanup();
     return true;
 }
@@ -984,7 +597,7 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
  *
  * 命令行参数说明：
  *   argv[1] —— 子命令（必填）
- *   argv[2] —— 子命令参数（可选，如 ping 的主机名、event-sub 的事件类型）
+ *   argv[2] —— 子命令参数（可选，如 ping 的主机名）
  *
  * 子命令列表：
  *   all                      - 运行完整测试套件（默认行为）
@@ -992,24 +605,12 @@ bool runSingleTest(const std::string& command, int argc, char* argv[]) {
  *   health                   - 网络健康检查（HealthCheck）
  *   ebpf-health              - eBPF 监控器健康快照（GetEbpfMonitorHealth）
  *   ping HOSTNAME            - Ping 指定主机（Ping 方法，需要第二个参数）
- *   check                    - 单次非阻塞检查 Changed 信号
- *   subscribe                - 持续监听 Changed 信号（最多 5 分钟）
- *   events                   - 单次非阻塞检查多类事件信号
- *   quality                  - 单次非阻塞检查 NetworkQualityChanged 信号
- *   quality-sub              - 持续监听网络质量事件（最多 60 秒）
- *   event-types              - 获取支持的事件类型字符串列表
- *   event-sub EVENT_TYPE     - 订阅指定事件类型（只添加 D-Bus match，不阻塞）
  *   bt-devices               - 获取蓝牙设备列表（GetBluetoothDevices）
  *   bt-adapter               - 获取蓝牙适配器状态（GetBluetoothAdapter）
- *   bt-events                - 持续监听蓝牙设备变化（最多 60 秒）
  *   test-basic               - 基础功能测试
  *   test-network             - 网络接口信息测试
  *   test-ping                - Ping 功能测试
- *   test-events              - 事件系统测试
- *   test-quality             - 网络质量事件非阻塞监听测试
- *   test-quality-callback    - 网络质量事件阻塞回调测试
- *   test-bt                  - 蓝牙功能组合测试
- *   test-bt-callback         - 蓝牙事件回调测试
+ *   test-bt                  - 蓝牙功能组合测试（设备列表 + 适配器）
  *   test-errors              - 错误处理边界测试
  *   test-performance         - get_interfaces 性能基准测试
  *
@@ -1033,28 +634,16 @@ int main(int argc, char* argv[]) {
         printf("  %s profiling              - 获取进程网络流量画像\n", argv[0]);
         printf("  %s history [IFACE]        - 查询网络历史监控记录\n", argv[0]);
         printf("  %s ping HOSTNAME          - Ping指定主机\n", argv[0]);
-        printf("  %s check                  - 单次检查变化\n", argv[0]);
-        printf("  %s subscribe              - 持续监听网络变化\n", argv[0]);
-        printf("  %s events                 - 单次检查事件\n", argv[0]);
-        printf("  %s quality                - 单次检查网络质量事件\n", argv[0]);
-        printf("  %s quality-sub            - 持续监听网络质量事件\n", argv[0]);
-        printf("  %s event-types            - 获取支持的事件类型\n", argv[0]);
-        printf("  %s event-sub EVENT_TYPE   - 订阅特定事件类型\n", argv[0]);
         printf("\n蓝牙功能:\n");
         printf("  %s bt-devices             - 获取蓝牙设备列表\n", argv[0]);
         printf("  %s bt-adapter             - 获取蓝牙适配器信息\n", argv[0]);
         printf("  %s bt-audio [MAC]         - 获取蓝牙音频质量与 eBPF 融合诊断\n", argv[0]);
         printf("  %s coexistence            - 获取 Wi-Fi 与蓝牙 2.4GHz 共存诊断\n", argv[0]);
-        printf("  %s bt-events              - 持续监听蓝牙设备变化\n", argv[0]);
         printf("\n测试模式:\n");
         printf("  %s test-basic             - 基础功能测试\n", argv[0]);
         printf("  %s test-network           - 网络信息测试\n", argv[0]);
         printf("  %s test-ping              - Ping功能测试\n", argv[0]);
-        printf("  %s test-events            - 事件系统测试\n", argv[0]);
-        printf("  %s test-quality           - 网络质量事件测试\n", argv[0]);
-        printf("  %s test-quality-callback  - 网络质量事件回调测试\n", argv[0]);
         printf("  %s test-bt                - 蓝牙功能测试\n", argv[0]);
-        printf("  %s test-bt-callback       - 蓝牙事件回调测试\n", argv[0]);
         printf("  %s test-errors            - 错误处理测试\n", argv[0]);
         printf("  %s test-performance       - 性能测试\n", argv[0]);
         return 1;

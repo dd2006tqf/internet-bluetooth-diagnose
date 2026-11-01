@@ -23,30 +23,31 @@
  *   - GetEbpfMonitorHealth      eBPF 监控器健康快照
  *   - GetHistory                查询历史监控数据
  *
- * ⚠️ 事件订阅族当前**无效**（2026-10-19 停发，2026-11-01 标注）：
+ * ⚠️ 事件订阅族已于 2026-11-01 **删除**（服务端 2026-10-19 起停发全部 D-Bus 信号）。
  *
- *   服务端已停发全部 D-Bus 信号（Changed / InterfaceChanged /
- *   ConnectionModeChanged / NetworkQualityChanged / BluetoothDeviceChanged /
- *   MonitorStateChanged / EbpfMonitorStats）。原因是它们在停止时**没有任何
- *   生产订阅者**——`server.cpp` 注释宣称的「信号替代轮询」这个消费者从未建出来。
- *   停发决策与处置记录见 openspec/tasks/2026-10-19-stop-unsubscribed-dbus-signals.md。
+ *   停发的信号：Changed / InterfaceChanged / ConnectionModeChanged /
+ *   NetworkQualityChanged / BluetoothDeviceChanged / MonitorStateChanged /
+ *   EbpfMonitorStats。原因是停发时它们**没有任何生产订阅者**——`server.cpp`
+ *   注释宣称的「信号替代轮询」这个消费者从未建出来。决策记录见
+ *   openspec/tasks/2026-10-19-stop-unsubscribed-dbus-signals.md。
  *
- *   因此下列 API 目前是**空转**的：
- *     weaknet_check_changes()          —— 永远返回 false
- *     weaknet_subscribe_event()        —— 只加 D-Bus match，服务端不会发
- *     weaknet_unsubscribe_event()      —— 只做本地状态，固定返回 true
- *     weaknet_get_event_types()        —— 本地拼接常量，与生产端无关
- *     weaknet_check_events()           —— 永远返回 false
- *     weaknet_subscribe_network_quality() / weaknet_check_network_quality()
- *     weaknet_subscribe_bluetooth_events()
+ *   已删除的 API（曾长期"空转"：订得上但永远等不到事件）：
+ *     weaknet_check_changes()              永远返回 false
+ *     weaknet_subscribe_event()            只加 D-Bus match，服务端不会发
+ *     weaknet_unsubscribe_event()          只做本地状态，固定返回 true
+ *     weaknet_get_event_types()            本地拼接常量，与生产端无关
+ *     weaknet_check_events()               永远返回 false
+ *     weaknet_subscribe_network_quality()  阻塞监听循环，收不到信号
+ *     weaknet_check_network_quality()      永远返回 false
+ *     weaknet_subscribe_bluetooth_events() 只加 match，收不到信号
  *
- *   它们被保留而不删除，是因为仓库内仍有示例/演示程序引用
- *   （client/example_usage.cpp、client/test_client.cpp、client/test_network_quality.cpp）。
- *   新代码**不要**用它们做事件驱动；要拿当前状态请直接调用对应的
- *   get_* / *_stats 查询方法（那是真实可用的路径）。
+ *   删除而非保留的理由：它们返回"成功"却不产生任何事件，对集成方是
+ *   **静默的谎**——比编译报错危险得多。保留只会让人以为事件系统可用。
  *
- *   彻底删除或重建发射（须先有真实订阅者）属于独立变更，见
- *   docs/架构设计-模块与代码结构.md 的"信号停发与出口对照表"。
+ *   **迁移指引**：要拿当前状态请直接调用对应的 get_* / *_stats 查询方法。
+ *   事件驱动需求若真实出现，须先有真实订阅者再重建服务端发射端
+ *   （走 OpenSpec change），不得凭空恢复发射。
+ *   对照表见 docs/架构设计-模块与代码结构.md 的"信号停发与出口对照表"。
  *
  * 使用流程：
  *   1. weaknet_init()              -- 初始化库并建立 D-Bus 连接
@@ -82,7 +83,7 @@ extern "C" {
  *   weaknet_health_check(buf, sz, err, errsz);    // 获取健康快照
  *   weaknet_cleanup();                            // 清理
  *
- * 注意：weaknet_subscribe_* / weaknet_check_* 事件订阅族当前无效，见文件头说明。
+ * 注意：weaknet_subscribe_* / weaknet_check_* 事件订阅族已于 2026-11-01 删除，见文件头说明。
  */
 
 // ============== 库初始化和清理 ==============
@@ -176,180 +177,6 @@ bool weaknet_health_check(char* result_buffer, size_t result_size, char* error_b
  * @return false - 调用失败（主机不可达或 D-Bus 错误）
  */
 bool weaknet_ping_host(const char* hostname, char* result_buffer, size_t result_size, char* error_buffer, size_t error_size);
-
-// ============== 网络状态变化监控 ==============
-
-/**
- * @brief 检查网络状态变化（非阻塞）
- *
- * @deprecated **当前永远返回 false**：服务端自 2026-10-19 起停发 Changed 信号
- *             （停止时零生产订阅者）。保留仅为源码兼容。要取当前状态请直接调用
- *             对应的 get_* / *_stats 查询方法。详见文件头说明。
- *
- * 从 D-Bus 消息队列中尝试弹出 Changed 信号。
- * 如果没有待处理信号，立即返回 false。
- *
- * D-Bus 信号：
- *   - Signal: Changed (旧版通用信号)
- *   - Payload: STRING message + INT32 counter
- *
- * @param message_buffer 消息缓冲区，存储变化描述文本（输出）
- * @param message_size   消息缓冲区大小
- * @param counter        事件计数器（输出，单调递增）
- * @param error_buffer   错误信息缓冲区（无新变化时写入）
- * @param error_size     错误缓冲区大小
- * @return true  - 检测到新的变化信号
- * @return false - 无新变化或调用出错
- */
-bool weaknet_check_changes(char* message_buffer, size_t message_size, int32_t* counter, char* error_buffer, size_t error_size);
-
-// ============== 事件监听和订阅系统 ==============
-
-/**
- * @brief 事件回调函数类型（旧版风格）
- *
- * @deprecated 服务端已停发全部 D-Bus 信号（2026-10-19），本回调**不会被调用**。
- *             类型保留仅为源码兼容，详见文件头说明。
- *
- * 用于 weaknet_subscribe_event() 的用户回调。
- *
- * @param event_type 事件类型（如 "InterfaceChanged", "Changed"）
- * @param message    事件消息内容
- * @param counter    事件计数器（服务端单调递增）
- * @param source     事件来源（如 "event_manager"）
- */
-typedef void weaknet_event_callback_t(const char* event_type, const char* message, int32_t counter, const char* source);
-
-/**
- * @brief 网络质量事件回调函数类型
- *
- * 用于 weaknet_subscribe_network_quality() 的用户回调。
- * 返回值决定是否继续监听：返回 true 继续，返回 false 停止。
- *
- * @param quality  网络质量等级（如 "poor", "fair", "good", "excellent"）
- * @param details  详细质量信息（JSON 格式的指标数据）
- * @param counter  事件计数器（服务端单调递增）
- * @return true  - 继续监听后续事件
- * @return false - 停止监听
- */
-typedef bool (*weaknet_network_quality_callback_t)(const char* quality, const char* details, int32_t counter);
-
-/**
- * @brief 订阅特定 D-Bus 事件（Signal）
- *
- * 通过 dbus_bus_add_match 在 D-Bus 总线上注册匹配规则，
- * 让指定事件类型的信号能被本客户端接收。
- *
- * 支持的事件类型字符串（对应 D-Bus 信号名）：
- *   - "Changed"                通用变化信号
- *   - "InterfaceChanged"       网卡添加/删除
- *   - "ConnectionModeChanged" 上网网卡切换
- *   - "NetworkQualityChanged" 网络质量变化
- *   - "BluetoothDeviceChanged" 蓝牙设备变化
- *   - "MonitorStateChanged"   监控器启停状态变化
- *   - "EbpfMonitorStats"      eBPF 监控器聚合指标（JSON：monitor + 统计 + 驱逐差分）
- *
- * @param event_type 要订阅的事件类型字符串
- * @param callback   事件回调函数（可为 NULL，仅添加 D-Bus 订阅不触发用户回调）
- * @return true  - 订阅成功
- * @return false - D-Bus 连接未就绪或添加 match 失败
- */
-bool weaknet_subscribe_event(const char* event_type, weaknet_event_callback_t callback);
-
-/**
- * @brief 取消订阅事件
- *
- * 注意：当前实现为简化版本，直接返回 true，
- * 实际 D-Bus match 规则的移除需要更复杂的管理。
- *
- * @param event_type 要取消订阅的事件类型字符串
- * @return true - 固定返回成功
- */
-bool weaknet_unsubscribe_event(const char* event_type);
-
-/**
- * @brief 获取支持的事件类型列表
- *
- * 本函数不发起 D-Bus 调用，直接在本地拼接逗号分隔的事件类型列表
- * （含 "EbpfMonitorStats"）写入结果缓冲区。
- *
- * @param buffer       结果缓冲区，存储逗号分隔的事件类型列表
- * @param buffer_size  缓冲区大小
- * @param error_buffer 错误信息缓冲区（当前实现不会失败）
- * @param error_size   错误缓冲区大小
- * @return true - 固定返回成功
- */
-bool weaknet_get_event_types(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
-
-/**
- * @brief 非阻塞检查事件（多信号通用）
- *
- * 从 D-Bus 消息队列中尝试弹出以下任一信号：
- *   - InterfaceChanged / ConnectionModeChanged
- *   - NetworkQualityChanged / BluetoothDeviceChanged
- *
- * D-Bus 信号 Payload（统一格式）：
- *   STRING text + INT32 counter
- *
- * @param event_type_buffer 事件类型缓冲区（输出，如 "InterfaceChanged"）
- * @param event_type_size   事件类型缓冲区大小
- * @param message_buffer    消息缓冲区（输出，变化描述文本）
- * @param message_size      消息缓冲区大小
- * @param counter           事件计数器（输出）
- * @param source_buffer     事件来源缓冲区（输出，固定为 "event_manager"）
- * @param source_size       来源缓冲区大小
- * @param error_buffer      错误信息缓冲区（无事件时写入）
- * @param error_size        错误缓冲区大小
- * @return true  - 检测到一个事件
- * @return false - 队列为空或发生错误
- */
-bool weaknet_check_events(char* event_type_buffer, size_t event_type_size,
-                          char* message_buffer, size_t message_size,
-                          int32_t* counter, char* source_buffer, size_t source_size,
-                          char* error_buffer, size_t error_size);
-
-// ============== 网络质量监控 ==============
-
-/**
- * @brief 订阅网络质量事件（阻塞监听模式）
- *
- * 内部会阻塞在 D-Bus 消息循环中，持续监听 NetworkQualityChanged 信号。
- * 每次收到信号后调用用户提供的 callback。
- * 当 callback 返回 false 时退出监听循环。
- *
- * D-Bus 信号：
- *   - Signal: NetworkQualityChanged
- *   - Payload: STRING quality + STRING details + INT32 counter
- *
- * @param callback 网络质量事件回调函数，返回值控制是否继续监听
- * @return true  - 监听循环正常退出
- * @return false - 订阅失败（客户端未连接）
- */
-bool weaknet_subscribe_network_quality(weaknet_network_quality_callback_t callback);
-
-/**
- * @brief 非阻塞检查网络质量事件
- *
- * 从 D-Bus 消息队列中尝试弹出 NetworkQualityChanged 信号。
- *
- * D-Bus 信号 Payload：
- *   STRING quality ("Poor"/"Fair"/"Good"/"Excellent")
- *   STRING details (JSON 格式指标详情)
- *   INT32 counter
- *
- * @param quality_buffer  网络质量等级缓冲区（输出）
- * @param quality_size    质量等级缓冲区大小
- * @param details_buffer   详细质量信息缓冲区（输出，JSON）
- * @param details_size     详细信息缓冲区大小
- * @param counter          事件计数器（输出）
- * @param error_buffer     错误信息缓冲区（无事件时写入）
- * @param error_size       错误缓冲区大小
- * @return true  - 检测到网络质量事件
- * @return false - 队列为空或发生错误
- */
-bool weaknet_check_network_quality(char* quality_buffer, size_t quality_size,
-                                   char* details_buffer, size_t details_size, 
-                                   int32_t* counter, char* error_buffer, size_t error_size);
 
 // ============== 版本和状态信息 ==============
 
@@ -498,22 +325,6 @@ bool weaknet_get_diagnosis(char* buffer, size_t buffer_size, char* error_buffer,
 bool weaknet_execute_action(const char* action_id, const char* param_key, const char* param_val,
                             char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
 
-/**
- * @brief 订阅蓝牙设备变化事件
- *
- * 通过 D-Bus add_match 订阅 BluetoothDeviceChanged 信号。
- * 当前实现只添加 D-Bus 匹配规则，不进入阻塞监听循环。
- * 实际事件通过 weaknet_check_events() 轮询获取。
- *
- * D-Bus 信号：
- *   - Signal: BluetoothDeviceChanged
- *   - Payload: STRING message + INT32 counter
- *
- * @param callback 事件回调函数（可为 NULL，当前版本回调暂未生效）
- * @return true  - 订阅成功
- * @return false - 客户端未连接
- */
-bool weaknet_subscribe_bluetooth_events(weaknet_event_callback_t callback);
 
 /* ============================== eBPF 监控数据 API ============================== */
 

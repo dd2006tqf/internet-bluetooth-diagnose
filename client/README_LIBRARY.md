@@ -52,30 +52,30 @@ int main() {
 
 #### C++程序示例
 
+> ⚠️ **事件订阅族已于 2026-11-01 删除**。服务端自 2026-10-19 起停发全部
+> D-Bus 信号，`weaknet_subscribe_*` / `weaknet_check_*` 长期"返回成功但永远
+> 等不到事件"。它们已被移除（详见 `weaknet_client.h` 文件头）。
+>
+> **需要持续监测时，按固定周期重复调用对应的 `get_*` / `*_stats` 查询方法：**
+
 ```cpp
 #include "weaknet_client.h"
 #include <iostream>
-
-void eventCallback(const char* type, const char* message, int32_t counter, const char* source) {
-    std::cout << "事件: " << type << " - " << message << std::endl;
-}
+#include <unistd.h>
 
 int main() {
     weaknet_init();
-    
-    // 订阅事件
-    weaknet_subscribe_event("InterfaceChanged", eventCallback);
-    
-    // 检查事件
-    char event_type[64], message[512], source[64];
-    int32_t counter;
-    char error[256];
-    
-    if (weaknet_check_events(event_type, sizeof(event_type), message, sizeof(message),
-                             &counter, source, sizeof(source), error, sizeof(error))) {
-        std::cout << "检测到事件: " << event_type << std::endl;
+
+    char buf[4096], err[256];
+    for (int i = 0; i < 60; ++i) {          // 每分钟轮询一次，共 60 次
+        if (weaknet_health_check(buf, sizeof(buf), err, sizeof(err))) {
+            std::cout << "健康快照: " << buf << std::endl;
+        } else {
+            std::cerr << "查询失败: " << err << std::endl;
+        }
+        sleep(1);
     }
-    
+
     weaknet_cleanup();
     return 0;
 }
@@ -113,25 +113,19 @@ bool weaknet_health_check(char* result_buffer, size_t result_size, char* error_b
 bool weaknet_ping_host(const char* hostname, char* result_buffer, size_t result_size, char* error_buffer, size_t error_size);
 ```
 
-### 事件系统
+### 事件系统 / 状态监控
 
-```c
-typedef void weaknet_event_callback_t(const char* event_type, const char* message, int32_t counter, const char* source);
+**已于 2026-11-01 删除。** 服务端停发全部 D-Bus 信号后，以下 8 个 API 长期
+处于空转状态（返回成功但永不产生事件），已从 `libweaknet.so` 移除：
 
-bool weaknet_subscribe_event(const char* event_type, weaknet_event_callback_t callback);
-bool weaknet_unsubscribe_event(const char* event_type);
-bool weaknet_get_event_types(char* buffer, size_t buffer_size, char* error_buffer, size_t error_size);
-bool weaknet_check_events(char* event_type_buffer, size_t event_type_size,
-                          char* message_buffer, size_t message_size,
-                          int32_t* counter, char* source_buffer, size_t source_size,
-                          char* error_buffer, size_t error_size);
+```
+weaknet_subscribe_event / weaknet_unsubscribe_event
+weaknet_subscribe_bluetooth_events / weaknet_subscribe_network_quality
+weaknet_check_changes / weaknet_check_events / weaknet_check_network_quality
+weaknet_get_event_types
 ```
 
-### 状态监控
-
-```c
-bool weaknet_check_changes(char* message_buffer, size_t message_size, int32_t* counter, char* error_buffer, size_t error_size);
-```
+改用对应的 `get_*` / `*_stats` 查询方法（见上方「信息获取」）。
 
 ## 🧪 测试
 
