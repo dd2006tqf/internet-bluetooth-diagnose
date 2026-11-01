@@ -139,6 +139,14 @@ if sub == "bump-boot-attempt":
     d["transaction"]["boot_attempts"] = int(d["transaction"].get("boot_attempts", 0)) + 1
     save(d)
     print(json.dumps({"ok": True, "boot_attempts": d["transaction"]["boot_attempts"]}))
+elif sub == "bump-trial-round":
+    # 与真控制器一致：**不按 boot_id 幂等**，并刷新窗口起点。
+    import time as _t
+    d = load()
+    d["transaction"]["boot_attempts"] = int(d["transaction"].get("boot_attempts", 0)) + 1
+    d["transaction"]["updated_at"] = _t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtime())
+    save(d)
+    print(json.dumps({"ok": True, "boot_attempts": d["transaction"]["boot_attempts"]}))
 elif sub == "do-switch":
     d = load()
     set_current(d["transaction"]["to_version"])
@@ -346,6 +354,108 @@ export FAKE_SERVICE_STATE=active FAKE_BUS_STATE=up FAKE_INSTALLED=1.1.0
 export FAKE_RESTARTS=0
 OUT="$(recover)"
 check "没有升级脚本也能完成转正" "COMMITTED" "$(phase)"
+
+head_ "9. 窗口耗尽 → 持久计数 +1 → 下一次判定真的变化（缺陷 C1）"
+# 这一节直接驱动 loop()（`--once` 不经过 loop 的耗尽分支），验证四件事：
+#   1. 耗尽时返回 75，且**退出前**已经调过 bump-trial-round；
+#   2. 同一次开机（boot_id 不变）里再跑一轮，计数仍然 +1（不幂等）；
+#   3. 计数推到上限后不再请求重启，而是走回滚——不会无界重启；
+#   4. 控制器不可用时 fail-closed 进救援，绝不以 75 退出。
+expire_window() {
+    python3 - "$STATE/transaction.json" <<'PYEOF'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["transaction"]["updated_at"] = "2020-01-01T00:00:00Z"
+json.dump(d, open(p, "w"))
+PYEOF
+}
+
+# 小驱动器：跑一轮 loop()，第一次休眠就抛哨兵收尾，避免真睡。
+run_loop_once() {  # $1 = ctl 路径
+    python3 - "$REPO/tools/weaknet-ota-recover" "$ROOT" "$STATE" "$1" <<'PYEOF'
+import importlib.machinery, importlib.util, os, sys
+path, root, state, ctl = sys.argv[1:5]
+loader = importlib.machinery.SourceFileLoader("wn_rec_drill", path)
+spec = importlib.util.spec_from_loader("wn_rec_drill", loader)
+rec = importlib.util.module_from_spec(spec)
+loader.exec_module(rec)
+
+
+class _Slept(Exception):
+    """哨兵：一旦进入休眠就抛出，把 loop() 从常驻循环里截断。"""
+
+
+def _sleeper(_seconds):
+    # 必须用**普通函数**抛哨兵，不能用生成器表达式。
+    #
+    # 旧写法 `(_ for _ in ()).throw(StopIteration())` 依赖一个版本相关的
+    # 行为：Python 3.9 会把从生成器里逸出的 StopIteration 按 PEP 479
+    # 转换成 RuntimeError（"generator raised StopIteration"），于是本函数
+    # 上方的 `except StopIteration` 抓不到，rc 变成空串、断言失败；
+    # Python 3.12 在本例这种同步 `throw()` 调用下不转换，于是"本机全绿"。
+    # 结论：这不是产品缺陷，是演练脚手架的错误假设，且只在板端 3.9 暴露。
+    # 改用自定义哨兵 + 普通函数后，两个版本语义完全一致。
+    raise _Slept()
+
+
+r = rec.Recoverer(root, state, ctl, sleeper=_sleeper)
+w = rec.Watcher(r, once=False)
+w.read_boot_id = lambda: "drill-boot-fixed"
+_override = os.environ.get("WEAKNET_DRILL_MAX_ROUNDS")
+if _override:
+    rec.MAX_TRIAL_ROUNDS = int(_override)
+try:
+    rc = w.loop()
+except _Slept:
+    rc = "slept"
+print("RC=%s" % (rc,))
+PYEOF
+}
+
+write_state TRIAL 1.1.0 1.0.0 0
+expire_window
+: > "$WORK/ctl.log"
+export FAKE_SERVICE_STATE=active FAKE_BUS_STATE=down FAKE_INSTALLED=1.1.0
+export FAKE_RESTARTS=0
+
+OUT1="$(run_loop_once "$WEAKNET_OTA_CTL")"
+RC1="$(printf '%s' "$OUT1" | sed -n 's/^RC=//p' | tail -1)"
+check "窗口耗尽且还有次数 → 退出码 75" "75" "$RC1"
+check "退出前已调用 bump-trial-round" "yes" \
+      "$(grep -qx bump-trial-round "$WORK/ctl.log" && echo yes || echo no)"
+# 首轮：run_once 的 bump_boot_attempt(+1) 之后 loop 再 bump_trial_round(+1)
+# 首轮：run_once 的 bump_boot_attempt(+1) 之后 loop 再 bump_trial_round(+1) = 2。
+# 第二轮同 boot_id：bump_boot_attempt 幂等（+0），窗口耗尽计数 +1 = 3，
+# 而 3 已达 MAX_TRIAL_ROUNDS —— 说明"再跑一轮"本身就该转回滚。
+check "首轮后计数为 2（开机计数 + 窗口耗尽计数）" "2" "$(attempts)"
+
+# 第二轮同 boot_id —— 这里只断言"计数继续增长"（窗口计数不幂等），
+# 不断言退出码：此时计数已达上限，恢复器正确地转向回滚而不是重启，
+# 那正是"有限次收敛"的预期终点（见下一段）。
+OUT2="$(run_loop_once "$WEAKNET_OTA_CTL")"
+RT2="$(printf '%s' "$OUT2" | sed -n 's/^RC=//p' | tail -1)"
+check "同 boot_id 第二轮推进到上限后不再重启" "slept" "$RT2"
+check "同 boot_id 第二轮计数继续增长（窗口计数不幂等）" "3" "$(attempts)"
+
+write_state TRIAL 1.1.0 1.0.0 3
+expire_window
+: > "$WORK/ctl.log"
+OUT3="$(run_loop_once "$WEAKNET_OTA_CTL")"
+RC3="$(printf '%s' "$OUT3" | sed -n 's/^RC=//p' | tail -1)"
+check "次数耗尽后不再请求重启（不返回 75）" "slept" "$RC3"
+check "次数耗尽后走回滚意图" "yes" \
+      "$(grep -qx rollback-arm "$WORK/ctl.log" && echo yes || echo no)"
+
+write_state TRIAL 1.1.0 1.0.0 0
+expire_window
+rm -f "$STATE/RESCUE.md" "$STATE/rescue.flag"
+OUT4="$(run_loop_once "$WORK/no-such-ctl")"
+RC4="$(printf '%s' "$OUT4" | sed -n 's/^RC=//p' | tail -1)"
+check "控制器不可用时不得以 75 退出（会变成无界重启）" "0" "$RC4"
+check "控制器不可用时留下救援现场" "yes" \
+      "$([ -f "$STATE/RESCUE.md" ] && echo yes || echo no)"
+
 
 printf '\n\033[36m== 结果 ==\033[0m\n'
 printf '  PASS=%d  FAIL=%d\n' "$PASS" "$FAIL"

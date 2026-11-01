@@ -96,7 +96,7 @@ cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF
 # 编译全部组件
 cmake --build build-x86 -j$(nproc)
 
-# 运行本地全量单元测试（52 个套件，实测 52/52 通过，约 4.6 秒）
+# 运行本地全量单元测试（54 个套件，实测 54/54 通过，约 5.5 秒）
 ctest --test-dir build-x86/server --output-on-failure
 ```
 

@@ -10,10 +10,17 @@
  *   3. weaknet_get_version()     获取库版本
  *   4. weaknet_get_interfaces()  获取当前网络接口（D-Bus Method: GetInterfaces）
  *   5. weaknet_health_check()    网络健康检查（D-Bus Method: HealthCheck）
- *   6. weaknet_subscribe_event() 订阅 InterfaceChanged / ConnectionModeChanged 信号
- *   7. weaknet_check_events()    非阻塞轮询 D-Bus 信号队列
- *   8. weaknet_unsubscribe_event() 取消订阅
- *   9. weaknet_cleanup()         释放资源
+ *   6. 按需的 get_* 查询       （这是当前唯一有效的数据路径）
+ *   7. weaknet_cleanup()         释放资源
+ *
+ * ⚠️ 本示例**不再演示事件订阅**（2026-11-01）：
+ *   服务端自 2026-10-19 起停发了全部 D-Bus 信号——停发时它们没有任何生产
+ *   订阅者（决策与证据见 openspec/tasks/2026-10-19-stop-unsubscribed-dbus-signals.md）。
+ *   于是 weaknet_subscribe_event() / weaknet_check_events() 这类 API 成了空转：
+ *   订阅会成功（本地加了 match 规则），但**永远等不到事件**。
+ *   示例程序若继续演示它，等于把"抄这个就能用"的错误信号传给集成方——
+ *   而这正是当初那条"信号替代轮询"的消费路径从未建出来的原因之一。
+ *   要拿当前状态请直接调用对应的 get_* / *_stats 查询方法。
  *
  * 依赖：
  *   - WeakNet 服务端必须已启动并在 D-Bus Session 总线上注册
@@ -110,102 +117,56 @@ int main() {
         std::cout << "❌ 健康检查失败: " << error_buffer << std::endl;
     }
 
-    // ===== 步骤 6：获取支持的事件类型 =====
-    // 本地拼接字符串 "InterfaceChanged,ConnectionModeChanged,NetworkQualityChanged,BluetoothDeviceChanged"
-    std::cout << "\n5. 获取支持的事件类型..." << std::endl;
-    char event_types[256];
-    
-    if (weaknet_get_event_types(event_types, sizeof(event_types), error_buffer, sizeof(error_buffer))) {
-        std::cout << "✅ 支持的事件类型: " << event_types << std::endl;
+    // ===== 步骤 6：查询当前状态（事件订阅的替代路径） =====
+    //
+    // 这里刻意演示**查询**而不是订阅：服务端已停发全部 D-Bus 信号
+    // （2026-10-19），weaknet_subscribe_event() / weaknet_check_events()
+    // 现在订得上但永远等不到事件。生产集成应当按需轮询 get_* 方法。
+    std::cout << "\n6. 查询当前网络状态..." << std::endl;
+
+    char query_buffer[2048];
+
+    // 6.1 TCP 重传统计（真实数据源：eBPF tcp_retrans 探针）
+    if (weaknet_get_tcp_retrans_stats(query_buffer, sizeof(query_buffer),
+                                   error_buffer, sizeof(error_buffer))) {
+        std::cout << "✅ TCP 统计: " << query_buffer << std::endl;
     } else {
-        std::cout << "❌ 获取事件类型失败: " << error_buffer << std::endl;
+        std::cout << "⚠️  TCP 统计暂不可用: " << error_buffer << std::endl;
     }
 
-    // ===== 步骤 7：订阅网络变化事件 =====
-    // 通过 dbus_bus_add_match 注册 D-Bus 信号匹配规则
-    // 匹配规则：type='signal', interface='com.example.WeakNet', member=<事件名>
-    std::cout << "\n6. 订阅网络变化事件..." << std::endl;
-    
-    if (weaknet_subscribe_event("InterfaceChanged", onNetworkChange)) {
-        std::cout << "✅ 已订阅InterfaceChanged事件" << std::endl;
+    // 6.2 TCP RTT 与抖动（真实数据源：tcp_connect / tcp_conn 探针）
+    if (weaknet_get_tcp_rtt_stats(query_buffer, sizeof(query_buffer),
+                              error_buffer, sizeof(error_buffer))) {
+        std::cout << "✅ RTT 统计: " << query_buffer << std::endl;
     } else {
-        std::cout << "❌ 订阅InterfaceChanged事件失败" << std::endl;
+        std::cout << "⚠️  RTT 统计暂不可用: " << error_buffer << std::endl;
     }
 
-    if (weaknet_subscribe_event("ConnectionModeChanged", onNetworkChange)) {
-        std::cout << "✅ 已订阅ConnectionModeChanged事件" << std::endl;
+    // 6.3 网络体验评分（Assurance v2 / SLE）
+    if (weaknet_get_network_experience(query_buffer, sizeof(query_buffer),
+                                    error_buffer, sizeof(error_buffer))) {
+        std::cout << "✅ 网络体验: " << query_buffer << std::endl;
     } else {
-        std::cout << "❌ 订阅ConnectionModeChanged事件失败" << std::endl;
+        std::cout << "⚠️  网络体验暂不可用: " << error_buffer << std::endl;
     }
 
-    // ===== 步骤 8：开始事件监控（持续 30 秒） =====
-    // 每 500ms 调用一次 weaknet_check_events() 非阻塞轮询 D-Bus 队列
-    // weaknet_check_events 检查四种信号：InterfaceChanged / ConnectionModeChanged / NetworkQualityChanged / BluetoothDeviceChanged
-    std::cout << "\n7. 开始事件监控（30秒）..." << std::endl;
-    std::cout << "   注意: 在新终端中运行服务器或改变网络状态来触发事件" << std::endl;
-    
-    char event_type_buffer[64];
-    char message_buffer[512];
-    char source_buffer[64];
-    int32_t counter;
-    
-    auto start_time = std::chrono::steady_clock::now();
-    auto end_time = start_time + std::chrono::seconds(30);
-    
-    int event_count = 0;
-    
-    while (std::chrono::steady_clock::now() < end_time) {
-        auto now = std::chrono::steady_clock::now();
-        auto remaining = std::chrono::duration_cast<std::chrono::seconds>(end_time - now).count();
-        
-        // 非阻塞检查事件 —— 内部调用 dbus_connection_read_write(conn, 0) + pop_message
-        if (weaknet_check_events(event_type_buffer, sizeof(event_type_buffer),
-                                  message_buffer, sizeof(message_buffer),
-                                  &counter, source_buffer, sizeof(source_buffer),
-                                  error_buffer, sizeof(error_buffer))) {
-            event_count++;
-            std::cout << "\n🎯 EVENT #" << event_count << ":" << std::endl;
-            std::cout << "   Type: " << event_type_buffer << std::endl;
-            std::cout << "   Counter: " << counter << std::endl;
-            std::cout << "   Source: " << source_buffer << std::endl;
-            std::cout << "   Message: " << message_buffer << std::endl;
-        }
-        
-        std::cout << "\r⏳ 剩余时间: " << remaining << "秒 (检测到 " << event_count << " 个事件)";
-        std::cout.flush();
-        
-        // 短暂休眠避免 CPU 占用过高
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    }
-    
-    std::cout << std::endl;
-    
-    // ===== 步骤 9：取消事件订阅 =====
-    // 当前实现为简化版本，固定返回 true（不实际移除 D-Bus match 规则）
-    std::cout << "\n8. 取消事件订阅..." << std::endl;
-    
-    if (weaknet_unsubscribe_event("InterfaceChanged")) {
-        std::cout << "✅ 已取消InterfaceChanged事件订阅" << std::endl;
-    }
-    
-    if (weaknet_unsubscribe_event("ConnectionModeChanged")) {
-        std::cout << "✅ 已取消ConnectionModeChanged事件订阅" << std::endl;
-    }
+    // 若需要"持续监测"，正确做法是按固定周期重复上面的查询，
+    // 而不是订阅一个永远不来的信号。
+    std::cout << "\n   提示：持续监测请按周期轮询上述查询方法；"
+                 "事件订阅族当前无效（见 weaknet_client.h 文件头）。" << std::endl;
 
-    // ===== 步骤 10：清理资源 =====
+    // ===== 步骤 7：清理资源 =====
     // 断开 D-Bus 连接、释放全局单例、关闭日志系统
-    std::cout << "\n9. 清理资源..." << std::endl;
+    std::cout << "\n7. 清理资源..." << std::endl;
     weaknet_cleanup();
     std::cout << "✅ WeakNet客户端库已清理" << std::endl;
 
     // ===== 总结输出 =====
     std::cout << "\n=== 使用示例完成 ===" << std::endl;
-    std::cout << "📊 本次运行检测到 " << event_count << " 个事件" << std::endl;
-    std::cout << "💡 提示: 要看到实际事件，请:" << std::endl;
-    std::cout << "    - 确保WeakNet服务器正在运行" << std::endl;
-    std::cout << "    - 插入/拔出网络设备" << std::endl;
-    std::cout << "    - 切换网络连接" << std::endl;
-    std::cout << "    - 改变网络配置" << std::endl;
+    std::cout << "💡 集成要点：" << std::endl;
+    std::cout << "    - 数据一律通过 get_* / *_stats 查询方法取得" << std::endl;
+    std::cout << "    - 事件订阅族当前无效（服务端自 2026-10-19 停发全部信号）" << std::endl;
+    std::cout << "    - 需要持续监测就按固定周期重复查询，不要依赖订阅" << std::endl;
 
     return 0;
 }

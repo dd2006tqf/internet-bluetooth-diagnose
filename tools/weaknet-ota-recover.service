@@ -10,6 +10,11 @@ Description=WeakNet OTA Boot Recovery Service (P0-B)
 # weaknet-server：它可能正是起不来的那个。
 After=network-online.target
 Wants=network-online.target
+# 真正的收敛靠 TRIAL 计数 +「次数耗尽就回滚」，不靠重启限流。
+# 注意 StartLimitIntervalSec 属于 **[Unit]** 段——写进 [Service] 会被 systemd
+# 当作 Unknown key name 静默忽略（`systemd-analyze verify` 只给一行 warning，
+# 运行时毫无提示）。P0-C1 那次 ConditionPathExists 写错段位就是同类陷阱。
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -26,8 +31,20 @@ ExecStart=/usr/bin/python3 /usr/local/lib/weaknet/weaknet-ota-recover \
 Restart=on-failure
 RestartSec=10
 # 退出码 75 = 本次开机的健康窗口耗尽但还有剩余尝试次数 → 主动重启，
-# 让下一次开机把 boot_attempts 再加一（持久化计数，断电重来不归零）。
-SuccessExitStatus=75
+# 开启下一轮试运行。
+#
+# **必须是 RestartForceExitStatus，不能是 SuccessExitStatus**（P0-C1 评审缺陷 C1）：
+#   * SuccessExitStatus=75 告诉 systemd「75 是干净退出」→ `Restart=on-failure`
+#     不重启 → 恢复服务静默死亡，设备停在未验证候选上，既不推进也不回滚。
+#   * RestartForceExitStatus=75 把它声明为「即使按 Restart= 不该重启，也要重启」。
+#     实测（systemd 255）：on-failure + RestartForceExitStatus=75 → NRestarts 递增、
+#     unit 保持在 activating/active 之间，不会变成 success/inactive。
+# 计数不依赖 boot_id：恢复器在退出前调 `bump-trial-round` 持久化消耗一次机会
+# 并重置窗口起点，因此每次重启都换来一个真实的新窗口，不会空转。
+#
+# StartLimitBurst 给个上限只是最后一道保险：真正的收敛由 TRIAL 计数 +
+# 「次数耗尽就回滚」的判定保证，不该靠限流。
+RestartForceExitStatus=75
 # 恢复期间不因自身异常拖垮系统
 TimeoutStopSec=30
 KillMode=control-group

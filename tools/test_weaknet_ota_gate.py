@@ -318,6 +318,61 @@ class TestServiceWiring(unittest.TestCase):
         for key in ("ConditionPathExists", "ConditionFileNotEmpty"):
             self.assertEqual(self._directives(text, key), [], key)
 
+class TestRecoverUnitRestartContract(unittest.TestCase):
+    """恢复服务单元的重启契约（评审缺陷 C1 的接线侧）。
+
+    门禁只管业务服务能不能起，恢复服务自己「该不该被重新拉起」是另一半。
+    `SuccessExitStatus=75` 会让 systemd 把 EXIT_RETRY 当作干净退出，
+    `Restart=on-failure` 于是不再重启 —— 恢复器静默死亡。
+    """
+
+    @staticmethod
+    def _directives(text, key):
+        out = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            k, v = stripped.split("=", 1)
+            if k.strip() == key:
+                out.append(v.strip())
+        return out
+
+    def _unit(self):
+        with open(os.path.join(HERE, "weaknet-ota-recover.service"),
+                  "r", encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_retry_code_forced_restart(self):
+        text = self._unit()
+        self.assertIn("75", self._directives(text, "RestartForceExitStatus"))
+        self.assertNotIn("75", self._directives(text, "SuccessExitStatus"))
+
+    def test_recover_unit_does_not_depend_on_business_service(self):
+        """恢复服务不能依赖被恢复对象——那可能正是起不来的那个。"""
+        text = self._unit()
+        for key in ("Requires", "BindsTo"):
+            for dep in self._directives(text, key):
+                self.assertNotIn("weaknet-server", dep)
+
+    def test_recover_unit_has_no_condition_guard(self):
+        """恢复服务不能被 Condition 跳过，否则"窗口耗尽 → 重启"这条链断掉。"""
+        text = self._unit()
+        for key in ("ConditionPathExists", "ConditionFileNotEmpty"):
+            self.assertEqual(self._directives(text, key), [], key)
+
+    def test_gate_has_no_dry_run_flag(self):
+        """门禁的输出就是退出码，不存在"只判定不拒绝"的模式。
+
+        曾经的 --dry-run 解析后从不读取，还会返回非零，容易被 wrapper
+        误当成真拒绝。要只看判定请用 `weaknet-ota-ctl reconcile --dry-run`。
+        """
+        with self.assertRaises(SystemExit) as ctx:
+            gate.main(["--root", "/tmp/x", "--state-dir", "/tmp/x", "--dry-run"])
+        self.assertNotEqual(ctx.exception.code, 0)
+
+
+
 
 if __name__ == "__main__":
     unittest.main()

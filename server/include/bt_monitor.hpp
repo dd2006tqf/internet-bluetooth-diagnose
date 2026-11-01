@@ -48,9 +48,6 @@ struct DBusConnection;
 struct DBusMessage;
 struct DBusError;
 
-// 前置声明测试友元（全局命名空间，供单元测试访问 calculateAudioScore 纯函数）
-class BtMonitorAudioScoreTest;
-
 // 前置声明 Phase 2 eBPF 融合层类型
 namespace weaknet_dbus {
 class BtAudioAnalyzer;
@@ -144,6 +141,13 @@ struct BtAudioTransport {
     std::chrono::system_clock::time_point lastActive;      ///< 最后一次变为 active 的时间
     uint64_t activeDurationMs = 0;  ///< 累计活跃时长（毫秒）
 };
+
+/// 计算音频质量评分（纯函数，基于 Transport 状态，无副作用）
+///
+/// 2026-11-01：从 BtMonitor 的私有成员函数提成自由函数。它不读任何实例状态，
+/// 只是 BtAudioTransport 的纯变换；留在类里就只能靠 `friend class
+/// ::BtMonitorAudioScoreTest` 向测试开后门（生产头文件为测试暴露私有入口）。
+double calculateAudioScore(const BtAudioTransport& transport);
 
 // ============================================================================
 // 蓝牙音频质量评估结果（Phase 1b 输出）
@@ -439,14 +443,8 @@ private:
     /// 解析单个 MediaTransport1 对象的属性
     BtAudioTransport parseMediaTransportProperties(const std::string& path);
 
-    /// 计算音频质量评分（纯函数，基于 Transport 状态，无副作用）
-    double calculateAudioScore(const BtAudioTransport& transport) const;
-
     /// 数值评分 → 等级字符串
     static std::string scoreToLevel(double score);
-
-    /// 测试友元：单元测试需要访问 calculateAudioScore 纯函数以验证评分边界
-    friend class ::BtMonitorAudioScoreTest;
 
 private:
     // ---- D-Bus 连接 ----

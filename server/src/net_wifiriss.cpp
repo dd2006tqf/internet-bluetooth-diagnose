@@ -144,16 +144,6 @@ bool getNl80211FamilyId(int fd, uint16_t* familyId) {
     return false;
 }
 
-bool getInterfaceBssid(const std::string& iface, uint8_t bssid[6]) {
-    const int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return false;
-    ifreq request{};
-    std::snprintf(request.ifr_name, IFNAMSIZ, "%s", iface.c_str());
-    const bool ok = ioctl(fd, SIOCGIWAP, &request) == 0;
-    if (ok) std::memcpy(bssid, request.ifr_addr.sa_data, 6);
-    close(fd);
-    return ok;
-}
 }  // namespace
 
 RssiSample readNl80211RssiWithBssid(const std::string& iface, const std::array<uint8_t, 6>& bssid) {

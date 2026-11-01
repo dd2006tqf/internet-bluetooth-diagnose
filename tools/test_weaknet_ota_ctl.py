@@ -577,6 +577,103 @@ class TestRescueFlag(unittest.TestCase):
         self.assertFalse(os.path.exists(self._flag()))
 
 
+
+class TestBumpTrialRound(unittest.TestCase):
+    """bump-trial-round：窗口耗尽时消耗一次试运行机会（**不按 boot_id 幂等**）。
+
+    它与 bump-boot-attempt 的分工是缺陷 C1 的修法核心：
+      * bump-boot-attempt：开机前计数，按 boot_id 幂等（恢复进程被 systemd
+        重启不该消耗新机会）；
+      * bump-trial-round：窗口耗尽时计数，不按 boot_id 幂等（那**就是**新的一轮，
+        必须真的计数，否则 attempts 永远追不上上限，恢复器会空转）。
+    两者都写同一个 boot_attempts，所以恢复器看到的"已尝试次数"是一致的。
+    """
+
+    def setUp(self):
+        self.sb = Sandbox(versions=("1.0.0", "1.1.0"), current="1.0.0")
+
+    def tearDown(self):
+        self.sb.cleanup()
+
+    def _begin_trial(self):
+        self.sb.run("begin", "--from", "1.0.0", "--to", "1.1.0",
+                    "--rollback-target", "1.0.0")
+        self.sb.run("arm-switch")
+        self.sb.run("do-switch")
+        return self.sb.load()["transaction"]
+
+    def test_bump_trial_round_increments_every_call(self):
+        """同一 boot_id 连续调用两次必须计数两次。"""
+        self._begin_trial()
+        self.assertEqual(self.sb.run("bump-trial-round"), ctl.EXIT_OK)
+        self.assertEqual(self.sb.load()["transaction"]["boot_attempts"], 1)
+        self.assertEqual(self.sb.run("bump-trial-round"), ctl.EXIT_OK)
+        self.assertEqual(self.sb.load()["transaction"]["boot_attempts"], 2)
+
+    def test_bump_trial_round_refreshes_window_start(self):
+        """必须刷新 updated_at：健康窗口起点就是它，不刷新则下一轮立刻又超时。
+
+        注意不能拿"刚 begin 的时间"作对照——同一秒内两次写入会得到相同的
+        秒级时间戳，断言就没有意义（会假失败）。这里先人为写一个明显过期的
+        起点，再 bump，验证它被推到"现在"。
+        """
+        self._begin_trial()
+        state = ctl.load_state(self.sb.state_dir)
+        state["transaction"]["updated_at"] = "2020-01-01T00:00:00Z"
+        ctl.save_state(self.sb.state_dir, state)
+
+        self.assertEqual(self.sb.run("bump-trial-round"), ctl.EXIT_OK)
+        after = self.sb.load()["transaction"]["updated_at"]
+        self.assertNotEqual(after, "2020-01-01T00:00:00Z",
+                            "窗口起点未刷新，下一轮会立刻再次判定\"窗口耗尽\"")
+        self.assertRegex(after, r"^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+
+    def test_bump_trial_round_requires_trial(self):
+        """只在 TRIAL 阶段可用；其它阶段拒绝（不许乱推进计数）。"""
+        self.sb.run("begin", "--from", "1.0.0", "--to", "1.1.0",
+                    "--rollback-target", "1.0.0")
+        self.assertNotEqual(self.sb.run("bump-trial-round"), ctl.EXIT_OK)
+        self.assertEqual(self.sb.load()["transaction"]["boot_attempts"], 0)
+
+    def test_bump_boot_attempt_stays_idempotent(self):
+        """对照组：bump-boot-attempt 仍然按 boot_id 幂等（不能一起改坏）。"""
+        self._begin_trial()
+        self.sb.run("bump-boot-attempt", "--boot-id", "boot-A")
+        self.sb.run("bump-boot-attempt", "--boot-id", "boot-A")
+        self.assertEqual(self.sb.load()["transaction"]["boot_attempts"], 1)
+        self.sb.run("bump-boot-attempt", "--boot-id", "boot-B")
+        self.assertEqual(self.sb.load()["transaction"]["boot_attempts"], 2)
+
+
+class TestRolledBackClearsDerivedViews(unittest.TestCase):
+    """ROLLED_BACK 是终态，必须和其他离开救援态的路径一样清理派生视图。"""
+
+    def setUp(self):
+        self.sb = Sandbox(versions=("1.0.0", "1.1.0"), current="1.0.0")
+
+    def tearDown(self):
+        self.sb.cleanup()
+
+    def test_rolled_back_clears_rescue_flag_and_report(self):
+        self.sb.run("begin", "--from", "1.0.0", "--to", "1.1.0",
+                    "--rollback-target", "1.0.0")
+        self.sb.run("arm-switch")
+        self.sb.run("do-switch")
+        self.sb.run("rollback-arm", "--reason", "test")
+        self.sb.run("rollback-do")
+        # 构造陈旧派生视图（模拟上一次救援留下的现场）
+        for path in (ctl.rescue_flag_path(self.sb.state_dir),
+                     ctl.rescue_report_path(self.sb.state_dir)):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("stale\n")
+        self.assertEqual(self.sb.run("rolled-back"), ctl.EXIT_OK)
+        self.assertFalse(os.path.exists(ctl.rescue_flag_path(self.sb.state_dir)),
+                         "ROLLED_BACK 后 rescue.flag 仍在：派生视图生命周期不一致")
+        self.assertFalse(os.path.exists(ctl.rescue_report_path(self.sb.state_dir)),
+                         "ROLLED_BACK 后 RESCUE.md 仍在：下次救援会读到旧现场")
+
+
+
 class TestReconcileMatrix(unittest.TestCase):
     """第 6 节崩溃点矩阵：按持久事实断言 reconcile 的判定。"""
 

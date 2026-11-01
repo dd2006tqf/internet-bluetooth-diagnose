@@ -197,13 +197,9 @@ TEST(BtMonitorTest, BtDeviceType) {
 // A2DP Audio Quality Score Tests (REQ-A2DP-QUALITY, T4)
 // ============================================================================
 
-// Test friend: access BtMonitor private pure function calculateAudioScore
-class BtMonitorAudioScoreTest {
-public:
-    static double score(const BtMonitor& m, const BtAudioTransport& t) {
-        return m.calculateAudioScore(t);
-    }
-};
+// 2026-11-01：评分函数已从 BtMonitor 私有成员提成命名空间级自由函数，
+// 测试不再需要 friend 后门（生产头文件不该为测试暴露私有入口）。
+// 逻辑不变，只是调用点从 `m.calculateAudioScore(t)` 变成 `calculateAudioScore(t)`。
 
 // Construct an active + SBC codec Transport, only delay is variable
 static BtAudioTransport makeActiveTransport(uint16_t delay) {
@@ -219,42 +215,37 @@ static BtAudioTransport makeActiveTransport(uint16_t delay) {
 
 // Test 17: delay=0 should have no delay penalty (only SBC -5)
 TEST(BtMonitorTest, AudioScoreDelay0) {
-    BtMonitor monitor;
     auto t = makeActiveTransport(0);
-    double s = BtMonitorAudioScoreTest::score(monitor, t);
+    double s = calculateAudioScore(t);
     EXPECT_NEAR(s, 95.0, 0.01);  // 100 - 5(SBC)
 }
 
 // Test 18: delay=100 still within 500 threshold
 TEST(BtMonitorTest, AudioScoreDelay100) {
-    BtMonitor monitor;
     auto t = makeActiveTransport(100);
-    double s = BtMonitorAudioScoreTest::score(monitor, t);
+    double s = calculateAudioScore(t);
     EXPECT_NEAR(s, 95.0, 0.01);
 }
 
 // Test 19: delay=501 triggers light delay penalty (-10)
 TEST(BtMonitorTest, AudioScoreDelay500Boundary) {
-    BtMonitor monitor;
     auto t = makeActiveTransport(501);
-    double s = BtMonitorAudioScoreTest::score(monitor, t);
+    double s = calculateAudioScore(t);
     EXPECT_NEAR(s, 85.0, 0.01);  // 100 - 10 - 5
 }
 
 // Test 20: delay=2001 triggers severe delay penalty (-40)
 TEST(BtMonitorTest, AudioScoreDelay2000Boundary) {
-    BtMonitor monitor;
     auto t = makeActiveTransport(2001);
-    double s = BtMonitorAudioScoreTest::score(monitor, t);
+    double s = calculateAudioScore(t);
     EXPECT_NEAR(s, 55.0, 0.01);  // 100 - 40 - 5
 }
 
 // Test 21: delay=5000 + inactive state additional penalty
 TEST(BtMonitorTest, AudioScoreDelay5000Inactive) {
-    BtMonitor monitor;
     auto t = makeActiveTransport(5000);
     t.state = "idle";
-    double s = BtMonitorAudioScoreTest::score(monitor, t);
+    double s = calculateAudioScore(t);
     EXPECT_NEAR(s, 40.0, 0.01);  // 100 - 40 - 5 - 15
 }
 

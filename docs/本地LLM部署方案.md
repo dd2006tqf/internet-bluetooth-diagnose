@@ -281,42 +281,38 @@ else
     ssh "$BOARD" 'cd /home/radxa/llama/models && wget -c "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"'
 fi
 
-# ── 3. 创建 systemd service 文件 ──
+# ── 3. 安装 systemd service 文件 ──
+# 单元文件以仓库 tools/llama-server.service 为**唯一权威来源**（单源化）。
+# 此前这里自带一份 heredoc，与仓库副本、与板上实际值三处漂移：
+# 文档声称 MemoryMax=4.5G + CPUAffinity=0 1，仓库副本却两者都没有，
+# 照仓库文件部署就会得到一个没有内存上限、没有核绑定的推理服务。
+# 现在只做一件事：把仓库里的那一份装上去。
 echo "===== 安装 systemd 服务 ====="
-ssh "$BOARD" "sudo tee /etc/systemd/system/llama-server.service" <<'SERVICE'
-[Unit]
-Description=llama.cpp LLM Inference Server
-After=network.target
+# 在仓库根执行本脚本（与下文 'git clone' 相对路径保持一致的约定）
+scp tools/llama-server.service "$BOARD:/tmp/llama-server.service"
+ssh "$BOARD" 'sudo install -m 0644 /tmp/llama-server.service /etc/systemd/system/llama-server.service && rm -f /tmp/llama-server.service'
 
-[Service]
-Type=simple
-User=radxa
-WorkingDirectory=/home/radxa/llama
-Environment=LD_LIBRARY_PATH=/home/radxa/llama/lib
-ExecStart=/home/radxa/llama/bin/llama-server \
-    -m /home/radxa/llama/models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
-    --host 127.0.0.1 --port 8080 \
-    -c 2048 -t 4 -np 1 \
-    --mlock
-Restart=on-failure
-RestartSec=5
-MemoryMax=4.5G
-CPUAffinity=0 1
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-ssh "$BOARD" 'sudo systemctl daemon-reload'
 echo "===== LLM 部署完成 ====="
 echo "启动: ssh $BOARD 'sudo systemctl start llama-server'"
 echo "状态: ssh $BOARD 'sudo systemctl status llama-server'"
 ```
 
-> **现网实际值（2026-10-09 与板上 `/etc/systemd/system/llama-server.service` 逐项核对）**：
-> 模型为 `qwen2.5-0.5b-instruct-q4_k_m.gguf`（上文 3B 为方案目标，现网以 0.5B 落地，
-> 基准实测见 `架构设计-模块与代码结构.md` §12.4）；资源限制为 `MemoryMax=4.5G` + `CPUAffinity=0 1`
-> （无 `CPUQuota`）。执行安装时以本 heredoc 为准。
+> **单元文件的唯一权威来源是仓库 `tools/llama-server.service`**（2026-11-01 单源化）。
+> 模型为 `qwen2.5-0.5b-instruct-q4_k_m.gguf`（本文 3B 为方案目标，现网以 0.5B 落地，
+> 基准实测见 `架构设计-模块与代码结构.md` §12.4）；资源限制为
+> `MemoryMax=4.5G` + `CPUAffinity=0 1`（无 `CPUQuota`），两项都写在那个文件里。
+> 本文不再自带 unit 副本——同一份配置存在三个版本（仓库 / 文档 heredoc / 板上）
+> 必然漂移，而这恰好是"计算硬隔离"最容易悄悄失效的地方。
+>
+> **核对命令**（部署后应逐项确认，不要只信文档）：
+> ```bash
+> ssh "$BOARD" 'systemctl show llama-server -p MemoryMax -p CPUAffinity -p CPUQuotaPerSecUSec'
+> ```
+> 若 `MemoryMax` 显示 `infinity`，说明装上去的不是本仓库这份文件。
+>
+> **板端 CPU 拓扑纠正**：实测 `/proc/cpuinfo` 为 8× Cortex-A55（无 A76 大核），
+> 因此 `CPUAffinity=0 1` 的含义是"把推理钉在固定两颗核上、其余核留给
+> weaknet-server 与系统"，而非本文早期所称的"绑定 A76 大核"。
 
 `llama-server` 参数详解：
 

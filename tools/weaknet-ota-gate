@@ -194,8 +194,11 @@ def main(argv=None):
         description="OTA 启动门禁（P0-C1）：weaknet-server 启动前检查事务状态")
     parser.add_argument("--root", default=None)
     parser.add_argument("--state-dir", default=None)
-    parser.add_argument("--dry-run", action="store_true",
-                        help="只输出判定，不影响退出码语义（仍会拒绝）")
+    # 刻意**不提供** --dry-run：门禁的全部输出就是退出码，systemd 只认非零。
+    # 一个\"只判定不拒绝\"的 dry-run 会让人误以为可以安全试跑，实际仍返回非零，
+    # 反而更容易被 wrapper 当成真拒绝。要只看判定就走 `weaknet-ota-ctl
+    # reconcile --dry-run`（它真的只判定、永不改状态）；要验证门禁本身，
+    # 直接看它打印的 JSON 即可，退出码语义不需要额外开关。
     args = parser.parse_args(argv)
 
     state_dir = args.state_dir or os.environ.get("WEAKNET_OTA_STATE_DIR") or DEFAULT_STATE_DIR

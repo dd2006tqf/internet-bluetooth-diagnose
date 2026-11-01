@@ -15,20 +15,31 @@
 ```
 
 自动完成 5 步：
-1. 在 ARM64 容器内编译（ccache 加速）
+1. ARM64 编译（宿主机原生交叉编译，Clang + Bullseye Sysroot，`-j$(nproc)`）
 2. 打包部署目录（dist-arm64/）
 3. rsync 部署到开发板
 4. 远程运行功能测试（health/get/eBPF/指标/历史）
 5. 生成报告到 `ci-reports/`
 
-> **单元测试不在开发板上跑**。52 个 gtest 套件的归属是 x86：
+> **单元测试不在开发板上跑**。54 个 gtest 套件的归属是 x86：
 > `ctest --test-dir build-x86/server`（本地，也是 `.ai-harness/project-profile.json`
 > 的 `test-all` 命令）与 GitHub Actions。板端只部署 `test_ebpf`
 > （需要 root + 内核 eBPF，只能真机跑），由 `weaknet-test-full.sh` 的 Phase 11 执行。
 
+### 部署阶段会做什么（2026-11-01 加固）
+
+跑 `ci.sh` 时如果发现下面这些行为，都是**设计如此**，不是异常：
+
+| 行为 | 原因 |
+|------|------|
+| 先 `rm -rf .deploy-staging` | 该目录是纯中转区，历史 root 属主日志会让 `rsync --delete` 恒失败（Permission denied / code 23）。每次部署前整体清空。 |
+| 暂停 `weaknet-ota-recover` | 它是常驻轮询，看到 `TRIAL` + 健康就自动 commit，会与 adopt 抢同一 OTA 事务，导致 adopt 的 commit 被判"非法阶段转换"。部署期间由 `ci.sh` 独占事务，结束（含失败/Ctrl-C）自动拉起。 |
+| 反向隧道重启后报 `Connection ... closed by remote host` | 重启隧道必然掐断承载该命令的通道（自指）。**不是失败**。`ci.sh` 随后轮询等待通道真正恢复（判据是完整 SSH 握手，不是端口 listen），实测 5～50s。 |
+| adopt 返回非零但仍继续 | 会先用 `phase=COMMITTED` + `.committed` 存在 + 服务 active 三条客观事实复核；全部满足则判定为成功（避免跳过后续步骤的"假失败"）。 |
+
 ### 使用已有 ARM64 构建结果
 
-当前 `ci.sh` 每次执行都会在 `build-arm64/` 中进行 CMake 增量配置/构建；未修改的目标会由 CMake/ccache 复用。部署包始终从该目录重新整理到 `dist-arm64/`。
+当前 `ci.sh` 每次执行都会在 `build-arm64-native/` 中进行 CMake 增量配置/构建（原生交叉编译）；未修改的目标会由 CMake/ccache 复用。部署包始终从该目录重新整理到 `dist-arm64/`。
 
 ### 跳过部署
 
@@ -36,11 +47,11 @@
 ./tools/ci.sh --skip-deploy
 ```
 
-只在本地容器内编译并打包 `dist-arm64/`，不部署到开发板。
+只在本地编译并打包 `dist-arm64/`，不部署到开发板。
 
 > 注意：`ci.sh` **不在本地跑单元测试**。本地跑单测请直接用
-> `ctest --test-dir build-x86/server`（x86，52 个套件）或容器内
-> `ctest --test-dir build-arm64/server`。
+> `ctest --test-dir build-x86/server`（x86，54 个套件）或容器内
+> `ctest --test-dir build-arm64-native/server`。
 
 ### 完整参数列表
 
@@ -67,8 +78,11 @@ ssh -t radxa@radxa-cubie-a7a.local 'sudo /home/radxa/weaknet/weaknet-test-full.s
 | `CONTAINER` | `weaknet-arm64-dev` | ARM64 构建容器名 |
 | `BOARD` | `radxa@radxa-cubie-a7a.local` | 开发板 SSH 地址 |
 
-> 编译并行度在 `ci.sh` 内**硬编码为 `-j1`**（QEMU 模拟下高并行度会导致编译器
-> segfault），不提供 `JOBS` 环境变量。
+> 编译并行度由 `ci.sh` 内的 `-j$(nproc)` 决定（宿主机裸机原生交叉编译，
+> Clang + Bullseye Sysroot）。旧版 QEMU 模拟下必须 `-j1`，现已不再使用，
+> 不再有该限制。
+
+`CONTAINER` 变量仍保留在参数表中，但当前原生交叉编译路径不使用它。
 
 示例：
 ```bash
@@ -91,7 +105,7 @@ ci-reports/
 
 ## 测试覆盖
 
-### 单元测试（52 个套件）
+### 单元测试（54 个套件）
 
 跑法：`ctest --test-dir build-x86/server --output-on-failure`
 
@@ -182,21 +196,28 @@ ci-reports/
 
 ## GitHub Actions 作业结构
 
-**只有仓库根 `.github/workflows/` 会被 GitHub 注册执行。** 实测查询
-`/actions/workflows` 确认当前生效的只有两个：
+**只有仓库根 `.github/workflows/` 会被 GitHub 注册执行。** 当前生效的两个：
 
-| workflow | 文件 | 触发 |
-|---|---|---|
-| CI | `.github/workflows/ci.yml` | push / PR |
-| ARM64 Build & Deploy | `.github/workflows/build-and-deploy.yml` | 手动 `workflow_dispatch` + release |
+| workflow | 文件 | 触发 | 职责 |
+|---|---|---|---|
+| CI | `.github/workflows/ci.yml` | push / PR | 静态规范、云端 pytest/ruff、OpenAPI 契约、前端构建、x86 编译 + ctest、OTA 三件套自测 |
+| Release Firmware (OTA) | `.github/workflows/release.yml` | tag `v*.*.*` / 手动 | ARM64 原生 runner 构建 → ECDSA 签名 → GitHub Release 制品 |
 
-`CI` 含三个作业：
+> **已删除**：`.github/workflows/build-and-deploy.yml`（2026-11-01，full-code-review O3）。
+> 它的 build job 与 `release.yml` 重复且更弱（不签名、不产 OTA 包），deploy job 则直接
+> `rsync --delete dist-arm64/ → /home/radxa/weaknet/` 并 `systemctl restart weaknet-server`——
+> 那会把文件直接铺进安装根，绕过 `weaknet-local-update.sh adopt` 的
+> `releases/<ver>` + `current` 原子翻链与健康窗口，等于把线上设备从 OTA 布局打回扁平布局，
+> 同时跳过验签。板端部署的唯一入口是 `tools/ci.sh`，发布制品走 `release.yml`。
+
+`CI` 含四个作业：
 
 | 作业 | 内容 |
 |---|---|
-| 静态规范检查 | CRLF/非法字符、受限二进制、`tools/verify_telemetry_contract.py --strict` |
+| 静态规范检查 | CRLF/非法字符、受限二进制、gitleaks 密钥扫描、`tools/verify_telemetry_contract.py --strict` |
 | 云端 Python 测试与连接路径静态检查 | `pytest tests/ -q -m "not live"` + `ruff 连接路径门禁` |
-| x86 编译与全量单元测试 | `cmake -B build-x86 -DBUILD_EBPF=OFF` + `ctest` |
+| OpenAPI 契约与前端构建门禁 | `generate_openapi.sh --check`、客户端漂移检查、`pnpm typecheck` + 生产构建 |
+| x86 编译与全量单元测试 | `cmake -B build-x86 -DBUILD_EBPF=OFF` + `ctest` + **OTA 控制器/恢复服务/启动门禁**的单测与沙盒演练 |
 
 ### ⚠️ `Large-Model-Application/.github/workflows/` 是不生效的
 
@@ -224,7 +245,10 @@ ci-reports/
 ## 常见问题
 
 ### Q: 编译超时怎么办？
-A: 首次编译约 30 分钟（QEMU 模拟），之后 ccache 加速，增量编译只需几秒。`ci.sh` 每次都会执行增量 CMake 构建，未修改的目标由 CMake/ccache 复用；只想打包不部署可用 `--local-only`。
+A: 使用宿主机裸机原生交叉编译（Clang + Bullseye Sysroot）时，全量约 40 秒；
+之后增量编译只需几秒。`ci.sh` 每次都会执行增量 CMake 构建，未修改的目标由
+CMake/ccache 复用；只想打包不部署可用 `--local-only`。
+（旧版 QEMU 容器路径全量约 30 分钟，现已不再走该路径。）
 
 ### Q: 开发板连不上？
 A: 检查 `ssh radxa@radxa-cubie-a7a.local echo ok`。连不上会自动跳过远程测试。

@@ -72,6 +72,7 @@ P0-A 提供了事务状态机与崩溃点**判定**，但判定本身不做事�
 """
 
 import argparse
+import calendar
 import errno
 import json
 import os
@@ -100,7 +101,14 @@ EXIT_ERROR = 1
 EXIT_USAGE = 2
 EXIT_RECOVERY = 4
 EXIT_SCHEMA = 5
-# 一次开机内的试运行窗口耗尽、但还有剩余尝试次数 → 用这个退出码请求重启
+# 一次开机内的试运行窗口耗尽、但还有剩余尝试次数 → 用这个退出码请求重启。
+#
+# **必须与单元契约配套**：weaknet-ota-recover.service 用
+# `Restart=on-failure` + `RestartForceExitStatus=75`，把 75 显式声明为
+# "仍要重启的退出码"。此前只有 `SuccessExitStatus=75`，systemd 把 75 当作
+# 干净退出、且 on-failure 不重启 —— 结果是"健康窗口耗尽 → 恢复服务静默
+# 死亡 → 设备停在未验证候选上"（P0-C1 评审缺陷 C1）。两侧必须同时成立，
+# 单测里有一对断言锁死这个配对。
 EXIT_RETRY = 75
 
 LIVE_PHASES = ("PREPARED", "SWITCH_PENDING", "TRIAL",
@@ -248,8 +256,13 @@ def read_current(root):
 # ============================================================================
 
 def decide(state, current, healthy, elapsed, restarts, attempts,
-           max_rounds=MAX_TRIAL_ROUNDS, max_restarts=MAX_TRIAL_RESTARTS):
+           max_rounds=None, max_restarts=None):
     """算出下一步动作。返回 (action, reason)。
+
+    注意 `max_rounds` / `max_restarts` 的默认值**必须在调用时**从模块常量读，
+    不能写成 `max_rounds=MAX_TRIAL_ROUNDS`：默认参数在函数定义时求值并绑定，
+    之后再改模块常量（单测/演练用环境变量压上限）对它完全无效，会静默地
+    按旧值判定。
 
     参数：
       state     TxState
@@ -263,6 +276,10 @@ def decide(state, current, healthy, elapsed, restarts, attempts,
       none | abort | mark_trial | commit | rollback | rollback_flip |
       rollback_verify | rolled_back | wait_trial | wait_rollback | rescue
     """
+    if max_rounds is None:
+        max_rounds = MAX_TRIAL_ROUNDS
+    if max_restarts is None:
+        max_restarts = MAX_TRIAL_RESTARTS
     if not state.has_tx:
         return "none", "没有进行中的事务"
     if state.phase == "RECOVERY_REQUIRED":
@@ -737,14 +754,25 @@ class Watcher(object):
             return None
 
     def phase_started_at(self, state):
-        """当前阶段的开始时间（用事务的 updated_at 近似）。"""
+        """当前阶段的开始时间（用事务的 updated_at 近似）。
+
+        `updated_at` 是 **UTC**（控制器用 `time.gmtime()` 写出，带 `Z` 后缀），
+        所以必须用 `calendar.timegm()` 解析。
+
+        这里曾经写的是 `time.mktime(parsed) - time.timezone`：`mktime` 按
+        **本地时间**解释，减去 `timezone`（标准时差）只在"当前偏移 == 标准
+        偏移"时才碰巧正确。在实行夏令时的时区（Europe/Berlin、America/New_York）
+        夏季会固定偏差 1 小时，方向是**把起始时间算早** → `elapsed` 偏大 1h →
+        健康窗口提前耗尽 → 健康的候选被回滚（叠加 EXIT_RETRY 还会请求重启）。
+        工业网关现场改时区很常见，不能靠"板端是 UTC"兜住。
+        """
         if not state.has_tx or not state.updated_at:
             return self.rec.clock()
         try:
             parsed = time.strptime(state.updated_at, "%Y-%m-%dT%H:%M:%SZ")
         except (ValueError, TypeError):
             return self.rec.clock()
-        return time.mktime(parsed) - time.timezone
+        return calendar.timegm(parsed)
 
     def elapsed(self, state):
         return max(0, int(self.rec.clock() - self.phase_started_at(state)))
@@ -890,10 +918,9 @@ class Watcher(object):
             return True, reason
 
         if action in ("wait_trial", "wait_rollback"):
-            # 窗口内继续等；但健康窗口耗尽且还有尝试次数时，本轮结束，
-            # 让上层重启本进程（下次开机重新计数）。
-            if self.elapsed(state) >= state.health_timeout:
-                return False, reason
+            # 窗口内继续等。窗口耗尽后的"再试一轮"由 loop() 统一处理：它必须先
+            # 在状态里消耗一次试运行机会，再请求重启本进程——否则同一次开机
+            # 里进程重启不会换 boot_id，计数不动，就会变成"永远还有剩余次数"。
             return False, reason
 
         if action == "rescue":
@@ -926,9 +953,35 @@ class Watcher(object):
             elapsed = self.elapsed(state)
             if elapsed >= state.health_timeout and state.phase == "TRIAL" \
                     and self.attempts(state) < MAX_TRIAL_ROUNDS:
-                # 本次开机的窗口已耗尽，但还有剩余尝试次数 → 请求重启本进程
-                # （重启后 boot_attempts 会再加一，权威计数不归零）。
-                log("本次开机的健康窗口已耗尽，请求重启恢复进程以计下一次尝试")
+                # 本次开机的健康窗口已耗尽，但还有剩余试运行机会。
+                #
+                # **必须先消耗一次机会再请求重启**（2026-11-01 修正）：
+                # 旧实现只 `return EXIT_RETRY`，指望"重启后 boot_attempts 会
+                # 再加一"。但 systemd 重启的是恢复进程本身，boot_id 不变，
+                # `bump-boot-attempt` 按 boot_id 幂等 → 计数原地不动；
+                # 而 elapsed 取自 updated_at（TRIAL 期间不变）→ 每轮都立刻
+                # 再次"窗口耗尽" → 与 RestartForceExitStatus 组合就是重启
+                # 风暴，被 StartLimitBurst 兜住后单元 failed。
+                #
+                # `bump-trial-round` 是**不依赖 boot_id** 的持久计数，并同时
+                # 重置本轮窗口起点，因此每次重启都真的换来一个新窗口。
+                rc, _ = self.rec.ctl("bump-trial-round",
+                                     "--reason", "本次开机健康窗口耗尽")
+                if rc != 0:
+                    # 控制器不可用 = 计数无法持久化。此时**绝不能**退出重启：
+                    # 进程重启后内存计数归零，attempts 永远追不上上限，就会
+                    # 变成无界重启循环（评审缺陷 C1 的另一种形态）。
+                    # fail-closed：进救援、停服、留现场，等人处理。
+                    log("bump-trial-round 失败（rc=%d）——无法持久化试运行计数，"
+                        "转入救援模式（不允许无界重启）" % rc)
+                    self.rec.enter_rescue(
+                        "无法持久化试运行计数（控制器不可用）", state,
+                        read_current(self.rec.root))
+                    return EXIT_OK
+                state = self.load() or state
+                log("本次开机的健康窗口已耗尽，已消耗一次试运行机会（累计 %s/%d），"
+                    "请求重启恢复进程开启下一轮"
+                    % (self.attempts(state), MAX_TRIAL_ROUNDS))
                 return EXIT_RETRY
             interval = state.health_poll_s if state else HEALTH_POLL_S
             self.rec.sleeper(interval)

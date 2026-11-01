@@ -1882,8 +1882,11 @@ std::vector<BtAudioTransport> BtMonitor::getAudioTransports() const {
  * @brief 基于 D-Bus 属性（Delay/Codec/State）计算音频质量评分（Phase 1b 纯 D-Bus 逻辑）
  * @param transport MediaTransport1 属性集合
  * @return 0~100 分，越大越好
+ *
+ * 2026-11-01：从 BtMonitor 成员函数提成自由函数（见头文件说明）。逻辑一字未改，
+ * 只去掉不再需要的 `BtMonitor::` 限定与 `this`。
  */
-double BtMonitor::calculateAudioScore(const BtAudioTransport& transport) const {
+double calculateAudioScore(const BtAudioTransport& transport) {
     double score = 100.0;
     if (transport.delay > 2000) {
         score -= 40.0;

@@ -40,9 +40,6 @@ namespace weaknet_dbus {
 
 namespace {
 
-/// FNV-1a（与 DNS 捕获侧一致，仅用于日志可读性，不参与配对）
-std::string qtypeName(uint16_t) { return "A"; }
-
 /**
  * @brief 自构造 DNS A 查询并等待应答。
  *
@@ -223,17 +220,6 @@ bool probeTcpConnectFd(const std::string& ip, uint16_t port, uint32_t timeout_se
     *out_fd = fd;
     *out_detail = "connected";
     return true;
-}
-
-/// 仅验证建连能力（Portal 探测只需要一个已连接 fd，用不到 TLS）
-bool probeTcpConnect(const std::string& ip, uint16_t port, uint32_t timeout_sec,
-                     std::string* out_detail) {
-    int fd = -1;
-    std::string detail;
-    const bool ok = probeTcpConnectFd(ip, port, timeout_sec, &fd, &detail);
-    if (fd >= 0) ::close(fd);
-    *out_detail = detail;
-    return ok;
 }
 
 /**

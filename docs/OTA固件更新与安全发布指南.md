@@ -144,8 +144,43 @@ sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \
 | 即使回滚失败也能保留 SSH 救援入口 | 救援模式：停服 + mask（不可用时退到 disable）+ 保证 `ssh` / `weaknet-tunnel` active + 写 `RESCUE.md`；**不做版本切换、不做无限重启、不启动 weaknet-server** |
 
 **尝试次数是持久化的**：`boot_attempts` 存在事务状态里，**重启后不归零**。
-断电重来的无限重试必须被它拦住。计数按内核 `boot_id` 幂等——恢复服务自身
-被 systemd 重启不算一次新尝试。
+断电重来的无限重试必须被它拦住。
+
+**两种计数，分工必须分清**（2026-11-01 修正，此前是 P0-C1 的一个真实缺口）：
+
+| 命令 | 何时调用 | 是否按 `boot_id` 幂等 | 为什么 |
+|---|---|---|---|
+| `bump-boot-attempt` | 每轮试运行**开始前**（`TRIAL` 阶段） | **是** | 恢复服务自身被 systemd 重启不是一次新的设备启动，不该消耗机会 |
+| `bump-trial-round` | 本次开机的健康窗口**耗尽时**，退出前 | **否** | 窗口耗尽就是**新的一轮试运行**，必须真的计数，否则追不上上限 |
+
+`bump-trial-round` 同时刷新事务的 `updated_at`——健康窗口的起点就是它，
+不刷新的话下一轮一进来就已经"超时"，会立刻再次判定窗口耗尽。
+
+**恢复进程自身的重启契约**（缺了它整条链会静默断掉）：
+
+```ini
+[Service]
+Restart=on-failure
+RestartForceExitStatus=75      # 恢复器用 75 表示"窗口耗尽但还有剩余次数"
+[Unit]
+StartLimitIntervalSec=0        # 收敛靠计数，不靠限流
+```
+
+- **必须是 `RestartForceExitStatus`，不能是 `SuccessExitStatus`**。
+  `SuccessExitStatus=75` 会让 systemd 认为恢复服务"干净退出"，
+  `Restart=on-failure` 于是不重启 → 恢复服务静默死亡，设备停在未验证候选上，
+  既不推进也不回滚。实测对照（systemd 255，退出码 75）：
+
+  | 配置 | `Result` | `NRestarts` | `ActiveState` |
+  |---|---|---|---|
+  | `Restart=on-failure` + `SuccessExitStatus=75` | `success` | 0 | `inactive`（**静默死亡**） |
+  | `Restart=on-failure` + `RestartForceExitStatus=75` | `exit-code` | 递增 | `activating`（**持续重启**） |
+
+- **`StartLimitIntervalSec` 属于 `[Unit]` 段**。写进 `[Service]` 会被 systemd
+  当作 `Unknown key name` 静默忽略（只有 `systemd-analyze verify` 给一行
+  warning）——与 P0-C1 那次 `ConditionPathExists` 写错段位是同类陷阱。
+- **控制器不可用时 fail-closed 进救援，不返回 75**：计数落不下去还请求重启，
+  进程重启后内存计数归零，就变成无界重启循环。
 
 **救援模式的行为约定：**
 
@@ -532,26 +567,32 @@ ssh board 'sudo /home/radxa/weaknet/weaknet-test-full.sh'
 systemd）：
 
 ```bash
-# P0-A 控制器单元测试（86 项）：状态机、崩溃矩阵、GC 保守性、投影、
-# bootstrap 推断来源、rescue.flag / RESCUE.md 生命周期、CLI 行为
+# P0-A 控制器单元测试（91 项）：状态机、崩溃矩阵、GC 保守性、投影、
+# bootstrap 推断来源、rescue.flag / RESCUE.md 生命周期、CLI 行为、
+# bump-trial-round（不幂等计数 + 刷新窗口起点）、ROLLED_BACK 清理派生视图
 python3 tools/test_weaknet_ota_ctl.py
 
 # P0-A 沙盒演练（44 项断言，8 节）：bootstrap 接管、正常升级、健康失败回滚、
 # 同版本幂等重装、崩溃点判定、GC 跳过、损坏拒绝、首次安装
 bash tools/ota_p0a_drill.sh
 
-# P0-B 恢复器单元测试（42 项）：只读事务、健康判据、救援模式、动作编排、
+# P0-B 恢复器单元测试（55 项）：只读事务、健康判据、救援模式、动作编排、
 # P0-C2 重启矩阵（回滚续跑 / 崩溃循环救援 / 尝试耗尽回滚 / 同 boot_id 不重复计数）、
-# 门禁与恢复器判定一致性
+# 门禁与恢复器判定一致性、**EXIT_RETRY 单元契约配对**（RestartForceExitStatus
+# 而非 SuccessExitStatus + 段位校验）、窗口耗尽计数、phase_started_at 的 UTC 解析、
+# **Python 3.9 兼容守护**（实例打补丁不得用 staticmethod 包装、
+# 哨兵不得用生成器表达式 .throw()——两者在 3.9 与 3.10+ 语义不同）
 python3 tools/test_weaknet_ota_recover.py
 
-# P0-B 沙盒演练（21 项断言，8 节）：无事务、健康转正、尝试耗尽回滚、
-# 崩溃循环、控制器缺失兜底、状态损坏救援、救援报告、升级脚本消失仍可恢复
+# P0-B 沙盒演练（30 项断言，9 节）：无事务、健康转正、尝试耗尽回滚、
+# 崩溃循环、控制器缺失兜底、状态损坏救援、救援报告、升级脚本消失仍可恢复、
+# **窗口耗尽→持久计数→下一轮判定真的变化**（并验证计数落不下去时 fail-closed）
 bash tools/ota_p0b_drill.sh
 
-# P0-C1 启动门禁单元测试（28 项）：decide() 判定矩阵、状态读取错误路径、
+# P0-C1 启动门禁单元测试（32 项）：decide() 判定矩阵、状态读取错误路径、
 # "门禁不读 rescue.flag"两个方向、systemd 接线（Requires 而非 Wants、
-# 门禁 oneshot 无 RemainAfterExit、门禁不依赖 weaknet-server）
+# 门禁 oneshot 无 RemainAfterExit、门禁不依赖 weaknet-server）、
+# 恢复服务单元重启契约、门禁不再提供无语义的 --dry-run
 python3 tools/test_weaknet_ota_gate.py
 
 # P0-C1 流程兼容演练（36 项断言，3 节）：阶段矩阵、升级全流程重放

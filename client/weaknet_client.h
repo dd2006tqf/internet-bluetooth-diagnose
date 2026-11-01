@@ -23,20 +23,36 @@
  *   - GetEbpfMonitorHealth      eBPF 监控器健康快照
  *   - GetHistory                查询历史监控数据
  *
- * 支持的 D-Bus 信号 (Signal):
- *   - Changed                   通用变化信号（旧版兼容）
- *   - InterfaceChanged           网卡添加/删除
- *   - ConnectionModeChanged     当前上网网卡切换
- *   - NetworkQualityChanged     综合网络质量变化
- *   - BluetoothDeviceChanged    蓝牙设备变化
+ * ⚠️ 事件订阅族当前**无效**（2026-10-19 停发，2026-11-01 标注）：
+ *
+ *   服务端已停发全部 D-Bus 信号（Changed / InterfaceChanged /
+ *   ConnectionModeChanged / NetworkQualityChanged / BluetoothDeviceChanged /
+ *   MonitorStateChanged / EbpfMonitorStats）。原因是它们在停止时**没有任何
+ *   生产订阅者**——`server.cpp` 注释宣称的「信号替代轮询」这个消费者从未建出来。
+ *   停发决策与处置记录见 openspec/tasks/2026-10-19-stop-unsubscribed-dbus-signals.md。
+ *
+ *   因此下列 API 目前是**空转**的：
+ *     weaknet_check_changes()          —— 永远返回 false
+ *     weaknet_subscribe_event()        —— 只加 D-Bus match，服务端不会发
+ *     weaknet_unsubscribe_event()      —— 只做本地状态，固定返回 true
+ *     weaknet_get_event_types()        —— 本地拼接常量，与生产端无关
+ *     weaknet_check_events()           —— 永远返回 false
+ *     weaknet_subscribe_network_quality() / weaknet_check_network_quality()
+ *     weaknet_subscribe_bluetooth_events()
+ *
+ *   它们被保留而不删除，是因为仓库内仍有示例/演示程序引用
+ *   （client/example_usage.cpp、client/test_client.cpp、client/test_network_quality.cpp）。
+ *   新代码**不要**用它们做事件驱动；要拿当前状态请直接调用对应的
+ *   get_* / *_stats 查询方法（那是真实可用的路径）。
+ *
+ *   彻底删除或重建发射（须先有真实订阅者）属于独立变更，见
+ *   docs/架构设计-模块与代码结构.md 的"信号停发与出口对照表"。
  *
  * 使用流程：
  *   1. weaknet_init()              -- 初始化库并建立 D-Bus 连接
  *   2. weaknet_is_connected()      -- 检查连接是否就绪
- *   3. 调用各种 get_* / *_stats   -- 获取数据
- *   4. weaknet_subscribe_*         -- 订阅事件信号
- *   5. weaknet_check_*             -- 非阻塞轮询事件
- *   6. weaknet_cleanup()           -- 释放资源
+ *   3. 调用各种 get_* / *_stats   -- 获取数据（这是当前唯一有效的数据路径）
+ *   4. weaknet_cleanup()           -- 释放资源
  */
 
 #ifndef WEAKNET_CLIENT_H
@@ -60,12 +76,13 @@ extern "C" {
  * - TCP丢包率监控
  * - RTT延迟监控
  * 
- * 使用示例：
- *   weaknet_init();                          // 初始化
- *   weaknet_get_interfaces(buf, sz, err, errsz);  // 获取信息
- *   weaknet_subscribe_event("InterfaceChanged", callback);  // 订阅事件
- *   weaknet_check_events(...);                // 检查事件
- *   weaknet_cleanup();                       // 清理
+ * 使用示例（只用真实有效的查询路径）：
+ *   weaknet_init();                               // 初始化
+ *   weaknet_get_interfaces(buf, sz, err, errsz);  // 获取网卡列表
+ *   weaknet_health_check(buf, sz, err, errsz);    // 获取健康快照
+ *   weaknet_cleanup();                            // 清理
+ *
+ * 注意：weaknet_subscribe_* / weaknet_check_* 事件订阅族当前无效，见文件头说明。
  */
 
 // ============== 库初始化和清理 ==============
@@ -165,6 +182,10 @@ bool weaknet_ping_host(const char* hostname, char* result_buffer, size_t result_
 /**
  * @brief 检查网络状态变化（非阻塞）
  *
+ * @deprecated **当前永远返回 false**：服务端自 2026-10-19 起停发 Changed 信号
+ *             （停止时零生产订阅者）。保留仅为源码兼容。要取当前状态请直接调用
+ *             对应的 get_* / *_stats 查询方法。详见文件头说明。
+ *
  * 从 D-Bus 消息队列中尝试弹出 Changed 信号。
  * 如果没有待处理信号，立即返回 false。
  *
@@ -186,6 +207,9 @@ bool weaknet_check_changes(char* message_buffer, size_t message_size, int32_t* c
 
 /**
  * @brief 事件回调函数类型（旧版风格）
+ *
+ * @deprecated 服务端已停发全部 D-Bus 信号（2026-10-19），本回调**不会被调用**。
+ *             类型保留仅为源码兼容，详见文件头说明。
  *
  * 用于 weaknet_subscribe_event() 的用户回调。
  *

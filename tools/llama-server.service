@@ -2,13 +2,43 @@
 Description=Llama.cpp Local LLM Inference Server (Qwen2.5-0.5B)
 After=network.target
 
+# 本文件是 llama-server 单元的**唯一权威来源**（单源化，2026-11-01）。
+#
+# 此前存在的问题（full-code-review O4）：
+#   * 仓库里这份 unit 无人安装（grep llama-server.service tools/ci.sh、
+#     tools/release.sh、.github/ 全为空）；
+#   * 它只有 LimitNOFILE=65535，而 docs/本地LLM部署方案.md 与
+#     docs/架构设计-模块与代码结构.md §12.4 声称生产是 MemoryMax=4.5G +
+#     CPUAffinity=0 1，文档则用 heredoc 现场写 unit。
+#   → 谁照仓库文件部署，就得到一个**没有内存上限、没有核绑定**的推理服务，
+#     恰好破坏文档宣称的"计算硬隔离"。
+#
+# 现在的约定：
+#   * 资源限制以本文件为准（与文档宣称的现网值一致）；
+#   * 文档不再自带 heredoc，改为引用本文件；
+#   * 安装方式见 docs/本地LLM部署方案.md §3.4：scp 本文件到
+#     /etc/systemd/system/llama-server.service 后 daemon-reload + enable。
+#
+# 板端（Radxa Cubie A7A）CPU 拓扑：8× Cortex-A55（实测 /proc/cpuinfo 与
+# 频率表均无 A76 大核），因此 CPUAffinity 绑定的是低编号核心，含义是
+# "把推理压在固定两颗核上、把其余核心留给 weaknet-server 与系统"，
+# 而不是文档早期所说的"绑定 A76 大核"。
+
 [Service]
 Type=simple
 User=radxa
 WorkingDirectory=/home/radxa/llama
-ExecStart=/home/radxa/llama/bin/llama-server -m /home/radxa/llama/models/qwen2.5-0.5b-instruct-q4_k_m.gguf --host 127.0.0.1 --port 8080 -c 1024 -t 4 --log-disable
+Environment=LD_LIBRARY_PATH=/home/radxa/llama/lib
+ExecStart=/home/radxa/llama/bin/llama-server \
+    -m /home/radxa/llama/models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+    --host 127.0.0.1 --port 8080 \
+    -c 1024 -t 4 \
+    --log-disable
 Restart=on-failure
-RestartSec=3s
+RestartSec=5
+# 计算硬隔离：内存上限 + 核绑定。缺了这两条就等于没有隔离。
+MemoryMax=4.5G
+CPUAffinity=0 1
 LimitNOFILE=65535
 
 [Install]

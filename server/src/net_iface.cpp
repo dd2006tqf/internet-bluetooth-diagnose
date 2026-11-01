@@ -112,34 +112,6 @@ void parseRtAttributes(struct rtattr* rta, int len, T (&attrs)[N]) {
     }
 }
 
-/**
- * @brief 将网卡 flags 位域转为可读字符串（如 "UP|RUNNING|LOWER_UP"）
- * @param flags ifinfomsg.ifi_flags 位掩码
- * @return 以 '|' 连接的标志名序列，空字符串表示无标志
- *
- * @note 包含自定义定义的 IFF_LOWER_UP 和 IFF_DORMANT（若内核头缺失）。
- */
-std::string ifFlagsToString(unsigned int flags) {
-    std::vector<std::string> names;
-    if (flags & IFF_UP) names.emplace_back("UP");
-    if (flags & IFF_BROADCAST) names.emplace_back("BROADCAST");
-    if (flags & IFF_DEBUG) names.emplace_back("DEBUG");
-    if (flags & IFF_LOOPBACK) names.emplace_back("LOOPBACK");
-    if (flags & IFF_POINTOPOINT) names.emplace_back("P2P");
-    if (flags & IFF_RUNNING) names.emplace_back("RUNNING");
-    if (flags & IFF_NOARP) names.emplace_back("NOARP");
-    if (flags & IFF_PROMISC) names.emplace_back("PROMISC");
-    if (flags & IFF_ALLMULTI) names.emplace_back("ALLMULTI");
-    if (flags & IFF_MULTICAST) names.emplace_back("MULTICAST");
-    if (flags & IFF_LOWER_UP) names.emplace_back("LOWER_UP");
-    if (flags & IFF_DORMANT) names.emplace_back("DORMANT");
-    std::string out;
-    for (size_t i = 0; i < names.size(); ++i) {
-        out += names[i];
-        if (i + 1 < names.size()) out += '|';
-    }
-    return out;
-}
 
 // ===========================================================================
 // SnapshotCollector：一次性 netlink 快照采集器

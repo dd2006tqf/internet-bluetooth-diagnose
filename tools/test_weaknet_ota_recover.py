@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -589,7 +590,7 @@ class TestRestartMatrix(unittest.TestCase):
     def _watcher(self):
         w = rec.Watcher(self.rec, once=True)
         # 不读真机 boot_id：固定一个"新开机"
-        w.read_boot_id = staticmethod(lambda: "boot-drill")
+        w.read_boot_id = lambda: "boot-drill"
         return w
 
     def test_rollback_pending_continues_rollback_not_retry_candidate(self):
@@ -605,7 +606,7 @@ class TestRestartMatrix(unittest.TestCase):
         self.sb.set_current("1.1.0")
         rec_no_ctl = make_recorder(self.sb, self.runner)  # ctl 路径不存在
         w = rec.Watcher(rec_no_ctl, once=True)
-        w.read_boot_id = staticmethod(lambda: "boot-drill")
+        w.read_boot_id = lambda: "boot-drill"
         w.run_once()
         self.assertEqual(rec.read_current(self.sb.root), "1.0.0")
 
@@ -642,6 +643,120 @@ class TestRestartMatrix(unittest.TestCase):
         self.assertGreaterEqual(len(bumps), 1)
         for call in bumps:
             self.assertIn("boot-drill", call)
+
+
+# ---------------------------------------------------------------------------
+# 板端 Python 3.9 兼容：实例打补丁不得用 staticmethod/classmethod 包装
+#
+# 缺陷本体（2026-11-01 板端复验发现）：测试与演练用
+#   w.read_boot_id = staticmethod(lambda: "boot-drill")
+# 给**实例**赋一个 staticmethod 对象。实例属性不经过描述符协议，
+# 取回来就是那个包装对象本身，于是调用时直接 TypeError。
+#
+# 为什么本机一直没暴露：Python 3.10 起 staticmethod 对象变成可调用
+# （bpo-43682），本机 3.12 侥幸通过；板端是 3.9.2，8 个用例直接 error，
+# 演练新增的第 9 节整段无法运行。
+#
+# 为什么原守护没拦住：`ast.parse(feature_version=(3,9))` 只校验**语法**，
+# 这是运行期语义差异，语法树完全合法。必须单独扫这个模式。
+# ---------------------------------------------------------------------------
+
+class TestInstancePatchIsCallable(unittest.TestCase):
+    """给实例打补丁的值必须可直接调用（3.9 兼容）。"""
+
+    # 被测文件：本文件自己 + 演练脚本里内嵌的 Python 片段
+    PATCHED_FILES = ("test_weaknet_ota_recover.py", "ota_p0b_drill.sh")
+
+    @staticmethod
+    def _code_only(name):
+        """取文件里**真正会被执行**的代码行。
+
+        必须同时剥掉两类"长得像代码的说明文字"，否则守护测试会被自己的
+        反例说明误伤（实测踩过：docstring 里写下问题写法示例 → 自我误报）：
+
+          * `#` 开头的注释行（.py 与 .sh 都适用）；
+          * .py 的 docstring 块（用 ast 定位行号后整段剔除）。
+
+        .sh 里内嵌的 Python 片段是纯文本，只需剥 `#` 注释即可。
+        """
+        path = os.path.join(HERE, name)
+        with open(path, "r", encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+
+        skip = set()
+        if name.endswith(".py"):
+            import ast
+            with open(path, "r", encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Expr) \
+                        and isinstance(node.value, ast.Constant) \
+                        and isinstance(node.value.value, str):
+                    for ln in range(node.value.lineno,
+                                    node.value.end_lineno + 1):
+                        skip.add(ln)
+
+        return "\n".join(
+            line for i, line in enumerate(lines, start=1)
+            if i not in skip and not line.lstrip().startswith("#"))
+
+    def test_no_staticmethod_wrapping_on_instance_assignment(self):
+        """不得出现 `xxx.yyy = staticmethod(...)` / `classmethod(...)`。
+
+        正确写法是直接赋函数：`w.read_boot_id = lambda: "boot-drill"`。
+        实例属性不做描述符绑定，直接赋函数与赋 staticmethod 行为相同，
+        但前者在 3.9 上也能调用。
+        """
+        import re
+        pattern = re.compile(
+            r"^\s*[\w.]+\s*=\s*(?:staticmethod|classmethod)\s*\(",
+            re.MULTILINE)
+        offenders = []
+        for name in self.PATCHED_FILES:
+            for m in pattern.finditer(self._code_only(name)):
+                offenders.append("%s: %s" % (name, m.group(0).strip()))
+        self.assertEqual(
+            offenders, [],
+            "实例属性赋值用了 staticmethod/classmethod 包装，"
+            "板端 Python 3.9 会 TypeError: %s" % offenders)
+
+    def test_descriptor_wrapping_on_instance_is_not_callable_on_39(self):
+        """反向确认这条断言的语义前提（本机 3.10+ 也成立）。
+
+        直接赋函数与（3.10+ 的）赋 staticmethod 结果一致；
+        3.9 上前者可调用、后者不可。这里只锁"直接赋函数可调用"这一半，
+        因为另一半在 3.10+ 本机无法复现。
+        """
+        class Probe(object):
+            @staticmethod
+            def read_boot_id():
+                return "real"
+
+        p = Probe()
+        p.read_boot_id = lambda: "patched"
+        self.assertEqual(p.read_boot_id(), "patched")
+
+    def test_no_generator_throw_sentinel(self):
+        """哨兵不得用「生成器表达式 + .throw()」抛出（PEP 479 版本差异）。
+
+        缺陷本体（2026-11-01 板端复验发现）：演练用
+            sleeper=lambda _s: (_ for _ in ()).throw(StopIteration())
+        截断常驻循环。Python 3.9 会把从生成器逸出的 StopIteration 按
+        PEP 479 转成 RuntimeError，调用方的 `except StopIteration` 抓不到
+        → 返回值变空串、断言失败；Python 3.12 在同场景下不转换 → 本机全绿。
+
+        正确写法：自定义哨兵异常 + 普通函数 raise。
+        """
+        import re
+        pattern = re.compile(r"\(\s*\w*\s+for\s+\w+\s+in\s+\(\)\s*\)\s*\.throw\(")
+        offenders = []
+        for name in self.PATCHED_FILES:
+            for m in pattern.finditer(self._code_only(name)):
+                offenders.append("%s: %s" % (name, m.group(0)))
+        self.assertEqual(
+            offenders, [],
+            "哨兵用了生成器表达式 .throw()，板端 Python 3.9 会抛 RuntimeError: %s"
+            % offenders)
 
 
 class TestGateConsistency(unittest.TestCase):
@@ -704,6 +819,357 @@ class TestGateConsistency(unittest.TestCase):
         """阶段词表必须两边都认识：新增阶段只改一边会导致静默不一致。"""
         self.assertEqual(set(rec.LIVE_PHASES), set(self.gate.LIVE_PHASES))
         self.assertEqual(set(rec.TERMINAL_PHASES), set(self.gate.TERMINAL_PHASES))
+
+# ---------------------------------------------------------------------------
+# C1：EXIT_RETRY 与 systemd 单元契约必须配对（2026-11-01 评审缺陷）
+#
+# 缺陷本体：恢复器 `return EXIT_RETRY`(75)，单元写的是
+#   Restart=on-failure + SuccessExitStatus=75
+# SuccessExitStatus 告诉 systemd「75 是干净退出」，on-failure 因此**不重启**
+# → 健康窗口耗尽但还有剩余次数时，恢复服务静默死亡：不推进、不回滚、
+#   不进救援，设备停在未验证候选上。
+#
+# 这一组断言锁死三件事，任何一件单独被"简化"回去都会重新打开这个洞：
+#   1. 单元必须用 RestartForceExitStatus（而不是 SuccessExitStatus）声明 75；
+#   2. 恢复器退出前必须先把计数落到状态里（不依赖 boot_id）；
+#   3. 计数落不下去时必须 fail-closed 进救援，而不是无界重启。
+# ---------------------------------------------------------------------------
+
+class TestRetryContract(unittest.TestCase):
+    """EXIT_RETRY 的恢复契约：单元接线 + 计数持久化 + 失败关闭。"""
+
+    @staticmethod
+    def _unit_text(name="weaknet-ota-recover.service"):
+        with open(os.path.join(HERE, name), "r", encoding="utf-8") as fh:
+            return fh.read()
+
+    @staticmethod
+    def _directives(text, key):
+        """取某个指令的所有取值（支持同一 key 出现多次）。
+
+        注意必须逐行解析并跳过注释：单元文件里有大量以 `#` 开头的解释
+        文本，直接 `in` 子串匹配会把注释误当成有效配置。
+        """
+        out = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            k, v = stripped.split("=", 1)
+            if k.strip() == key:
+                out.append(v.strip())
+        return out
+
+    def test_retry_code_is_forced_restart_not_success(self):
+        """75 必须是 RestartForceExitStatus，不能是 SuccessExitStatus。
+
+        这是缺陷 C1 的直接回归：SuccessExitStatus=75 会让 systemd 认为
+        恢复服务"正常结束"，Restart=on-failure 不再拉起它。
+        """
+        text = self._unit_text()
+        forced = self._directives(text, "RestartForceExitStatus")
+        self.assertIn(str(rec.EXIT_RETRY), forced,
+                      "单元必须用 RestartForceExitStatus=75 才会重启")
+        success = self._directives(text, "SuccessExitStatus")
+        self.assertNotIn(str(rec.EXIT_RETRY), success,
+                         "75 不能出现在 SuccessExitStatus：那会让 systemd 当作干净退出")
+
+    def test_restart_policy_allows_the_forced_code(self):
+        """Restart 不能是 no/on-success；否则 RestartForceExitStatus 也没用。"""
+        restart = self._directives(self._unit_text(), "Restart")
+        self.assertEqual(len(restart), 1, restart)
+        self.assertIn(restart[0], ("on-failure", "always"))
+
+    def _section_of(self, text, key):
+        """返回某个指令所在的段名（[Unit] / [Service] / ...）。
+
+        systemd 对**段位错误**只打一行 `Unknown key name` warning，运行时
+        毫无提示——把指令放错段等于它从未生效。P0-C1 的 ConditionPathExists
+        就是踩过这个坑，所以这里不只校验"写没写"，还校验"写在哪一段"。
+        """
+        section = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith("[") and stripped.endswith("]"):
+                section = stripped[1:-1]
+                continue
+            if "=" in stripped:
+                k = stripped.split("=", 1)[0].strip()
+                if k == key:
+                    return section
+        return None
+
+    def test_retry_does_not_depend_on_restart_limits(self):
+        """真正的收敛靠计数，不靠 StartLimitBurst 兜底。
+
+        限流只是最后一道保险；若把 StartLimitIntervalSec 留在默认 10s，
+        连续 5 次快速重启就会让单元 failed，看起来"收敛"了其实只是停了。
+        """
+        text = self._unit_text()
+        interval = self._directives(text, "StartLimitIntervalSec")
+        if interval:
+            self.assertEqual(interval[0], "0",
+                             "StartLimitIntervalSec 必须为 0 或省略（靠计数收敛）")
+            self.assertEqual(self._section_of(text, "StartLimitIntervalSec"), "Unit",
+                             "StartLimitIntervalSec 属于 [Unit] 段；写进 [Service] "
+                             "会被 systemd 当作 Unknown key name 静默忽略")
+
+
+class _StopAfterFirstSleep(object):
+    """第一次休眠就抛 StopIteration，把 loop() 截断在一轮之内。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, _seconds):
+        self.calls += 1
+        raise StopIteration()
+
+
+class TestWindowExhaustionCounts(unittest.TestCase):
+    """窗口耗尽必须真的推进持久计数（评审缺陷 C1 的第二半）。
+
+    旧实现只 `return EXIT_RETRY`，依赖"重启后 boot_attempts 会加一"。
+    但 systemd 重启的是恢复进程本身，boot_id 不变 → 控制器按 boot_id 幂等
+    → 计数不动；而 elapsed 取自 updated_at（TRIAL 期间不变）→ 每轮立刻又
+    "窗口耗尽"。改成先 bump-trial-round（不按 boot_id 幂等）再退出。
+    """
+
+    def setUp(self):
+        self.sb = Sandbox()
+        self.ctl_path = self.sb.make_fake_ctl()
+        self.runner = FakeRunner({
+            ("systemctl", "is-active"): (0, "active\n"),
+            "busctl": {
+                "HealthCheck": (1, ""),
+                "GetEbpfMonitorHealth": (1, ""),
+                "GetUpdateStatus": (1, ""),
+            },
+        }, delegate_paths=(self.ctl_path,))
+
+    def tearDown(self):
+        self.sb.cleanup()
+
+    # 2026-01-01T00:00:00Z 是 _trial_state 的固定起点；把"现在"放到它之后
+    # 一个 health_timeout，才真的"窗口已耗尽"。写成 1_700_000_000（2023）会
+    # 让 elapsed 被 max(0, ...) 夹成 0，测试就永远走不到耗尽分支。
+    NOW = float(rec.calendar.timegm(
+        time.strptime("2026-01-01T00:10:00Z", "%Y-%m-%dT%H:%M:%SZ")))
+
+    def _watcher(self, now=None):
+        """窗口已耗尽的 TRIAL：updated_at 早于 now 一个 health_timeout。"""
+        now = self.NOW if now is None else now
+        rec_ = make_recorder(self.sb, self.runner, clock=lambda: now,
+                             ctl_path=self.ctl_path)
+        w = rec.Watcher(rec_, once=False)
+        w.read_boot_id = lambda: "boot-drill"
+        # 只允许一次循环：loop() 是本例的被测对象，不能真跑成死循环。
+        # sleeper 注入成会抛异常的哨兵，一旦进入等待就立刻暴露。
+        return w
+
+    def _trial_state(self, attempts=0, updated_at="2026-01-01T00:00:00Z"):
+        state = make_state("TRIAL", to="1.1.0", attempts=attempts)
+        state["transaction"]["updated_at"] = updated_at
+        self.sb.write_state(state)
+        self.sb.set_current("1.1.0")
+        return state
+
+    def _loop_once(self, w):
+        """让 loop() 只跑一轮。
+
+        loop() 在 done=True（事务终结/进救援）时会 `sleeper(30)` 继续循环，
+        在未耗尽时也会按 health_poll_s 休眠。注入一个第一次调用就抛
+        StopIteration 的 sleeper，保证任何分支都只走一轮、不会把测试挂死。
+        """
+        w.rec.sleeper = _StopAfterFirstSleep()
+        try:
+            return w.loop()
+        except StopIteration:
+            return None
+
+    def test_window_exhausted_bumps_round_before_retry(self):
+        """窗口耗尽 + 还有次数 → 必须调 bump-trial-round，然后返回 75。"""
+        self._trial_state(attempts=0)
+        w = self._watcher()
+        rc = self._loop_once(w)
+        self.assertEqual(rc, rec.EXIT_RETRY,
+                         "窗口耗尽且还有剩余次数时必须请求重启（75）")
+        self.assertIn("bump-trial-round", self.sb.ctl_verbs(),
+                      "退出前必须先持久化消耗一次试运行机会")
+
+    def test_bump_trial_round_is_not_idempotent_on_boot_id(self):
+        """同一 boot_id 连续两次消耗都要计数（与 bump-boot-attempt 相反）。
+
+        这正是缺陷的根因：恢复进程被 systemd 重启不换 boot_id，
+        如果沿用按 boot_id 幂等的 bump-boot-attempt，计数永远不增长。
+        """
+        self._trial_state(attempts=0)
+        w = self._watcher()
+        self._loop_once(w)
+        first = [c for c in self.sb.ctl_calls()
+                 if len(c) > 4 and c[4] == "bump-trial-round"]
+        self.assertTrue(first, "没有调用 bump-trial-round")
+
+        # 模拟"进程被 systemd 重启，boot_id 不变"：再消耗一次
+        w2 = self._watcher()
+        self._loop_once(w2)
+        second = [c for c in self.sb.ctl_calls()
+                  if len(c) > 4 and c[4] == "bump-trial-round"]
+        self.assertEqual(len(second), len(first) + 1,
+                         "同 boot_id 的第二次窗口耗尽也必须计数")
+
+    def test_bump_failure_fails_closed_to_rescue(self):
+        """计数落不下去时不许无界重启：必须进救援并停服。"""
+        self._trial_state(attempts=0)
+        # 必须把时钟一起传进去：默认 clock 是 2023 年，早于 updated_at，
+        # elapsed 会被 max(0,...) 夹成 0，用例就走不到"窗口耗尽"分支。
+        broken = make_recorder(self.sb, self.runner, clock=lambda: self.NOW,
+                               ctl_path=os.path.join(self.sb.tmp, "no-such-ctl"))
+        w = rec.Watcher(broken, once=False)
+        w.read_boot_id = lambda: "boot-drill"
+        rc = self._loop_once(w)
+        # 关键断言是「没有带着 EXIT_RETRY 退出」：一旦返回 75，systemd 会
+        # RestartForceExitStatus 拉起它，而计数根本落不下去 → 无界重启。
+        # 转救援后 loop() 会进入 done 分支并休眠（被 _loop_once 截断，rc=None）。
+        self.assertNotEqual(rc, rec.EXIT_RETRY,
+                            "控制器不可用时不能返回 EXIT_RETRY（会变成无界重启）")
+        self.assertIsNotNone(self.sb.read_rescue(),
+                             "控制器不可用且窗口耗尽时必须留下救援现场")
+
+
+# ---------------------------------------------------------------------------
+# I1：phase_started_at 的 UTC 解析（2026-11-01 评审缺陷）
+#
+# 旧写法 `time.mktime(parsed) - time.timezone` 按本地时间解释 UTC 时间戳，
+# 减去的是**标准**时差。在实行夏令时的时区（Europe/Berlin、America/New_York）
+# 夏季固定偏差 1 小时，方向是把起点算早 → elapsed 偏大 → 健康窗口提前耗尽
+# → 健康候选被回滚。工业网关现场改时区很常见。
+# ---------------------------------------------------------------------------
+
+class TestPhaseStartedAtTimezone(unittest.TestCase):
+    """updated_at 是 UTC，解析必须与时区无关。"""
+
+    def setUp(self):
+        self.sb = Sandbox()
+        self.runner = FakeRunner({}, default=(1, ""))
+        self._saved_tz = os.environ.get("TZ")
+
+    def tearDown(self):
+        if self._saved_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self._saved_tz
+        if hasattr(time, "tzset"):
+            time.tzset()
+        self.sb.cleanup()
+
+    def _set_tz(self, tz):
+        os.environ["TZ"] = tz
+        if hasattr(time, "tzset"):
+            time.tzset()
+
+    def _started_at(self, tz):
+        self._set_tz(tz)
+        state = rec.TxState(make_state("TRIAL", to="1.1.0"))
+        state.updated_at = "2026-07-01T12:00:00Z"   # 北半球夏令时期间
+        r = make_recorder(self.sb, self.runner, clock=lambda: 0.0)
+        return r, state
+
+    def test_utc_timestamp_is_timezone_independent(self):
+        """同一条 UTC 时间戳在任何 TZ 下都必须算出同一个绝对时间。"""
+        expected = rec.calendar.timegm(
+            time.strptime("2026-07-01T12:00:00Z", "%Y-%m-%dT%H:%M:%SZ"))
+        for tz in ("UTC", "Asia/Shanghai", "Europe/Berlin", "America/New_York"):
+            r, state = self._started_at(tz)
+            # Watcher 需要 recoverer；这里只测纯函数，直接借用同名逻辑
+            w = rec.Watcher(r, once=True)
+            self.assertEqual(w.phase_started_at(state), expected,
+                             "TZ=%s 解析 UTC 时间戳时偏移了" % tz)
+
+    def test_dst_zone_does_not_shrink_health_window(self):
+        """夏令时时区不得把健康窗口算短（不得提前回滚）。"""
+        r, state = self._started_at("Europe/Berlin")
+        state.updated_at = "2026-07-01T12:00:00Z"
+        # now == updated_at 的绝对时刻 → elapsed 必须是 0
+        now = rec.calendar.timegm(
+            time.strptime(state.updated_at, "%Y-%m-%dT%H:%M:%SZ"))
+        r.clock = lambda: float(now)
+        w = rec.Watcher(r, once=True)
+        self.assertEqual(w.elapsed(state), 0,
+                         "窗口起点被算早，elapsed 会凭空多出 1 小时")
+
+
+# ---------------------------------------------------------------------------
+# I3：wait_trial 与 wait_rollback 的两支完全相同（评审缺陷）
+#
+# 旧实现 `if elapsed >= timeout: return False, reason` 与
+# `return False, reason` 一字不差，注释所述"让上层重启"其实由 loop() 承担。
+# 现在收敛成一条 return，并在注释里写明真实分工。
+# ---------------------------------------------------------------------------
+
+class TestWaitBranchesUnified(unittest.TestCase):
+    def test_wait_actions_return_undone_without_side_effects(self):
+        sb = Sandbox()
+        try:
+            ctl = sb.make_fake_ctl()
+            runner = FakeRunner({
+                ("systemctl", "is-active"): (0, "active\n"),
+                "busctl": {"HealthCheck": (1, ""),
+                           "GetEbpfMonitorHealth": (1, ""),
+                           "GetUpdateStatus": (1, "")},
+            }, delegate_paths=(ctl,))
+            r = make_recorder(sb, runner, ctl_path=ctl)
+            w = rec.Watcher(r, once=True)
+            state = rec.TxState(make_state("TRIAL", to="1.1.0"))
+            done_t, _ = w.execute("wait_trial", "等待", state, "1.1.0")
+            done_r, _ = w.execute("wait_rollback", "等待", state, "1.0.0")
+            self.assertFalse(done_t)
+            self.assertFalse(done_r)
+        finally:
+            sb.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# O6：控制器 CLI 的 sync-rescue-flag 与恢复器内建同步必须规则一致
+# ---------------------------------------------------------------------------
+
+class TestRescueFlagConsistency(unittest.TestCase):
+    """两份 sync 实现必须给出同样结论（判定规则不允许漂移）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        ctl_path = os.path.join(HERE, "weaknet-ota-ctl")
+        loader = importlib.machinery.SourceFileLoader("weaknet_ota_ctl_x", ctl_path)
+        spec = importlib.util.spec_from_loader("weaknet_ota_ctl_x", loader)
+        cls.ctl = importlib.util.module_from_spec(spec)
+        loader.exec_module(cls.ctl)
+
+    def setUp(self):
+        self.sb = Sandbox()
+
+    def tearDown(self):
+        self.sb.cleanup()
+
+    def test_both_sides_agree_on_rescue_flag(self):
+        cases = [("RECOVERY_REQUIRED", True),
+                 ("TRIAL", False),
+                 ("COMMITTED", False)]
+        for phase, expect_in_rescue in cases:
+            state = make_state(phase, to="1.1.0")
+            self.sb.write_state(state)
+            # 恢复器那份
+            tx = rec.TxState(state)
+            in_rescue, _ = rec.sync_rescue_flag(self.sb.state_dir, tx)
+            self.assertEqual(in_rescue, expect_in_rescue, phase)
+            # 控制器那份：判定条件必须相同
+            raw = self.ctl.load_state(self.sb.state_dir)
+            ctl_in_rescue = bool(raw.get("transaction")
+                                 and raw["transaction"].get("phase")
+                                 == self.ctl.PHASE_RECOVERY_REQUIRED)
+            self.assertEqual(ctl_in_rescue, expect_in_rescue,
+                             "控制器与恢复器对 %s 的救援判定不一致" % phase)
 
 
 if __name__ == "__main__":

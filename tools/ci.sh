@@ -204,6 +204,19 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # 会经软链误删当前 release 的 .bpf.o（OTA 布局切换期的坑）。
     ssh "${BOARD}" "sudo systemctl stop weaknet-server 2>/dev/null || true; sudo killall weaknet-dbus-server 2>/dev/null || true; sudo rm -rf /home/radxa/weaknet/__pycache__ 2>/dev/null || true"
 
+    # 整个暂存区清空（2026-11-01 完整 ci.sh 实跑暴露的第二个缺陷）。
+    #
+    # 暂存区是纯粹的**中转目录**：rsync 把 dist-arm64 灌进来，adopt 再把内容
+    # 搬进 releases/<ver>，中间没有任何东西需要跨次保留。但历史遗留会在里面
+    # 攒下 root 属主文件——服务曾把 .deploy-staging/server 当工作目录写日志，
+    # 于是留下 server/server/log、server/logs（Oct 22 的 52MB 日志）。
+    # radxa 用户的 rsync --delete 删不掉 root 属主文件，于是**每次部署都恒败**：
+    #   rsync: delete_file: unlink(...log) failed: Permission denied (13)
+    #   rsync error: some files/attrs were not transferred (code 23)
+    # 之前只清了 __pycache__，属于打地鼠；这里直接整目录移除，radxa 重新创建。
+    ssh "${BOARD}" "sudo rm -rf /home/radxa/weaknet/.deploy-staging" \
+        || warn "暂存区清空失败——若含 root 属主残留，本轮 rsync 可能失败"
+
     # 只同步 dist-arm64 编译产物到暂存目录（不碰 releases/current/data/config），
     # 由下方 weaknet-local-update.sh adopt 原子迁入 releases/${VERSION}。
     # 旧版遗留的 data/、config/、日志与本次 rsync 彻底解耦（不再依赖 exclude 保护）。
@@ -264,7 +277,8 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # （adopt → 重启服务 → 健康窗口）都走同一条 SSH 通道，必须放在**隧道
     # 重启之前**完成，否则连接会在通道重建途中被掐断（实测：Connection
     # closed by remote host，后续 adopt 步骤整段没跑，服务停在 inactive）。
-    # 所以这里只做"清历史单元 + 落盘新单元"，隧道重启交给 deploy 收尾。
+    # 所以这里只做"清历史单元 + 落盘新单元"，隧道重启放到本次部署的**收尾**
+    # 处（见下方"反向隧道收尾重启"），那里所有不能被掐断的步骤都已经跑完。
     if [ -f "${ROOT}/tools/weaknet-tunnel.service" ]; then
         scp "${ROOT}/tools/weaknet-tunnel.service" "${BOARD}:/tmp/weaknet-tunnel.service" 2>/dev/null
         ssh "${BOARD}" "sudo cp /tmp/weaknet-tunnel.service /etc/systemd/system/weaknet-tunnel.service && \
@@ -350,10 +364,123 @@ if [ "$SKIP_DEPLOY" = false ]; then
         fi
     fi
     scp "${ROOT}/tools/weaknet-local-update.sh" "${BOARD}:/tmp/weaknet-local-update.sh" 2>/dev/null
+
+    # ===== 停掉常驻恢复服务，避免与 adopt 抢同一个 OTA 事务 =====
+    #
+    # 缺陷（2026-11-01 完整 ci.sh 实跑暴露）：weaknet-ota-recover 是常驻轮询
+    # （30s 一次），看到 TRIAL + 服务健康就**自动 commit**——这是 P0-B 的正确
+    # 设计（开机自愈），但它与 adopt 的「翻转→健康窗口→commit」是同一件事。
+    # 两者抢同一个事务时恢复服务先赢了，adopt 的 commit 撞上
+    # 「当前阶段 COMMITTED 不允许该操作（要求：TRIAL）」→ rc=3，
+    # 被 ci.sh 判为部署失败并**跳过后续全部步骤**（隧道收尾重启、板端测试），
+    # 而实际上部署已经成功。板端 journal 实锤：
+    #   13:45:41 recover 判定 action=commit → 已转正（COMMITTED）
+    #   13:45:41 ci.sh  健康窗口通过 → commit 被拒 → 报 adopt 失败
+    #
+    # 修法：部署是**人工主动操作**，期间由 ci.sh 独占事务；恢复服务的职责是
+    # 「开机自愈」，不该在人工部署时抢跑。停掉它，部署结束再拉起。
+    #
+    # 必须配 trap：fail() 是 exit 1，中途失败会直接终止脚本，若不兜底，
+    # 恢复服务将**永久停着**——下次真出事（升级后起不来）就没人自愈了。
+    OTA_RECOVER_WAS_ACTIVE=false
+    if ssh "${BOARD}" "systemctl is-active --quiet weaknet-ota-recover.service" 2>/dev/null; then
+        OTA_RECOVER_WAS_ACTIVE=true
+        ssh "${BOARD}" "sudo systemctl stop weaknet-ota-recover.service" 2>/dev/null \
+            || warn "停止 weaknet-ota-recover 失败——可能与 adopt 争抢事务"
+        pass "恢复服务已暂停（部署期间由 ci.sh 独占 OTA 事务）"
+    fi
+
+    # 无论成功、失败还是 Ctrl-C，都把恢复服务拉回来。
+    restore_ota_recover() {
+        if [ "${OTA_RECOVER_WAS_ACTIVE}" = "true" ]; then
+            ssh "${BOARD}" "sudo systemctl start weaknet-ota-recover.service" 2>/dev/null \
+                || echo -e "${YELLOW}⚠️  恢复服务未能自动拉起，请手工：ssh board 'sudo systemctl start weaknet-ota-recover'${NC}"
+        fi
+    }
+    trap 'restore_ota_recover' EXIT INT TERM
+
     ssh "${BOARD}" "sudo install -m 0755 /tmp/weaknet-local-update.sh /home/radxa/weaknet/weaknet-local-update.sh && \
         sudo WEAKNET_ROOT=/home/radxa/weaknet /home/radxa/weaknet/weaknet-local-update.sh adopt /home/radxa/weaknet/.deploy-staging ${VERSION}" \
-        || fail "adopt 失败（布局迁移/健康窗口未通过，已自动回滚）——依据上方输出排查，必要时 sudo weaknet-cli update rollback"
+        || {
+            # adopt 返回非零，但**不等于部署失败**：事务可能已被别的东西推进。
+            # 典型是恢复服务抢跑（本次已用 trap 停掉，但仍有复活窗口），
+            # 或有人手工 commit 过。判据只看客观事实——权威阶段已终结 +
+            # release 已转正（.committed 存在）+ 服务在跑：
+            #   * 三条都满足 → 部署其实成功了，降级为告警并**继续后续步骤**
+            #     （否则会跳过隧道收尾重启与板端测试，制造"假失败"）
+            #   * 否则 → 真失败，保持原来的 fail
+            ota_phase=$(ssh "${BOARD}" "sudo python3 /usr/local/lib/weaknet/weaknet-ota-ctl \
+                --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota status 2>/dev/null" \
+                | sed -n 's/.*"phase": *"\([^"]*\)".*/\1/p' | head -1)
+            has_committed=$(ssh "${BOARD}" "sudo test -f /home/radxa/weaknet/releases/${VERSION}/.committed \
+                && echo yes || echo no")
+            svc_state=$(ssh "${BOARD}" "systemctl is-active weaknet-server 2>/dev/null || echo unknown")
+            if [ "${ota_phase}" = "COMMITTED" ] && [ "${has_committed}" = "yes" ] \
+               && [ "${svc_state}" = "active" ]; then
+                warn "adopt 返回非零，但事务已是 COMMITTED、releases/${VERSION} 已转正、服务正常——判定为成功"
+                warn "（多为恢复服务抢跑同一事务；本次已加暂停机制，若复现请查 journalctl -u weaknet-ota-recover）"
+            else
+                fail "adopt 失败（phase=${ota_phase:-未知} committed=${has_committed} service=${svc_state}）——依据上方输出排查，必要时 sudo weaknet-cli update rollback"
+            fi
+        }
     pass "部署完成（releases/${VERSION} 已转正）"
+
+    # 部署已完成，立即恢复常驻服务（不必等脚本整体结束——后面还有隧道重启
+    # 与板端测试，那些阶段同样需要恢复服务在位）。
+    restore_ota_recover
+    trap - EXIT INT TERM
+    pass "恢复服务已恢复运行"
+
+    # 反向隧道收尾重启（I5，full-code-review 2026-11-01）。
+    #
+    # 上面落盘隧道单元时只 `enable`，注释写的"隧道重启交给 deploy 收尾"
+    # 却从来没有实现——全仓 `systemctl restart weaknet-tunnel` 零处。
+    # 后果：首次装机的板子要等下次重启才有反向隧道（云端 2222 不可达），
+    # 改过 unit 之后改动也不生效。在"SSH 靠隧道"的拓扑下这是运维级隐患。
+    #
+    # 位置必须在这里（adopt 之后）：隧道重启会掐断 SSH 反向通道，
+    # 而 adopt → 健康窗口 → 转正全程都走同一条通道。放在收尾处，
+    # 让所有"不能被掐断"的步骤先跑完。
+    #
+    # **重启后必须等通道真的回来**（2026-11-01 完整 ci.sh 实跑暴露）：
+    # 单元是 `Restart=always` + `RestartSec=3` + `-R 2222:localhost:22`，
+    # 重启后云端 sshd 要重新绑定 2222，实测约 **50 秒**才可用。原先重启完
+    # 立刻往下走，紧接着的 scp 与板端测试全部撞在断链窗口里：
+    #   ssh: connect to host 127.0.0.1 port 2222: Connection refused
+    # 表现为"上传失败 / chmod 失败 / 测试失败（退出码 255）"，而板端其实完好
+    # ——纯属自己把通道掐了还立刻要用。这里改成轮询等待，超时才告警。
+    if [ -f "${ROOT}/tools/weaknet-tunnel.service" ]; then
+        # 这条 ssh 会**掐断它自己**：命令经反向隧道下发，重启隧道 = 断掉
+        # 承载本次连接的通道，于是必然看到
+        #   Connection to 127.0.0.1 closed by remote host.
+        # ssh 因此返回 255。这是设计的必然结果（自指），不是失败信号。
+        # 所以**不用返回码判定成功**，改用「重启后通道能否恢复」作准据
+        # ——下方轮询才是真正的判据。这里只记录，不告警。
+        ssh "${BOARD}" "sudo systemctl restart weaknet-tunnel.service" \
+            && pass "反向隧道重启命令已下发" \
+            || info "反向隧道已断开（预期：重启隧道必然掐断本次连接），等待其自行重建"
+
+        # 轮询等通道恢复。总预算 90s（实测 50s 上下），每 5s 探一次。
+        # 判据用一次**真正走完整 SSH 握手**的探测，不是只看端口 listen
+        # ——端口早就由云端 sshd 监听着，但转发链路要等隧道会话建立后才通，
+        # 只看端口会得到"假可用"。
+        tunnel_wait=0
+        tunnel_ok=false
+        while [ "$tunnel_wait" -lt 90 ]; do
+            if ssh -o ConnectTimeout=5 "${BOARD}" "true" >/dev/null 2>&1; then
+                tunnel_ok=true
+                break
+            fi
+            sleep 5
+            tunnel_wait=$((tunnel_wait + 5))
+        done
+        if [ "$tunnel_ok" = true ]; then
+            pass "反向通道已恢复（等待 ${tunnel_wait}s）"
+        else
+            warn "反向通道 90s 内未恢复——后续板端步骤可能全部失败"
+            warn "手工检查：ssh board 是否可达；板端 systemctl status weaknet-tunnel"
+        fi
+    fi
 
     # 测试脚本上传失败不能让 set -e 在部署收尾处静默杀死整个脚本
     # （真机踩过：板端残留 root 属主旧文件 → scp EACCES → 后续步骤全没跑）
