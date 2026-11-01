@@ -24,6 +24,43 @@ namespace weaknet_dbus {
 class ServerContext;
 
 /**
+ * @brief 单轮事件循环内最多派发的消息条数
+ *
+ * 一次 dbus_connection_read_write_dispatch 只派发一条消息，因此这个上限
+ * 等价于“单轮最多处理多少条积压消息”。取 64 的理由：
+ *   - 正常负载下 libdbus 内部队列远小于此值（实测积压个位数）；
+ *   - 足够小，超限回到 poll 后 self-pipe 的停止信号能被及时处理，
+ *     不会拖长 systemd 停服时间。
+ *
+ * 无界 while 会在持续有内部消息时永久饿死停止信号，导致 SIGTERM/SIGINT
+ * 失效（systemd 停服只能等 TimeoutStopSec 后 SIGKILL）。
+ */
+inline constexpr int kMaxDispatchRounds = 64;
+
+/**
+ * @brief 派发 libdbus 内部队列直到清空，带轮次上限
+ *
+ * 为什么需要它，而不是直接调一次 read_write_dispatch？
+ *   `dbus_connection_read_write_dispatch` 的语义是“读一次 + 派发**一条**消息”
+ *   （实测：队列积压 N 条时，一次调用只让回调计数 +1，dispatch_status 仍是
+ *   DATA_REMAINS）。只有反复调用才能清空队列。若只调一次，外部方法调用
+ *   就要排队等后续事件循环轮次——2026-11-01 实测 GetInterfaces 延迟呈
+ *   13ms / 300ms / 1000ms / 3000ms 的离散阶梯，最坏 25s。
+ *
+ * 为什么必须带上限？
+ *   read_write_dispatch 的返回值语义是“连接未断开”而不是“还有数据”，
+ *   无界 while 在持续有内部消息时会饿死停止信号（见 kMaxDispatchRounds）。
+ *
+ * @param conn       D-Bus 连接（不拥有所有权）
+ * @param max_rounds 最多派发轮次，必须为正
+ * @return false 表示连接已断开，调用方应退出事件循环
+ *
+ * @note 该函数有真实生产调用方（Looper::run），同时被
+ *       server/test/unit/test_looper_dispatch_gtest.cpp 直接验证。
+ */
+bool dispatchUntilDrained(DBusConnection* conn, int max_rounds);
+
+/**
  * @brief D-Bus 事件循环封装（单例模式）
  *
  * 职责：

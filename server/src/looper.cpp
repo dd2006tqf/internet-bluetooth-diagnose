@@ -65,6 +65,17 @@ static void looper_signal_handler(int signum) {
     }
 }
 
+/// 实现见 looper.hpp 的契约说明（该函数同时被单元测试直接验证）
+bool dispatchUntilDrained(DBusConnection* conn, int max_rounds) {
+    for (int round = 0; round < max_rounds; ++round) {
+        if (!dbus_connection_read_write_dispatch(conn, 0)) return false;
+        if (dbus_connection_get_dispatch_status(conn) != DBUS_DISPATCH_DATA_REMAINS) {
+            return true;  // 队列已清空
+        }
+    }
+    return true;
+}
+
 // ---- Looper 单例实现 ----
 
 /**
@@ -158,7 +169,6 @@ void Looper::run(ServerContext* ctx) {
                 LOG_ERROR(LogModule::DBUS, "Looper::run: poll() error");
                 break;
             }
-            if (ret == 0) continue;  // 超时无事件，回去检查 running flag
 
             // 收到退出信号（signal handler 写入）
             if (fds[1].revents & POLLIN) {
@@ -170,16 +180,42 @@ void Looper::run(ServerContext* ctx) {
                 break;
             }
 
-            // D-Bus fd 可读：单次非阻塞派发
-            // 注意：dbus_connection_read_write_dispatch(conn_, 0) 的返回值语义是
-            // “连接未断开”而不是“还有数据”——无界 while 会把主循环永久卡死在这里：
-            //   1. self-pipe 停止信号永远得不到检查，SIGTERM/SIGINT 失效
-            //      （systemd 停服只能等 TimeoutStopSec 后 SIGKILL，journal 可见 stop timeout）
-            //   2. 主线程空转，单核 CPU 接近 100%
-            //   3. 切换到系统总线后该问题必现（原会话总线场景同样存在，只是未暴露）
-            // 因此每次 POLLIN 只派发一次；若仍有数据到达，poll 会立即再次唤醒。
+            // D-Bus 派发
+            //
+            // 历史行为（已修复的缺陷）：每次 POLLIN 只派发一次，且只在 POLLIN
+            // 分支里派发。该写法假设“若仍有数据到达，poll 会立即再次唤醒”，
+            // 但两个前提都不成立：
+            //
+            //   1. 单次 read_write_dispatch 只派发**一条**消息。多个监控线程
+            //      持续向系统总线发送消息时 libdbus 内部队列积压，外部方法调用
+            //      要排队等后续轮次。实测 GetInterfaces 延迟呈
+            //      13ms / 300ms / 1000ms / 3000ms 的离散阶梯，最坏 25s。
+            //   2. 内部队列有积压但 socket 已读空时，poll 不再报告 POLLIN。
+            //      实测：队列剩余数据时 poll(fd, POLLIN, 300ms) 返回 0（超时），
+            //      即积压期间主线程会一直睡到 100ms 超时，且醒来后若判定为
+            //      超时就直接 continue、不派发 → 积压只能等下一条 socket 数据
+            //      才被处理。
+            //
+            // 因此这里的正确写法是：**每一轮循环都派发到队列为空**，
+            // 不看 revents。POLLIN 只是“有新数据”的加速信号，不是派发前提。
+            //
+            // 上限不能去掉：持续有内部消息时无界 while 会饿死 self-pipe 的
+            // 停止信号（systemd 停服要等 TimeoutStopSec 后 SIGKILL）。
+            // 64 轮足以清空正常负载下的队列，超出则回到 poll 让信号有机会被处理。
             if (fds[0].revents & POLLIN) {
-                (void)dbus_connection_read_write_dispatch(conn_, 0);
+                if (!dispatchUntilDrained(conn_, kMaxDispatchRounds)) {
+                    LOG_ERROR(LogModule::DBUS, "Looper::run: D-Bus connection lost");
+                    ctx->running.store(false);
+                    break;
+                }
+            } else if (dbus_connection_get_dispatch_status(conn_) == DBUS_DISPATCH_DATA_REMAINS) {
+                // poll 超时但内部队列仍有积压：主动排空，避免积压等到下一条
+                // socket 数据才被处理（上面实测过的 100ms 阶梯来源）。
+                if (!dispatchUntilDrained(conn_, kMaxDispatchRounds)) {
+                    LOG_ERROR(LogModule::DBUS, "Looper::run: D-Bus connection lost");
+                    ctx->running.store(false);
+                    break;
+                }
             }
         }
     } else {
