@@ -4,13 +4,21 @@
  *
  * Looper 是一个单例，在 start_server() 中被创建，
  * 由主线程调用 run() 阻塞处理 D-Bus 消息，直到 ServerContext::running_ 变为 false。
- * 内部使用 dbus_connection_read_write_dispatch 非阻塞调用，
- * 配合 epoll 或 dbus_connection_get_dispatch_status 实现超时退出机制。
  *
- * 设计思路：
- *   D-Bus 库没有提供优雅的"从 dispatch 中跳出"API。Looper 通过
- *   dbus_connection_read_write_dispatch(1000) 以 1 秒超时轮询，
- *   每次超时后检查 ctx->running_，为 false 则退出循环。
+ * 两条运行路径：
+ *   1. poll 模式（主路径）：poll() 同时监听 D-Bus socket 与 self-pipe（停止信号），
+ *      100ms 超时；每轮唤醒后由 dispatchUntilDrained() 派发到队列清空。
+ *   2. 降级模式：pipe 创建失败或拿不到 D-Bus fd 时，退回
+ *      dbus_connection_read_write_dispatch(conn, 1000) 的 1 秒轮询，
+ *      配合 Logger::stopRequested() 退出。
+ *
+ * 为什么不是 epoll：
+ *   只需要监听两个 fd 且超时精度要求不高，poll() 足够且代码更短。
+ *
+ * 派发语义的三个坑（2026-11-01 实测，详见 dispatchUntilDrained 注释）：
+ *   一次 read_write_dispatch 只派发一条消息；内部队列积压时 poll 不再报
+ *   POLLIN；无界派发会饿死 self-pipe 的停止信号。三者共同决定了
+ *   "每轮都派发 + 清空即停 + 轮次上限" 的写法。
  */
 
 #pragma once
@@ -89,7 +97,7 @@ public:
     /**
      * @brief 阻塞运行，处理 D-Bus 消息直到 ctx->running 为 false
      *
-     * 内部循环：dbus_connection_read_write_dispatch(1000) → 检查 running_ → 继续或退出
+     * poll 模式下每轮：poll(2 fds, 100ms) → 检查停止信号 → 派发到队列清空。
      * 正常退出后 conn_ 保持不变（由调用者负责关闭 DBusConnection）。
      *
      * @param ctx 全局上下文，线程安全读取 running_ 标志

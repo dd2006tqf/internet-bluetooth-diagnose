@@ -133,6 +133,12 @@ SoC 最高核心温度        : 52.4 ℃ (预算门限: < 75.0 ℃)  -> ✅ 合�
 
 **板端冒烟**：`weaknet-test-full.sh` → **PASS 26 / FAIL 0 / SKIP 1**。
 
+**部署链路复验**（并行会话在 `23f88ae` 修掉恢复服务抢跑后）：再跑一次
+`./tools/ci.sh --skip-push` 同版本重部署，全程 exit 0、`✅ 全部完成`，
+事务终态 `COMMITTED`（`stable_version=1.1.0`、`boot_attempts=0`），
+恢复服务经 trap 自动拉回 `active`，业务服务 `active`，
+新二进制时间戳 `14:25:30` 生效。上次中断在 adopt 处的假失败不再出现。
+
 ## 结果
 
 ### 关键收获：测量陷阱
@@ -149,11 +155,14 @@ P99 长期停在 18–26ms，一直"超标"。这不是服务端问题——
 
 ### 遗留
 
-1. **`./tools/ci.sh --skip-push` 的 adopt 步骤报错**（`phase=COMMITTED 不允许 commit`，
-   rc=3）。这是**重复部署同一版本**时的幂等分支未覆盖：健康窗口已通过、
-   版本实际已 `COMMITTED`、新二进制已生效（时间戳与大小与本地一致）、
-   服务正常运行，因此**不影响本次交付**；但脚本在"目标版本 == 当前已提交版本"
-   时应当走 no-op 而不是报错退出。这是独立缺陷，本次未修。
+1. ~~**`./tools/ci.sh --skip-push` 的 adopt 步骤报错**（`phase=COMMITTED
+   不允许 commit`，rc=3）~~ —— **已由并行会话在 `23f88ae` 修掉，本次实测验证通过**。
+   根因不是"同版本重部署"，而是 **`weaknet-ota-recover` 常驻恢复服务抢跑**：
+   它 30s 轮询一次，看到 TRIAL + 服务健康就自动 commit，与 ci.sh 的
+   「翻转→健康窗口→commit」抢同一个事务；恢复服务先赢，ci.sh 的 commit
+   就撞上"已是 COMMITTED"。修法是部署期间用 trap 暂停恢复服务，
+   并增加"客观事实判定"（权威阶段已终结 + `.committed` 存在 + 服务在跑
+   ⇒ 降级为告警而不是判失败）。
 2. **派生度量仍在用子进程方式**：`tools/interference_test.py --legacy-cli`
    以及其他历史脚本里的 `dbus-send` 延迟测量同样含进程启动开销，
    如需用于 SLO 判定需逐一改造。
@@ -162,6 +171,7 @@ P99 长期停在 18–26ms，一直"超标"。这不是服务端问题——
 
 ### 后续方向
 
-- 修 `tools/ci.sh` adopt 的"同版本重部署"幂等分支（独立小修）。
 - 若将来出现方法调用抖动，先看 `dispatch_status` 是否长期为
   `DATA_REMAINS`，再怀疑处理逻辑——派发层已不再是可疑点。
+- 其他历史脚本里的 `dbus-send` 延迟测量若要用于 SLO 判定，需按
+  `interference_test.py` 的做法改为复用连接，否则同样含进程启动开销。
