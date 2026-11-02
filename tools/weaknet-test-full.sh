@@ -107,15 +107,12 @@ echo ""
 echo "===== Phase 4: Ping 测试 ====="
 run_client_test "test-ping" "test-ping"
 
-# Phase 5: 事件系统测试
-echo ""
-echo "===== Phase 5: 事件系统测试 ====="
-run_client_test "test-events" "test-events"
-
-# Phase 6: 网络质量测试
-echo ""
-echo "===== Phase 6: 网络质量测试 ====="
-run_client_test "test-quality" "test-quality"
+# Phase 5/6 已移除（2026-11-01）：原先的 "test-events"（事件系统）与
+# "test-quality"（网络质量订阅）随客户端订阅族一并删除——服务端自
+# 2026-10-19 起停发全部 D-Bus 信号，这两个子命令已不存在。
+# 编号不从 4 顺延到 5，是为了不打乱 Phase 7~15 的既有编号（日志、
+# 文档、历史排障记录都按这些编号引用）。若要验证等价能力，改用
+# Phase 10 的查询类子命令。
 
 # Phase 7: 蓝牙测试
 echo ""
@@ -133,10 +130,11 @@ echo "===== Phase 9: 性能测试 ====="
 run_client_test "test-performance" "test-performance"
 
 # Phase 10: 单项命令验证
+# 注意（2026-11-01）：原先这里的 "check" 与 "event-types" 随客户端订阅族
+# 一并删除（服务端停发信号后它们永远返回 false）。不要再加回来——
+# test-client 对未知子命令现在返回非零退出码，加回来会直接判 FAIL。
 echo ""
 echo "===== Phase 10: 单项命令验证 ====="
-run_client_test "check" "check"
-run_client_test "event-types" "event-types"
 run_client_test "ebpf-health" "ebpf-health"
 run_client_test "skb-drop" "skb-drop"
 run_client_test "dns-stats" "dns-stats"
@@ -153,7 +151,7 @@ echo ""
 echo "===== Phase 11: 单元测试 ====="
 cd /home/radxa/weaknet/server
 # 板端只部署 ci.sh 选择打包的测试二进制（当前仅 test/bin/test_ebpf）。
-# 39 个 gtest 套件不在板端跑：它们的归属是 x86 本地
+# 55 个 gtest 套件不在板端跑：它们的归属是 x86 本地
 # （ctest --test-dir build-x86/server，同时也是 project-profile 的 test-all 命令）
 # 与 GitHub Actions。
 #

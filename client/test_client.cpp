@@ -651,11 +651,16 @@ int main(int argc, char* argv[]) {
 
     // ===== 有参数：argv[1] 为子命令 =====
     std::string command = argv[1];
-    
+
     if (command == "all") {
         runAllTests();  // 完整测试套件
-    } else {
-        runSingleTest(command, argc, argv);  // 单次命令执行
+    } else if (!runSingleTest(command, argc, argv)) {
+        // 必须把失败传播成非零退出码：
+        //   1. 未知子命令（如已删除的 test-events）会走这里 —— 若返回 0，
+        //      调用方（tools/weaknet-test-full.sh 的 run_client_test）会把
+        //      删掉的命令判成 PASS，等于假绿灯；
+        //   2. 查询失败（D-Bus 调用出错）同样要能被脚本捕获。
+        return 1;
     }
 
     return 0;

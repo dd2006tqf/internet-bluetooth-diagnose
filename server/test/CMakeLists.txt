@@ -251,6 +251,16 @@ target_link_libraries(test_map_sizing_spec_sync_gtest PRIVATE ${TEST_COMMON_LIBS
 target_compile_definitions(test_map_sizing_spec_sync_gtest PRIVATE
     WEAKNET_SERVER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
 
+# 校验 test_client 的 CLI 子命令与板端冒烟脚本保持一致：
+# 需要读取仓库根的 tools/ 与 client/ 源码，故传入仓库根目录。
+# 背景：订阅族删除后冒烟脚本仍调用已删子命令，且 main() 丢弃返回值导致
+# 这四项被误判为 PASS（假绿灯）。该测试把这份契约固化，防止再次漂移。
+add_executable(test_client_cli_contract_gtest
+    unit/test_client_cli_contract_gtest.cpp)
+target_link_libraries(test_client_cli_contract_gtest PRIVATE ${TEST_COMMON_LIBS})
+target_compile_definitions(test_client_cli_contract_gtest PRIVATE
+    WEAKNET_REPO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../..")
+
 # ---- CTest 集成 ----
 # enable_testing() 已在根 CMakeLists.txt 中调用
 foreach(test_target
@@ -307,7 +317,8 @@ foreach(test_target
     test_bt_hci_traffic_gtest
     test_bt_anomaly_detector_gtest
     test_bt_events_lifecycle_gtest
-    test_looper_dispatch_gtest)
+    test_looper_dispatch_gtest
+    test_client_cli_contract_gtest)
     add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()
 

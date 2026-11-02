@@ -133,21 +133,26 @@ weaknet_get_event_types
 # 测试基本功能（先完成 build-x86 构建）
 ctest --test-dir build-x86/server -R 'test_net_info|test_quality|test_serializer'
 
-# 测试事件监听
-./build-x86/client/bin/test_client_bin test-events
-
 # 测试特定功能
 ./build-x86/client/bin/test_client_bin get
 ./build-x86/client/bin/test_client_bin ping google.com
 ./build-x86/client/bin/test_client_bin test-basic
-./build-x86/client/bin/test_client_bin test-events
 ```
 
-## 🔧 支持的事件类型
+> 注：`test_client_bin` 对未知子命令返回**非零**退出码（2026-11-01 起），
+> 因此 `test-events` 这类已删除的子命令会直接报错而不是静默通过。
+
+## 🔧 事件类型（已停发）
+
+以下信号**自 2026-10-19 起服务端已全部停发**，对应的客户端订阅 API
+也于 2026-11-01 从 `libweaknet.so` 删除。本表仅作历史对照：
 
 - `InterfaceChanged` - 网络接口变化
-- `ConnectionModeChanged` - 连接方式变化  
+- `ConnectionModeChanged` - 连接方式变化
 - `NetworkQualityChanged` - 网络质量变化
+
+需要这些信息请改用 `weaknet_get_interfaces()` / `weaknet_health_check()`
+等查询方法周期性轮询。
 
 ## 📝 使用注意事项
 

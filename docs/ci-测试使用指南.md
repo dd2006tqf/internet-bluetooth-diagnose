@@ -21,7 +21,7 @@
 4. 远程运行功能测试（health/get/eBPF/指标/历史）
 5. 生成报告到 `ci-reports/`
 
-> **单元测试不在开发板上跑**。54 个 gtest 套件的归属是 x86：
+> **单元测试不在开发板上跑**。55 个 gtest 套件的归属是 x86：
 > `ctest --test-dir build-x86/server`（本地，也是 `.ai-harness/project-profile.json`
 > 的 `test-all` 命令）与 GitHub Actions。板端只部署 `test_ebpf`
 > （需要 root + 内核 eBPF，只能真机跑），由 `weaknet-test-full.sh` 的 Phase 11 执行。
@@ -50,7 +50,7 @@
 只在本地编译并打包 `dist-arm64/`，不部署到开发板。
 
 > 注意：`ci.sh` **不在本地跑单元测试**。本地跑单测请直接用
-> `ctest --test-dir build-x86/server`（x86，54 个套件）或容器内
+> `ctest --test-dir build-x86/server`（x86，55 个套件）或容器内
 > `ctest --test-dir build-arm64-native/server`。
 
 ### 完整参数列表
@@ -105,7 +105,7 @@ ci-reports/
 
 ## 测试覆盖
 
-### 单元测试（54 个套件）
+### 单元测试（55 个套件）
 
 跑法：`ctest --test-dir build-x86/server --output-on-failure`
 

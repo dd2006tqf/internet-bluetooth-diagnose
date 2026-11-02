@@ -5,7 +5,7 @@
 ## 特性
 
 - 🔗 与WeakNet DBus服务进行通信
-- 📡 实时监控网络状态变化
+- 📡 周期性查询网络状态（事件订阅族已于 2026-11-01 删除）
 - 📊 提供网络健康检查功能
 - 💾 支持从序列化文件读取离线数据
 - 🔧 提供C和C++两种接口
@@ -31,15 +31,6 @@ cmake --build build-x86 -j$(nproc)
 # 网络健康检查
 ./build-x86/client/bin/test_client_bin health
 
-# 单次检查网络状态变化
-./build-x86/client/bin/test_client_bin check
-
-# 持续监听网络变化
-./build-x86/client/bin/test_client_bin subscribe
-
-# 从文件读取最新状态
-./build-x86/client/bin/test_client_bin file
-
 # 获取蓝牙设备列表
 ./build-x86/client/bin/test_client_bin bt-devices
 
@@ -51,10 +42,12 @@ cmake --build build-x86 -j$(nproc)
 
 # 获取 Wi-Fi 与蓝牙 2.4GHz 共存干扰根因诊断
 ./build-x86/client/bin/test_client_bin coexistence
-
-# 持续监听蓝牙设备变化（最多 60 秒）
-./build-x86/client/bin/test_client_bin bt-events
 ```
+
+> **变更说明（2026-11-01）**：`check` / `subscribe` / `bt-events` 等事件
+> 订阅类子命令已随客户端订阅族一并删除（服务端自 2026-10-19 起停发全部
+> D-Bus 信号，这些命令此前只是空转）。`test_client_bin` 对未知子命令
+> **返回非零退出码**，脚本调用不会再把它们误判为通过。
 
 ### C/C++ 库接口
 
@@ -76,10 +69,6 @@ void weaknet_cleanup();
 // 获取网络接口信息
 bool weaknet_get_interfaces(char* buffer, size_t buffer_size, 
                            char* error_buffer, size_t error_size);
-
-// 检查网络状态变化（非阻塞）
-bool weaknet_check_changes(char* message_buffer, size_t message_size,
-                          int32_t* counter, char* error_buffer, size_t error_size);
 
 // 网络健康检查
 bool weaknet_health_check(char* result_buffer, size_t result_size,
@@ -120,13 +109,6 @@ if (weaknet_get_interfaces(buffer, sizeof(buffer), error_buffer, sizeof(error_bu
     std::cout << "网络接口: " << buffer << std::endl;
 } else {
     std::cerr << "错误: " << error_buffer << std::endl;
-}
-
-// 检查变化
-char message[512];
-int32_t counter;
-if (weaknet_check_changes(message, sizeof(message), &counter, error_buffer, sizeof(error_buffer))) {
-    std::cout << "检测到变化: " << message << std::endl;
 }
 
 // 清理
@@ -181,15 +163,18 @@ CLIENT_PID=$!
 trap "kill $CLIENT_PID" EXIT
 ```
 
-## 网络状态变化信号
+## 网络状态变化信号（已停发）
 
-当网络状态发生变化时，服务会发送DBus信号：
+服务端**自 2026-10-19 起已停发全部 D-Bus 信号**，客户端订阅 API 于
+2026-11-01 一并删除。以下信号类型仅作历史对照：
 
 - **接口变化**: 网卡添加/移除时
 - **TCP丢包率变化**: TCP连接质量变化时
 - **RTT变化**: 网络延迟变化时
 - **RSSI变化**: Wi-Fi信号强度变化时
 - **当前上网网卡变化**: 主网卡切换时
+
+要获取这些状态，请周期性调用对应的 `get_*` / `*_stats` 查询方法。
 
 ## 错误处理
 
