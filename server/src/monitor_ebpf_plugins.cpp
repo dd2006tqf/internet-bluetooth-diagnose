@@ -52,7 +52,7 @@ public:
     bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
     bool start(ServerContext* ctx) override {
         if (!ctx->cfg.dns.enabled.load()) {
-            LOG_INFO(LogModule::NETWORK, "DNS monitor disabled by config");
+            LOG_INFO(LogModule::DNS, "DNS monitor disabled by config");
             return true;
         }
         monitor_ = std::make_unique<DnsMonitor>();
@@ -96,7 +96,7 @@ public:
     bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
     bool start(ServerContext* ctx) override {
         if (!ctx->cfg.wifi_loss.enabled.load()) {
-            LOG_INFO(LogModule::NETWORK, "Wi-Fi loss monitor disabled by config");
+            LOG_INFO(LogModule::WIFI_LOSS, "Wi-Fi loss monitor disabled by config");
             return true;
         }
         monitor_ = std::make_unique<WifiPacketLossMonitor>();
@@ -137,7 +137,7 @@ public:
     bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
     bool start(ServerContext* ctx) override {
         if (!ctx->cfg.http_latency.enabled.load()) {
-            LOG_INFO(LogModule::NETWORK, "HTTP latency monitor disabled by config");
+            LOG_INFO(LogModule::HTTP, "HTTP latency monitor disabled by config");
             return true;
         }
         monitor_ = std::make_unique<HttpLatencyMonitor>();
@@ -182,7 +182,7 @@ public:
     bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
     bool start(ServerContext* ctx) override {
         if (!ctx->cfg.process_profiler.enabled.load()) {
-            LOG_INFO(LogModule::NETWORK, "Process net profiler disabled by config");
+            LOG_INFO(LogModule::PROCESS_PROF, "Process net profiler disabled by config");
             return true;
         }
         monitor_ = std::make_unique<ProcessNetProfiler>();
@@ -226,7 +226,7 @@ public:
     bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
     bool start(ServerContext* ctx) override {
         if (!ctx->cfg.tcp_retrans.enabled.load()) {
-            LOG_INFO(LogModule::NETWORK, "TCP retransmit monitor disabled by config");
+            LOG_INFO(LogModule::TCP_RETRANS, "TCP retransmit monitor disabled by config");
             return true;
         }
         monitor_ = std::make_unique<TcpRetransMonitor>();
@@ -270,7 +270,7 @@ public:
     bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
     bool start(ServerContext* ctx) override {
         if (!ctx->cfg.tcp_conn.enabled.load()) {
-            LOG_INFO(LogModule::TCP_LOSS, "TCP conn monitor disabled by config");
+            LOG_INFO(LogModule::TCP_CONN, "TCP conn monitor disabled by config");
             return true;
         }
         monitor_ = std::make_unique<TcpConnMonitor>();
@@ -318,7 +318,7 @@ public:
     bool start(ServerContext* ctx) override {
         if (!monitor_) return false;
         if (ctx && !ctx->cfg.skb_drop.enabled.load()) {
-            LOG_INFO(LogModule::NETWORK, "SkbDropPlugin: disabled by configuration");
+            LOG_INFO(LogModule::SKB_DROP, "SkbDropPlugin: disabled by configuration");
             return true;
         }
         std::string path = "build/skb_drop.bpf.o";
@@ -332,7 +332,7 @@ public:
         if (!monitor_->init(path,
                             weaknet::resolveScopePlan(weaknet::MapSizingScope::SkbDrop,
                                                       sizing_cfg, weaknet::totalPhysicalRamBytes()))) {
-            LOG_WARNING(LogModule::NETWORK, "SkbDropPlugin: failed to load BPF object from " << path);
+            LOG_WARNING(LogModule::SKB_DROP, "SkbDropPlugin: failed to load BPF object from " << path);
             return false;
         }
         if (ctx) {
@@ -370,13 +370,13 @@ public:
     bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
     bool start(ServerContext* ctx) override {
         if (!ctx->cfg.tcp_connect.enabled.load()) {
-            LOG_INFO(LogModule::NETWORK, "TCP connect monitor disabled by config");
+            LOG_INFO(LogModule::TCP_CONNECT, "TCP connect monitor disabled by config");
             return true;
         }
         monitor_ = std::make_unique<TcpConnectMonitor>();
         if (!monitor_->init(ctx->cfg.tcp_connect.bpf_obj.get().c_str(),
                             ctx->cfg.tcp_connect.capture_pages.load())) {
-            LOG_WARNING(LogModule::NETWORK, "TcpConnectPlugin: init failed for "
+            LOG_WARNING(LogModule::TCP_CONNECT, "TcpConnectPlugin: init failed for "
                         << ctx->cfg.tcp_connect.bpf_obj.get());
             monitor_.reset();
             return false;
@@ -414,7 +414,7 @@ public:
     bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
     bool start(ServerContext* ctx) override {
         if (!ctx->cfg.tcp_rtt.enabled.load()) {
-            LOG_INFO(LogModule::TCP_LOSS, "TCP passive RTT monitor disabled by config");
+            LOG_INFO(LogModule::TCP_RTT, "TCP passive RTT monitor disabled by config");
             return true;
         }
         monitor_ = std::make_unique<TcpRttMonitor>();
@@ -422,7 +422,7 @@ public:
                             weaknet::resolveScopePlan(weaknet::MapSizingScope::TcpRtt,
                                 {ctx->cfg.tcp_rtt.map_sizing.mode.get(), ctx->cfg.tcp_rtt.map_sizing.entries.load(),
                                  ctx->cfg.tcp_rtt.map_sizing.ram_budget_bp.load()}, weaknet::totalPhysicalRamBytes()))) {
-            LOG_WARNING(LogModule::TCP_LOSS, "TcpRttPlugin: init failed for "
+            LOG_WARNING(LogModule::TCP_RTT, "TcpRttPlugin: init failed for "
                         << ctx->cfg.tcp_rtt.bpf_obj.get());
             monitor_.reset();
             return false;

@@ -27,6 +27,7 @@
 
 #include "bt_audio_analyzer.hpp"
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
@@ -63,9 +64,13 @@ bool BtAudioAnalyzer::init(const std::string& bpfObjectPath,
     lastError_.clear();
 
     // 1. 打开 BPF 对象文件
+    // 走统一日志通道，失败时把 libbpf 的原始结论一起留下（见 ebpf_log_bridge.hpp）
+    installLibbpfLogBridge();
+    clearLibbpfError();
     bpfObj_ = bpf_object__open(bpfObjectPath.c_str());
     if (!bpfObj_) {
-        lastError_ = "bpf_object__open failed for " + bpfObjectPath + ": " + std::string(strerror(errno));
+        lastError_ = "bpf_object__open failed for " + bpfObjectPath + ": " +
+                     std::string(strerror(errno)) + takeLibbpfError();
         LOG_ERROR(LogModule::BLUETOOTH, "BtAudioAnalyzer: " << lastError_);
         state_ = BtAudioAnalyzerState::Error;
         stateSupport_.setState(EbpfMonitorState::Error, false, lastError_);
@@ -79,7 +84,8 @@ bool BtAudioAnalyzer::init(const std::string& bpfObjectPath,
 
     // 2. 加载 BPF 程序到内核（验证字节码，解析 CO-RE 重定位）
     if (bpf_object__load(bpfObj_) != 0) {
-        lastError_ = "bpf_object__load failed: " + std::string(strerror(errno));
+        lastError_ = "bpf_object__load failed: " + std::string(strerror(errno)) +
+                     takeLibbpfError();
         LOG_ERROR(LogModule::BLUETOOTH, "BtAudioAnalyzer: " << lastError_);
         bpf_object__close(bpfObj_);
         bpfObj_ = nullptr;

@@ -1,5 +1,6 @@
 #include "bt_data_path_analyzer.hpp"
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 #include "utils/json_escape.hpp"
 
 #include <bpf/bpf.h>
@@ -51,9 +52,12 @@ bool BtDataPathAnalyzer::init(const std::string& bpfObjectPath, const std::strin
     state_ = EbpfMonitorState::Initializing;
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading bt_hci_traffic BPF object");
 
+    installLibbpfLogBridge();
+    clearLibbpfError();
     bpfObj_ = bpf_object__open(bpfObjectPath.c_str());
     if (!bpfObj_) {
-        lastError_ = "bpf_object__open failed for " + bpfObjectPath + ": " + std::string(strerror(errno));
+        lastError_ = "bpf_object__open failed for " + bpfObjectPath + ": " +
+                     std::string(strerror(errno)) + takeLibbpfError();
         LOG_WARNING(LogModule::BLUETOOTH, "BtDataPathAnalyzer: " << lastError_ << " — fallback mode");
         state_ = EbpfMonitorState::Fallback;
         stateSupport_.setState(EbpfMonitorState::Fallback, false, lastError_);
@@ -61,7 +65,8 @@ bool BtDataPathAnalyzer::init(const std::string& bpfObjectPath, const std::strin
     }
 
     if (bpf_object__load(bpfObj_) != 0) {
-        lastError_ = "bpf_object__load failed: " + std::string(strerror(errno));
+        lastError_ = "bpf_object__load failed: " + std::string(strerror(errno)) +
+                     takeLibbpfError();
         LOG_WARNING(LogModule::BLUETOOTH, "BtDataPathAnalyzer: " << lastError_ << " — fallback mode");
         bpf_object__close(bpfObj_);
         bpfObj_ = nullptr;

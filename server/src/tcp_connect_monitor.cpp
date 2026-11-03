@@ -18,6 +18,7 @@
 
 #include "tcp_connect_monitor.hpp"
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 
 #include <cerrno>
 #include <vector>
@@ -220,18 +221,21 @@ TcpConnectMonitor::~TcpConnectMonitor() {
 bool TcpConnectMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
-    LOG_INFO(LogModule::NETWORK, "TcpConnectMonitor: BPF not available (no libbpf)");
+    LOG_INFO(LogModule::TCP_CONNECT, "TcpConnectMonitor: BPF not available (no libbpf)");
     available_ = false;
     initialized_ = true;
     stateSupport_.setState(EbpfMonitorState::Fallback, false, "libbpf unavailable");
     return false;
 #else
-    LOG_INFO(LogModule::NETWORK, "TcpConnectMonitor: loading BPF object from " << bpfObjPath);
+    LOG_INFO(LogModule::TCP_CONNECT, "TcpConnectMonitor: loading BPF object from " << bpfObjPath);
+    installLibbpfLogBridge();
+    clearLibbpfError();
 
     LIBBPF_OPTS(bpf_object_open_opts, opts);
     struct bpf_object* obj = bpf_object__open_file(bpfObjPath.c_str(), &opts);
     if (!obj) {
-        LOG_ERROR(LogModule::NETWORK, "TcpConnectMonitor: failed to open BPF object: " << bpfObjPath);
+        LOG_ERROR(LogModule::TCP_CONNECT, "TcpConnectMonitor: failed to open BPF object: "
+                  << bpfObjPath << takeLibbpfError());
         available_ = false;
         initialized_ = true;
         stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
@@ -239,7 +243,8 @@ bool TcpConnectMonitor::init(const std::string& bpfObjPath, uint32_t capture_pag
     }
 
     if (bpf_object__load(obj) != 0) {
-        LOG_ERROR(LogModule::NETWORK, "TcpConnectMonitor: failed to load BPF object");
+        LOG_ERROR(LogModule::TCP_CONNECT, "TcpConnectMonitor: failed to load BPF object"
+                  << takeLibbpfError());
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -256,14 +261,14 @@ bool TcpConnectMonitor::init(const std::string& bpfObjPath, uint32_t capture_pag
             __u32 k = 0;
             __u32 self_pid = static_cast<__u32>(::getpid());
             if (bpf_map_update_elem(self_fd, &k, &self_pid, BPF_ANY) == 0) {
-                LOG_INFO(LogModule::NETWORK, "TcpConnectMonitor: self-pid filter set to " << self_pid);
+                LOG_INFO(LogModule::TCP_CONNECT, "TcpConnectMonitor: self-pid filter set to " << self_pid);
             }
         }
     }
 
     struct bpf_program* prog = bpf_object__find_program_by_name(obj, "trace_tcp_connect");
     if (!prog) {
-        LOG_ERROR(LogModule::NETWORK, "TcpConnectMonitor: BPF program not found");
+        LOG_ERROR(LogModule::TCP_CONNECT, "TcpConnectMonitor: BPF program not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -273,7 +278,7 @@ bool TcpConnectMonitor::init(const std::string& bpfObjPath, uint32_t capture_pag
 
     impl_->link = bpf_program__attach(prog);
     if (libbpf_get_error(impl_->link)) {
-        LOG_ERROR(LogModule::NETWORK, "TcpConnectMonitor: attach tracepoint/sock/inet_sock_set_state failed");
+        LOG_ERROR(LogModule::TCP_CONNECT, "TcpConnectMonitor: attach tracepoint/sock/inet_sock_set_state failed");
         impl_->link = nullptr;
         bpf_object__close(obj);
         available_ = false;
@@ -290,16 +295,16 @@ bool TcpConnectMonitor::init(const std::string& bpfObjPath, uint32_t capture_pag
         impl_->events = perf_buffer__new(events_fd, capture_pages, on_tcp_event, on_tcp_lost,
                                          impl_.get(), nullptr);
         if (!impl_->events) {
-            LOG_WARNING(LogModule::NETWORK, "TcpConnectMonitor: perf buffer unavailable");
+            LOG_WARNING(LogModule::TCP_CONNECT, "TcpConnectMonitor: perf buffer unavailable");
         } else {
-            LOG_INFO(LogModule::NETWORK, "TcpConnectMonitor: perf buffer pages=" << capture_pages);
+            LOG_INFO(LogModule::TCP_CONNECT, "TcpConnectMonitor: perf buffer pages=" << capture_pages);
         }
     }
 
     available_ = true;
     initialized_ = true;
     stateSupport_.setState(EbpfMonitorState::Attached, true, "tracepoint attached");
-    LOG_INFO(LogModule::NETWORK, "TcpConnectMonitor: initialized successfully");
+    LOG_INFO(LogModule::TCP_CONNECT, "TcpConnectMonitor: initialized successfully");
     return true;
 #endif
 }
@@ -313,7 +318,7 @@ void TcpConnectMonitor::stop() {
     if (impl_->obj) {
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
-        LOG_INFO(LogModule::NETWORK, "TcpConnectMonitor: stopped");
+        LOG_INFO(LogModule::TCP_CONNECT, "TcpConnectMonitor: stopped");
     }
     impl_->counters_fd = -1;
     available_ = false;
@@ -335,7 +340,7 @@ size_t TcpConnectMonitor::drain(std::chrono::milliseconds window_duration) {
     if (last_ret < 0 && last_ret != -EINTR) {
         impl_->drain_stats.poll_errors++;
         stateSupport_.recordReadFailure("perf poll failed");
-        LOG_WARNING(LogModule::NETWORK, "TcpConnectMonitor: perf poll failed: " << last_ret);
+        LOG_WARNING(LogModule::TCP_CONNECT, "TcpConnectMonitor: perf poll failed: " << last_ret);
         return 0;
     }
     impl_->drain_stats.poll_records += total;
@@ -363,7 +368,7 @@ size_t TcpConnectMonitor::drain(std::chrono::milliseconds window_duration) {
         constexpr size_t kMaxInflight = 8192;
         if (impl_->inflight.size() > kMaxInflight) {
             impl_->inflight.clear();
-            LOG_WARNING(LogModule::NETWORK, "TcpConnectMonitor: inflight overflow cleared");
+            LOG_WARNING(LogModule::TCP_CONNECT, "TcpConnectMonitor: inflight overflow cleared");
         }
     }
     return static_cast<size_t>(total);

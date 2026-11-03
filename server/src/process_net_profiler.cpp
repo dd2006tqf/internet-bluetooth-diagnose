@@ -26,6 +26,7 @@
 
 #include "process_net_profiler.hpp"
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 #include "net_traffic.h"
 
 #include <cstring>
@@ -105,7 +106,7 @@ ProcessNetProfiler::~ProcessNetProfiler() {
 bool ProcessNetProfiler::init(const std::string& bpfObjPath, const weaknet::MapSizingPlan& plan) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
-    LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: BPF not available (no libbpf)");
+    LOG_INFO(LogModule::PROCESS_PROF, "ProcessNetProfiler: BPF not available (no libbpf)");
     available_ = false;
     initialized_ = true;
     stateSupport_.setState(EbpfMonitorState::Fallback, false, "libbpf unavailable");
@@ -146,14 +147,14 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath, const weaknet::MapS
         // 计划值与内核实际值不一致时显式告警，避免容量水位判定建立在错误前提上
         const uint64_t planned = weaknet::findResolvedMax(plan, "process_stats");
         if (planned != 0 && impl_->process_stats_max != planned) {
-            LOG_WARNING(LogModule::NETWORK,
+            LOG_WARNING(LogModule::PROCESS_PROF,
                         "ProcessNetProfiler: process_stats 实际容量与本地计划不一致"
                         " (kernel=" << impl_->process_stats_max << " plan=" << planned
                         << ")，以内核实际值为准");
         }
         available_ = true;
         initialized_ = true;
-        LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: using shared process_stats fd from TrafficAnalyzer"
+        LOG_INFO(LogModule::PROCESS_PROF, "ProcessNetProfiler: using shared process_stats fd from TrafficAnalyzer"
                                      << " (resolved max_entries=" << impl_->process_stats_max << ")");
         stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached (shared TrafficAnalyzer)");
         stateSupport_.recordProbeAttached();
@@ -163,12 +164,15 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath, const weaknet::MapS
     }
 
     // 回退：独立加载 BPF（TrafficAnalyzer 不可用时）
-    LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: loading BPF object from " << bpfObjPath);
+    LOG_INFO(LogModule::PROCESS_PROF, "ProcessNetProfiler: loading BPF object from " << bpfObjPath);
+    installLibbpfLogBridge();
+    clearLibbpfError();
 
     LIBBPF_OPTS(bpf_object_open_opts, opts);
     struct bpf_object *obj = bpf_object__open_file(bpfObjPath.c_str(), &opts);
     if (!obj) {
-        LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: failed to open BPF object: " << bpfObjPath);
+        LOG_ERROR(LogModule::PROCESS_PROF, "ProcessNetProfiler: failed to open BPF object: "
+                  << bpfObjPath << takeLibbpfError());
         available_ = false;
         initialized_ = true;
         stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
@@ -182,7 +186,8 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath, const weaknet::MapS
 
 
     if (bpf_object__load(obj) != 0) {
-        LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: failed to load BPF object");
+        LOG_ERROR(LogModule::PROCESS_PROF, "ProcessNetProfiler: failed to load BPF object"
+                  << takeLibbpfError());
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -192,7 +197,7 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath, const weaknet::MapS
 
     impl_->process_stats_fd = bpf_object__find_map_fd_by_name(obj, "process_stats");
     if (impl_->process_stats_fd < 0) {
-        LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: process_stats map not found");
+        LOG_ERROR(LogModule::PROCESS_PROF, "ProcessNetProfiler: process_stats map not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -207,22 +212,22 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath, const weaknet::MapS
 
     impl_->link_retrans = retrans_prog ? bpf_program__attach(retrans_prog) : nullptr;
     if (impl_->link_retrans && libbpf_get_error(impl_->link_retrans)) {
-        LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: attach tcp_retransmit_skb failed");
+        LOG_ERROR(LogModule::PROCESS_PROF, "ProcessNetProfiler: attach tcp_retransmit_skb failed");
         impl_->link_retrans = nullptr;
     }
     impl_->link_xmit = xmit_prog ? bpf_program__attach(xmit_prog) : nullptr;
     if (impl_->link_xmit && libbpf_get_error(impl_->link_xmit)) {
-        LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: attach ip_queue_xmit failed");
+        LOG_ERROR(LogModule::PROCESS_PROF, "ProcessNetProfiler: attach ip_queue_xmit failed");
         impl_->link_xmit = nullptr;
     }
     impl_->link_udp = udp_prog ? bpf_program__attach(udp_prog) : nullptr;
     if (impl_->link_udp && libbpf_get_error(impl_->link_udp)) {
-        LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: attach udp_sendmsg failed");
+        LOG_ERROR(LogModule::PROCESS_PROF, "ProcessNetProfiler: attach udp_sendmsg failed");
         impl_->link_udp = nullptr;
     }
 
     if (!impl_->link_retrans && !impl_->link_xmit && !impl_->link_udp) {
-        LOG_ERROR(LogModule::NETWORK, "ProcessNetProfiler: all probes failed to attach");
+        LOG_ERROR(LogModule::PROCESS_PROF, "ProcessNetProfiler: all probes failed to attach");
         bpf_object__close(obj);
         impl_->link_retrans = impl_->link_xmit = impl_->link_udp = nullptr;
         available_ = false;
@@ -236,7 +241,7 @@ bool ProcessNetProfiler::init(const std::string& bpfObjPath, const weaknet::MapS
     available_ = true;
     initialized_ = true;
 
-    LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: initialized successfully");
+    LOG_INFO(LogModule::PROCESS_PROF, "ProcessNetProfiler: initialized successfully");
     stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached");
     stateSupport_.recordProbeAttached();
     stateSupport_.recordProbeAttached();
@@ -262,7 +267,7 @@ void ProcessNetProfiler::stop() {
     if (impl_->owns_obj && impl_->obj) {
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
-        LOG_INFO(LogModule::NETWORK, "ProcessNetProfiler: stopped");
+        LOG_INFO(LogModule::PROCESS_PROF, "ProcessNetProfiler: stopped");
     }
     impl_->process_stats_fd = -1;
     available_ = false;

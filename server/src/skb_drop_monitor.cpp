@@ -8,6 +8,7 @@
 #include <mutex>
 #include <unordered_map>
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 
 #if defined(__has_include)
 #  if __has_include(<linux/bpf.h>) && __has_include(<bpf/libbpf.h>) && __has_include(<bpf/bpf.h>)
@@ -89,9 +90,12 @@ bool SkbDropMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
     impl_->state = EbpfMonitorState::Initializing;
 
 #if HAVE_LIBBPF
+    installLibbpfLogBridge();
+    clearLibbpfError();
     impl_->obj = bpf_object__open_file(bpfObjPath.c_str(), nullptr);
     if (!impl_->obj) {
-        LOG_WARNING(LogModule::NETWORK, "SkbDropMonitor: failed to open BPF object: " << bpfObjPath);
+        LOG_WARNING(LogModule::SKB_DROP, "SkbDropMonitor: failed to open BPF object: "
+                    << bpfObjPath << takeLibbpfError());
         impl_->state = EbpfMonitorState::Fallback;
         return false;
     }
@@ -102,7 +106,8 @@ bool SkbDropMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
 
 
     if (bpf_object__load(impl_->obj) != 0) {
-        LOG_WARNING(LogModule::NETWORK, "SkbDropMonitor: failed to load BPF object");
+        LOG_WARNING(LogModule::SKB_DROP, "SkbDropMonitor: failed to load BPF object"
+                    << takeLibbpfError());
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
         impl_->state = EbpfMonitorState::Fallback;
@@ -111,7 +116,7 @@ bool SkbDropMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
 
     struct bpf_program* prog = bpf_object__find_program_by_name(impl_->obj, "trace_kfree_skb");
     if (!prog) {
-        LOG_WARNING(LogModule::NETWORK, "SkbDropMonitor: program trace_kfree_skb not found");
+        LOG_WARNING(LogModule::SKB_DROP, "SkbDropMonitor: program trace_kfree_skb not found");
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
         impl_->state = EbpfMonitorState::Fallback;
@@ -120,7 +125,7 @@ bool SkbDropMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
 
     impl_->link = bpf_program__attach(prog);
     if (!impl_->link) {
-        LOG_WARNING(LogModule::NETWORK, "SkbDropMonitor: failed to attach tracepoint trace_kfree_skb");
+        LOG_WARNING(LogModule::SKB_DROP, "SkbDropMonitor: failed to attach tracepoint trace_kfree_skb");
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
         impl_->state = EbpfMonitorState::Fallback;
@@ -129,7 +134,7 @@ bool SkbDropMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
 
     impl_->mapFd = bpf_object__find_map_fd_by_name(impl_->obj, "drop_stats_map");
     if (impl_->mapFd < 0) {
-        LOG_WARNING(LogModule::NETWORK, "SkbDropMonitor: map drop_stats_map not found");
+        LOG_WARNING(LogModule::SKB_DROP, "SkbDropMonitor: map drop_stats_map not found");
         bpf_link__destroy(impl_->link);
         impl_->link = nullptr;
         bpf_object__close(impl_->obj);
@@ -140,7 +145,7 @@ bool SkbDropMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
 
     impl_->metricsData.attachedProbes = 1;
     impl_->state = EbpfMonitorState::Attached;
-    LOG_INFO(LogModule::NETWORK, "SkbDropMonitor: eBPF attached successfully");
+    LOG_INFO(LogModule::SKB_DROP, "SkbDropMonitor: eBPF attached successfully");
     return true;
 #else
     // x86 非 eBPF 环境下作为 fallback 状态正常运行

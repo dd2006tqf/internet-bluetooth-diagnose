@@ -10,7 +10,7 @@
 
 server:
   data_dir: /home/radxa/weaknet/data    # 空则回落 WEAKNET_DATA_DIR / 默认路径
-  log_level: info                       # info / warning / error / fatal
+  log_level: info                       # debug / info / warning / error / fatal
 
 monitors:
   rtt:

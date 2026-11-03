@@ -25,6 +25,7 @@
 
 #include "tcp_conn_monitor.hpp"
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 
 #include <chrono>
 #include <cerrno>
@@ -120,18 +121,21 @@ TcpConnMonitor::~TcpConnMonitor() { stop(); }
 bool TcpConnMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizingPlan& plan) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
-    LOG_INFO(LogModule::TCP_LOSS, "TcpConnMonitor: BPF not available (no libbpf)");
+    LOG_INFO(LogModule::TCP_CONN, "TcpConnMonitor: BPF not available (no libbpf)");
     available_ = false;
     initialized_ = true;
     stateSupport_.setState(EbpfMonitorState::Fallback, false, "libbpf unavailable");
     return false;
 #else
-    LOG_INFO(LogModule::TCP_LOSS, "TcpConnMonitor: loading BPF object from " << bpfObjPath);
+    LOG_INFO(LogModule::TCP_CONN, "TcpConnMonitor: loading BPF object from " << bpfObjPath);
+    installLibbpfLogBridge();
+    clearLibbpfError();
 
     LIBBPF_OPTS(bpf_object_open_opts, opts);
     struct bpf_object *obj = bpf_object__open_file(bpfObjPath.c_str(), &opts);
     if (!obj) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpConnMonitor: failed to open BPF object: " << bpfObjPath);
+        LOG_ERROR(LogModule::TCP_CONN, "TcpConnMonitor: failed to open BPF object: "
+                  << bpfObjPath << takeLibbpfError());
         available_ = false;
         initialized_ = true;
         stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
@@ -144,7 +148,8 @@ bool TcpConnMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
 
 
     if (bpf_object__load(obj) != 0) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpConnMonitor: failed to load BPF object");
+        LOG_ERROR(LogModule::TCP_CONN, "TcpConnMonitor: failed to load BPF object"
+                  << takeLibbpfError());
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -154,7 +159,7 @@ bool TcpConnMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
 
     impl_->conn_start_fd = bpf_object__find_map_fd_by_name(obj, "conn_start");
     if (impl_->conn_start_fd < 0) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpConnMonitor: conn_start map not found");
+        LOG_ERROR(LogModule::TCP_CONN, "TcpConnMonitor: conn_start map not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -164,7 +169,7 @@ bool TcpConnMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
 
     impl_->conn_stats_fd = bpf_object__find_map_fd_by_name(obj, "conn_stats");
     if (impl_->conn_stats_fd < 0) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpConnMonitor: conn_stats map not found");
+        LOG_ERROR(LogModule::TCP_CONN, "TcpConnMonitor: conn_stats map not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -174,7 +179,7 @@ bool TcpConnMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
 
     impl_->conn_ports_fd = bpf_object__find_map_fd_by_name(obj, "conn_ports");
     if (impl_->conn_ports_fd < 0) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpConnMonitor: conn_ports map not found");
+        LOG_ERROR(LogModule::TCP_CONN, "TcpConnMonitor: conn_ports map not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -185,7 +190,7 @@ bool TcpConnMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
     struct bpf_program *accept_prog = bpf_object__find_program_by_name(obj, "trace_inet_csk_accept");
     struct bpf_program *close_prog = bpf_object__find_program_by_name(obj, "trace_tcp_close");
     if (!accept_prog || !close_prog) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpConnMonitor: BPF program not found"
+        LOG_ERROR(LogModule::TCP_CONN, "TcpConnMonitor: BPF program not found"
                   << (!accept_prog ? " trace_inet_csk_accept" : "")
                   << (!close_prog ? " trace_tcp_close" : ""));
         bpf_object__close(obj);
@@ -199,19 +204,19 @@ bool TcpConnMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
     impl_->link_accept = bpf_program__attach(accept_prog);
     long err_accept = libbpf_get_error(impl_->link_accept);
     if (err_accept) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpConnMonitor: attach inet_csk_accept failed err=" << err_accept);
+        LOG_ERROR(LogModule::TCP_CONN, "TcpConnMonitor: attach inet_csk_accept failed err=" << err_accept);
         impl_->link_accept = nullptr;
     }
 
     impl_->link_close = bpf_program__attach(close_prog);
     long err_close = libbpf_get_error(impl_->link_close);
     if (err_close) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpConnMonitor: attach tcp_close failed err=" << err_close);
+        LOG_ERROR(LogModule::TCP_CONN, "TcpConnMonitor: attach tcp_close failed err=" << err_close);
         impl_->link_close = nullptr;
     }
 
     if (!impl_->link_accept && !impl_->link_close) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpConnMonitor: both probes failed to attach");
+        LOG_ERROR(LogModule::TCP_CONN, "TcpConnMonitor: both probes failed to attach");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -229,13 +234,13 @@ bool TcpConnMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizin
         __u32 zero_key = 0;
         tcp_conn_global empty_record = {};
         if (bpf_map_update_elem(impl_->conn_stats_fd, &zero_key, &empty_record, BPF_ANY) != 0) {
-            LOG_WARNING(LogModule::TCP_LOSS,
+            LOG_WARNING(LogModule::TCP_CONN,
                         "TcpConnMonitor: pre-create conn_stats entry failed (errno=" << errno
                         << "), getStats will treat ENOENT as empty stats");
         }
     }
 
-    LOG_INFO(LogModule::TCP_LOSS, "TcpConnMonitor: initialized successfully");
+    LOG_INFO(LogModule::TCP_CONN, "TcpConnMonitor: initialized successfully");
     stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached");
     stateSupport_.recordProbeAttached();
     stateSupport_.recordProbeAttached();

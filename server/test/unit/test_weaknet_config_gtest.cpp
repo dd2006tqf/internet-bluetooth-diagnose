@@ -10,6 +10,7 @@
 #include <string>
 
 #include "weaknet_config.hpp"
+#include "logger.hpp"
 
 using namespace weaknet_dbus;
 
@@ -864,4 +865,61 @@ TEST(WeakNetConfigTest, RejectsInsecureNonLoopbackEdgeUrl) {
         "edge:\n"
         "  url: \"https://ops.example.com/api/v1/network/edge/telemetry\"\n",
         &tls, &err)) << err;
+}
+
+// ============================================================================
+// server.log_level 的写入校验与运行期生效
+//
+// 历史缺陷（两条，都会造成"看起来配好了、其实没生效"）：
+//   1. setMonitorParam 不校验就存，弱网网关会接受 "verbose" 这类非法值；
+//   2. 级即便合法也只写进 cfg，从不作用于 glog —— weaknet-cli set 返回 ok
+//      而日志输出纹丝不动。
+// 这两条合起来让"实时调日志级别"变成了纯粹的表演。
+// ============================================================================
+
+TEST(WeakNetConfigTest, SetLogLevelRejectsInvalidValue) {
+    WeakNetConfig cfg;
+    std::string err;
+    EXPECT_FALSE(setMonitorParam(&cfg, "server.log_level", "verbose", &err));
+    EXPECT_FALSE(err.empty());
+    EXPECT_NE(err.find("server.log_level"), std::string::npos);
+    // 拒绝后配置必须保持原值，不能半写
+    EXPECT_EQ(cfg.log_level.get(), "info");
+}
+
+TEST(WeakNetConfigTest, SetLogLevelAcceptsDocumentedValues) {
+    WeakNetConfig cfg;
+    const char* good[] = {"debug", "info", "warning", "error", "fatal"};
+    for (const char* v : good) {
+        std::string err;
+        EXPECT_TRUE(setMonitorParam(&cfg, "server.log_level", v, &err)) << err;
+        EXPECT_EQ(cfg.log_level.get(), v);
+    }
+}
+
+TEST(WeakNetConfigTest, SetLogLevelAppliesImmediately) {
+    // 写入合法级别后，运行期开关必须同步变化——这是"实时调参"的全部意义。
+    // 用 applyLogLevel 的可观测结果（Logger::debugEnabled）间接断言，
+    // 避免测试直接断言 glog 内部状态。
+    WeakNetConfig cfg;
+    std::string err;
+
+    ASSERT_TRUE(setMonitorParam(&cfg, "server.log_level", "debug", &err)) << err;
+    EXPECT_TRUE(Logger::debugEnabled());
+
+    ASSERT_TRUE(setMonitorParam(&cfg, "server.log_level", "error", &err)) << err;
+    EXPECT_FALSE(Logger::debugEnabled());
+
+    // 复位，避免影响同进程内其它用例
+    Logger::setLogLevel(LogLevel::INFO);
+}
+
+TEST(WeakNetConfigTest, SetLogLevelBumpsConfigGeneration) {
+    // 配置代必须推进：已发布的评估快照要能被判为过期。
+    WeakNetConfig cfg;
+    const uint32_t before = cfg.config_generation.load();
+    std::string err;
+    ASSERT_TRUE(setMonitorParam(&cfg, "server.log_level", "warning", &err)) << err;
+    EXPECT_GT(cfg.config_generation.load(), before);
+    Logger::setLogLevel(LogLevel::INFO);
 }

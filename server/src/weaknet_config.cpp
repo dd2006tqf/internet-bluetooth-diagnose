@@ -24,6 +24,7 @@
 #include <sstream>
 #include <vector>
 
+#include "logger.hpp"
 #include "utils/json_escape.hpp"
 
 namespace weaknet_dbus {
@@ -859,7 +860,17 @@ static bool applyMonitorParam(WeakNetConfig* cfg, const std::string& key,
     }
     if (mon == "server") {
         if (field == "data_dir") { cfg->data_dir.set(trim(value)); return true; }
-        if (field == "log_level") { cfg->log_level.set(trim(value)); return true; }
+        if (field == "log_level") {
+            // 写入前校验：非法级别必须在写入处被拒，否则配置里会留下一个
+            // 永远生效不了的值，而调用方收到的是 "ok"（假成功）。
+            LogLevel parsed;
+            if (!parseLogLevel(trim(value), &parsed)) {
+                if (error) *error = "server.log_level: must be one of debug/info/warning/error/fatal";
+                return false;
+            }
+            cfg->log_level.set(trim(value));
+            return true;
+        }
     }
 
     // 边缘遥测上报的运行时调参。
@@ -904,6 +915,14 @@ bool setMonitorParam(WeakNetConfig* cfg, const std::string& key,
     // 消费者转为显式 UNKNOWN 而不是继续返回基于旧配置的结论。
     // 放在这里而不是各调用点：覆盖本地调参、云端下发与回滚三条路径。
     cfg->config_generation.fetch_add(1);
+
+    // server.log_level 是唯一一个"写进配置还不够、必须立刻作用到运行期"的键：
+    // glog 的级别不会自己从 cfg 里读。此处统一收口，三条写路径都能立即生效，
+    // 避免 weaknet-cli set 返回 ok 而日志级别纹丝不动。
+    if (key == "server.log_level") {
+        std::string apply_err;
+        (void)applyLogLevel(value, &apply_err);  // 前面已校验，此处不会失败
+    }
     return true;
 }
 

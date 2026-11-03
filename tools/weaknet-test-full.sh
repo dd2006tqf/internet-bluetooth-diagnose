@@ -13,6 +13,10 @@
 
 export HOME=/home/radxa
 export LD_LIBRARY_PATH=/home/radxa/weaknet/lib:/home/radxa/weaknet/client/lib:/usr/local/lib
+# 与 systemd 单元保持一致：日志落盘到 <root>/data/logs（持久化目录）。
+# 不设置时服务端会回落到相对 WorkingDirectory 的 ./logs/server，
+# 手工测试写下的日志会留在版本目录里，升级即丢。
+export WEAKNET_ROOT=/home/radxa/weaknet
 
 set -u
 
@@ -35,7 +39,7 @@ pkill -f "weaknet-dbus-[s]erver" 2>/dev/null || true
 sleep 1
 
 cd /home/radxa/weaknet/server
-mkdir -p logs/server
+mkdir -p "$WEAKNET_ROOT/data/logs"
 : > /tmp/weaknet-server.log
 
 echo "=============================================="

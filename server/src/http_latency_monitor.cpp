@@ -26,6 +26,7 @@
 
 #include "http_latency_monitor.hpp"
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 
 #include <cstring>
 #include <unistd.h>
@@ -121,18 +122,21 @@ HttpLatencyMonitor::~HttpLatencyMonitor() {
 bool HttpLatencyMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizingPlan& plan) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
-    LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: BPF not available (no libbpf)");
+    LOG_INFO(LogModule::HTTP, "HttpLatencyMonitor: BPF not available (no libbpf)");
     available_ = false;
     initialized_ = true;
     stateSupport_.setState(EbpfMonitorState::Fallback, false, "libbpf unavailable");
     return false;
 #else
-    LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: loading BPF object from " << bpfObjPath);
+    LOG_INFO(LogModule::HTTP, "HttpLatencyMonitor: loading BPF object from " << bpfObjPath);
+    installLibbpfLogBridge();
+    clearLibbpfError();
 
     LIBBPF_OPTS(bpf_object_open_opts, opts);
     struct bpf_object *obj = bpf_object__open_file(bpfObjPath.c_str(), &opts);
     if (!obj) {
-        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: failed to open BPF object: " << bpfObjPath);
+        LOG_ERROR(LogModule::HTTP, "HttpLatencyMonitor: failed to open BPF object: "
+                  << bpfObjPath << takeLibbpfError());
         available_ = false;
         initialized_ = true;
         stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
@@ -145,7 +149,8 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath, const weaknet::MapS
 
 
     if (bpf_object__load(obj) != 0) {
-        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: failed to load BPF object");
+        LOG_ERROR(LogModule::HTTP, "HttpLatencyMonitor: failed to load BPF object"
+                  << takeLibbpfError());
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -155,7 +160,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath, const weaknet::MapS
 
     impl_->http_txn_stats_fd = bpf_object__find_map_fd_by_name(obj, "http_txn_stats");
     if (impl_->http_txn_stats_fd < 0) {
-        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: http_txn_stats map not found");
+        LOG_ERROR(LogModule::HTTP, "HttpLatencyMonitor: http_txn_stats map not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -172,7 +177,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath, const weaknet::MapS
             __u32 k = 0;
             __u32 self_pid = static_cast<__u32>(::getpid());
             if (bpf_map_update_elem(self_fd, &k, &self_pid, BPF_ANY) == 0) {
-                LOG_INFO(LogModule::NETWORK,
+                LOG_INFO(LogModule::HTTP,
                          "HttpLatencyMonitor: self-pid filter set to " << self_pid);
             }
         }
@@ -183,7 +188,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath, const weaknet::MapS
     struct bpf_program *entry_prog = bpf_object__find_program_by_name(obj, "trace_recvmsg_entry");
     struct bpf_program *ret_prog = bpf_object__find_program_by_name(obj, "trace_recvmsg_return");
     if (!send_prog || !entry_prog || !ret_prog) {
-        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: BPF program not found"
+        LOG_ERROR(LogModule::HTTP, "HttpLatencyMonitor: BPF program not found"
                   << (!send_prog ? " probe_http_req" : "")
                   << (!entry_prog ? " trace_recvmsg_entry" : "")
                   << (!ret_prog ? " trace_recvmsg_return" : ""));
@@ -198,7 +203,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath, const weaknet::MapS
     impl_->link_send = bpf_program__attach(send_prog);
     long err_send = libbpf_get_error(impl_->link_send);
     if (err_send) {
-        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: attach tcp_sendmsg failed err=" << err_send);
+        LOG_ERROR(LogModule::HTTP, "HttpLatencyMonitor: attach tcp_sendmsg failed err=" << err_send);
         impl_->link_send = nullptr;
     }
 
@@ -227,15 +232,15 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath, const weaknet::MapS
         err_ret = libbpf_get_error(l_ret);
     }
     if (err_entry || err_ret) {
-        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: attach entry/retprobe failed"
+        LOG_ERROR(LogModule::HTTP, "HttpLatencyMonitor: attach entry/retprobe failed"
                   << " entry_err=" << err_entry << " ret_err=" << err_ret);
         // 修复：如果成功 attach 了其中一个，需要销毁它（避免资源泄漏）
         if (l_entry && !err_entry) {
-            LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: destroying successful entry probe");
+            LOG_INFO(LogModule::HTTP, "HttpLatencyMonitor: destroying successful entry probe");
             bpf_link__destroy(l_entry);
         }
         if (l_ret && !err_ret) {
-            LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: destroying successful ret probe");
+            LOG_INFO(LogModule::HTTP, "HttpLatencyMonitor: destroying successful ret probe");
             bpf_link__destroy(l_ret);
         }
         impl_->link_entry = nullptr;
@@ -243,11 +248,11 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath, const weaknet::MapS
     } else {
         impl_->link_entry = l_entry;
         impl_->link_recv = l_ret;
-        LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: recv probe attached as entry+retprobe(tcp_recvmsg_locked)");
+        LOG_INFO(LogModule::HTTP, "HttpLatencyMonitor: recv probe attached as entry+retprobe(tcp_recvmsg_locked)");
     }
 
     if (!impl_->link_send && !impl_->link_recv) {
-        LOG_ERROR(LogModule::NETWORK, "HttpLatencyMonitor: both probes failed to attach");
+        LOG_ERROR(LogModule::HTTP, "HttpLatencyMonitor: both probes failed to attach");
         bpf_object__close(obj);
         impl_->link_send = impl_->link_recv = nullptr;
         available_ = false;
@@ -260,7 +265,7 @@ bool HttpLatencyMonitor::init(const std::string& bpfObjPath, const weaknet::MapS
     available_ = true;
     initialized_ = true;
 
-    LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: initialized successfully");
+    LOG_INFO(LogModule::HTTP, "HttpLatencyMonitor: initialized successfully");
     stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached");
     stateSupport_.recordProbeAttached();
     stateSupport_.recordProbeAttached();
@@ -284,7 +289,7 @@ void HttpLatencyMonitor::stop() {
     if (impl_->obj) {
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
-        LOG_INFO(LogModule::NETWORK, "HttpLatencyMonitor: stopped");
+        LOG_INFO(LogModule::HTTP, "HttpLatencyMonitor: stopped");
     }
     impl_->http_txn_stats_fd = -1;
     available_ = false;

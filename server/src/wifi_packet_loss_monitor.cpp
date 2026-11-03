@@ -29,6 +29,7 @@
 
 #include "wifi_packet_loss_monitor.hpp"
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 
 #include <cstring>
 #include <cstdio>
@@ -79,15 +80,15 @@ struct iface_packet_stats {
 static struct bpf_link* attachProgram(struct bpf_object* obj, const char* progName) {
     struct bpf_program* prog = bpf_object__find_program_by_name(obj, progName);
     if (!prog) {
-        LOG_ERROR(LogModule::NETWORK, "WifiPacketLossMonitor: BPF program " << progName << " not found");
+        LOG_ERROR(LogModule::WIFI_LOSS, "WifiPacketLossMonitor: BPF program " << progName << " not found");
         return nullptr;
     }
     struct bpf_link* link = bpf_program__attach(prog);
     if (libbpf_get_error(link)) {
-        LOG_ERROR(LogModule::NETWORK, "WifiPacketLossMonitor: attach " << progName << " failed err=" << libbpf_get_error(link));
+        LOG_ERROR(LogModule::WIFI_LOSS, "WifiPacketLossMonitor: attach " << progName << " failed err=" << libbpf_get_error(link));
         return nullptr;
     }
-    LOG_INFO(LogModule::NETWORK, "WifiPacketLossMonitor: " << progName << " attached");
+    LOG_INFO(LogModule::WIFI_LOSS, "WifiPacketLossMonitor: " << progName << " attached");
     return link;
 }
 #endif
@@ -130,17 +131,21 @@ WifiPacketLossMonitor::~WifiPacketLossMonitor() {
 bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
-    LOG_INFO(LogModule::NETWORK, "WifiPacketLossMonitor: BPF not available (no libbpf)");
+    LOG_INFO(LogModule::WIFI_LOSS, "WifiPacketLossMonitor: BPF not available (no libbpf)");
     available_ = false;
     initialized_ = true;
     stateSupport_.setState(EbpfMonitorState::Fallback, false, "libbpf unavailable");
     return false;
 #else
-    LOG_INFO(LogModule::NETWORK, "WifiPacketLossMonitor: loading BPF object from " << bpfObjPath);
+    LOG_INFO(LogModule::WIFI_LOSS, "WifiPacketLossMonitor: loading BPF object from " << bpfObjPath);
 
+    installLibbpfLogBridge();
+    clearLibbpfError();
     LIBBPF_OPTS(bpf_object_open_opts, opts);
     struct bpf_object *obj = bpf_object__open_file(bpfObjPath.c_str(), &opts);
     if (!obj) {
+        LOG_ERROR(LogModule::WIFI_LOSS, "WifiPacketLossMonitor: failed to open BPF object: "
+                  << bpfObjPath << takeLibbpfError());
         available_ = false;
         initialized_ = true;
         stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
@@ -148,6 +153,8 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
     }
 
     if (bpf_object__load(obj) != 0) {
+        LOG_ERROR(LogModule::WIFI_LOSS, "WifiPacketLossMonitor: failed to load BPF object"
+                  << takeLibbpfError());
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -157,7 +164,7 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
 
     impl_->packet_stats_fd = bpf_object__find_map_fd_by_name(obj, "packet_stats");
     if (impl_->packet_stats_fd < 0) {
-        LOG_ERROR(LogModule::NETWORK, "WifiPacketLossMonitor: packet_stats map not found");
+        LOG_ERROR(LogModule::WIFI_LOSS, "WifiPacketLossMonitor: packet_stats map not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -174,7 +181,7 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
     impl_->link_tx_xmit = attachProgram(obj, "trace_net_tx_xmit");
 
     if (!impl_->link_rx && !impl_->link_tx_queue && !impl_->link_tx_xmit) {
-        LOG_ERROR(LogModule::NETWORK, "WifiPacketLossMonitor: all tracepoints failed to attach");
+        LOG_ERROR(LogModule::WIFI_LOSS, "WifiPacketLossMonitor: all tracepoints failed to attach");
         bpf_object__close(obj);
         impl_->link_rx = impl_->link_tx_queue = impl_->link_tx_xmit = nullptr;
         available_ = false;
@@ -186,7 +193,7 @@ bool WifiPacketLossMonitor::init(const std::string& bpfObjPath) {
     available_ = true;
     initialized_ = true;
 
-    LOG_INFO(LogModule::NETWORK, "WifiPacketLossMonitor: initialized successfully");
+    LOG_INFO(LogModule::WIFI_LOSS, "WifiPacketLossMonitor: initialized successfully");
     stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached");
     stateSupport_.recordProbeAttached();
     stateSupport_.recordProbeAttached();
@@ -210,7 +217,7 @@ void WifiPacketLossMonitor::stop() {
     if (impl_->obj) {
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
-        LOG_INFO(LogModule::NETWORK, "WifiPacketLossMonitor: stopped");
+        LOG_INFO(LogModule::WIFI_LOSS, "WifiPacketLossMonitor: stopped");
     }
     impl_->packet_stats_fd = -1;
     available_ = false;
@@ -353,7 +360,7 @@ WifiPacketLossMonitor::LossAttribution WifiPacketLossMonitor::analyze(uint32_t i
         result.analysis = "连接正常，无显著丢包";
     }
 
-    LOG_INFO(LogModule::NETWORK, "WifiPacketLoss: iface=" << ifaceName
+    LOG_INFO(LogModule::WIFI_LOSS, "WifiPacketLoss: iface=" << ifaceName
         << " txPkts=" << stats.txPkts << " rxPkts=" << stats.rxPkts
         << " txDrops=" << stats.txDrops << " txRetries=" << stats.txRetries
         << " -> " << result.analysis);

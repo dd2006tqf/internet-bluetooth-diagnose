@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 
 #if defined(__has_include)
 #  if __has_include(<linux/bpf.h>) && __has_include(<bpf/libbpf.h>) && __has_include(<bpf/bpf.h>)
@@ -105,9 +106,12 @@ bool TcpRttMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizing
     impl_->state = EbpfMonitorState::Initializing;
 
 #if HAVE_LIBBPF
+    installLibbpfLogBridge();
+    clearLibbpfError();
     impl_->obj = bpf_object__open_file(bpfObjPath.c_str(), nullptr);
     if (!impl_->obj) {
-        LOG_WARNING(LogModule::TCP_LOSS, "TcpRttMonitor: failed to open BPF object: " << bpfObjPath);
+        LOG_WARNING(LogModule::TCP_RTT, "TcpRttMonitor: failed to open BPF object: "
+                    << bpfObjPath << takeLibbpfError());
         impl_->state = EbpfMonitorState::Fallback;
         return false;
     }
@@ -115,7 +119,8 @@ bool TcpRttMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizing
     weaknet::applyMapSizingPlan(impl_->obj, plan);
 
     if (bpf_object__load(impl_->obj) != 0) {
-        LOG_WARNING(LogModule::TCP_LOSS, "TcpRttMonitor: failed to load BPF object");
+        LOG_WARNING(LogModule::TCP_RTT, "TcpRttMonitor: failed to load BPF object"
+                    << takeLibbpfError());
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
         impl_->state = EbpfMonitorState::Fallback;
@@ -124,7 +129,7 @@ bool TcpRttMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizing
 
     struct bpf_program* prog = bpf_object__find_program_by_name(impl_->obj, "trace_tcp_probe");
     if (!prog) {
-        LOG_WARNING(LogModule::TCP_LOSS, "TcpRttMonitor: program trace_tcp_probe not found");
+        LOG_WARNING(LogModule::TCP_RTT, "TcpRttMonitor: program trace_tcp_probe not found");
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
         impl_->state = EbpfMonitorState::Fallback;
@@ -133,7 +138,7 @@ bool TcpRttMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizing
 
     impl_->link = bpf_program__attach(prog);
     if (!impl_->link) {
-        LOG_WARNING(LogModule::TCP_LOSS, "TcpRttMonitor: failed to attach tracepoint trace_tcp_probe");
+        LOG_WARNING(LogModule::TCP_RTT, "TcpRttMonitor: failed to attach tracepoint trace_tcp_probe");
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
         impl_->state = EbpfMonitorState::Fallback;
@@ -145,7 +150,7 @@ bool TcpRttMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizing
     impl_->selfPidMapFd = bpf_object__find_map_fd_by_name(impl_->obj, "tcp_rtt_self_pid");
 
     if (impl_->statsMapFd < 0 || impl_->globalMapFd < 0) {
-        LOG_WARNING(LogModule::TCP_LOSS, "TcpRttMonitor: essential BPF maps not found");
+        LOG_WARNING(LogModule::TCP_RTT, "TcpRttMonitor: essential BPF maps not found");
         if (impl_->link) { bpf_link__destroy(impl_->link); impl_->link = nullptr; }
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
@@ -162,7 +167,7 @@ bool TcpRttMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizing
 
     impl_->metricsData.attachedProbes = 1;
     impl_->state = EbpfMonitorState::Attached;
-    LOG_INFO(LogModule::TCP_LOSS, "TcpRttMonitor: eBPF attached successfully (trace_tcp_probe)");
+    LOG_INFO(LogModule::TCP_RTT, "TcpRttMonitor: eBPF attached successfully (trace_tcp_probe)");
     return true;
 #else
     impl_->state = EbpfMonitorState::Fallback;

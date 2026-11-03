@@ -1221,7 +1221,7 @@ void start_history_persistence_thread(ServerContext* ctx) {
             auto now = std::chrono::steady_clock::now();
             static auto last_log_cleanup = std::chrono::steady_clock::now();
             if (now - last_log_cleanup > std::chrono::hours(24)) {
-                int log_deleted = Logger::cleanOldLogs("./logs/server", 7);
+                int log_deleted = Logger::cleanOldLogs(Logger::currentLogDir(), 7);
                 last_log_cleanup = now;
                 if (log_deleted > 0) {
                     LOG_INFO(LogModule::SYSTEM, "History persistence: cleaned " << log_deleted << " old log files");
@@ -1247,24 +1247,45 @@ int start_server(int argc, char** argv) {
     // 注意：此函数内已有 ctx 之前不能 LOG_*
     std::cerr << "Loading config from: " << config_path << std::endl;
 
-    // 解析日志级别（用于 Logger::init）
+    // 解析日志级别（用于 Logger::init）：启动早期只有默认值，
+    // 稍后加载配置文件再用 server.log_level 覆盖。
     LogLevel log_level = LogLevel::INFO;
-    if (!parseLogLevel("info", &log_level)) log_level = LogLevel::INFO;
 
-    // 初始化日志系统
-    if (!Logger::init("server", "./logs/server", log_level, true)) {
+    // 初始化日志系统。
+    //
+    // 日志落盘位置：优先 $WEAKNET_LOG_DIR，其次安装根下的 data/logs
+    // （<root>/data 是部署时持久化的目录，OTA 切版本不会带走它），
+    // 最后回落到当前工作目录的相对路径（本地开发/手工起服务）。
+    //
+    // 历史实现把 glog 目录写死成 "./logs/server"、把文件日志写死成
+    // "./server/log"，是两个不同目录；且二者都相对 WorkingDirectory 解析，
+    // 而 WorkingDirectory 指向 current/server —— 每次 OTA 升级都会把日志
+    // 连同旧版本目录一起换掉，属于既丢证据又占空间。现在统一成一个目录。
+    std::string log_dir;
+    if (const char* env = std::getenv("WEAKNET_LOG_DIR"); env && *env) {
+        log_dir = env;
+    } else if (const char* root = std::getenv("WEAKNET_ROOT"); root && *root) {
+        log_dir = std::string(root) + "/data/logs";
+    } else {
+        log_dir = "./logs/server";
+    }
+
+    if (!Logger::init("server", log_dir, log_level, true)) {
         std::cerr << "Failed to initialize logger" << std::endl;
         return 1;
     }
 
-    // 启动带时间戳的文件日志
-    Logger::startFileLog("./server/log");
+    // 崩溃现场（SIGSEGV 等）的调用栈：必须在其它线程起来之前安装
+    Logger::installCrashHandler();
+
+    // 启动带时间戳的文件日志（目录同上）
+    Logger::startFileLog(log_dir);
 
     // 全局网络与通信库初始化（单线程早期调用）
     weaknet::EdgeTelemetryExporter::initGlobal();
 
     // 启动时清理 7 天前的日志文件
-    int cleaned = Logger::cleanOldLogs("./logs/server", 7);
+    int cleaned = Logger::cleanOldLogs(log_dir, 7);
     if (cleaned > 0) {
         LOG_INFO(LogModule::SYSTEM, "Cleaned " << cleaned << " old log files on startup");
     }
@@ -1287,13 +1308,18 @@ int start_server(int argc, char** argv) {
             << " (dbus name: " << kBusName << ")");
 
         // 应用日志级别（配置文件覆盖默认）
-        LogLevel new_level;
-        if (parseLogLevel(ctx.cfg.log_level.get(), &new_level)) {
-            Logger::setLogLevel(new_level);
-            LOG_INFO(LogModule::SYSTEM, "Log level from config: " << ctx.cfg.log_level.get());
-        } else if (!ctx.cfg.log_level.get().empty()) {
-            LOG_WARNING(LogModule::SYSTEM,
-                "Unknown log_level '" << ctx.cfg.log_level.get() << "', keeping default INFO");
+        {
+            const std::string& configured = ctx.cfg.log_level.get();
+            if (configured.empty()) {
+                // 未配置：保持默认 INFO
+            } else {
+                std::string lv_err;
+                if (!applyLogLevel(configured, &lv_err)) {
+                    LOG_WARNING(LogModule::SYSTEM, lv_err << ", keeping default INFO");
+                } else {
+                    LOG_INFO(LogModule::SYSTEM, "Log level from config: " << configured);
+                }
+            }
         }
 
         // IR-3: assessment profile 合法性校验（权威值始终是 cfg.dns.assessment_profile，
@@ -1550,11 +1576,11 @@ int start_server(int argc, char** argv) {
     // 杜绝静态单例析构时后台线程野访问已释放的日志设施。
     UsingInterfaceManager::getInstance()->stop();
 
-    // 停止文件日志（在 glog 关闭之前）
-    Logger::stopFileLog();
-
-    // 清理glog。资源（DBus 连接 / service / weak_mgr）由 ~ServerContext 统一释放。
-    google::ShutdownGoogleLogging();
+    // 关闭日志系统：走 Logger::shutdown() 而不是裸调 ShutdownGoogleLogging——
+    // 后者会绕过文件 sink 的摘除与收尾行，日志文件里就看不到"服务正常退出"
+    // 这条关键证据（与崩溃场景无法区分）。资源（DBus 连接 / service /
+    // weak_mgr）由 ~ServerContext 统一释放。
+    Logger::shutdown();
 
     // 清理全局网络通信库（libcurl 全局资源释放）
     weaknet::EdgeTelemetryExporter::cleanupGlobal();

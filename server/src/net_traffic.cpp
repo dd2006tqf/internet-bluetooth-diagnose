@@ -29,6 +29,7 @@
 
 #include "net_traffic.h"
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 
 using namespace weaknet_dbus;
 
@@ -142,24 +143,38 @@ bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName,
 #else
     // 开启 libbpf 严格模式，尽早暴露 API 误用
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
-    // 将 libbpf 日志输出到 stderr
-    libbpf_set_print([](enum libbpf_print_level level, const char *fmt, va_list args) -> int {
-        (void)level; return vfprintf(stderr, fmt, args);
-    });
+    // libbpf 输出统一走日志系统（含 BPF 校验器根因），不再直写 stderr
+    installLibbpfLogBridge();
     if (attached_) return true;
 
     // ========== 1. 打开并加载 BPF 对象 ==========
+    // 本对象是 flow_rate 的持有者，ProcessNetProfiler 在它加载成功时共享 map fd；
+    // 这里失败会连带拖垮进程画像，所以每一步都要留下可归因的日志。
+    clearLibbpfError();
     bpf_object* obj = bpf_object__open(bpfObjPath_.c_str());
-    if (!obj) return false;
+    if (!obj) {
+        LOG_ERROR(LogModule::TRAFFIC, "traffic BPF: failed to open object: "
+                  << bpfObjPath_ << takeLibbpfError());
+        return false;
+    }
     // 在 open→load 间隙应用容量定标：map 一旦 load 就无法 resize。
     weaknet::applyMapSizingPlan(obj, plan);
 
-    if (bpf_object__load(obj)) { bpf_object__close(obj); return false; }
+    if (bpf_object__load(obj)) {
+        LOG_ERROR(LogModule::TRAFFIC, "traffic BPF: failed to load object: "
+                  << bpfObjPath_ << takeLibbpfError());
+        bpf_object__close(obj);
+        return false;
+    }
 
     // ========== 2. 查找 BPF map fd ==========
     // current_sec：必需，按流五元组聚合计数的主 map
     mapCurrFd_ = bpf_object__find_map_fd_by_name(obj, "current_sec");
-    if (mapCurrFd_ < 0) { bpf_object__close(obj); return false; }
+    if (mapCurrFd_ < 0) {
+        LOG_ERROR(LogModule::TRAFFIC, "traffic BPF: map current_sec not found: " << bpfObjPath_);
+        bpf_object__close(obj);
+        return false;
+    }
 
     // process_stats：可选，供 ProcessNetProfiler 共享读取
     mapProcessStatsFd_ = bpf_object__find_map_fd_by_name(obj, "process_stats");
@@ -173,7 +188,7 @@ bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName,
             int zero = 0; unsigned val = ifi;
             bpf_map_update_elem(mapCfgFd_, &zero, &val, BPF_ANY);
         } else {
-            LOG_WARNING(LogModule::NETWORK, "traffic BPF: interface '" << ifaceName
+            LOG_WARNING(LogModule::TRAFFIC, "traffic BPF: interface '" << ifaceName
                         << "' not found (if_nametoindex=0), cfg_iface filter stays disabled");
         }
     }
@@ -186,18 +201,24 @@ bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName,
     // 它累计，缺了它该字段恒为 0 —— 而 ProcessNetProfiler 在本对象加载成功时
     // 是**共享** map fd（不再自己 attach），所以这里漏挂会让进程重传画像永久为空。
     bpf_program* prog_retrans = bpf_object__find_program_by_name(obj, "trace_tcp_retransmit");
-    if (!prog_tcp || !prog_udp) { bpf_object__close(obj); return false; }
+    if (!prog_tcp || !prog_udp) {
+        LOG_ERROR(LogModule::TRAFFIC, "traffic BPF: program "
+                  << (prog_tcp ? "udp_send_entry" : "tcp_transmit_entry")
+                  << " not found: " << bpfObjPath_);
+        bpf_object__close(obj);
+        return false;
+    }
     bpf_link* l1 = bpf_program__attach(prog_tcp);
     long err_tcp = libbpf_get_error(l1);
     if (err_tcp) {
-        LOG_ERROR(LogModule::NETWORK, "attach kprobe/ip_queue_xmit failed: err=" << err_tcp << " errno=" << errno);
+        LOG_ERROR(LogModule::TRAFFIC, "attach kprobe/ip_queue_xmit failed: err=" << err_tcp << " errno=" << errno);
         if (!l1) {/* noop */} else { bpf_link__destroy(l1); }
         l1 = nullptr;
     }
     bpf_link* l2 = bpf_program__attach(prog_udp);
     long err_udp = libbpf_get_error(l2);
     if (err_udp) {
-        LOG_ERROR(LogModule::NETWORK, "attach kprobe/udp_sendmsg failed: err=" << err_udp << " errno=" << errno);
+        LOG_ERROR(LogModule::TRAFFIC, "attach kprobe/udp_sendmsg failed: err=" << err_udp << " errno=" << errno);
         if (!l2) {/* noop */} else { bpf_link__destroy(l2); }
         l2 = nullptr;
     }
@@ -206,12 +227,12 @@ bool NetTrafficAnalyzer::initForInterface(const std::string& ifaceName,
         l3 = bpf_program__attach(prog_retrans);
         long err_retrans = libbpf_get_error(l3);
         if (err_retrans) {
-            LOG_ERROR(LogModule::NETWORK, "attach kprobe/tcp_retransmit_skb failed: err=" << err_retrans << " errno=" << errno);
+            LOG_ERROR(LogModule::TRAFFIC, "attach kprobe/tcp_retransmit_skb failed: err=" << err_retrans << " errno=" << errno);
             if (!l3) {/* noop */} else { bpf_link__destroy(l3); }
             l3 = nullptr;
         }
     } else {
-        LOG_WARNING(LogModule::NETWORK,
+        LOG_WARNING(LogModule::TRAFFIC,
                     "traffic BPF: program 'trace_tcp_retransmit' not found; process retransmit count will stay 0");
     }
 

@@ -24,6 +24,7 @@ set(SERVER_SOURCES
     src/dbus_service.cpp
     src/dns_monitor.cpp
     src/ebpf_monitor_metrics.cpp
+    src/ebpf_log_bridge.cpp
     src/edge_telemetry_exporter.cpp
     src/edge_wireless_uplink_exporter.cpp
     src/event_manager.cpp
@@ -74,10 +75,22 @@ target_include_directories(weaknet_common PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set_target_properties(weaknet_common PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# 启动日志里的版本/构建类型：版本单一来源是仓库根 VERSION（见根 CMakeLists.txt）。
+# 用 PUBLIC 是为了让 server_lib / 客户端动态库 / 测试都能直接读到。
+target_compile_definitions(weaknet_common PUBLIC
+    WEAKNET_VERSION="${PROJECT_VERSION}"
+    WEAKNET_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+
 # ---- 服务端静态库（供测试链接） ----
 add_library(server_lib STATIC ${SERVER_SOURCES})
 target_include_directories(server_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# logger.cpp 同时编进 weaknet_common 与 server_lib（两端各自链接其中一个），
+# 所以两处都要拿到同样的版本/构建类型宏，否则服务端会退化成 "0.0.0"。
+target_compile_definitions(server_lib PUBLIC
+    WEAKNET_VERSION="${PROJECT_VERSION}"
+    WEAKNET_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
 
 find_package(PkgConfig REQUIRED)
 # QEMU ARM64 模拟下 cmake try_compile 会 segfault，手动设置 pthread

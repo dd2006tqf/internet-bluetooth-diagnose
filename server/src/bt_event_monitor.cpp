@@ -21,6 +21,7 @@
 #include <sstream>
 
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 
 namespace weaknet_dbus {
 
@@ -94,17 +95,20 @@ bool BtEventMonitor::init(const std::string& bpf_object_path, const std::string&
     bpf_object_path_ = bpf_object_path;
     gateway_id_ = gateway_id;
 
+    installLibbpfLogBridge();
+    clearLibbpfError();
     bpf_obj_ = bpf_object__open(bpf_object_path.c_str());
     if (!bpf_obj_) {
         last_error_ = "bpf_object__open failed for " + bpf_object_path +
-                      ": " + std::string(strerror(errno));
+                      ": " + std::string(strerror(errno)) + takeLibbpfError();
         stateSupport_.setState(EbpfMonitorState::Fallback, false, last_error_);
         LOG_WARNING(LogModule::BLUETOOTH, "BtEventMonitor: " << last_error_);
         return false;
     }
 
     if (bpf_object__load(bpf_obj_) != 0) {
-        last_error_ = "bpf_object__load failed: " + std::string(strerror(errno));
+        last_error_ = "bpf_object__load failed: " + std::string(strerror(errno)) +
+                      takeLibbpfError();
         bpf_object__close(bpf_obj_);
         bpf_obj_ = nullptr;
         stateSupport_.setState(EbpfMonitorState::Fallback, false, last_error_);

@@ -26,6 +26,7 @@
 
 #include "dns_monitor.hpp"
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 
 #include <chrono>
 #include <cerrno>
@@ -255,7 +256,7 @@ static void on_dns_event(void* ctx, int /*cpu*/, void* data, __u32 size) {
     {
         static std::atomic<int> diag_budget{kDnsKeyDumpBudget};
         if (diag_budget.load() > 0 && diag_budget.fetch_sub(1) >= 0) {
-            LOG_INFO(LogModule::NETWORK, "DNSKEY dir=" << (int)event->direction
+            LOG_INFO(LogModule::DNS, "DNSKEY dir=" << (int)event->direction
                 << " cli=" << key.client_ip << ":" << key.client_port
                 << " rs=" << key.resolver_ip
                 << " txid=" << key.txid);
@@ -322,18 +323,21 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
                  const weaknet::MapSizingPlan& plan) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
-    LOG_INFO(LogModule::NETWORK, "DnsMonitor: BPF not available (no libbpf)");
+    LOG_INFO(LogModule::DNS, "DnsMonitor: BPF not available (no libbpf)");
     available_ = false;
     initialized_ = true;
     stateSupport_.setState(EbpfMonitorState::Fallback, false, "libbpf unavailable");
     return false;
 #else
-    LOG_INFO(LogModule::NETWORK, "DnsMonitor: loading BPF object from " << bpfObjPath);
+    LOG_INFO(LogModule::DNS, "DnsMonitor: loading BPF object from " << bpfObjPath);
+    installLibbpfLogBridge();
+    clearLibbpfError();
 
     LIBBPF_OPTS(bpf_object_open_opts, opts);
     struct bpf_object *obj = bpf_object__open_file(bpfObjPath.c_str(), &opts);
     if (!obj) {
-        LOG_ERROR(LogModule::NETWORK, "DnsMonitor: failed to open BPF object: " << bpfObjPath);
+        LOG_ERROR(LogModule::DNS, "DnsMonitor: failed to open BPF object: "
+                  << bpfObjPath << takeLibbpfError());
         available_ = false;
         initialized_ = true;
         stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
@@ -347,7 +351,8 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
 
 
     if (bpf_object__load(obj) != 0) {
-        LOG_ERROR(LogModule::NETWORK, "DnsMonitor: failed to load BPF object");
+        LOG_ERROR(LogModule::DNS, "DnsMonitor: failed to load BPF object"
+                  << takeLibbpfError());
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -357,7 +362,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
 
     impl_->dns_queries_fd = bpf_object__find_map_fd_by_name(obj, "dns_queries");
     if (impl_->dns_queries_fd < 0) {
-        LOG_ERROR(LogModule::NETWORK, "DnsMonitor: dns_queries map not found");
+        LOG_ERROR(LogModule::DNS, "DnsMonitor: dns_queries map not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -367,7 +372,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
 
     impl_->dns_stats_fd = bpf_object__find_map_fd_by_name(obj, "dns_stats");
     if (impl_->dns_stats_fd < 0) {
-        LOG_ERROR(LogModule::NETWORK, "DnsMonitor: dns_stats map not found");
+        LOG_ERROR(LogModule::DNS, "DnsMonitor: dns_stats map not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -389,9 +394,9 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
             __u32 k = 0;
             __u32 self_pid = static_cast<__u32>(::getpid());
             if (bpf_map_update_elem(self_fd, &k, &self_pid, BPF_ANY) == 0) {
-                LOG_INFO(LogModule::NETWORK, "DnsMonitor: self-pid filter set to " << self_pid);
+                LOG_INFO(LogModule::DNS, "DnsMonitor: self-pid filter set to " << self_pid);
             } else {
-                LOG_WARNING(LogModule::NETWORK, "DnsMonitor: failed to set self-pid filter");
+                LOG_WARNING(LogModule::DNS, "DnsMonitor: failed to set self-pid filter");
             }
         }
     }
@@ -401,7 +406,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
     struct bpf_program *send_prog = bpf_object__find_program_by_name(obj, "trace_dns_egress_skb");
     struct bpf_program *recv_prog = bpf_object__find_program_by_name(obj, "trace_dns_recv");
     if (!send_prog || !recv_prog) {
-        LOG_ERROR(LogModule::NETWORK, "DnsMonitor: BPF program not found");
+        LOG_ERROR(LogModule::DNS, "DnsMonitor: BPF program not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -412,7 +417,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
     impl_->link_send = bpf_program__attach(send_prog);
     long err_send = libbpf_get_error(impl_->link_send);
     if (err_send) {
-        LOG_ERROR(LogModule::NETWORK, "DnsMonitor: attach kprobe/udp_sendmsg failed err=" << err_send);
+        LOG_ERROR(LogModule::DNS, "DnsMonitor: attach kprobe/udp_sendmsg failed err=" << err_send);
         impl_->link_send = nullptr;
     }
 
@@ -421,7 +426,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
     if (queue_prog) {
         impl_->link_queue = bpf_program__attach(queue_prog);
         if (libbpf_get_error(impl_->link_queue)) {
-            LOG_WARNING(LogModule::NETWORK, "DnsMonitor: attach kprobe/udp_queue_rcv_skb failed");
+            LOG_WARNING(LogModule::DNS, "DnsMonitor: attach kprobe/udp_queue_rcv_skb failed");
             impl_->link_queue = nullptr;
         } else {
             stateSupport_.recordProbeAttached();
@@ -431,12 +436,12 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
     impl_->link_recv = bpf_program__attach(recv_prog);
     long err_recv = libbpf_get_error(impl_->link_recv);
     if (err_recv) {
-        LOG_ERROR(LogModule::NETWORK, "DnsMonitor: attach kprobe/udp_recvmsg failed err=" << err_recv);
+        LOG_ERROR(LogModule::DNS, "DnsMonitor: attach kprobe/udp_recvmsg failed err=" << err_recv);
         impl_->link_recv = nullptr;
     }
 
     if (!impl_->link_send && !impl_->link_recv) {
-        LOG_ERROR(LogModule::NETWORK, "DnsMonitor: both probes failed to attach");
+        LOG_ERROR(LogModule::DNS, "DnsMonitor: both probes failed to attach");
         bpf_object__close(obj);
         impl_->link_send = impl_->link_recv = nullptr;
         available_ = false;
@@ -459,7 +464,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
             }
             struct bpf_link *link = bpf_program__attach(prog);
             if (libbpf_get_error(link)) {
-                LOG_WARNING(LogModule::NETWORK, "DnsMonitor: attach failed for prog "
+                LOG_WARNING(LogModule::DNS, "DnsMonitor: attach failed for prog "
                             << bpf_program__name(prog) << " section=" << sec);
                 link = nullptr;
             } else {
@@ -467,7 +472,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
                 stateSupport_.recordProbeAttached();
             }
         }
-        LOG_INFO(LogModule::NETWORK, "DnsMonitor: raw_syscall capture programs attached="
+        LOG_INFO(LogModule::DNS, "DnsMonitor: raw_syscall capture programs attached="
                  << impl_->capture_links.size());
     }
 
@@ -477,16 +482,16 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
             impl_->events = perf_buffer__new(events_fd, capture_pages, on_dns_event, on_dns_lost,
                                              impl_.get(), nullptr);
             if (!impl_->events) {
-                LOG_WARNING(LogModule::NETWORK, "DnsMonitor: perf buffer unavailable; lifecycle events disabled");
+                LOG_WARNING(LogModule::DNS, "DnsMonitor: perf buffer unavailable; lifecycle events disabled");
             } else {
-                LOG_INFO(LogModule::NETWORK, "DnsMonitor: perf buffer pages=" << capture_pages);
+                LOG_INFO(LogModule::DNS, "DnsMonitor: perf buffer pages=" << capture_pages);
             }
         }
     }
     available_ = true;
     initialized_ = true;
 
-    LOG_INFO(LogModule::NETWORK, "DnsMonitor: initialized successfully");
+    LOG_INFO(LogModule::DNS, "DnsMonitor: initialized successfully");
     // 预创建 key=0 聚合条目：BPF 侧只在首个 DNS 事件到达时才创建该条目，
     // 若窗口期内无 DNS 流量，用户态 lookup 会得到 ENOENT。预先写入零值记录，
     // 保证 getStats() 在无流量时也能成功读到零值而不是被计为读取错误。
@@ -494,7 +499,7 @@ bool DnsMonitor::init(const std::string& bpfObjPath, uint32_t capture_pages,
         __u32 stats_key = 0;
         dns_stats_record empty_record = {};
         if (bpf_map_update_elem(impl_->dns_stats_fd, &stats_key, &empty_record, BPF_ANY) != 0) {
-            LOG_WARNING(LogModule::NETWORK,
+            LOG_WARNING(LogModule::DNS,
                         "DnsMonitor: pre-create dns_stats entry failed (errno=" << errno
                         << "), getStats will treat ENOENT as empty stats");
         }
@@ -524,7 +529,7 @@ void DnsMonitor::stop() {
     if (impl_->obj) {
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
-        LOG_INFO(LogModule::NETWORK, "DnsMonitor: stopped");
+        LOG_INFO(LogModule::DNS, "DnsMonitor: stopped");
     }
     impl_->dns_queries_fd = -1;
     impl_->dns_stats_fd = -1;
@@ -671,7 +676,7 @@ size_t DnsMonitor::drainEvents(weaknet::DnsTransactionTracker* tracker) {
 
     if (last_ret < 0 && last_ret != -EINTR) {
         impl_->drain_stats.poll_errors++;
-        LOG_WARNING(LogModule::NETWORK, "DnsMonitor: perf buffer poll failed: " << last_ret);
+        LOG_WARNING(LogModule::DNS, "DnsMonitor: perf buffer poll failed: " << last_ret);
         return 0;
     }
     impl_->drain_stats.poll_records += total_records;
@@ -789,7 +794,7 @@ void DnsMonitor::feedTransportDelta(weaknet::DnsTransactionTracker* tracker) {
         counters.values[DNS_STAT_EMIT_FAIL] < prev.values[DNS_STAT_EMIT_FAIL] ||
         counters.values[DNS_STAT_EMITTED] < prev.values[DNS_STAT_EMITTED] ||
         impl_->drain_stats.lost_events < impl_->last_lost_events) {
-        LOG_WARNING(LogModule::NETWORK,
+        LOG_WARNING(LogModule::DNS,
                     "DNS capture counters counter-reset or lookup failure detected, skipping delta update");
         impl_->last_counters = counters;
         impl_->last_lost_events = impl_->drain_stats.lost_events;

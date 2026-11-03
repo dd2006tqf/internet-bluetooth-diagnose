@@ -365,7 +365,7 @@ ok
 | `edge` | `interval`/`interval_ms` | duration | `1000ms` ~ `3600000ms` | 上行周期 |
 | `edge` | `timeout`/`timeout_ms` | duration | `100ms` ~ `120000ms` | 上行超时 |
 | `server` | `data_dir` | string | 路径 | 数据目录 |
-| `server` | `log_level` | string | `info`/`warning`/`error`/`fatal` | 日志级别 |
+| `server` | `log_level` | string | `debug`/`info`/`warning`/`error`/`fatal` | 日志级别（`debug` 额外打开 `LOG_DEBUG` 调试行与 libbpf 校验器原文） |
 
 **时长格式**：
 - 裸数字 = 毫秒（如 `5000` = 5000ms）

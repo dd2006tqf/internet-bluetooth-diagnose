@@ -30,6 +30,7 @@
 
 #include "tcp_retransmit_monitor.hpp"
 #include "logger.hpp"
+#include "ebpf_log_bridge.hpp"
 
 #include <cstring>
 #include <cstdio>
@@ -158,19 +159,22 @@ TcpRetransMonitor::~TcpRetransMonitor() {
 bool TcpRetransMonitor::init(const std::string& bpfObjPath, const weaknet::MapSizingPlan& plan) {
     stateSupport_.setState(EbpfMonitorState::Initializing, false, "loading BPF object");
 #if !HAVE_LIBBPF
-    LOG_INFO(LogModule::TCP_LOSS, "TcpRetransMonitor: BPF not available (no libbpf)");
+    LOG_INFO(LogModule::TCP_RETRANS, "TcpRetransMonitor: BPF not available (no libbpf)");
     available_ = false;
     initialized_ = true;
     stateSupport_.setState(EbpfMonitorState::Fallback, false, "libbpf unavailable");
     return false;
 #else
-    LOG_INFO(LogModule::TCP_LOSS, "TcpRetransMonitor: loading BPF object from " << bpfObjPath);
+    LOG_INFO(LogModule::TCP_RETRANS, "TcpRetransMonitor: loading BPF object from " << bpfObjPath);
+    installLibbpfLogBridge();
+    clearLibbpfError();
 
     // 打开 BPF 对象
     LIBBPF_OPTS(bpf_object_open_opts, opts);
     struct bpf_object *obj = bpf_object__open_file(bpfObjPath.c_str(), &opts);
     if (!obj) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: failed to open BPF object: " << bpfObjPath);
+        LOG_ERROR(LogModule::TCP_RETRANS, "TcpRetransMonitor: failed to open BPF object: "
+                  << bpfObjPath << takeLibbpfError());
         available_ = false;
         initialized_ = true;
         stateSupport_.setState(EbpfMonitorState::Error, false, "failed to open BPF object");
@@ -183,7 +187,8 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath, const weaknet::MapSi
     impl_->retrans_stats_max = weaknet::findResolvedMax(plan, "retrans_stats");
 
     if (bpf_object__load(obj) != 0) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: failed to load BPF object");
+        LOG_ERROR(LogModule::TCP_RETRANS, "TcpRetransMonitor: failed to load BPF object"
+                  << takeLibbpfError());
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -194,7 +199,7 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath, const weaknet::MapSi
     // 查找 retrans_events Map（重传事件明细）和 retrans_stats Map（重传统计聚合）
     impl_->retrans_events_fd = bpf_object__find_map_fd_by_name(obj, "retrans_events");
     if (impl_->retrans_events_fd < 0) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: retrans_events map not found");
+        LOG_ERROR(LogModule::TCP_RETRANS, "TcpRetransMonitor: retrans_events map not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -204,7 +209,7 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath, const weaknet::MapSi
 
     impl_->retrans_stats_fd = bpf_object__find_map_fd_by_name(obj, "retrans_stats");
     if (impl_->retrans_stats_fd < 0) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: retrans_stats map not found");
+        LOG_ERROR(LogModule::TCP_RETRANS, "TcpRetransMonitor: retrans_stats map not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -223,7 +228,7 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath, const weaknet::MapSi
             __u32 k = 0;
             __u32 self_pid = static_cast<__u32>(::getpid());
             if (bpf_map_update_elem(self_fd, &k, &self_pid, BPF_ANY) == 0) {
-                LOG_INFO(LogModule::TCP_LOSS,
+                LOG_INFO(LogModule::TCP_RETRANS,
                          "TcpRetransMonitor: self-pid filter set to " << self_pid);
             }
         }
@@ -234,7 +239,7 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath, const weaknet::MapSi
     struct bpf_program *retrans_prog = bpf_object__find_program_by_name(obj, "trace_tcp_retransmit");
     struct bpf_program *send_prog = bpf_object__find_program_by_name(obj, "trace_tcp_sendmsg");
     if (!retrans_prog || !send_prog) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: BPF program not found");
+        LOG_ERROR(LogModule::TCP_RETRANS, "TcpRetransMonitor: BPF program not found");
         bpf_object__close(obj);
         available_ = false;
         initialized_ = true;
@@ -244,17 +249,17 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath, const weaknet::MapSi
 
     impl_->link_retrans = bpf_program__attach(retrans_prog);
     if (libbpf_get_error(impl_->link_retrans)) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: attach tcp_retransmit_skb failed");
+        LOG_ERROR(LogModule::TCP_RETRANS, "TcpRetransMonitor: attach tcp_retransmit_skb failed");
         impl_->link_retrans = nullptr;
     }
     impl_->link_send = bpf_program__attach(send_prog);
     if (libbpf_get_error(impl_->link_send)) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: attach tcp_sendmsg failed");
+        LOG_ERROR(LogModule::TCP_RETRANS, "TcpRetransMonitor: attach tcp_sendmsg failed");
         impl_->link_send = nullptr;
     }
 
     if (!impl_->link_retrans && !impl_->link_send) {
-        LOG_ERROR(LogModule::TCP_LOSS, "TcpRetransMonitor: both probes failed to attach");
+        LOG_ERROR(LogModule::TCP_RETRANS, "TcpRetransMonitor: both probes failed to attach");
         bpf_object__close(obj);
         impl_->link_retrans = impl_->link_send = nullptr;
         available_ = false;
@@ -267,7 +272,7 @@ bool TcpRetransMonitor::init(const std::string& bpfObjPath, const weaknet::MapSi
     available_ = true;
     initialized_ = true;
 
-    LOG_INFO(LogModule::TCP_LOSS, "TcpRetransMonitor: initialized successfully");
+    LOG_INFO(LogModule::TCP_RETRANS, "TcpRetransMonitor: initialized successfully");
     stateSupport_.setState(EbpfMonitorState::Attached, true, "BPF probes attached");
     stateSupport_.recordProbeAttached();
     stateSupport_.recordProbeAttached();
@@ -287,7 +292,7 @@ void TcpRetransMonitor::stop() {
     if (impl_->obj) {
         bpf_object__close(impl_->obj);
         impl_->obj = nullptr;
-        LOG_INFO(LogModule::TCP_LOSS, "TcpRetransMonitor: stopped");
+        LOG_INFO(LogModule::TCP_RETRANS, "TcpRetransMonitor: stopped");
     }
     impl_->retrans_events_fd = -1;
     impl_->retrans_stats_fd = -1;
