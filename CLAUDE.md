@@ -298,9 +298,22 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 | "查启动门禁" / "gate" | `ssh board 'sudo python3 /usr/local/lib/weaknet/weaknet-ota-gate --root /home/radxa/weaknet --state-dir /var/lib/weaknet-ota; echo rc=$?'` | P0-C1 判定：rc=0 放行 / rc=1 拒绝（附原因）/ rc=5 状态不可读 |
 | "启动门禁自测" | `python3 tools/test_weaknet_ota_gate.py` + `bash tools/ota_p0c1_drill.sh` | P0-C1：32 项单元测试 + 36 项流程兼容演练（升级/回滚全程门禁必须放行） |
 
-> **边界声明**：P0-A 事务 + P0-B 开机恢复 + P0-C1 启动门禁已落地并通过沙盒
-> 演练与真机兼容性验证，但**真正的断电自愈尚未验证**（`fsync` 只保证「内核 → 设备」，板端
-> 根分区 `/dev/sda3` 的写缓存行为未知）。**不得宣称断电自愈已完成**。
+> **边界声明**：P0-A 事务 + P0-B 开机恢复 + P0-C1 启动门禁 + P0-C2 真实重启收敛
+> 已落地并通过沙盒演练与真机验证。P0-C2 剩余项（真实 `reboot` 后恢复器开机自启、
+> `boot_attempts` 跨 `boot_id` 持久累加、事务仍停在 TRIAL 并继续判定）已于
+> 2026-11-03 在板端跑通，详见 `openspec/tasks/2026-11-03-p0c2-real-reboot-convergence.md`。
+>
+> **真实断电已完成首次验证，但不足以宣称断电自愈完成**（P0-C3 部分完成）。
+> 2026-11-03 在隔离沙盒中构造 `TRIAL` 后**真实拔电**：重新上电后
+> `transaction.json` 完整可解析、`phase`/`boot_attempts`/`revision`/`current`
+> 与断电前逐项一致、`reconcile` 判定自洽，生产零影响。详见
+> `openspec/tasks/2026-11-03-p0c3-powercut-first-run.md`。
+>
+> 但边界仍然成立：板端 `/dev/sda3` 的 `write_cache` 是 **`write back`**，
+> `fsync` 只保证「内核 → 设备」；单次成功**不能**排除概率性丢失。
+> 已测仅 `trial` 一个时机，`arm-switch` / `do-switch` / `commit-immediate`
+> 未测，也无 `write through` 对照与重复统计。
+> **不得宣称断电自愈已完成。**
 
 ### 配置化与实时调参（新增）
 

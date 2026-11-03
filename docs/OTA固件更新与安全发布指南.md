@@ -206,9 +206,25 @@ sudo systemctl start weaknet-server
 > 重启后又没了"的假成功。退出救援后的门禁语义见 §1.5。
 
 **当前边界**：P0-B 提供的是**开机自动恢复 + 最小 SSH 救援**。
-**真正的断电自愈尚未验证**——`fsync` 保证的是「内核 → 设备」，不保证设备
-写缓存已落到介质；板端根分区是 `/dev/sda3`（SATA/USB）。所有验证都是用
-状态构造与 `kill` 代替的，**不等于掉电验证**。
+
+**真实的 `reboot` 收敛已验证**（2026-11-03）：在隔离沙盒中造 `TRIAL` 事务后
+执行真实 `sudo reboot`，恢复器由 systemd 开机自启拉起（`active`），
+`boot_attempts` 跨 `boot_id` 持久累加（`befde079…` → `a5819368…`，计数 `1 → 2`），
+事务仍在 `TRIAL` 并继续正常判定（`action=wait_trial`），生产事务零触碰。
+证据见 `openspec/tasks/2026-11-03-p0c2-real-reboot-convergence.md`。
+
+**真实断电已完成首次验证**（2026-11-03）：在隔离沙盒中构造 `TRIAL` 后物理拔电，
+重新上电后 `transaction.json` 完整可解析，`phase` / `boot_attempts` / `revision` /
+`current` 与断电前逐项一致，`reconcile` 判定自洽，生产零触碰。证据见
+`openspec/tasks/2026-11-03-p0c3-powercut-first-run.md`。
+测试台：`tools/ota_p0c3_powercut_drill.sh`（支持 `trial` / `arm-switch` /
+`do-switch` / `commit-immediate` 四种断电时机）。
+
+**但这不足以宣称断电自愈完成**——板端 `/dev/sda3` 的
+`/sys/block/sda/queue/write_cache` 是 `write back`，`fsync` 只保证
+「内核 → 设备」，不保证设备写缓存已落到介质；单次成功**不能排除概率性丢失**。
+目前仅测了 `trial` 一个时机，其余三个时机、`write through` 对照与重复统计
+均未做。
 
 ### 1.5 救援模式持久化启动门禁（P0-C1）
 
