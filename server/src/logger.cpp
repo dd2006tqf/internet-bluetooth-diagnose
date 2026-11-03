@@ -243,7 +243,11 @@ bool Logger::init(const std::string& program_name,
                   << " build=" << WEAKNET_BUILD_TYPE
                   << " pid=" << static_cast<long>(::getpid())
                   << " program=" << program_name;
-        LOG(INFO) << "[logger] Log directory: " << (log_dir.empty() ? "(none)" : log_dir);
+        // 措辞要点：init() 只是**登记**目录，真正开始写文件要等 startFileLog()。
+        // 客户端只走 stderr、从不调用 startFileLog()，若这里写成
+        // "Log directory: ./logs/client"，排障者会以为那里有文件可查。
+        LOG(INFO) << "[logger] File log directory (used by startFileLog): "
+                  << (log_dir.empty() ? "(none)" : log_dir);
         LOG(INFO) << "[logger] Min log level: " << glog_level
                   << (debug ? " (debug output enabled)" : "");
         LOG(INFO) << "[logger] Log to stderr: " << (log_to_stderr ? "true" : "false");
