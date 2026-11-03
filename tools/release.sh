@@ -86,7 +86,7 @@ if [ "$SKIP_BUILD" = false ]; then
               -DCMAKE_BUILD_TYPE=Debug \
               -DBUILD_EBPF=ON >/dev/null
 
-        cmake --build build-arm64-native --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf ebpf -j"$(nproc)" >/dev/null
+        cmake --build build-arm64-native --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf test_crash_handler ebpf -j"$(nproc)" >/dev/null
 
         rm -rf dist-arm64
         mkdir -p dist-arm64/server/bin dist-arm64/server/build dist-arm64/server/test \
@@ -95,6 +95,7 @@ if [ "$SKIP_BUILD" = false ]; then
         install -m 0755 build-arm64-native/server/weaknet-dbus-server dist-arm64/server/bin/
         install -m 0755 build-arm64-native/server/history_query_tool dist-arm64/server/bin/
         install -m 0755 build-arm64-native/server/test/test_ebpf dist-arm64/server/test/
+        install -m 0755 build-arm64-native/server/test/test_crash_handler dist-arm64/server/test/
         for f in build-arm64-native/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true; done
         install -m 0755 build-arm64-native/client/bin/test_client_bin dist-arm64/client/bin/test-client
         install -m 0755 build-arm64-native/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli

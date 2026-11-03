@@ -42,6 +42,14 @@ cd /home/radxa/weaknet/server
 mkdir -p "$WEAKNET_ROOT/data/logs"
 : > /tmp/weaknet-server.log
 
+# 记录启动前 data/logs 里已有的 .log 文件名，Phase 1.5 用它判断
+# "本次进程确实新建了文件"，而不是在数上一轮的残留。
+#
+# 比的是**文件名集合**而不是数量：目录里已有 kFileLogMaxFiles(5) 个文件时，
+# 新进程开出的第 6 个会立即触发裁剪，数量仍然是 5 —— 用计数会误判成失败。
+LOG_DIR="$WEAKNET_ROOT/data/logs"
+PRE_LOG_LIST=$(ls -1 "$LOG_DIR"/*.log 2>/dev/null || true)
+
 echo "=============================================="
 echo "  WeakNet 开发板全面测试"
 echo "=============================================="
@@ -75,6 +83,113 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
 fi
 echo "  [PASS] 服务端运行中 (PID=$SERVER_PID)"
 PASS=$((PASS + 1))
+
+# =============================================
+# Phase 1.5: 文件日志落盘断言
+#
+# 服务端有两条日志通道：glog 的 stderr（这里重定向到 /tmp/weaknet-server.log）
+# 和项目自己的 FileLogSink（落盘到 $WEAKNET_ROOT/data/logs）。
+# 过去只验证前者，于是"日志目录解析错了"这类回归（历史上 glog 用
+# ./logs/server、sink 用 ./server/log，都相对 WorkingDirectory 解析，
+# OTA 切版本即丢）不会被任何自动断言发现。
+# =============================================
+echo ""
+echo "===== Phase 1.5: 文件日志落盘断言 ====="
+
+CUR_LOG_LIST=$(ls -1 "$LOG_DIR"/*.log 2>/dev/null || true)
+
+# 找出启动后存在、启动前不存在的文件名
+NEW_NAME=""
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if ! printf '%s\n' "$PRE_LOG_LIST" | grep -qxF "$f"; then
+        NEW_NAME="$f"
+        break
+    fi
+done <<< "$CUR_LOG_LIST"
+
+if [ -z "$NEW_NAME" ]; then
+    fail "文件日志：data/logs 未产生新文件"
+    echo "        目录: $LOG_DIR"
+    ls -la "$LOG_DIR" 2>/dev/null | head -10
+else
+    ok "文件日志：产生了新文件 $(basename "$NEW_NAME")"
+
+    # 取最新一个文件做内容断言
+    NEWEST=$(ls -t "$LOG_DIR"/*.log 2>/dev/null | head -1)
+    if [ -z "$NEWEST" ]; then
+        fail "文件日志：无法定位最新文件"
+    else
+        # 2.1 文件头必须含版本/构建/pid：离线取证时先要确认"这份日志是谁写的"
+        if grep -q "weaknet version=" "$NEWEST" 2>/dev/null; then
+            ok "文件日志：文件头含版本元信息"
+        else
+            fail "文件日志：文件头缺少 version= 元信息（$NEWEST）"
+        fi
+
+        # 2.2 行格式必须是 [时间戳] [级别] [模块] 正文
+        if grep -qE '^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}\] \[(INFO|WARNING|ERROR|FATAL)\] \[' "$NEWEST" 2>/dev/null; then
+            ok "文件日志：行格式含时间戳/级别/模块"
+        else
+            fail "文件日志：行格式不符（$NEWEST）"
+        fi
+
+        # 2.3 模块标签必须与 weaknet-cli 的监控器名对齐，否则 grep 不到
+        if grep -qE '\[(dns|tcp_rtt|skb_drop|wifi_loss|http_latency|tcp_conn|tcp_retrans|tcp_connect|process_profiler|traffic|ebpf)\]' "$NEWEST" 2>/dev/null; then
+            ok "文件日志：模块标签与监控器名对齐"
+        else
+            skip "文件日志：本窗口内没有细粒度模块标签可验证"
+        fi
+    fi
+fi
+
+# =============================================
+# Phase 1.6: 崩溃调用栈可符号化
+#
+# InstallFailureSignalHandler 的产出质量取决于二进制的 .symtab 是否在
+# （glog 0.4.0 走 /proc/self/maps + 磁盘 ELF 解析，不依赖 dladdr/rdynamic）。
+# 用一个内置的小探针真崩一次：能解析出函数名才算这条能力成立。
+# =============================================
+echo ""
+echo "===== Phase 1.6: 崩溃调用栈可符号化 ====="
+
+CRASH_PROBE="$WEAKNET_ROOT/server/test/test_crash_handler"
+if [ -x "$CRASH_PROBE" ]; then
+    # --check 模式自己 fork、自己收尸、自己判定，成功退出 0
+    if "$CRASH_PROBE" --check 2>&1; then
+        ok "崩溃栈：SIGSEGV 已捕获且调用栈已符号化"
+    else
+        fail "崩溃栈：捕获或符号化失败（二进制可能被 strip）"
+    fi
+else
+    skip "崩溃栈验证（test_crash_handler 未部署）"
+fi
+
+# =============================================
+# Phase 1.7: 日志目录回归检查
+# =============================================
+echo ""
+echo "===== Phase 1.7: 日志目录回归检查 ====="
+
+# 日志不得再落进版本目录（相对 WorkingDirectory 的老路径）
+#
+# 历史上两条通道用了两个不同的相对路径：
+#   - glog        -> ./logs/server   （logtostderr=true 时其实不落盘）
+#   - FileLogSink -> ./server/log    （真正写文件的那条）
+# 二者都相对 WorkingDirectory(=current/server) 解析，OTA 切版本即丢。
+LEGACY_HIT=""
+for d in "/home/radxa/weaknet/current/server/logs" \
+         "/home/radxa/weaknet/current/server/log"; do
+    if [ -d "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then
+        LEGACY_HIT="$d"
+        break
+    fi
+done
+if [ -n "$LEGACY_HIT" ]; then
+    fail "文件日志：日志仍写进版本目录 $LEGACY_HIT（应落在 data/logs）"
+else
+    ok "文件日志：未写进版本目录"
+fi
 
 cd /home/radxa/weaknet
 

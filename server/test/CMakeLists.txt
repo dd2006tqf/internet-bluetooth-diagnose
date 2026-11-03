@@ -106,6 +106,18 @@ add_executable(test_ebpf
     test_ebpf.cpp)
 target_link_libraries(test_ebpf PRIVATE ${TEST_COMMON_LIBS} bpf)
 
+# ---- 崩溃处理器验证探针 ----
+# 故意触发 SIGSEGV，验证 glog 的 InstallFailureSignalHandler 在板端能否
+# 打出**已符号化**的调用栈。不链接 server_lib：探针只用到 glog 的崩溃
+# 处理器，把整个服务端（D-Bus / libbpf / OpenSSL）拖进来只会让板端部署
+# 更脆弱，且与验证目标无关。
+#
+# 不注册到 ctest：它必然以非零退出码结束（除非崩溃没发生），
+# 放进常规回归集会污染 ctest 结果。由 weaknet-test-full.sh 在板端调用
+# 其 --check 模式自行判定。
+add_executable(test_crash_handler test_crash_handler.cpp)
+target_link_libraries(test_crash_handler PRIVATE glog pthread)
+
 
 add_executable(test_ebpf_monitor_observability_gtest
     unit/test_ebpf_monitor_observability_gtest.cpp)

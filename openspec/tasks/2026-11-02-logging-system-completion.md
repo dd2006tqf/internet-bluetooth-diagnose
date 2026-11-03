@@ -105,6 +105,7 @@
 |---|---|
 | `server/include/ebpf_log_bridge.hpp` | libbpf → 日志桥接接口 |
 | `server/src/ebpf_log_bridge.cpp` | 回调实现（按行拆分 + 分级 + 线程局部缓存） |
+| `server/test/test_crash_handler.cpp` | 崩溃栈符号化验证探针（`--check` 自判，供板端脚本调用） |
 
 核心改写：
 
@@ -214,7 +215,9 @@ libbpf 把整段校验器日志放在**一次** print 调用里
 5. **libbpf 桥接端到端探针**：把非 ELF 文件喂给 `bpf_object__open`，
    确认 libbpf 结论进了 WARNING 通道，且 `takeLibbpfError()` 把它拼进了
    监控器的 ERROR 行。
-   （三个临时探针用完即删，未进仓库——符合"一次性探针不得留在工作区"。）
+   （三个**临时**探针用完即删，未进仓库——符合"一次性探针不得留在工作区"。
+   后来新增的 `test_crash_handler` 不属此类：它是长期回归断言，
+   有 CMake 目标、随部署分发、由板端测试脚本调用，见下方"后续补齐"。）
 
 ## 结果
 
@@ -234,19 +237,80 @@ libbpf 把整段校验器日志放在**一次** print 调用里
 P2 卫生项：零调用宏与孤儿 API 已删；内部入口收进 private；
 退出路径统一走 `Logger::shutdown()`；logger 测试 5 → 20 项。
 
-### 遗留问题
+### 后续补齐（2026-11-03 同日完成）
 
-- **崩溃处理器在 ARM64 上未做真机崩溃验证**。已确认 sysroot 的 glog 0.4.0
-  暴露 `InstallFailureSignalHandler()` 且 ARM64 编译通过，但"真的 SIGSEGV
-  能打出符号化调用栈"需要板端实跑。符号化质量取决于板端是否有对应
-  调试符号，这一点本次未验证。
-- **`FLAGS_max_log_size` 保留但无效**。代码里设了 10（MiB），注释已写明
-  在 `logtostderr=true` 下不生效；保留是为了将来若关掉 stderr 输出仍有护栏。
-  属于"已知无效但刻意保留"，不是遗漏。
-- **`weaknet-test-full.sh` 只补了 `WEAKNET_ROOT`**，没有把板端日志
-  纳入自动断言（仍靠 `/tmp/weaknet-server.log` 看 stderr）。
-  若要断言文件日志，需要脚本知道 `data/logs` 路径并解析最新文件——
-  属于测试脚本增强，本次未做。
+原报告列的三条遗留中，前两条与第三条已在本日补齐：
+
+**1. 崩溃处理器已在 ARM64 真机验证。**
+
+关键事实（实测，不是推断）：glog 0.4.0 的 `Symbolize()` **不依赖 `dladdr`**，
+走的是 `/proc/self/maps` + 磁盘 ELF 的 `.symtab` 解析（`libglog.a` 里能看到
+`/proc/self/maps` 与 `.symtab` 字面量，且没有 `dladdr` 未定义符号，反倒有
+`InstallSymbolizeOpenObjectFileCallback`）。因此：
+
+- **不需要 `-rdynamic`**。`-rdynamic` 只影响 `.dynsym`，而 glog 读的是 `.symtab`。
+- 只要二进制**未被 strip**，就能符号化；一旦 strip，全部退化成 `(unknown)`。
+
+板端实测两种链接方式都通过：
+
+```
+# 非 PIE（-no-pie）
+    @           0x400ad8 level3()
+    @           0x400ab4 level2()
+    @           0x400a90 level1()
+    @           0x400a48 main
+
+# PIE（-fPIE -pie，与服务端生产链接方式一致）
+    @     0xaaaae2650c58 level3()
+    @     0xaaaae2650c34 level2()
+    @     0xaaaae2650c10 level1()
+    @     0xaaaae2650bc8 main
+```
+
+未符号化的帧只有 vdso 与 libc（二者板端无本地符号文件），属正常边界。
+生产路径也满足前提：`tools/ci.sh` 与 `tools/release.sh` 都用
+`-DCMAKE_BUILD_TYPE=Debug`，全链无 strip，部署到板的 `weaknet-dbus-server`
+带 `.symtab` + `.debug_info`（19 MB）。
+
+固化为可重复断言：新增 `server/test/test_crash_handler.cpp`，CMake 目标
+`test_crash_handler`（只链 glog + pthread，不链 `server_lib`，避免把
+D-Bus/libbpf/OpenSSL 拖进板端探针）。`--check` 模式自行 fork、收尸、
+判定，成功退出 0。**故意不注册进 ctest**——它必然以非零码结束，
+放进回归集会污染 ctest 结果。
+
+**2. 文件日志已纳入板端自动断言。**
+
+`weaknet-test-full.sh` 新增 Phase 1.5，六条断言：
+
+| 断言 | 抓的是哪类回归 |
+|---|---|
+| 产生了新文件 | 日志目录解析错 / sink 没挂上 |
+| 文件头含版本元信息 | 元信息只在 stderr、没进文件（本次修过） |
+| 行格式含时间戳/级别/模块 | sink 格式化退化 |
+| 模块标签与监控器名对齐 | 标签被重新合并成 `[network]` |
+| 崩溃栈已符号化 | 二进制被 strip（见上） |
+| 未写进版本目录 | 目录解析退回相对 WorkingDirectory |
+
+两个实现细节值得记下来：
+
+- **比文件名集合，不比数量**。`data/logs` 满 `kFileLogMaxFiles`(5) 个后，
+  新进程开的第 6 个会立即触发裁剪，数量仍是 5 —— 用计数判定会**误报失败**。
+  改为"启动后存在、启动前不存在的文件名"，已用 5 个场景单测过（空目录、
+  1→2、5→5 且有新文件、无变化、空→空）。
+- **旧路径要查两个**。历史上 glog 用 `./logs/server`、`FileLogSink` 用
+  `./server/log`，是两个不同目录。只查一个会漏。
+
+**3. `FLAGS_max_log_size` 保留但无效** —— 维持原判（已知无效、刻意保留），
+不属遗漏。
+
+### 断言有效性（反向验证）
+
+新断言都做了反向验证，确认它们**会失败**，而不是永远绿灯：
+
+- 把探针 `strip --strip-all` 后 `--check` 返回 rc=1，栈全部 `(unknown)`；
+  x86 与本机 ARM64 两条路径都验过。
+- 在板端手工造 `current/server/logs/server_fake.log`，"未写进版本目录"
+  的检测逻辑正确命中该路径（造完即清理）。
 
 ### 是否值得升格为正式 OpenSpec change
 
