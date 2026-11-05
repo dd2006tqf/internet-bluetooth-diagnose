@@ -30,6 +30,31 @@
 #define WEAKNET_KMOD_NR_SOFTIRQ  10u
 
 /*
+ * 映射尺寸约定（踩过坑，务必看懂再改结构体）
+ *
+ * 内核侧：  g_map_size = PAGE_ALIGN(sizeof(struct wn_*_snapshot))
+ *           vmalloc_user(g_map_size)，mmap 时要求 size <= g_map_size
+ *
+ * 用户侧：  mmap(NULL, sizeof(struct wn_*_snapshot), ...)
+ *
+ * 两者能对上，依赖一个隐式前提：
+ *
+ *     sizeof(struct wn_*_snapshot) <= PAGE_ALIGN(同一个值)
+ *
+ * 这看起来是恒真的，其实不是——当结构体尺寸**恰好跨过页边界**时，
+ * PAGE_ALIGN 会跳到下一个页，仍然成立。真正的风险在于有人把用户态
+ * 尺寸算错（比如按错的结构体格式算），此时会得到一个大于 g_map_size
+ * 的值而被 EINVAL 拒绝，报错信息里只有个数，排查成本很高。
+ *
+ * 本仓库真实发生过一次：soak 脚本误用 cpu_stat 的 struct 格式去算
+ * softirq 的尺寸，得出 24600 而非 22552，超过 softirq 的 g_map_size
+ * 24576，mmap 直接 EINVAL。
+ *
+ * 因此：**任何改动这两个结构体的提交，都必须同步确认用户态用的是
+ * 对应的结构体**。
+ */
+
+/*
  * 快照头。seq 为 seqlock 代次号：
  *   奇数 = 内核正在写入，读者必须重试
  *   偶数 = 内容一致，可以采信
