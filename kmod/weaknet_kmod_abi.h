@@ -25,7 +25,7 @@
 #define WN_U32 uint32_t
 #endif
 
-#define WEAKNET_KMOD_ABI_VERSION 1u
+#define WEAKNET_KMOD_ABI_VERSION 2u
 #define WEAKNET_KMOD_MAX_CPUS    256u
 #define WEAKNET_KMOD_NR_SOFTIRQ  10u
 
@@ -57,10 +57,26 @@ struct wn_kmod_hdr {
  *   total = busy + idle + iowait
  *
  * 不要把 guest / guest_nice 再加进 busy，否则会重复计入。
+ *
+ * 【online 与 valid 的区别 —— 做区间差值前必须看 valid】
+ *
+ *   online  当前这一刻该 CPU 是否在线。
+ *   valid   本记录能否与上一份快照做差值比较。
+ *
+ * CPU 下线时内核会在 tick_cancel_sched_timer() 里
+ * memset(per_cpu(tick_cpu_sched, cpu), 0, ...)，把 idle/iowait 的累计
+ * 清零；重新上线后这些计数从 0 重新累积。于是快照会出现
+ * 「累计值突然变小」的跳变，直接相减会得到负数或荒唐的使用率。
+ *
+ * 因此：只要该 CPU 本轮与上一轮的 online 状态不同（下线或上线），
+ * valid 就被置 0，表示这一对快照不可相减。用户态必须跳过，不能
+ * 自行用 a > b 之类的判断去猜。
  */
 struct wn_cpu_stat {
 	WN_U32 cpu_id;
 	WN_U32 online;
+	WN_U32 valid;       /* 0 = 累计值发生过重置，本轮不可做差值 */
+	WN_U32 _pad;        /* 显式补齐，保持后续 u64 的 8 字节对齐 */
 	WN_U64 user;
 	WN_U64 nice;
 	WN_U64 system;

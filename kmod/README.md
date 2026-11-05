@@ -132,6 +132,7 @@ do {
 | 只读映射 | `PROT_READ\|PROT_WRITE` 映射被拒绝（`EACCES`），仅 `PROT_READ` 成功 |
 | 卸载安全性 | 映射存活时 `rmmod` 被拒绝（`Module weaknet_cpu_stat is in use`，refcount=3）；进程退出后 rc=0 |
 | 撕裂检测 | 30 s 内 666,726 次读取（约 22k 次/秒），覆盖约 60 个写入窗口，**0 次撕裂、0 次重试耗尽** |
+| CPU 热插拔 | 离线 CPU 的 `idle` 完全冻结（12 s 内三次读数一致），不再跟随 wall clock；`valid` 在离线↔上线切换时置 0，用户态显式跳过该轮 |
 
 ### 一个必须记住的精度边界
 
@@ -147,16 +148,102 @@ do {
 若要更细的采样间隔，这个下限会成为瓶颈，需要换
 `CONFIG_VIRT_CPU_ACCOUNTING_GEN` 或 `CONFIG_IRQ_TIME_ACCOUNTING`（本板均未开启）。
 
-## 六、没有做的事（边界）
+## 六、CPU 热插拔：一个必须知道的陷阱
+
+这是实测中踩到的坑，比预想的深，值得单独记一节。
+
+### 陷阱：`get_cpu_idle_time_us()` 不判 CPU 在线
+
+`kernel/time/tick-sched.c` 里这个函数的开头只有一句守卫：
+
+```c
+if (!tick_nohz_active)
+    return -1;
+```
+
+**它不检查 `cpu_online()`。** 它读的是 `per_cpu(tick_cpu_sched, cpu)` 的
+`idle_sleeptime` / `idle_entrytime` 两个字段。而 CPU 下线时
+`tick_cancel_sched_timer()` 会执行：
+
+```c
+memset(ts, 0, sizeof(*ts));
+```
+
+把整块结构清零。之后 `idle_active=0`、`idle_entrytime=0`，函数走 else 分支：
+
+```c
+idle = ktime_add(ts->idle_sleeptime, delta);   // 0 + (ktime_get() - 0)
+```
+
+于是它**返回自开机以来的绝对时间**，且每次采样都在增长。实测（CPU6/CPU7 离线）：
+值从 1533 s 掉到 1.58 s，之后每 2 秒精确 +2.00 s——它跟的是 wall clock，
+不是 CPU 空闲时间。
+
+**危害**：用户态用 `(idle_a - idle_b)` 算区间增量会得到负数或远超 100% 的值。
+而且这个错误值**不会返回 -1**，所以「失败就回落 kcpustat」的分支根本不触发。
+
+### 修法：离线 CPU 绕开 tick 路径
+
+```c
+static u64 wn_idle_ns(int cpu)
+{
+    u64 us;
+
+    if (!cpu_online(cpu))
+        return kcpustat_cpu(cpu).cpustat[CPUTIME_IDLE];   /* 冻结的累计值 */
+
+    us = get_cpu_idle_time_us(cpu, NULL);
+    ...
+}
+```
+
+已实测确认：CPU 离线期间 `kcpustat` 的纯累计字段（user/system/softirq 等）
+**完全冻结**，5 秒内一个字节都不变。所以对离线 CPU 直接读 kcpustat 既安全
+又语义正确——报的是该 CPU 下线前的最终累计值。
+
+`idle` 的修复效果：离线后 12 秒内三次读数完全一致（1785.72 s），不再漂移。
+
+### 第二个坑：`valid` 标记的必要性
+
+即使 `idle` 修好了，还有一个残留问题：`kcpustat` 与 `tick_cpu_sched` 的
+生命周期不一致。前者跨热插拔保留累计，后者被 `memset` 清零。这意味着
+「离线→上线」这一对快照的**不同字段可能处于不同基准**，直接相减不可靠。
+
+因此 ABI v2 给每条记录加了 `valid` 字段：
+
+```c
+WN_U32 online;   /* 当前这一刻是否在线 */
+WN_U32 valid;    /* 本记录能否与上一份快照做差值 */
+```
+
+内核侧记住上一轮各 CPU 的 online 状态，**只要与上一轮不同就置 `valid=0`**。
+用户态必须显式跳过，不能靠 `tot_a <= tot_b` 之类的判断去猜——那只是巧合，
+不是契约。
+
+实测确认：跨过恢复点的那一轮输出 `<累计值已重置，跳过本轮>`，
+下一轮自动恢复正常。
+
+### 仍然存在的语义限制
+
+CPU 下线时 `tick_cpu_sched` 被清零，因此该 CPU **自开机以来经
+`get_cpu_idle_time_us` 累计的那部分历史（若在线期间有 tickless 空闲）
+在重新上线后不可恢复**。`kcpustat` 的部分会保留，两者不再严格可比。
+
+如果业务要求「跨热插拔的绝对累计值」，需要在内核侧自行维护一份
+per-CPU 的累计快照与基线，这是当前实现没有做的。
+
+## 七、没有做的事（边界）
 
 - **没有**接入生产链路（`IMonitorPlugin` / D-Bus / `config.yaml` / SQLite）。
-- **没有**做热插拔 CPU 的动态扩容验证（只在 8 核静态环境测过）。
+- **没有**做热插拔 CPU 的**绝对累计值**跨周期保持（见第五节末尾的语义限制）。
+  当前实现只保证「热插拔期间不产出错误数据」，不保证「累计值连续」。
+- **没有**在超过 8 核的机器上验证（`WEAKNET_KMOD_MAX_CPUS` 为 256，但只实测了 8 核）。
 - **没有**在 `CONFIG_VIRT_CPU_ACCOUNTING_GEN=y` 的内核上验证
   （本板未开，`kcpustat_cpu_fetch` 走的是内联 `*dst = kcpustat_cpu(cpu)` 分支）。
 - **没有**做长期稳定性测试（>1 小时）与内存泄漏检测。
 - **没有**做跨内核版本兼容性矩阵，只验证了 5.15.147 与编译期的 6.8。
 
-## 七、来源与许可
+## 八、来源与许可
 
 本目录代码为本项目重写，遵循 GNU General Public License v2.0（见各文件
 `SPDX-License-Identifier: GPL-2.0`）——内核模块必须与内核许可兼容。

@@ -73,11 +73,35 @@ static ktime_t g_interval;
 /*
  * tickless 感知的空闲时间。NO_HZ_IDLE 下 kcpustat 的 idle 不会随 tick
  * 推进，必须优先取 tick 子系统的精确值，失败才回落累计值。
+ *
+ * 【离线 CPU 必须绕开 tick 路径】
+ *
+ * get_cpu_idle_time_us() 内部只判 tick_nohz_active，**不判 cpu_online()**，
+ * 它读的是 per_cpu(tick_cpu_sched, cpu) 的 idle_sleeptime / idle_entrytime。
+ * 而 CPU 下线时 tick_cancel_sched_timer() 会执行
+ *
+ *     memset(ts, 0, sizeof(*ts));
+ *
+ * 把这两个字段连同 idle_active 一起清零。清零后本函数走 else 分支：
+ * idle = 0 + (ktime_get() - 0)，也就是**返回自开机以来的绝对时间**，
+ * 且每次采样都在增长。实测（11-05，CPU6/CPU7 离线）该值从 1533 s 跳到
+ * 1.58 s，之后每 2 秒 +2.00 s——它跟的是 wall clock，不是 CPU 空闲。
+ *
+ * 危害：用户态用 (idle_a - idle_b) 算区间增量，会得到负数或远超 100%
+ * 的离谱使用率。而且这个错误值不会返回 -1，所以下面的回落分支根本不触发。
+ *
+ * 已实测确认（11-05）：CPU 离线期间 kcpustat 的纯累计字段
+ * （user/system/softirq 等）是完全冻结的。因此对离线 CPU 直接读
+ * kcpustat 既安全又语义正确——报的是该 CPU 下线前的最终累计值。
  */
 static u64 wn_idle_ns(int cpu)
 {
-	u64 us = get_cpu_idle_time_us(cpu, NULL);
+	u64 us;
 
+	if (!cpu_online(cpu))
+		return kcpustat_cpu(cpu).cpustat[CPUTIME_IDLE];
+
+	us = get_cpu_idle_time_us(cpu, NULL);
 	if (us != (u64)-1)
 		return us * NSEC_PER_USEC_LOCAL;
 	return kcpustat_cpu(cpu).cpustat[CPUTIME_IDLE];
@@ -85,12 +109,27 @@ static u64 wn_idle_ns(int cpu)
 
 static u64 wn_iowait_ns(int cpu)
 {
-	u64 us = get_cpu_iowait_time_us(cpu, NULL);
+	u64 us;
 
+	if (!cpu_online(cpu))
+		return kcpustat_cpu(cpu).cpustat[CPUTIME_IOWAIT];
+
+	us = get_cpu_iowait_time_us(cpu, NULL);
 	if (us != (u64)-1)
 		return us * NSEC_PER_USEC_LOCAL;
 	return kcpustat_cpu(cpu).cpustat[CPUTIME_IOWAIT];
 }
+
+/*
+ * 上一轮各 CPU 的在线状态，用于判定累计值是否发生重置。
+ *
+ * 为什么要记：CPU 下线 → 上线时，内核在 tick_cancel_sched_timer() 里
+ * memset 掉 tick_cpu_sched，idle/iowait 累计被清零后重新累加。
+ * 快照表现为「累计值突然变小」。只要 online 状态与上一轮不同，
+ * 就把 valid 置 0，让用户态跳过这一对快照。
+ */
+static u8 g_prev_online[WEAKNET_KMOD_MAX_CPUS];
+static bool g_have_prev;
 
 /* 采集到私有缓冲区，不触碰共享区，避免长时间中断读者。 */
 static void wn_collect(struct wn_cpu_snapshot *priv)
@@ -103,6 +142,7 @@ static void wn_collect(struct wn_cpu_snapshot *priv)
 	for_each_possible_cpu(cpu) {
 		struct wn_cpu_stat *r;
 		struct kernel_cpustat kcs;
+		u32 online;
 
 		if (n >= (int)WEAKNET_KMOD_MAX_CPUS)
 			break;
@@ -113,9 +153,22 @@ static void wn_collect(struct wn_cpu_snapshot *priv)
 		 */
 		kcpustat_cpu_fetch(&kcs, cpu);
 
+		online = cpu_online(cpu) ? 1u : 0u;
+
 		r = &priv->cpu[n++];
 		r->cpu_id = (u32)cpu;
-		r->online = cpu_online(cpu) ? 1u : 0u;
+		r->online = online;
+
+		/*
+		 * 首轮没有可比对象，标 valid；此后只要在线状态发生变化
+		 * （下线或上线）就标 0，因为内核此时已经重置了累计值。
+		 */
+		if (!g_have_prev || g_prev_online[cpu] == online)
+			r->valid = 1u;
+		else
+			r->valid = 0u;
+		g_prev_online[cpu] = (u8)online;
+
 		r->user = kcs.cpustat[CPUTIME_USER];
 		r->nice = kcs.cpustat[CPUTIME_NICE];
 		r->system = kcs.cpustat[CPUTIME_SYSTEM];
@@ -128,6 +181,7 @@ static void wn_collect(struct wn_cpu_snapshot *priv)
 		r->guest_nice = kcs.cpustat[CPUTIME_GUEST_NICE];
 	}
 
+	g_have_prev = true;
 	priv->hdr.nr_cpus = (u32)n;
 }
 

@@ -187,14 +187,14 @@ static int run_cpu(const char *dev, int count, int interval)
 			check_sample_age(cur->hdr.sample_ns, iter);
 			printf("=== 累计值（seq=%" PRIu64 "，%u 个 CPU）===\n",
 			       seq, n);
-			printf("%-4s %-6s %12s %12s %12s %12s\n",
-			       "CPU", "online", "user(s)", "system(s)",
+			printf("%-4s %-6s %-5s %12s %12s %12s %12s\n",
+			       "CPU", "online", "valid", "user(s)", "system(s)",
 			       "idle(s)", "softirq(s)");
 			for (i = 0; i < (int)n; i++) {
 				const struct wn_cpu_stat *r = &cur->cpu[i];
 
-				printf("%-4u %-6u %12.2f %12.2f %12.2f %12.2f\n",
-				       r->cpu_id, r->online,
+				printf("%-4u %-6u %-5u %12.2f %12.2f %12.2f %12.2f\n",
+				       r->cpu_id, r->online, r->valid,
 				       (double)r->user / 1e9,
 				       (double)r->system / 1e9,
 				       (double)r->idle / 1e9,
@@ -212,6 +212,20 @@ static int run_cpu(const char *dev, int count, int interval)
 				const struct wn_cpu_stat *b = &prev->cpu[i];
 				uint64_t busy_a, busy_b, tot_a, tot_b;
 				uint64_t busy, total;
+
+				/*
+				 * valid=0 表示该 CPU 在两份快照之间发生了
+				 * 下线/上线，内核已把 idle/iowait 累计清零，
+				 * 相减会得到负数或荒唐值。必须显式跳过，
+				 * 不能靠下面的 tot_a <= tot_b 碰巧挡住——
+				 * 那只是巧合，不是契约。
+				 */
+				if (!a->valid) {
+					printf("cpu%-2u %-4s <累计值已重置，跳过本轮>\n",
+					       a->cpu_id,
+					       a->online ? "on" : "off");
+					continue;
+				}
 
 				busy_a = a->user + a->nice + a->system + a->irq +
 					 a->softirq + a->steal;

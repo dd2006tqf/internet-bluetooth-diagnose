@@ -49,12 +49,12 @@ D4 CPU 上限、D5 离线标记、D6 capability、映射存活期卸载）已覆
 
 | 文件 | 行数 | 作用 |
 | --- | --- | --- |
-| `kmod/weaknet_kmod_abi.h` | 97 | 内核与用户态共享的 ABI 结构 |
-| `kmod/weaknet_cpu_stat.c` | 305 | per-CPU 累计时间采集 |
-| `kmod/weaknet_softirq.c` | 247 | per-CPU 十类软中断计数采集 |
+| `kmod/weaknet_kmod_abi.h` | 113 | 内核与用户态共享的 ABI 结构（v2，含 `valid`） |
+| `kmod/weaknet_cpu_stat.c` | 371 | per-CPU 累计时间采集 |
+| `kmod/weaknet_softirq.c` | 257 | per-CPU 十类软中断计数采集 |
 | `kmod/Makefile` | 35 | 三种用法：板端就地 / 宿主对拍 / 交叉编译 |
-| `kmod/tools/wn_kmod_read.c` | 422 | 用户态读取工具 |
-| `kmod/README.md` | 157 | 实验边界、改造点、实测结果、未做项 |
+| `kmod/tools/wn_kmod_read.c` | 436 | 用户态读取工具 |
+| `kmod/README.md` | 257 | 实验边界、改造点、实测结果、热插拔陷阱、未做项 |
 
 ### 关键决策
 
@@ -117,6 +117,50 @@ D4 CPU 上限、D5 离线标记、D6 capability、映射存活期卸载）已覆
 
 `kmod/README.md` 的验证清单与「改造点」一节已同步补充此条。
 
+### 第三个缺陷：CPU 热插拔导致 idle 跟随 wall clock
+
+在补齐「未验证场景」时发现，比前两个都隐蔽。
+
+**根因（内核语义，非本模块 bug，但本模块必须处理）**：
+
+`kernel/time/tick-sched.c` 的 `get_cpu_idle_time_us()` 只判 `tick_nohz_active`，
+**不判 `cpu_online()`**。它读 `per_cpu(tick_cpu_sched, cpu)` 的
+`idle_sleeptime` / `idle_entrytime`；而 CPU 下线时 `tick_cancel_sched_timer()`
+执行 `memset(ts, 0, sizeof(*ts))` 把整块清零。清零后函数走 else 分支
+`idle = 0 + (ktime_get() - 0)`，**返回自开机以来的绝对时间**。
+
+**实测现象**：CPU6/CPU7 离线后，`idle` 从 1533 s 掉到 1.58 s，
+之后每 2 秒精确 +2.00 s。用 `/proc/uptime` 交叉验证：两者同步增长，
+但绝对值等于 `now - 离线时刻`，确认它跟的是 wall clock。
+
+**危害**：用户态算 `(idle_a - idle_b)` 会得到负数或远超 100% 的使用率。
+而且它**不返回 -1**，所以「失败回落 kcpustat」的分支根本不触发——
+这是个静默错误。
+
+**修法**：`wn_idle_ns()` / `wn_iowait_ns()` 开头加
+`if (!cpu_online(cpu)) return kcpustat_cpu(cpu).cpustat[CPUTIME_*];`，
+离线时绕开 tick 路径。
+
+已实测确认（严格对照，先离线再测）：CPU 离线期间 `kcpustat` 的
+纯累计字段（user/system/softirq）**5 秒内一个字节都不变**，完全冻结。
+所以直接读 kcpustat 既安全又语义正确。
+
+修复效果：离线后 12 秒内三次读数完全一致（1785.72 s），不再漂移。
+
+### 第四个缺陷：缺少 `valid` 标记，用户态靠巧合挡异常
+
+`kcpustat` 跨热插拔保留累计，`tick_cpu_sched` 被 `memset` 清零——
+两者生命周期不一致。「离线→上线」这一对快照里不同字段可能处于不同基准。
+
+原来的用户态靠 `if (tot_a <= tot_b) continue;` 挡住异常，但**那只是巧合，
+不是契约**。一个恰好满足 `tot_a > tot_b` 的错误组合就会算出荒唐值。
+
+**修法（ABI 升到 v2）**：`struct wn_cpu_stat` 增加 `valid` 字段，
+内核侧记住上一轮各 CPU 的 online 状态，只要与上一轮不同就置 `valid=0`。
+用户态见到 `valid=0` 显式打印 `<累计值已重置，跳过本轮>` 并跳过。
+
+实测确认：跨过恢复点的那一轮正确输出跳过提示，下一轮自动恢复。
+
 ### 两条被实测推翻的判断（已回写讨论稿）
 
 **1. 讨论稿 D3「`user` 与 `guest` 重复计入」不成立**
@@ -138,7 +182,7 @@ total 同样没有。原判断把「模块导出了全部 10 项」误推成「�
 
 ### 遗留问题
 
-- 只验证了 8 核静态环境，**未测**热插拔 CPU 的动态扩容
+- 热插拔已验证「不产出错误数据」，但**不保证累计值跨周期连续**（见第三个缺陷）
 - 只在 `CONFIG_VIRT_CPU_ACCOUNTING_GEN` 未开的内核上验证（本板未开）
 - **未做**长期稳定性测试（>1 小时）与内存泄漏检测
 - **未做**跨内核版本兼容性矩阵，只覆盖 5.15.147 与编译期 6.8
