@@ -117,6 +117,7 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 - `work-handoff` — 基于真实仓库事实生成结构化工作交接文档（背景目标、文件清单、进度、下一步、预期成果、技术难点与教训）。交接给他人或新会话时使用。
 - `kickoff` — 新功能/新工作立项前的全景技术探索与构思输出。
 - `code-explainer` — 逐行深入解读代码，讲解语法、原理与项目架构。
+- `coaching-resume-bullets` — 简历分点面试辩护准备。拆断言、建知识骨架、双视角渲染、追问树与 drill 压力测试；不背代码细节，只掌握知识架构与项目全景。
 
 **元技能：**
 - `using-superpowers` — 如何发现和调用技能。
