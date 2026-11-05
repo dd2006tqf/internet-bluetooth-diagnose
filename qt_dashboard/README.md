@@ -79,13 +79,48 @@ qt_dashboard/
 
 | 项 | 状态 | 证据 |
 |------|------|------|
-| 数据层单测 | ✅ **30/30 通过** | `ctest` 0.03s |
+| 数据层单测 | ✅ **34/34 通过** | `ctest` 0.03s，含 6 个真机样本用例 |
 | 取数层编译 | ✅ 通过 | 链接真实 `weaknet_client.h`，签名全对 |
 | UI 层 **moc** | ✅ **3/3 生成成功** | `Q_OBJECT`/信号槽声明语法正确 |
 | UI 层编译 | ✅ **零警告** | `-Wall -Wextra` 全部通过 |
 | **完整链接** | ✅ **成功** | 365 KB 可执行文件，无 undefined reference |
-| **实际运行** | ✅ **启动正常** | `--help` 正确输出；`offscreen` 下持续运行不崩溃 |
-| 板端运行 | ❌ 未做 | 无显示器 |
+| **x86 实际运行** | ✅ **启动正常** | `--help` 正确输出；`offscreen` 下持续运行不崩溃 |
+| **ARM64 交叉编译** | ✅ **成功** | `tools/build-arm64.sh`，最高 glibc 需求 `2.17`（板端 `2.31`） |
+| **板端真实运行** | ✅ **成功** | arm64 二进制在 `radxa-cubie-a7a` 上启动，D-Bus 连接建立 |
+| **真实取数** | ✅ **5/5 成功** | experience 4129B / diagnosis 285B / history 50KB / interfaces / health |
+| **真实渲染** | ✅ **像素级验证** | offscreen 截图 1024x700，折线横跨绘图区 674px，状态色齐全 |
+| HDMI 实机显示 | ⏳ 待做 | 显示器未在位（`HDMI disconnected`） |
+
+### 板端验证是怎么做的（无显示器）
+
+关键在于 `--screenshot` 选项：用 `offscreen` 平台插件跑真实二进制，
+等首轮取数完成后把窗口 `grab()` 成 PNG。
+
+```bash
+# 板端
+LD_LIBRARY_PATH=/home/radxa/weaknet/current/client/lib \
+  QT_QPA_PLATFORM=offscreen ./weaknet_dashboard \
+  --screenshot /tmp/dash.png --screenshot-delay 5000
+```
+
+判据不是"看起来像"，而是可复算的**差分对照**：
+
+| 检查 | 真实数据（wlan0） | 对照（`--interface nosuchif0`） |
+|------|------------------|------------------------------|
+| `y=341` 折线长度 | **674 px**（横跨绘图区 329..1003） | **无折线** |
+| 图表中心提示文字 | **0 px** | **396 px**（"暂无历史数据"） |
+| 状态色绿/黄/红/灰 | 75 / 96 / 14 / 428 采样点 | — |
+
+这张图证明折线来自真实 D-Bus 数据，而不是占位符。
+
+另外做了「删代码前后截图对比」：删除孤立的 `score_range()` 后重跑，
+1024x700 中只有 **1042 px** 不同，且全部落在两处文字区域
+（右上角时间戳 `y=20..32`、底栏诊断文字 `y=611..622`，都含运行时刻），
+图表与维度列表**逐像素一致**，证明重构没有改变渲染行为。
+
+> 这里踩过一个坑：最初的「图表非白像素」判据是假通过——图表背景本身是
+> `(239,239,239)`，整片灰底都被算成了内容。改成「折线颜色的连续段」才有效。
+> 阈值判据必须锚定到具体颜色与几何位置，不能只看"非白"。
 
 ### 怎么验证的（无 Qt 开发包的环境）
 
@@ -158,18 +193,49 @@ cmake --build build-qt-dashboard -j$(nproc)
 
 `WEAKNET_CLIENT_LIB` 不硬编码路径，因为板端可能直接链接已安装的库。
 
+### 交叉编译到 ARM64（宿主机直出，不用 Docker/QEMU）
+
+```bash
+./qt_dashboard/tools/build-arm64.sh
+```
+
+关键技巧：**moc 用宿主机 x86 的，编译器用 arm64 的**。moc 是构建期工具，
+产物只是展开 `Q_OBJECT` 宏的普通 C++ 源码，**与目标架构无关**。
+
+前置条件（脚本启动时会一次性检查并说明缺什么）：
+
+1. sysroot 里有 arm64 Qt5 开发文件 → `./qt_dashboard/tools/fetch-qt-arm64-sysroot.sh`
+2. 宿主机有 x86 moc → `sudo apt install qtbase5-dev-tools`（零卸载）
+3. 已构建 arm64 `libweaknet.so` → `cmake -B build-arm64-native ...`
+
+产物：`build-qt-arm64/weaknet_dashboard`（约 399 KB，glibc 需求仅 2.17）。
+
 ## 上板运行还缺什么
 
-1. **Qt 开发包** — 板端只有运行时。已排除板端 `apt install`（会卸载 KDE）
-2. **显示器** — HDMI 当前 `disconnected`
+**只剩显示器。** 交叉编译、板端启动、真实取数、离屏渲染都已实测通过。
 
-### 板端运行的可能路径
+接上 HDMI 显示器后，用 `eglfs` 直接跑（需要 `/dev/dri` 权限）：
 
-| 路径 | 说明 |
-|------|------|
-| 交叉编译 | 往 sysroot 装 Qt dev，编译 ARM64 二进制（要改 `scripts/`，须在 change 前做） |
-| Docker 容器 | 容器内装 ARM64 Qt 编译（glibc 需与板端一致 2.31） |
-| 本机 x86 验证 | ✅ **已完成**（见上表） |
+```bash
+ssh board 'sudo QT_QPA_PLATFORM=eglfs /tmp/weaknet_dashboard'
+```
+
+### 已排除的路径（留作记录，避免重复试）
+
+板端 `apt install qtbase5-dev` 会级联移除 200+ KDE 包，不可用：
+
+```text
+$ ssh board 'apt-get -s install qtbase5-dev > /tmp/qt-dryrun.txt'
+$ grep -c '^Remv' /tmp/qt-dryrun.txt   →  1
+$ grep -c '^Inst' /tmp/qt-dryrun.txt   →  23
+```
+
+`Remv` 行只有 1 条容易误读成「只删一个」，但方括号里是**全部级联受害者**
+（`plasma-workspace`、`kwin-x11`、`sddm` 等 200+）。且 `apt-cache search`
+确认**不存在 gles 变体的 dev 包**，无绕开方案。
+
+因此 ARM64 走「x86 moc + arm64 编译器 + sysroot 里的 Qt 头/库」这条路，
+完全不动板端包管理器。
 
 ## 与现有代码的边界
 
@@ -180,6 +246,9 @@ cmake --build build-qt-dashboard -j$(nproc)
 
 ## 下一步
 
-1. 解决 ARM64 交叉编译环境（D2 或 D3）
-2. 接显示器后走 `-platform eglfs` 实机验证
-3. 验证真实数据（当前只验证了程序能启动，未验证 D-Bus 取数是否成功）
+1. 接显示器后走 `-platform eglfs` 实机验证（唯一剩余项）
+2. 观察真机长时间运行的内存与线程稳定性
+3. 视需要补充维度详情、告警高亮等交互
+
+是否升格为正式 OpenSpec change：**待 HDMI 实机验证后再评估**。
+当前代码仍是探索性质，未接入根构建、未修改任何既有文件。

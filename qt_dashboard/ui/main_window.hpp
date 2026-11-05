@@ -64,6 +64,14 @@ public:
      */
     void start();
 
+    /**
+     * @brief 指定历史趋势查询的网卡
+     *
+     * 空字符串表示不限制（服务端按全部网卡返回）。
+     * 必须在 start() 之前调用，否则首轮取数用的是默认值。
+     */
+    void setInterface(const QString& interface_name);
+
 private slots:
     void onExperienceReady(const QByteArray& json);
     void onDiagnosisReady(const QByteArray& json);

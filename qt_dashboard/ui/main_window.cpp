@@ -102,6 +102,11 @@ void MainWindow::start() {
     refresh_in_flight_ = true;
 }
 
+void MainWindow::setInterface(const QString& interface_name) {
+    // 历史查询的网卡过滤在后台线程里读取，这里同步进去
+    fetcher_->setHistoryQuery(interface_name, kHistoryLimit);
+}
+
 void MainWindow::build_ui() {
     auto* central = new QWidget;
     auto* root = new QVBoxLayout(central);

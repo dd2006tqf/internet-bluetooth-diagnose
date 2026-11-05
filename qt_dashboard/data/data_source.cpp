@@ -137,30 +137,10 @@ FetchResult DataSource::fetch_experience_raw() const {
     });
 }
 
-ExperienceSnapshot DataSource::fetch_experience() const {
-    const FetchResult raw = fetch_experience_raw();
-    if (!raw.ok) {
-        ExperienceSnapshot snap;
-        snap.unavailable_reason = raw.error;
-        return snap;
-    }
-    return parse_experience(raw.json);
-}
-
 FetchResult DataSource::fetch_diagnosis_raw() const {
     return invoke([](char* b, size_t n, char* e, size_t en) {
         return weaknet_get_diagnosis(b, n, e, en);
     });
-}
-
-DiagnosisSnapshot DataSource::fetch_diagnosis() const {
-    const FetchResult raw = fetch_diagnosis_raw();
-    if (!raw.ok) {
-        DiagnosisSnapshot snap;
-        snap.raw_json = raw.error;
-        return snap;
-    }
-    return parse_diagnosis(raw.json);
 }
 
 FetchResult DataSource::fetch_history_raw(const std::string& interface,
@@ -169,27 +149,6 @@ FetchResult DataSource::fetch_history_raw(const std::string& interface,
         // start / end 传空串表示不限时间范围
         return weaknet_get_history(interface.c_str(), "", "", limit,
                                    b, n, e, en);
-    });
-}
-
-HistorySeries DataSource::fetch_history(const std::string& interface,
-                                        int limit) const {
-    const FetchResult raw = fetch_history_raw(interface, limit);
-    if (!raw.ok) {
-        return HistorySeries{};
-    }
-    return parse_history(raw.json);
-}
-
-FetchResult DataSource::fetch_interfaces_raw() const {
-    return invoke([](char* b, size_t n, char* e, size_t en) {
-        return weaknet_get_interfaces(b, n, e, en);
-    });
-}
-
-FetchResult DataSource::fetch_health_raw() const {
-    return invoke([](char* b, size_t n, char* e, size_t en) {
-        return weaknet_health_check(b, n, e, en);
     });
 }
 

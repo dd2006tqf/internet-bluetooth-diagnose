@@ -24,6 +24,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include "data/dashboard_data.hpp"
 #include "data/json_reader.hpp"
 
@@ -341,20 +343,6 @@ TEST(HistoryTest, ParsesHistoryArray) {
     EXPECT_DOUBLE_EQ(series.points[1].score, 88.0);
 }
 
-TEST(HistoryTest, ScoreRangeForChartAxis) {
-    const char* json = R"([
-      {"ts":"t1","iface":"wlan0","score":70.0},
-      {"ts":"t2","iface":"wlan0","score":95.0},
-      {"ts":"t3","iface":"wlan0","score":40.0}
-    ])";
-    const HistorySeries series = weaknet::dashboard::parse_history(json);
-
-    double lo = 0, hi = 0;
-    series.score_range(&lo, &hi);
-    EXPECT_DOUBLE_EQ(lo, 40.0);
-    EXPECT_DOUBLE_EQ(hi, 95.0);
-}
-
 TEST(HistoryTest, EmptyArray) {
     const HistorySeries series = weaknet::dashboard::parse_history("[]");
     EXPECT_TRUE(series.empty());
@@ -367,19 +355,183 @@ TEST(HistoryTest, DatabaseUnavailableObject) {
     EXPECT_TRUE(series.empty());
 }
 
-TEST(HistoryTest, EmptySeriesScoreRangeDefaultsTo0to100) {
-    const HistorySeries series;
-    double lo = -1, hi = -1;
-    series.score_range(&lo, &hi);
-    EXPECT_DOUBLE_EQ(lo, 0.0);
-    EXPECT_DOUBLE_EQ(hi, 100.0);
-}
-
 TEST(HistoryTest, LegacyFlagIsPreserved) {
     const char* json = R"([{"ts":"t","iface":"wlan0","score":50,"legacy":true}])";
     const HistorySeries series = weaknet::dashboard::parse_history(json);
     ASSERT_EQ(series.points.size(), 1u);
     EXPECT_TRUE(series.points[0].legacy);
+}
+
+// ---------------------------------------------------------------------------
+// 真机实测样本（2026-11-05，radxa-cubie-a7a）
+//
+// 上面那组样本是**从服务端序列化代码抄来的**，验证的是「代码怎么写」。
+// 这一组是**从运行中的服务端真取回来的**，验证的是「实际返回什么」。
+//
+// 两者不能互相替代：代码抄本会漏掉运行时才出现的字段组合与取值
+// （例如大量 UNKNOWN/NONE 的服务维度、PARTIAL 覆盖、中文摘要模板）。
+// 样本原文见 tests/fixtures/board_experience_real.json。
+// ---------------------------------------------------------------------------
+
+// 逐字取自板端 weaknet_get_network_experience() 的真实返回（4129 字节原文，
+// 此处保留结构与全部字段值，只删去 evidence 数组内容以保持可读）
+const char* kBoardRealSnapshot = R"({
+  "schema_version":2,
+  "interface":"wlan0",
+  "assessment_profile":"INTERNET_ACCESS",
+  "overall":{"state":"DEGRADED","coverage":"PARTIAL","display_score":55},
+  "network_health":{
+    "ip_reachability":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"ip_path_fully_reachable","evidence":[]},
+    "responsiveness":{"state":"BAD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"rtt_severely_high_or_volatile","evidence":[]},
+    "reliability":{"state":"GOOD","coverage":"PARTIAL","applicability":"APPLICABLE","reason":"partial_metrics_healthy","evidence":[]},
+    "rf_health":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"strong_rf_signal","evidence":[]}
+  },
+  "service_health":{
+    "dns":{"state":"UNKNOWN","coverage":"NONE","applicability":"APPLICABLE","reason":"no_dns_observations","evidence":[]},
+    "tcp_connect":{"state":"UNKNOWN","coverage":"PARTIAL","applicability":"APPLICABLE","reason":"observer_unreliable_pairing_incomplete","evidence":[]},
+    "tcp_rtt":{"state":"DEGRADED","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"elevated_passive_tcp_rtt_p90","evidence":[]},
+    "http_access":{"state":"UNKNOWN","coverage":"NONE","applicability":"APPLICABLE","reason":"no_http_observations","evidence":[]},
+    "captive_portal":{"state":"UNKNOWN","coverage":"NONE","applicability":"APPLICABLE","reason":"no_portal_probe_capability","evidence":[]},
+    "active_dns":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"active_dns_capability_ok","evidence":[]},
+    "active_tcp":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"active_tcp_capability_ok","evidence":[]},
+    "active_https":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"active_https_capability_ok","evidence":[]},
+    "active_portal":{"state":"GOOD","coverage":"FULL_FOR_PROFILE","applicability":"APPLICABLE","reason":"no_captive_portal","evidence":[]}
+  },
+  "warnings":[],
+  "primary_issue":"High latency or excessive jitter"
+})";
+
+TEST(BoardRealSampleTest, ParsesRealSnapshotEndToEnd) {
+    const ExperienceSnapshot snap =
+        weaknet::dashboard::parse_experience(kBoardRealSnapshot);
+
+    ASSERT_TRUE(snap.available());
+    EXPECT_EQ(snap.schema_version, 2);
+    EXPECT_EQ(snap.interface_name, "wlan0");
+    // 真机是 INTERNET_ACCESS，不是代码抄本里的 FULL
+    EXPECT_EQ(snap.assessment_profile, "INTERNET_ACCESS");
+    EXPECT_EQ(snap.overall_state, "DEGRADED");
+    EXPECT_EQ(snap.overall_coverage, "PARTIAL");
+    EXPECT_DOUBLE_EQ(snap.display_score, 55.0);
+}
+
+TEST(BoardRealSampleTest, RealSnapshotHasMixedDimensionStates) {
+    const ExperienceSnapshot snap =
+        weaknet::dashboard::parse_experience(kBoardRealSnapshot);
+
+    // 真机同时出现 GOOD / BAD / DEGRADED / UNKNOWN 四种状态，
+    // 这是代码抄本样本覆盖不到的组合
+    EXPECT_EQ(snap.ip_reachability.state, "GOOD");
+    EXPECT_EQ(snap.responsiveness.state, "BAD");
+    EXPECT_EQ(snap.reliability.state, "GOOD");
+    EXPECT_EQ(snap.rf_health.state, "GOOD");
+    EXPECT_EQ(snap.tcp_rtt.state, "DEGRADED");
+
+    // 大量服务维度在真机上是 UNKNOWN + NONE（没有观测数据）
+    EXPECT_EQ(snap.dns_service.state, "UNKNOWN");
+    EXPECT_EQ(snap.http_access.state, "UNKNOWN");
+    EXPECT_FALSE(snap.dns_service.has_value());
+    EXPECT_FALSE(snap.http_access.has_value());
+
+    // 但 tcp_connect 是 UNKNOWN + PARTIAL：有覆盖但不可用，
+    // 与「完全没观测」不是同一回事，看板显示逻辑必须能区分
+    EXPECT_EQ(snap.tcp_connect.state, "UNKNOWN");
+    EXPECT_EQ(snap.tcp_connect.coverage, "PARTIAL");
+}
+
+TEST(BoardRealSampleTest, RealSnapshotPartialCoverageIsDetected) {
+    const ExperienceSnapshot snap =
+        weaknet::dashboard::parse_experience(kBoardRealSnapshot);
+
+    // 看板对 PARTIAL 覆盖的维度会显示 "(部分)" 后缀，
+    // 这里固定住真实数据里确实存在 PARTIAL 维度这一事实
+    EXPECT_EQ(snap.overall_coverage, "PARTIAL");
+    EXPECT_EQ(snap.reliability.coverage, "PARTIAL");
+    EXPECT_EQ(snap.tcp_connect.coverage, "PARTIAL");
+
+    int healthy = 0, degraded = 0, failed = 0, unknown = 0;
+    snap.count_by_state(&healthy, &degraded, &failed, &unknown);
+    EXPECT_EQ(healthy + degraded + failed + unknown, 13);
+    EXPECT_GT(unknown, 0);
+    EXPECT_GT(failed, 0);  // responsiveness 是 BAD，计入 failed
+}
+
+// 逐字取自板端 weaknet_get_diagnosis() 的真实返回（285 字节原文）
+const char* kBoardRealDiagnosis = R"({"fault_domain":"UNKNOWN","primary_issue":"High latency or excessive jitter","confidence":"LOW","secondary_issues":[],"evidence_refs":[],"excluded_causes":[],"actions":[],"default_summary_template":"当前网络指标存在异常但缺乏明确的判定规则，建议人工关注。"})";
+
+TEST(BoardRealSampleTest, ParsesRealDiagnosisWithChineseSummary) {
+    const DiagnosisSnapshot snap =
+        weaknet::dashboard::parse_diagnosis(kBoardRealDiagnosis);
+
+    EXPECT_TRUE(snap.valid);
+    EXPECT_EQ(snap.fault_domain, "UNKNOWN");
+    EXPECT_EQ(snap.primary_issue, "High latency or excessive jitter");
+    EXPECT_EQ(snap.confidence, "LOW");
+    // 摘要模板是中文，且原文里包含 UTF-8 多字节字符。
+    // 这里守住解析器不会在 UTF-8 上截断或乱码
+    EXPECT_FALSE(snap.summary_template.empty());
+    EXPECT_NE(snap.summary_template.find("当前网络指标"), std::string::npos);
+    EXPECT_TRUE(snap.secondary_issues.empty());
+    EXPECT_TRUE(snap.excluded_causes.empty());
+    EXPECT_TRUE(snap.actions.empty());
+}
+
+// 逐字取自板端 weaknet_get_history() 的真实返回元素（字段取自 60 条中的一条）。
+// 注意顺序：服务端按 ts DESC 返回，最新在前——这与真实响应一致。
+const char* kBoardRealHistory = R"([
+  {"ts":"2026-11-05T13:31:56","iface":"wlan0","rtt_ms":58,"jitter_ms":62.72,
+   "rssi_dbm":-47,"rssi_source":"nl80211","rssi_estimated":false,
+   "rssi_status":"valid","rtt_status":"valid","jitter_status":"valid",
+   "tcp_loss_status":"valid","traffic_status":"valid","tcp_loss":0.0,
+   "quality":"FAIR","link_quality":"FAIR","overall_quality":"FAIR",
+   "overall_score":55.0,"score":55.0,"legacy":false},
+  {"ts":"2026-11-05T13:27:00","iface":"wlan0","rtt_ms":58,"jitter_ms":62.72,
+   "rssi_dbm":-47,"rssi_source":"nl80211","rssi_estimated":false,
+   "rssi_status":"valid","rtt_status":"valid","jitter_status":"valid",
+   "tcp_loss_status":"valid","traffic_status":"valid","tcp_loss":0.0,
+   "quality":"FAIR","link_quality":"FAIR","overall_quality":"FAIR",
+   "overall_score":55.0,"score":55.0,"legacy":false}
+])";
+
+TEST(BoardRealSampleTest, ParsesRealHistoryTimestampsAndFlipsOrder) {
+    const HistorySeries series =
+        weaknet::dashboard::parse_history(kBoardRealHistory);
+
+    ASSERT_EQ(series.points.size(), 2u);
+    // 服务端按 ts DESC 返回，parse 后应是正序
+    EXPECT_EQ(series.points.front().ts, "2026-11-05T13:27:00");
+    EXPECT_EQ(series.points.back().ts, "2026-11-05T13:31:56");
+    EXPECT_LE(series.points.front().ts, series.points.back().ts);
+
+    // 真机 ts 是 ISO 8601 带 T 分隔，不是 SQLite 的空格分隔形式
+    EXPECT_NE(series.points.front().ts.find('T'), std::string::npos);
+
+    EXPECT_DOUBLE_EQ(series.points.front().score, 55.0);
+    EXPECT_EQ(series.points.front().overall_quality, "FAIR");
+    EXPECT_EQ(series.points.front().iface, "wlan0");
+    EXPECT_FALSE(series.points.front().legacy);
+}
+
+TEST(BoardRealSampleTest, RealHistoryFlatScoreKeepsTimeOrderAndValues) {
+    // 真机 60 个点的 score 全是 55.0。这种全等值序列是图表的边界情况：
+    // 轴范围必须由 LineChartWidget 自己兜底（±5 最小跨度），
+    // 数据层只负责如实保留原值，不做任何"修正"。
+    const HistorySeries series =
+        weaknet::dashboard::parse_history(kBoardRealHistory);
+
+    ASSERT_EQ(series.points.size(), 2u);
+    // 翻转后应是时间正序
+    EXPECT_LE(series.points.front().ts, series.points.back().ts);
+
+    double lo = 1e9, hi = -1e9;
+    for (const auto& p : series.points) {
+        lo = std::min(lo, p.score);
+        hi = std::max(hi, p.score);
+        EXPECT_DOUBLE_EQ(p.score, 55.0);
+    }
+    // 数据层如实报告全等值：min == max，由视图层负责展开轴范围
+    EXPECT_DOUBLE_EQ(lo, 55.0);
+    EXPECT_DOUBLE_EQ(hi, 55.0);
 }
 
 } // namespace

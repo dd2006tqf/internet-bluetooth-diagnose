@@ -2,7 +2,8 @@
 
 > 日期：2026-11-05
 > 分类：探索 / 工作流外实施
-> 结果：调用链已打通并**在本机完成完整编译、链接、启动验证**；ARM64 交叉编译与板端运行未做
+> 结果：**ARM64 已构建并上板跑通**，真实 D-Bus 取数 5/5 成功，离屏渲染做像素级验证；
+> 仅剩 HDMI 实机显示（显示器未在位）
 
 ## 构思
 
@@ -38,7 +39,7 @@
 ### 新增文件（全部在独立目录，未改动任何既有文件）
 
 ```
-qt_dashboard/                          16 个文件，代码 2988 行
+qt_dashboard/                          19 个文件，代码 3192 行（含 2 个构建脚本）
 ├── README.md                  设计决定与验证状态
 ├── CMakeLists.txt             139 行，独立 project，三 target
 ├── main.cpp                   入口，QCommandLineParser
@@ -50,8 +51,13 @@ qt_dashboard/                          16 个文件，代码 2988 行
 │   ├── line_chart_widget.hpp/cpp  106 / 208 行，QPainter 折线图
 │   ├── data_fetch_thread.hpp/cpp  115 / 120 行，QThread 后台取数
 │   └── main_window.hpp/cpp        116 / 336 行，主窗口
+├── tools/
+│   ├── build-arm64.sh                ARM64 交叉编译（x86 moc + arm64 clang）
+│   └── fetch-qt-arm64-sysroot.sh     往 sysroot 装 arm64 Qt 头/库
 └── tests/
-    └── test_json_reader.cpp   385 行，30 个用例
+    ├── test_json_reader.cpp   34 个用例（含 6 个真机样本）
+    └── fixtures/
+        └── board_experience_real.json   板端实测快照（带来源标注）
 ```
 
 ### 调用链
@@ -188,7 +194,7 @@ QT_QPA_PLATFORM=offscreen ./weaknet_dashboard --help
 | 项 | 状态 | 证据 |
 |----|------|------|
 | 数据层编译 | ✅ 零警告 | `-Wall -Wextra` 通过 |
-| 数据层单测 | ✅ **30/30 通过** | `ctest` 0.03s |
+| 数据层单测 | ✅ **34/34 通过**（含 6 个真机样本用例） | `ctest` 0.03s |
 | 取数层编译 | ✅ 通过 | 链接真实 `weaknet_client.h`，签名全对 |
 | UI 层 **moc** | ✅ **3/3 生成成功** | `Q_OBJECT`/信号槽声明语法正确 |
 | UI 层编译 | ✅ **零警告** | `main.cpp` + 3 个 ui 源文件 + 3 个 moc 产物，共 7 个单元全部通过 |
@@ -211,15 +217,102 @@ QT_QPA_PLATFORM=offscreen ./weaknet_dashboard --help
 
 | 项 | 原因 |
 |----|------|
-| ARM64 交叉编译 | sysroot 无 Qt dev，需 D2（改 `scripts/` 初始化脚本）或 D3（Docker 容器） |
-| 上板运行 | 无 HDMI 显示器（当前 `disconnected`） |
-| 真实 D-Bus 取数验证 | 只验证了程序能启动，**未验证 `weaknet_get_*` 是否真的取到数据** |
-| 界面渲染效果 | 无显示器，offscreen 只能证明不崩溃 |
+| **HDMI 实机显示** | 唯一剩余项。显示器未在位（`HDMI disconnected`），eglfs 真机路径未跑 |
+| 长时间运行稳定性 | 只跑了数分钟级，未做长稳 |
+
+### 2026-11-05 续：ARM64 构建 + 板端真实取数与渲染（已完成）
+
+上一轮停在「未验证 D-Bus 取数」，本轮把它全部打通。
+
+#### 突破点：moc 用 x86，编译器用 arm64
+
+板端装 Qt dev 会拆 KDE（200+ 包），此路已死。真正的解法是：
+
+> **moc 是构建期工具，产物只是展开 `Q_OBJECT` 宏的普通 C++ 源码，与目标架构无关。**
+
+因此用宿主机 x86 的 `moc 5.15.13`（`qtbase5-dev-tools`，零卸载）+ sysroot 里的
+arm64 Qt 头文件/运行库 + `clang --target=aarch64-linux-gnu`，**不需要 Docker、
+不需要 QEMU、不需要碰板端包管理器**。固化为 `qt_dashboard/tools/build-arm64.sh`。
+
+产物 `build-qt-arm64/weaknet_dashboard`：399 KB，最高 glibc 需求 **2.17**
+（板端 2.31），依赖 `libQt5Widgets/Gui/Core/DBus` + `libweaknet.so`，板端四个
+Qt 运行库实测齐全。
+
+#### 真实取数：5/5 全部成功
+
+写一次性探针直接调 C API（用完即删，未入库）：
+
+| API | 结果 | 大小 |
+|-----|------|------|
+| `weaknet_get_network_experience` | ✅ | 4129 B，schema v2，`DEGRADED`/`PARTIAL`/55 |
+| `weaknet_get_diagnosis` | ✅ | 285 B |
+| `weaknet_get_history` | ✅ | 50317 B / 60 条 |
+| `weaknet_get_interfaces` | ✅ | 5 B（**裸字符串 `wlan0`，不是 JSON**） |
+| `weaknet_health_check` | ✅ | 534 B |
+
+`interfaces` 返回裸字符串是个**易踩的坑**：它不是 JSON。当前看板没有消费它，
+所以未受影响；将来接入时必须按纯文本处理，不能丢给 `JsonReader`。
+
+#### 真实渲染：像素级差分验证
+
+给 `main.cpp` 加 `--screenshot <path> [--screenshot-delay ms]`，用 `offscreen`
+平台插件跑真实 arm64 二进制，首轮取数完成后 `window.grab()` 存 PNG。
+
+| 检查 | 真实数据（wlan0） | 对照（`--interface nosuchif0`） |
+|------|------------------|------------------------------|
+| `y=341` 折线连续段 | **674 px**（329..1003，与 `plot` 边界吻合） | **无折线** |
+| 图表中心提示文字 | **0 px** | **396 px**（"暂无历史数据"） |
+| 状态色 绿/黄/红/灰 | 75 / 96 / 14 / 428 采样点 | — |
+
+真实 60 个点 score 全为 55.0 → 折线是水平线且居中，与 `auto_scale` 的
+`(hi-lo)<1e-6 → ±5` 兜底一致。
+
+#### 顺手修掉的两个真问题
+
+1. **`--interface` 是孤儿参数**：`main.cpp` 解析了却从未传给 `MainWindow`，
+   属于「有接口无消费者」。补上 `MainWindow::setInterface()` 后才真正生效——
+   上面那张对照组截图正是它生效的证明。
+2. **`HistorySeries::score_range()` 是多余的第二套轴逻辑**：只被测试引用，
+   而 `LineChartWidget::paint()` 内部另算了一套带边距的轴（含 ±5 兜底）。
+   两个函数对同一概念给出不同答案，后来者必用错。经用户确认后**删除**，
+   连带删掉 2 个只为它存在的测试。
+
+#### 删除后回归：截图逐像素对比
+
+改动前后各截一张 1024x700：
+
+- 差异 **1042 px**，全部落在两处含运行时刻的文字区域
+  （右上角时间戳 `y=20..32 x=966..1013`、底栏诊断 `y=611..622 x=451..1000`）
+- 图表区、左侧维度列表、分数、状态色**完全一致**
+
+证明重构没有改变渲染行为。
+
+#### 测试与回归
+
+| 项 | 状态 |
+|----|------|
+| 数据层单测 | ✅ **34/34 通过** |
+| 其中新增真机样本用例 | ✅ **6 个**（`BoardRealSampleTest`） |
+| 样本留存 | `qt_dashboard/tests/fixtures/board_experience_real.json`（带来源标注） |
+| ARM64 重编译 | ✅ 零警告 |
+| 板端重部署 + 重截图 | ✅ 通过 |
+
+新增的 `BoardRealSampleTest` 与原有测试**不是重复**：原有样本抄自服务端
+序列化代码（验证「代码怎么写」），新样本取自运行中的服务端（验证「实际返回什么」）。
+本轮就靠它抓到两处真实差异：
+
+1. `assessment_profile` 真机是 `INTERNET_ACCESS`，代码抄本写的是 `FULL`
+2. 真机同时出现 GOOD/BAD/DEGRADED/UNKNOWN 四种状态，且有 `UNKNOWN + PARTIAL`
+   这种「有覆盖但不可用」的组合——这是抄本样本覆盖不到的
+
+**写测试时踩的坑**：我给历史样本写的是 ASC 顺序，而服务端实际按 `DESC` 返回
+（`parse_history` 负责翻转）。测试失败暴露的是样本错了，不是代码错了。
+真实样本必须保留原始顺序，否则测不到翻转逻辑。
 
 ### 后续
 
-1. 解决 ARM64 交叉编译环境（D2 或 D3）
-2. 接显示器后走 `-platform eglfs` 实机验证
-3. 验证真实数据：确认 D-Bus 取数成功、维度列表与趋势图正确渲染
+1. 接 HDMI 显示器，走 `-platform eglfs` 实机验证（**唯一剩余项**）
+2. 视需要补充维度详情、告警高亮等交互
 
-是否升格为正式 OpenSpec change：**待 ARM64 构建 + 实机验证通过后再评估**。
+是否升格为正式 OpenSpec change：**待 HDMI 实机验证后再评估**。
+当前代码仍是探索性质，未接入根构建、未修改任何既有文件。

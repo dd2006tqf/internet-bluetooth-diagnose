@@ -1,11 +1,12 @@
 /**
  * @file data_source.hpp
- * @brief 取数层：调用 libweaknet 的 C API，把 JSON 变成 POD
+ * @brief 取数层：调用 libweaknet 的 C API 拿原始 JSON
  *
  * ## 为什么单独一层
  *
  * 数据层（`parse_xxx`）只做 JSON → POD 的纯转换，它不知道数据从哪来。
  * 取数层负责「去拿 JSON」这件事，是唯一直接调用 `weaknet_*` 的地方。
+ * 解析由调用方（主线程槽函数）调 `parse_xxx()` 完成，本层不解析。
  *
  * 分开的好处：数据层可以在没有 D-Bus、没有服务端的机器上单测；
  * 取数层可以在板端用真实服务验证。
@@ -31,9 +32,6 @@
 
 #include <cstddef>
 #include <string>
-#include <vector>
-
-#include "dashboard_data.hpp"
 
 namespace weaknet {
 namespace dashboard {
@@ -101,16 +99,15 @@ public:
      * @brief 取网络体验快照（schema v2）
      *
      * 对应 D-Bus `GetNetworkExperience`。
-     * 服务端在无快照时也会返回合法的 UNKNOWN JSON，此时 `available()` 为 false。
+     * 服务端在无快照时也会返回合法的 UNKNOWN JSON，调用方用
+     * `parse_experience()` + `available()` 判断，不在这里解析。
      */
     FetchResult fetch_experience_raw() const;
-    ExperienceSnapshot fetch_experience() const;
 
     /**
      * @brief 取诊断事实
      */
     FetchResult fetch_diagnosis_raw() const;
-    DiagnosisSnapshot fetch_diagnosis() const;
 
     /**
      * @brief 取历史趋势
@@ -119,19 +116,6 @@ public:
      * @param limit     最多返回条数（服务端上限 10000，且 <=0 会被钳制为 1）
      */
     FetchResult fetch_history_raw(const std::string& interface, int limit) const;
-    HistorySeries fetch_history(const std::string& interface, int limit) const;
-
-    /**
-     * @brief 取网卡列表
-     *
-     * 返回原始 JSON（形状为数组，看板只需网卡名）。
-     */
-    FetchResult fetch_interfaces_raw() const;
-
-    /**
-     * @brief 取服务健康检查
-     */
-    FetchResult fetch_health_raw() const;
 
 private:
     /**

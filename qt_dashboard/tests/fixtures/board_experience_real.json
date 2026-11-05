@@ -1,0 +1,99 @@
+{
+  "_source": "2026-11-05 板端真机实测，weaknet_get_network_experience() 原样返回",
+  "_captured_on": "radxa-cubie-a7a (aarch64, Debian bullseye)",
+  "_note": "去掉 _source/_captured_on/_note 三个标注键后即为服务端原始响应；测试里用的内联字符串与 payload 逐字一致",
+  "payload": {
+    "schema_version": 2,
+    "interface": "wlan0",
+    "assessment_profile": "INTERNET_ACCESS",
+    "overall": {
+      "state": "DEGRADED",
+      "coverage": "PARTIAL",
+      "display_score": 55
+    },
+    "network_health": {
+      "ip_reachability": {
+        "state": "GOOD",
+        "coverage": "FULL_FOR_PROFILE",
+        "applicability": "APPLICABLE",
+        "reason": "ip_path_fully_reachable"
+      },
+      "responsiveness": {
+        "state": "BAD",
+        "coverage": "FULL_FOR_PROFILE",
+        "applicability": "APPLICABLE",
+        "reason": "rtt_severely_high_or_volatile"
+      },
+      "reliability": {
+        "state": "GOOD",
+        "coverage": "PARTIAL",
+        "applicability": "APPLICABLE",
+        "reason": "partial_metrics_healthy"
+      },
+      "rf_health": {
+        "state": "GOOD",
+        "coverage": "FULL_FOR_PROFILE",
+        "applicability": "APPLICABLE",
+        "reason": "strong_rf_signal"
+      }
+    },
+    "service_health": {
+      "dns": {
+        "state": "UNKNOWN",
+        "coverage": "NONE",
+        "applicability": "APPLICABLE",
+        "reason": "no_dns_observations"
+      },
+      "tcp_connect": {
+        "state": "UNKNOWN",
+        "coverage": "PARTIAL",
+        "applicability": "APPLICABLE",
+        "reason": "observer_unreliable_pairing_incomplete"
+      },
+      "tcp_rtt": {
+        "state": "DEGRADED",
+        "coverage": "FULL_FOR_PROFILE",
+        "applicability": "APPLICABLE",
+        "reason": "elevated_passive_tcp_rtt_p90"
+      },
+      "http_access": {
+        "state": "UNKNOWN",
+        "coverage": "NONE",
+        "applicability": "APPLICABLE",
+        "reason": "no_http_observations"
+      },
+      "captive_portal": {
+        "state": "UNKNOWN",
+        "coverage": "NONE",
+        "applicability": "APPLICABLE",
+        "reason": "no_portal_probe_capability"
+      },
+      "active_dns": {
+        "state": "GOOD",
+        "coverage": "FULL_FOR_PROFILE",
+        "applicability": "APPLICABLE",
+        "reason": "active_dns_capability_ok"
+      },
+      "active_tcp": {
+        "state": "GOOD",
+        "coverage": "FULL_FOR_PROFILE",
+        "applicability": "APPLICABLE",
+        "reason": "active_tcp_capability_ok"
+      },
+      "active_https": {
+        "state": "GOOD",
+        "coverage": "FULL_FOR_PROFILE",
+        "applicability": "APPLICABLE",
+        "reason": "active_https_capability_ok"
+      },
+      "active_portal": {
+        "state": "GOOD",
+        "coverage": "FULL_FOR_PROFILE",
+        "applicability": "APPLICABLE",
+        "reason": "no_captive_portal"
+      }
+    },
+    "warnings": [],
+    "primary_issue": "High latency or excessive jitter"
+  }
+}

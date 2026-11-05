@@ -182,22 +182,6 @@ DiagnosisSnapshot parse_diagnosis(const std::string& json) {
 // HistorySeries
 // ---------------------------------------------------------------------------
 
-void HistorySeries::score_range(double* min_out, double* max_out) const {
-    if (points.empty()) {
-        if (min_out) *min_out = 0.0;
-        if (max_out) *max_out = 100.0;
-        return;
-    }
-    double lo = points.front().score;
-    double hi = points.front().score;
-    for (const HistoryPoint& p : points) {
-        lo = std::min(lo, p.score);
-        hi = std::max(hi, p.score);
-    }
-    if (min_out) *min_out = lo;
-    if (max_out) *max_out = hi;
-}
-
 HistorySeries parse_history(const std::string& json) {
     HistorySeries series;
     JsonReader reader(json);

@@ -261,9 +261,6 @@ struct HistorySeries {
     std::vector<HistoryPoint> points;
 
     bool empty() const { return points.empty(); }
-
-    /// 返回分数的最小 / 最大值，用于图表 Y 轴自适应
-    void score_range(double* min_out, double* max_out) const;
 };
 
 // ---------------------------------------------------------------------------
