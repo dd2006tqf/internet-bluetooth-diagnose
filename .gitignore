@@ -11,6 +11,17 @@ build/
 build-x86/
 build-arm64/
 
+# 内核模块（kmod/）构建副产物
+#
+# `make -C ... M=... modules` 会就地写一堆中间文件；`*.o` 和 `*.ko` 上面
+# 已覆盖，这里只补它们没覆盖到的。用前导 `/kmod/` 锚定，避免误伤别的目录。
+/kmod/*.mod
+/kmod/*.mod.c
+/kmod/modules.order
+/kmod/Module.symvers
+/kmod/.*.cmd
+/kmod/.tmp_versions/
+
 # 交叉编译部署产物（tools/deploy_and_test.sh 每次重建）
 dist-arm64/
 
