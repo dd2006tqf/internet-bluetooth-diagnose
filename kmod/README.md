@@ -69,9 +69,21 @@ sudo rmmod weaknet_cpu_stat weaknet_softirq
 | D6 | 无权限校验 | `open()` 校验 `capable(CAP_SYS_ADMIN)` |
 | D7 | 构建链不可移植 | `KDIR ?=` 可覆盖；板端开箱即用 |
 
-补充一处源实现没有、但这里必须加的：**映射存活期间禁止卸载**。
-`mmap` 里 `try_module_get(THIS_MODULE)`，`vm_ops->close` 里 `module_put()`。
-否则用户态还持有映射时 `rmmod` 成功，`vm_ops` 回调会跳进已释放的代码段。
+补充两处源实现没有、但这里必须加的：
+
+**1. 映射存活期间禁止卸载。** `mmap` 里 `try_module_get(THIS_MODULE)`，
+`vm_ops->close` 里 `module_put()`。否则用户态还持有映射时 `rmmod` 成功，
+`vm_ops` 回调会跳进已释放的代码段。
+
+**2. 只读映射强制。** `mmap` 里检查 `vma->vm_flags & VM_WRITE` 并返回 `-EACCES`。
+
+这一条容易漏，因为 `remap_vmalloc_range` **不**替你拒绝 `PROT_WRITE`。
+曾经实测过漏掉的后果：root 用 `PROT_READ|PROT_WRITE` 映射成功后，
+直接把 `hdr.sample_ns` 从 `1374934036214` 改成 `18446744073709551615`，写入生效。
+
+更麻烦的是**seqlock 挡不住这种篡改**——它的前提是「一个写者、多个读者」，
+而用户态一旦可写就变成了第二个写者：改完 `seq` 后读者照常校验通过并采信，
+一致性保证被彻底架空。所以这不是「防君子」的加固，是协议成立的必要条件。
 
 ## 四、seqlock 快照协议
 
@@ -117,6 +129,7 @@ do {
 | 与 `/proc/softirqs` 对拍 | 十类计数逐 CPU 全部一致 |
 | 区间使用率 | `Δtotal ≈ 1.0e9 ns`，量纲正确 |
 | 权限门禁 | 同一 root 身份，`capsh --drop=cap_sys_admin` 后打开设备返回 `EPERM(1)`，加回则成功 |
+| 只读映射 | `PROT_READ\|PROT_WRITE` 映射被拒绝（`EACCES`），仅 `PROT_READ` 成功 |
 | 卸载安全性 | 映射存活时 `rmmod` 被拒绝（`Module weaknet_cpu_stat is in use`，refcount=3）；进程退出后 rc=0 |
 | 撕裂检测 | 30 s 内 666,726 次读取（约 22k 次/秒），覆盖约 60 个写入窗口，**0 次撕裂、0 次重试耗尽** |
 

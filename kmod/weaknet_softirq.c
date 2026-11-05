@@ -125,6 +125,16 @@ static int wn_mmap(struct file *file, struct vm_area_struct *vma)
 	unsigned long size = vma->vm_end - vma->vm_start;
 	int ret;
 
+	/*
+	 * 只读映射：快照是内核单向发布的，用户态没有写它的理由。
+	 *
+	 * 缺了这一条时 PROT_WRITE 映射会被 remap_vmalloc_range 直接放行，
+	 * 用户态可以改写 hdr.seq / sample_ns 等字段。更糟的是 seqlock 挡不住：
+	 * 用户态自己就是写者，改完 seq 后读者照常采信，一致性保证被架空。
+	 */
+	if (vma->vm_flags & VM_WRITE)
+		return -EACCES;
+
 	if (vma->vm_pgoff)
 		return -EINVAL;
 
