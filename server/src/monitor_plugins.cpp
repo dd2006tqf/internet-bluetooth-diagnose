@@ -22,6 +22,7 @@
 #include "rtt_monitor.hpp"
 #include "rssi_monitor.hpp"
 #include "tcp_loss_monitor.hpp"
+#include "host_pressure_monitor.hpp"
 
 namespace weaknet_dbus {
 
@@ -254,6 +255,41 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// 采集端自身 CPU 压力（order 10）
+//
+// 为什么把它做成独立插件而不是塞进 quality 线程：
+//   quality 是唯一 evaluator 执行点，它的执行时长本身就是被观测对象的一部分。
+//   如果把"测量采集端压力"的代码放进 quality 线程内，那么 quality 自己忙到
+//   跑不动时也无法采样，「过载」这件事就永远测不到——观测者不能被自己的
+//   观测对象挡住。独立线程才能在被观测者卡死时仍然给出读数。
+//
+// order 10 与 quality 同级：两者无依赖关系。quality 读指标时若本插件尚未
+// 发布首轮数据，会拿到 UNAVAILABLE（首轮是 baseline_only），按缺失处理。
+// ---------------------------------------------------------------------------
+class HostPressurePlugin : public IMonitorPlugin {
+    ServerContext* ctx_ = nullptr;
+    std::thread worker_;
+public:
+    const char* name() const override { return "host_pressure"; }
+    int order() const override { return 10; }
+    bool init(ServerContext* ctx) override { ctx_ = ctx; return true; }
+    bool start(ServerContext* ctx) override {
+        if (!ctx->cfg.host_pressure.enabled.load()) {
+            LOG_INFO(LogModule::HOST_PRESSURE, "CPU pressure monitor disabled by config");
+            return true;
+        }
+        ctx->host_pressure_stop.store(false);
+        start_host_pressure_monitor_thread(ctx, &worker_);
+        return true;
+    }
+    void stop() override {
+        if (!ctx_) return;
+        ctx_->host_pressure_stop.store(true);
+        if (worker_.joinable()) worker_.join();
+    }
+};
+
+// ---------------------------------------------------------------------------
 // 内置插件注册入口（server.cpp 启动前调用）
 // ---------------------------------------------------------------------------
 void registerBuiltinPlugins() {
@@ -266,6 +302,7 @@ void registerBuiltinPlugins() {
     registerPlugin("tcp_loss",     [] { return std::make_unique<TcpLossPlugin>(); });
     registerPlugin("traffic",      [] { return std::make_unique<TrafficPlugin>(); });
     registerPlugin("quality",      [] { return std::make_unique<QualityPlugin>(); });
+    registerPlugin("host_pressure", [] { return std::make_unique<HostPressurePlugin>(); });
     registerPlugin("bluetooth",    [] { return std::make_unique<BluetoothPlugin>(); });
 }
 

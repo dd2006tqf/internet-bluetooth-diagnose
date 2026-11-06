@@ -10,6 +10,7 @@ set(SERVER_SOURCES
     src/assurance/action_registry.cpp
     src/assurance/dns_transaction_tracker.cpp
     src/assurance/edge_ai_scheduler.cpp
+    src/assurance/observer_attribution.cpp
     src/band_conflict_detector.cpp
     src/bt_audio_analyzer.cpp
     src/bt_audio_fusion.cpp
@@ -29,6 +30,7 @@ set(SERVER_SOURCES
     src/edge_wireless_uplink_exporter.cpp
     src/event_manager.cpp
     src/http_latency_monitor.cpp
+    src/host_pressure_monitor.cpp
     src/iface_type.cpp
     src/logger.cpp
     src/looper.cpp

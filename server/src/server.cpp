@@ -52,6 +52,7 @@
 #include "network_quality_result.hpp"
 #include "assurance/legacy_adapter.hpp"
 #include "assurance/overall_policy.hpp"
+#include "assurance/observer_attribution.hpp"
 #include "assurance/state_stabilizer.hpp"
 #include "assurance/ip_reachability_evaluator.hpp"
 #include "assurance/responsiveness_evaluator.hpp"
@@ -564,6 +565,61 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                                                          active.dns, active.tcp,
                                                          active.https, active.portal,
                                                          currentAssessmentProfile(*ctx));
+                    // ------------------------------------------------------------
+                    // 观测者降级归因（HOST 域证据的唯一消费者）
+                    //
+                    // 为什么放在 decide() 之后而不是塞进 DnsServiceEvaluator：
+                    // 那个评估器是无状态纯函数，契约是"只吃 DNS 事实"。把 CPU
+                    // 压力传进去会让观测者的状态污染被观测对象的判定——同一个
+                    // DNS 窗口在板子忙时和空闲时会得出不同结论，SR 系列约束
+                    // （同源纪律、证据可复现）与单元测试可判定性会同时失效。
+                    //
+                    // 所以分两层：decide() 给出链路结论，这里只追加"那份观测
+                    // 为什么不可靠"的归因，不修改任何 state/coverage/reason。
+                    // ------------------------------------------------------------
+                    {
+                        double cpu_busy = 0.0;
+                        bool cpu_ok = false;
+                        auto cpu_sample = ctx->metrics_registry->latest(
+                            "host:", weaknet::MetricId::CPU_BUSY_RATIO);
+                        if (cpu_sample) {
+                            cpu_ok = cpu_sample->isValid(
+                                weaknet::getMetricDescriptor(weaknet::MetricId::CPU_BUSY_RATIO).freshness);
+                            if (cpu_ok) cpu_busy = cpu_sample->value;
+                        }
+
+                        // DNS 是当前唯一带 observer 质量门禁的 SLE。将来其它
+                        // SLE 若也引入 observer 门禁，在这里并列追加即可。
+                        auto attr = weaknet::attributeObserverDegradation(
+                            dns_sle, "dns_service", cpu_busy, cpu_ok);
+                        if (attr.evaluated) {
+                            exp.observer_attribution = attr.attribution;
+                            exp.observer_attribution_detail = attr.explanation;
+                            exp.warnings.push_back(attr.explanation);
+                            // 归因证据挂回 SLE。
+                            //
+                            // observer_attribution.hpp 的 ObserverAttributionResult::evidence
+                            // 注释写的是「机器可读证据条目，直接挂到 SleResult.evidence 上」，
+                            // 但此前只生成不使用——Build 出来的 evidence 被整体丢弃，
+                            // 于是 host_cpu_busy_ratio 永远进不了任何序列化出口，
+                            // 诊断规则也无法用它做前置条件（buildResolver 只认 SLE evidence）。
+                            //
+                            // 挂回 exp.dns_service 而不是 dns_sle：decide() 已经按值
+                            // 拷贝过 SLE，改局部变量对已发布的快照没有任何影响。
+                            // append 而不是覆盖：observer 原有的四个比率证据必须保留。
+                            exp.dns_service.evidence.insert(exp.dns_service.evidence.end(),
+                                                            attr.evidence.begin(),
+                                                            attr.evidence.end());
+                            LOG_WARNING(LogModule::NETWORK,
+                                "observer attribution: " << weaknet::observerAttributionToString(attr.attribution)
+                                << " sle=" << attr.trigger_sle
+                                << " reason=" << attr.observer_reason
+                                << " cpu_available=" << (attr.cpu_available ? "yes" : "no")
+                                << " cpu_busy=" << attr.observed_cpu_busy
+                                << " threshold=" << attr.cpu_threshold);
+                        }
+                    }
+
                     if (!rtt_samples.empty()) newest_rev = rtt_samples.back().sequence;
                     else if (!reach_samples.empty()) newest_rev = reach_samples.back().sequence;
                 } else {

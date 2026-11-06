@@ -175,6 +175,42 @@ TEST(WeakNetConfigTest, UnknownFieldRejected) {
     EXPECT_NE(err.find("magic"), std::string::npos);
 }
 
+// host_pressure 的 yaml 入口。
+//
+// 这条路径曾经完全缺失：applyMonitorField 没有该分支，于是
+// config.yaml 里写 monitors.host_pressure.* 会被当成 unknown monitor，
+// 整份配置解析失败并回落默认值——也就是说运维改了配置却毫无效果，
+// 而 weaknet-cli set 却能生效，形成两个标准。
+TEST(WeakNetConfigTest, HostPressureParsesFromYaml) {
+    WeakNetConfig cfg;
+    std::string err;
+    bool ok = parse(
+        "monitors:\n"
+        "  host_pressure:\n"
+        "    enabled: false\n"
+        "    interval: 5s\n",
+        &cfg, &err);
+    EXPECT_TRUE(ok) << err;
+    EXPECT_FALSE(cfg.host_pressure.enabled.load());
+    EXPECT_EQ(cfg.host_pressure.interval_ms.load(), 5000u);
+}
+
+TEST(WeakNetConfigTest, HostPressureYamlIntervalOutOfRangeRejected) {
+    WeakNetConfig cfg;
+    std::string err;
+    // 与运行时 set 路径同一区间（1000ms~600000ms），不能出现 yaml 更宽松的双标准
+    EXPECT_FALSE(parse("monitors:\n  host_pressure:\n    interval: 100ms\n", &cfg, &err));
+    EXPECT_NE(err.find("host_pressure.interval"), std::string::npos);
+    EXPECT_FALSE(parse("monitors:\n  host_pressure:\n    interval: 700000\n", &cfg, &err));
+}
+
+TEST(WeakNetConfigTest, HostPressureYamlUnknownFieldRejected) {
+    WeakNetConfig cfg;
+    std::string err;
+    EXPECT_FALSE(parse("monitors:\n  host_pressure:\n    magic: 1\n", &cfg, &err));
+    EXPECT_NE(err.find("host_pressure: unknown field"), std::string::npos);
+}
+
 TEST(WeakNetConfigTest, TopLevelBareKeyRejected) {
     WeakNetConfig cfg;
     std::string err;
@@ -282,6 +318,22 @@ TEST(WeakNetConfigTest, SerializeMonitorJsonUnknown) {
     std::string json = serializeMonitorJson(cfg, "frobnicate", &err);
     EXPECT_TRUE(json.empty());
     EXPECT_FALSE(err.empty());
+}
+
+// host_pressure 必须可被 `weaknet-cli get host_pressure` 查询到。
+// 该 monitor 是 HOST 域 CPU 压力指标的唯一配置出口；若 serializeMonitorJson
+// 的有效名集合漏了它，运维就无从发现这个插件存在。
+TEST(WeakNetConfigTest, SerializeMonitorJsonHostPressure) {
+    WeakNetConfig cfg;
+    std::string err;
+    std::string json = serializeMonitorJson(cfg, "host_pressure", &err);
+    EXPECT_TRUE(err.empty()) << err;
+    EXPECT_NE(json.find("\"enabled\":true"), std::string::npos);
+    EXPECT_NE(json.find("\"interval_ms\":15000"), std::string::npos);
+
+    // get all 也必须带上它
+    std::string all = serializeMonitorJson(cfg, "all", &err);
+    EXPECT_NE(all.find("\"host_pressure\""), std::string::npos);
 }
 
 // ============================================================================

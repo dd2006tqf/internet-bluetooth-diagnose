@@ -179,6 +179,7 @@ struct ServerContext {
     std::atomic<bool> tcp_loss_stop{false};
     std::atomic<bool> traffic_stop{false};
     std::atomic<bool> quality_stop{false};
+    std::atomic<bool> host_pressure_stop{false};
     std::atomic<bool> bluetooth_stop{false};
     std::atomic<bool> dns_stop{false};
     std::atomic<bool> wifi_loss_stop{false};

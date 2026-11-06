@@ -130,6 +130,7 @@ rssi
 tcp_loss
 traffic
 quality
+host_pressure
 bluetooth
 dns
 wifi_loss
@@ -280,7 +281,7 @@ $ weaknet-cli get all
 }
 ```
 
-**支持的监控器名**：`rtt` `rssi` `tcp_loss` `traffic` `quality` `bluetooth` `dns` `wifi_loss` `http_latency` `process_profiler` `tcp_retrans` `tcp_conn` `skb_drop` `tcp_connect` `tcp_rtt` `bt_events` `bt_hci_traffic` `active_probe` `edge` `server` `all`
+**支持的监控器名**：`rtt` `rssi` `tcp_loss` `traffic` `quality` `host_pressure` `bluetooth` `dns` `wifi_loss` `http_latency` `process_profiler` `tcp_retrans` `tcp_conn` `skb_drop` `tcp_connect` `tcp_rtt` `bt_events` `bt_hci_traffic` `active_probe` `edge` `server` `all`
 
 **输出字段说明**（以 `rtt` 为例）：
 
@@ -328,8 +329,8 @@ ok
 | `rtt` | `interval_ms` | duration | `100ms` ~ `600000ms` | 采样周期，支持 `ms`/`s`/`m` 后缀 |
 | `rtt` | `timeout_ms` | duration | `100ms` ~ `60000ms` | 单次超时 |
 | `rtt` | `window_size` | uint | `2` ~ `1000` | RTT 滑动窗口大小（jitter 计算窗口） |
-| `rssi`/`tcp_loss`/`traffic`/`quality`/`wifi_loss`/`http_latency`/`process_profiler`/`tcp_retrans`/`tcp_conn`/`skb_drop`/`tcp_connect` | `enabled` | bool | `true` / `false` | 启用开关 |
-| `rssi`/`tcp_loss`/`traffic`/`quality`/`wifi_loss`/`http_latency`/`process_profiler`/`tcp_retrans`/`tcp_conn`/`skb_drop`/`tcp_connect` | `interval_ms` | duration | `1000ms` ~ `600000ms` | 采样周期 |
+| `rssi`/`tcp_loss`/`traffic`/`quality`/`host_pressure`/`wifi_loss`/`http_latency`/`process_profiler`/`tcp_retrans`/`tcp_conn`/`skb_drop`/`tcp_connect` | `enabled` | bool | `true` / `false` | 启用开关 |
+| `rssi`/`tcp_loss`/`traffic`/`quality`/`host_pressure`/`wifi_loss`/`http_latency`/`process_profiler`/`tcp_retrans`/`tcp_conn`/`skb_drop`/`tcp_connect` | `interval_ms` | duration | `1000ms` ~ `600000ms` | 采样周期 |
 | `bluetooth` | `enabled` | bool | `true` / `false` | 启用开关（同时控制 `bt_events`） |
 | `bluetooth` | `interval_ms` | duration | `1000ms` ~ `60000ms` | 采样周期 |
 | `bluetooth` | `bpf_obj` | string | 路径 | Phase2 eBPF 对象路径 |

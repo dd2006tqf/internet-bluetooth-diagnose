@@ -94,3 +94,40 @@ TEST_F(W4SnapshotLifecycleTest, CrossConsumerSnapshotConsistency) {
 
     // 结论绝对同源一致
 }
+
+// --- 5. 观测者归因字段必须真正走出进程 ---
+//
+// 这个字段曾经是典型的「孤儿面」：server.cpp 把它写进 NetworkExperience，
+// 单元测试也覆盖了判定逻辑，但 toExperienceJsonV2 —— GetNetworkExperience
+// 的唯一出口 —— 从不序列化它。于是无论现场发生什么，
+// `weaknet-cli experience` 都读不到任何归因结论，机器可读的那一半等于不存在。
+TEST_F(W4SnapshotLifecycleTest, ObserverAttributionEscapesThroughV2Json) {
+    auto s = std::make_shared<AssessmentSnapshot>();
+    s->experience.overall = HealthState::UNKNOWN;
+    s->experience.dns_service.state = HealthState::UNKNOWN;
+    s->experience.dns_service.reason = "observer_unreliable_capture_emit_failure";
+    s->experience.observer_attribution = ObserverAttribution::SELF_INFLICTED;
+    s->experience.observer_attribution_detail =
+        "Observer degraded while host CPU was saturated";
+    store.publish(s);
+
+    auto snap = store.latest();
+    ASSERT_NE(snap, nullptr);
+
+    const std::string json = LegacyAdapter::toExperienceJsonV2(snap->experience);
+    EXPECT_NE(json.find("\"observer_attribution\":\"SELF_INFLICTED\""),
+              std::string::npos)
+        << json;
+    EXPECT_NE(json.find("\"observer_attribution_detail\":\"Observer degraded"), std::string::npos)
+        << json;
+
+    // 无降级时必须稳定输出 NONE，且既有关键字段一字不动
+    auto clean = std::make_shared<AssessmentSnapshot>();
+    clean->experience.overall = HealthState::GOOD;
+    store.publish(clean);
+    const std::string clean_json =
+        LegacyAdapter::toExperienceJsonV2(store.latest()->experience);
+    EXPECT_NE(clean_json.find("\"observer_attribution\":\"NONE\""), std::string::npos);
+    EXPECT_NE(clean_json.find("\"schema_version\":2"), std::string::npos);
+    EXPECT_NE(clean_json.find("\"observer_attribution_detail\":\"\""), std::string::npos);
+}

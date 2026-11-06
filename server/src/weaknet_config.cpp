@@ -249,6 +249,22 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         *error = "quality: unknown field '" + field + "'";
         return false;
     }
+    if (mon == "host_pressure") {
+        // 区间校验与运行时 set 路径（applyMonitorParam）逐字保持一致，
+        // 避免出现"yaml 能写、weaknet-cli set 拒收"的双标准。
+        if (field == "enabled") return setBoolField(cfg->host_pressure.enabled, val, error);
+        if (field == "interval" || field == "interval_ms") {
+            uint32_t ms = 0;
+            if (!parseDurationMs(val, &ms) || ms < 1000 || ms > 600000) {
+                *error = "host_pressure.interval: must be 1000ms~600000ms";
+                return false;
+            }
+            cfg->host_pressure.interval_ms.store(ms);
+            return true;
+        }
+        *error = "host_pressure: unknown field '" + field + "'";
+        return false;
+    }
     if (mon == "bluetooth") {
         if (field == "enabled") return setBoolField(cfg->bluetooth.enabled, val, error);
         if (field == "interval" || field == "interval_ms") return setDurationField(cfg->bluetooth.interval_ms, val, error);
@@ -685,6 +701,7 @@ bool getMonitorEnabled(const WeakNetConfig& cfg, const std::string& monitor, boo
     else if (monitor == "tcp_loss") *enabled = cfg.tcp_loss.enabled.load();
     else if (monitor == "traffic") *enabled = cfg.traffic.enabled.load();
     else if (monitor == "quality") *enabled = cfg.quality.enabled.load();
+    else if (monitor == "host_pressure") *enabled = cfg.host_pressure.enabled.load();
     else if (monitor == "bluetooth") *enabled = cfg.bluetooth.enabled.load();
     // bt_events 与 bt_hci_traffic 与 bluetooth 同属蓝牙数据域、共用一个 enabled 开关，
     // 但它们是独立插件：bluetooth 走 BlueZ D-Bus 采集状态，
@@ -713,6 +730,7 @@ bool setMonitorEnabled(WeakNetConfig* cfg, const std::string& monitor, bool enab
     else if (monitor == "tcp_loss") cfg->tcp_loss.enabled.store(enabled);
     else if (monitor == "traffic") cfg->traffic.enabled.store(enabled);
     else if (monitor == "quality") cfg->quality.enabled.store(enabled);
+    else if (monitor == "host_pressure") cfg->host_pressure.enabled.store(enabled);
     else if (monitor == "bluetooth") cfg->bluetooth.enabled.store(enabled);
     else if (monitor == "bt_events") cfg->bluetooth.enabled.store(enabled);
     else if (monitor == "bt_hci_traffic") cfg->bluetooth.enabled.store(enabled);
@@ -763,6 +781,12 @@ static bool applyMonitorParam(WeakNetConfig* cfg, const std::string& key,
     if (mon == "traffic") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "traffic.enabled: invalid bool"; return false; } cfg->traffic.enabled.store(b); return true; }
         if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "traffic.interval: must be 1000ms~600000ms"; return false; } cfg->traffic.interval_ms.store(ms); return true; }
+    }
+    if (mon == "host_pressure") {
+        if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "host_pressure.enabled: invalid bool"; return false; } cfg->host_pressure.enabled.store(b); return true; }
+        if (field == "interval" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 600000)) { if (error) *error = "host_pressure.interval: must be 1000ms~600000ms"; return false; } cfg->host_pressure.interval_ms.store(ms); return true; }
+        *error = "host_pressure: unknown field '" + field + "'";
+        return false;
     }
     if (mon == "quality") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "quality.enabled: invalid bool"; return false; } cfg->quality.enabled.store(b); return true; }
@@ -1292,10 +1316,11 @@ bool ConfigTransaction::loadPriorValues(std::map<std::string, std::string>* out)
 
 std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& monitor,
                                  std::string* error) {
-    // 未知 monitor 直接报错（支持 "all" + 15 个监控器 + "server" + "edge"）
+    // 未知 monitor 直接报错（支持 "all" + 各监控器名 + "server" + "edge"）。
+    // 名单只增不减：漏一个就等于该监控器"可 set 但不可 get"，用户无从发现。
     static const std::set<std::string> valid = {
         "all", "server", "rtt", "rssi", "tcp_loss", "traffic", "quality",
-        "bluetooth", "dns", "wifi_loss", "http_latency", "process_profiler",
+        "bluetooth", "dns", "wifi_loss", "http_latency", "process_profiler", "host_pressure",
         "tcp_retrans", "tcp_conn", "skb_drop", "tcp_connect", "tcp_rtt", "active_probe", "edge"
     };
     if (valid.find(monitor) == valid.end()) {
@@ -1335,6 +1360,12 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         json << "\"rssi\":{";
         writeBool("enabled", cfg.rssi.enabled.load());
         writeUint("interval_ms", cfg.rssi.interval_ms.load());
+        json.seekp(-1, std::ios_base::cur); json << "},";
+    }
+    if (monitor == "all" || monitor == "host_pressure") {
+        json << "\"host_pressure\":{";
+        writeBool("enabled", cfg.host_pressure.enabled.load());
+        writeUint("interval_ms", cfg.host_pressure.interval_ms.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "tcp_loss") {

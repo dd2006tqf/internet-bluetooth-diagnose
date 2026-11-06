@@ -87,6 +87,7 @@ namespace LogModule {
     constexpr const char* INTERFACE    = "interface";
     constexpr const char* BLUETOOTH    = "bluetooth";
     constexpr const char* SYSTEM       = "system";
+    constexpr const char* HOST_PRESSURE = "host_pressure";
 }
 
 /**

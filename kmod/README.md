@@ -11,6 +11,13 @@
 >
 > 换句话说：**当前项目的主构建、部署流程、发布产物都不会因为本目录存在而改变。**
 > 如果有人发现某个脚本引用了本目录，那是个 bug。
+>
+> **例外（2026-11-06）**：`weaknet_cpu_stat` 的共享 ABI 头 `weaknet_kmod_abi.h`
+> 已被服务端 `server/src/host_pressure_monitor.cpp` include，用来把 CPU 压力接进
+> 观测者降级归因（`CPU_BUSY_RATIO` → `observer_attribution`）。这是本目录第一次
+> 进入主构建，但**只依赖头文件**：不加载 .ko、不打包 .ko、不要求设备节点存在。
+> 设备节点缺失时该消费者恒报 `UNAVAILABLE`，不伪造 0，业务链路行为不变。
+> 其余边界（不进 CI、不进 OTA manifest、不新增 D-Bus 方法）仍然成立。
 
 ---
 

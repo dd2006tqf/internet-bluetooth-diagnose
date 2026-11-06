@@ -36,6 +36,13 @@ monitors:
     enabled: true
     interval_ms: 15000
 
+  # 采集端自身 CPU 压力（HOST 域证据）。
+  # 数据源是实验性内核模块 /dev/weaknet_cpu_stat；设备节点不存在时
+  # 指标恒为 UNAVAILABLE，整条业务链路行为与未启用本插件时完全一致。
+  host_pressure:
+    enabled: true
+    interval_ms: 15000   # 与 quality 对齐；CPU 值只用于那一轮评估的归因
+
   bluetooth:
     enabled: true
     interval_ms: 3000

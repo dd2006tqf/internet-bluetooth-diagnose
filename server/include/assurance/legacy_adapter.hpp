@@ -221,6 +221,18 @@ public:
         }
         json << "],";
 
+        // 观测者降级归因（机器可读）。
+        //
+        // 为什么必须进这里：该字段此前只写进 NetworkExperience，而
+        // toExperienceJsonV2 是 GetNetworkExperience 的唯一出口
+        // （dbus_service.cpp:923）——不序列化就等于没有任何消费者能读到，
+        // 是标准的孤儿字段。归因值域是四个固定字符串，第 2 层判定
+        // （observer_attribution.hpp:65-80）保证不会出现别的值。
+        json << "\"observer_attribution\":\""
+             << observerAttributionToString(exp.observer_attribution) << "\",";
+        json << "\"observer_attribution_detail\":"
+             << "\"" << exp.observer_attribution_detail << "\",";
+
         json << "\"primary_issue\":" << (exp.primary_issue.has_value() ? ("\"" + exp.primary_issue.value() + "\"") : "null");
         json << "}";
         return json.str();

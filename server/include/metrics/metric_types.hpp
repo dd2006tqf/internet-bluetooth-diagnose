@@ -23,7 +23,18 @@ enum class MetricId {
     DNS_INFLIGHT,
     TCP_RETRANS_LOSS_PCT,
     TCP_CONN_ACTIVE,
-    TCP_CONN_ACCEPT_RATE
+    TCP_CONN_ACCEPT_RATE,
+
+    /// 采集端自身 CPU 压力（HOST 域，0~1）。
+    ///
+    /// 存在的理由不是"多一个指标"，而是回答一个现有证据链答不出的问题：
+    /// eBPF 掉证据（capture_emit_failure_ratio 高）到底是**网络真的坏了**，
+    /// 还是**板子 CPU 被打满、采集线程抢不到 CPU**。二者在旧证据上完全同形，
+    /// 会把采集端过载误判成网络故障。
+    ///
+    /// 本指标把"观测者自身状态"变成一等证据，使归因可以往下分辨一层。
+    /// 数据来源是 kmod/weaknet_cpu_stat（4 ms 粒度的 per-CPU 累计时间）。
+    CPU_BUSY_RATIO
 };
 
 inline const char* metricIdToString(MetricId id) {
@@ -45,6 +56,7 @@ inline const char* metricIdToString(MetricId id) {
         case MetricId::TCP_RETRANS_LOSS_PCT: return "tcp_retrans_loss_pct";
         case MetricId::TCP_CONN_ACTIVE: return "tcp_conn_active";
         case MetricId::TCP_CONN_ACCEPT_RATE: return "tcp_conn_accept_rate";
+        case MetricId::CPU_BUSY_RATIO: return "cpu_busy_ratio";
         default: return "unknown";
     }
 }
@@ -163,6 +175,21 @@ inline MetricDescriptor getMetricDescriptor(MetricId id) {
         case MetricId::TCP_CONN_ACCEPT_RATE:
             return {MetricId::TCP_CONN_ACCEPT_RATE, "tcp_conn_accept_rate", MetricUnit::COUNT, MetricScope::GLOBAL,
                     SourceSemantics::CUMULATIVE_COUNTER, PublishedSemantics::INTERVAL_RATE, 10000ms, 30000ms};
+        case MetricId::CPU_BUSY_RATIO:
+            /*
+             * HOST 域首个投入使用的指标（MetricScope::HOST 在此之前只有
+             * metrics_registry.hpp 的 scopeKey() 拼接逻辑，从无指标使用）。
+             *
+             * 语义：全系统 CPU 忙碌占比 0~1（多核按累计时间加权，不是算术平均，
+             * 避免单核打满被 8 核平均稀释掉）。
+             *
+             * GAUGE：源数据是 /dev/weaknet_cpu_stat 的**累计**纳秒，但本驱动的
+             * 插件内部已经做了区间差值并只发布比率，因此对外粒度是瞬时值。
+             * 采样周期与 quality 线程对齐（15s），freshness 给两个周期，
+             * 容许一次抖动而不至于让下游立刻判 STALE。
+             */
+            return {MetricId::CPU_BUSY_RATIO, "cpu_busy_ratio", MetricUnit::PERCENT, MetricScope::HOST,
+                    SourceSemantics::CUMULATIVE_COUNTER, PublishedSemantics::GAUGE, 15000ms, 30000ms};
         default:
             return {id, "unknown", MetricUnit::COUNT, MetricScope::INTERFACE,
                     SourceSemantics::GAUGE, PublishedSemantics::GAUGE, 10000ms, 30000ms};

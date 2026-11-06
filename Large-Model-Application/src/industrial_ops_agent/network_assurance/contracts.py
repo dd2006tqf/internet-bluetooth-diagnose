@@ -206,6 +206,24 @@ class NetworkExperienceSnapshot(_ClosedModel):
     warnings: list[str] = Field(default_factory=list, max_length=64)
     primary_issue: str | None = Field(default=None, max_length=512)
 
+    # --- observer attribution (edge-side evidence quality) --------------------
+    # The edge's collection layer can degrade for two reasons that look
+    # identical in the old evidence: the observed network really failed, or
+    # the device's own CPU was saturated so the collector could not keep up.
+    # The kernel module (kmod/weaknet_cpu_stat) makes the second case
+    # measurable; these two fields carry that verdict.
+    #
+    #   NONE                no SLE reported observer degradation
+    #   UNATTRIBUTED        degraded, but no host CPU sample was available
+    #   SELF_INFLICTED      degraded while host CPU was saturated
+    #   NOT_HOST_CPU_BOUND  degraded while host CPU was normal
+    #
+    # Defaults keep older edges (which never emit them) validating unchanged.
+    observer_attribution: Literal[
+        "NONE", "UNATTRIBUTED", "SELF_INFLICTED", "NOT_HOST_CPU_BOUND"
+    ] = "NONE"
+    observer_attribution_detail: str = Field(default="", max_length=1024)
+
     # --- identity / topology at capture time ---------------------------------
     # Collected by the edge because the server cannot observe the device's
     # layer-2 identity. These are what make "which network was it on when it

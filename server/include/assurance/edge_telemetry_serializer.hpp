@@ -144,6 +144,14 @@ inline std::string toEdgeTelemetrySnapshotJson(const NetworkExperience& exp, con
                  : "null");
     json << ",";
 
+    // 观测者降级归因（机器可读）。
+    // 云端契约 NetworkExperienceSnapshot 是 extra="forbid" 的封闭模型，
+    // 这里新增字段必须同时在 contracts.py 声明，否则整批遥测被云端拒收。
+    json << "\"observer_attribution\":\""
+         << observerAttributionToString(exp.observer_attribution) << "\",";
+    json << "\"observer_attribution_detail\":\""
+         << escapeJsonString(exp.observer_attribution_detail) << "\",";
+
     json << "\"link_type\":\"" << edgeLinkTypeToString(exp, topo) << "\"";
 
     // K4 板端补采：hardware_arch / os_kernel（uname 实测值，非编译期宏）。

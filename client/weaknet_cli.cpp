@@ -61,7 +61,8 @@ static void printUsage(const char* prog) {
         "\n"
         "监控器与参数目标：\n"
         "  插件监控器（支持 get/set 及 monitor 启停）：\n"
-        "        rtt, rssi, tcp_loss, traffic, quality, bluetooth, bt_events, bt_hci_traffic,\n"
+        "        rtt, rssi, tcp_loss, traffic, quality, host_pressure, bluetooth,\n"
+        "        bt_events, bt_hci_traffic,\n"
         "        dns, wifi_loss, http_latency, process_profiler, tcp_retrans,\n"
         "        tcp_conn, skb_drop, tcp_connect\n"
         "  常驻服务/全局组件（仅支持 get/set 调参，非插件）：\n"
@@ -549,7 +550,7 @@ int main(int argc, char** argv) {
         // 必须与 serializers 端的有效名集合保持一致（weaknet_config.cpp 的
         // serializeMonitorJson）。此前这里漏了 skb_drop / tcp_connect /
         // active_probe / edge——它们可以被 `set` 但 `list` 不显示，用户无从发现。
-        printf("rtt\nrssi\ntcp_loss\ntraffic\nquality\n"
+        printf("rtt\nrssi\ntcp_loss\ntraffic\nquality\nhost_pressure\n"
                "bluetooth\ndns\nwifi_loss\nhttp_latency\nprocess_profiler\n"
                "tcp_retrans\ntcp_conn\nskb_drop\ntcp_connect\ntcp_rtt\n"
                "active_probe\nedge\nserver\nall\n");
