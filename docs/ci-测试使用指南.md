@@ -21,7 +21,7 @@
 4. 远程运行功能测试（health/get/eBPF/指标/历史）
 5. 生成报告到 `ci-reports/`
 
-> **单元测试不在开发板上跑**。55 个 gtest 套件的归属是 x86：
+> **单元测试不在开发板上跑**。56 个 gtest 套件的归属是 x86：
 > `ctest --test-dir build-x86/server`（本地，也是 `.ai-harness/project-profile.json`
 > 的 `test-all` 命令）与 GitHub Actions。板端只部署 `test_ebpf`
 > （需要 root + 内核 eBPF，只能真机跑），由 `weaknet-test-full.sh` 的 Phase 11 执行。
@@ -50,7 +50,7 @@
 只在本地编译并打包 `dist-arm64/`，不部署到开发板。
 
 > 注意：`ci.sh` **不在本地跑单元测试**。本地跑单测请直接用
-> `ctest --test-dir build-x86/server`（x86，55 个套件）或容器内
+> `ctest --test-dir build-x86/server`（x86，56 个套件）或容器内
 > `ctest --test-dir build-arm64-native/server`。
 
 ### 完整参数列表
@@ -105,7 +105,7 @@ ci-reports/
 
 ## 测试覆盖
 
-### 单元测试（55 个套件）
+### 单元测试（56 个套件）
 
 跑法：`ctest --test-dir build-x86/server --output-on-failure`
 
@@ -163,6 +163,10 @@ ci-reports/
 | test_bt_hci_traffic_gtest | 蓝牙 HCI ACL 流量聚合与特征解析 |
 | test_bt_anomaly_detector_gtest | 蓝牙 L2 数据通道异常检测器（stall/degraded） |
 | test_bt_events_lifecycle_gtest | 跨插件指针读写锁纪律与 UsingInterfaceManager 显式停机 |
+| test_client_cli_contract_gtest | test_client CLI 子命令契约与板端冒烟脚本一致（静态分析，防假绿灯） |
+| test_looper_dispatch_gtest | D-Bus 派发层排空语义（单次只派发一条 / poll 不为内部积压唤醒 / 64 轮上限） |
+| test_observer_attribution_gtest | 观测者降级归因四分支真值表 + CPU 采样器缺失不得回落成 0 |
+| test_update_status_gtest | OTA 版本号数值比较（非字典序）+ apply 策略矩阵 + manifest 全量校验 |
 
 ### 功能测试
 

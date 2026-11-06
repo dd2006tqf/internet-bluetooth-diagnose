@@ -524,15 +524,15 @@ Skills 是来自 [superpowers](https://github.com/obra/superpowers) 框架的技
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
 | "编译一下" / "build" | `cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build-x86 -j$(nproc)` | x86 本地快速编译 |
-| "容器内编译" / "ARM64 编译" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Debug && cmake --build build-arm64 -j1'` | 需要 ~10 分钟（QEMU 模拟） |
-| "编译 eBPF" | `docker exec weaknet-arm64-dev bash -c 'cd /src && cmake --build build-arm64 --target ebpf -j1'` | 单独编译 eBPF 程序 |
+| "ARM64 编译" / "原生交叉编译" | `cmake -B build-arm64-native -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm64-cross.cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=ON && cmake --build build-arm64-native -j$(nproc)` | 宿主机原生交叉编译，全量约 40 秒 |
+| "编译 eBPF" | `cmake --build build-arm64-native --target ebpf -j$(nproc)` | 单独编译 12 个 eBPF 程序，约 1.5 秒 |
 
 ### 4.2 测试
 
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
 | "跑测试" / "test" | `build-x86/server/test/test_database_manager_gtest` | 运行指定测试 |
-| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure` | x86 全量单元测试（48 套件，无需 D-Bus/真机环境） |
+| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure` | x86 全量单元测试（56 套件，无需 D-Bus/真机环境） |
 
 ### 4.3 部署
 
@@ -548,7 +548,7 @@ Skills 是来自 [superpowers](https://github.com/obra/superpowers) 框架的技
 | 用户意图 | 执行命令 | 说明 |
 |---------|---------|------|
 | "板子在线吗" / "检查开发板" | `ping -c 1 -W 2 radxa-cubie-a7a.local && ssh radxa@radxa-cubie-a7a.local 'uname -m'` | 检查连通性 + 架构 |
-| "容器状态" | `docker ps --filter name=weaknet-arm64-dev` | 检查 ARM64 容器 |
+| "eBPF 产物确认" | `find build-arm64-native -name '*.bpf.o' \| wc -l` | 应为 12；旧的 `docker ps` 容器检查已随 QEMU 路径废弃 |
 | "CI 状态" | `gh run list --limit 5` | 查看 GitHub Actions 运行记录 |
 
 ---
@@ -588,9 +588,9 @@ Skills 是来自 [superpowers](https://github.com/obra/superpowers) 框架的技
 - 工作流**不能**用于配置 Claude Code
 
 ### 6.4 eBPF 编译注意事项
-- **eBPF 必须在 ARM64 容器内编译**，x86 上会报 `user_pt_regs` 错误
-- **容器内编译必须用 `-j1`**，QEMU 模拟下高并行度会 segfault
-- **增量编译**：必须保留 build 目录做增量编译，切勿每次 `rm -rf build`
+- **eBPF 推荐在宿主机原生交叉编译**（Clang 18 + `/opt/sysroot-bullseye-arm64`），`-j$(nproc)` 可满核并行，12 个程序约 1.5 秒
+- **旧的 ARM64 容器 + QEMU 路径已废弃**，仅在缺少 sysroot 时兜底；该路径下必须用 `-j1`（高并行度会 segfault），且 x86 直编 eBPF 会报 `user_pt_regs` 错误
+- **增量编译**：保留 `build-arm64-native` 做增量编译，切勿每次 `rm -rf` 清目录
 
 ---
 

@@ -3,7 +3,7 @@
 const fs = require('fs'), path = require('path'), crypto = require('crypto'), cp = require('child_process');
 
 const templatePaths = [
-  'PROJECT_ATTRIBUTION.md', 'CLAUDE.md', 'AGENTS.md', 'init.sh', '.cursorrules',
+  'PROJECT_ATTRIBUTION.md', 'CLAUDE.md', 'AGENTS.md', '.cursorrules',
   '.claude/settings.json', '.claude/skills/full-code-review/SKILL.md',
   '.codex/skills/full-code-review/SKILL.md', '.codex/skills/full-code-review/agents/openai.yaml',
   'docs/ai/openspec.md', 'docs/ai/implementation-economy.md', 'docs/ai/workflow.md',

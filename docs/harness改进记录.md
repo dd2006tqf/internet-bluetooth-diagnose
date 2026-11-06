@@ -230,3 +230,52 @@ bash scripts/change_abort.sh <change-name> --purge
 - **新增 scripts/ 下脚本后，必须同步三处**：`templatePaths`、`workflow-contract.json` `managed_scripts`、`manifest.json` 条目，然后 `manifest_sync.sh`——否则受管文档一旦引用它就触发 contract error。
 - **删除受管模板文件前，先查 `templatePaths`**：docs 清理误删模板会留下 ENOENT 潜伏错误，直到其它哈希错误修好才暴露。
 - 修完后验证基线：`harness_doctor --json` = pass（0 error / 0 warning）、`workflow_contract_check.sh` = OK、`project_index --check` = fresh。
+
+---
+
+## 改进点13：受管模板哈希长期漂移 + 删除文件未注销（2026-11-06）
+
+### 问题
+
+`harness_doctor --json` 报 32 checks / 31 pass / 1 fail，唯一失败项 `control.manifest`：
+
+```text
+loadManifest FAILED: managed template content mismatch: CLAUDE.md
+内容漂移: CLAUDE.md   recorded e964c46d… → actual 09295438…
+文件缺失: init.sh
+```
+
+两个缺陷叠加，且都只在“开工时”才炸：
+
+1. **内容漂移**：`f69a158`（2026-10-18）之后有 8+ 个 commit 编辑了 `CLAUDE.md`，但没有一个同步 `manifest.json` 的 `content_sha256`。`loadManifest()` 对 `ownership == "template"` 的条目逐个做内容校验（`docs/ai/` 之外不跳过），所以直接抛错。
+2. **幽灵条目**：`init.sh` 在 `2a80f6b` 被有意删除（旧启动包装，三个脚本均可直接调用，全仓零引用），但 `scripts/manifest_policy.js` 的 `templatePaths` 与 `manifest.json` 仍登记着它——属于「删除受管模板前没查 `templatePaths`」，正是改进点12 记下的教训再次发生。
+
+影响面被低估过：漂移不是“某条命令报错”，而是**所有调用 `loadManifest()` 的包装器全部不可用**——`snapshot_update.sh`、`evaluator_check.sh`、`evaluation_template.sh`、`evaluation_fix.sh`、`openspec_preflight.sh`、`change_scope.js`、`harness_doctor.js`。也就是下一个 change 既创建不了，也记录不了 evidence。
+
+### 修复
+
+按「描述当前状态的要改、记录历史事实的不改」原则，先取可复算基线再动手：
+
+1. **注销 `init.sh`**：从 `scripts/manifest_policy.js` 的 `templatePaths` 与 `manifest.json` 的 `managed_paths` 中同步移除（97 → 96 条），**不复活文件**——它是被有意删除的孤儿，复活会违反孤儿判定；
+2. **刷哈希**：`bash scripts/manifest_sync.sh`，自动修正 `CLAUDE.md` 与 `scripts/manifest_policy.js` 两条；
+3. 未改动任何其它受管脚本。
+
+### 修改文件
+
+- `scripts/manifest_policy.js`（`templatePaths` 移除 `init.sh`）
+- `.ai-harness/manifest.json`（移除 `init.sh` 条目；`CLAUDE.md` / `manifest_policy.js` 的 `content_sha256` 由 `manifest_sync.sh` 刷新）
+
+### 验证
+
+```text
+harness_doctor --json      → 32 checks, 32 pass（0 fail）
+loadManifest               → OK, upgrade_required = false
+openspec_preflight.sh      → manifest policy passed / OpenSpec preflight passed
+独立复核 template 条目     → 内容漂移(无) / 文件缺失(无)
+```
+
+### 教训
+
+- **改受管模板（`CLAUDE.md`、`AGENTS.md`、`prompts/`、`scripts/` 等）后必须跑 `manifest_sync.sh`**，否则漂移会潜伏到下次开工才炸，且症状是“工作流整体不可用”而不是“某条命令失败”。
+- **删除任何文件前先 `grep templatePaths`**：改进点12 已记过这条，本次是同一坑的第二次。建议把这条检查加入删除类操作的固定前置。
+- **诊断顺序**：先跑 `harness_doctor --json` 看是否 `control.manifest` 失败，再 `node -e` 直接调 `loadManifest()` 拿首个错误——`loadManifest` 是快速失败的，一次只报一个，需逐个修。

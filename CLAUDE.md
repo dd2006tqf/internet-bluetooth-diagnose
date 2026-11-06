@@ -239,7 +239,7 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 |---------|---------|------|
 | "编译一下" / "build" | `cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build-x86 -j$(nproc)` | x86 本地快速编译 |
 | "跑测试" / "test" | `build-x86/server/test/test_database_manager_gtest` | 运行指定测试 |
-| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure` | x86 全量单元测试（53 套件，无需 D-Bus/真机环境） |
+| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure` | x86 全量单元测试（56 套件，无需 D-Bus/真机环境） |
 
 ### 部署到开发板
 
@@ -330,11 +330,11 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 
 ### 注意事项
 
-- **eBPF 必须在 ARM64 容器内编译**，x86 上会报 `user_pt_regs` 错误
-- **容器内编译必须用 `-j1`**，QEMU 模拟下高并行度会 segfault
+- **eBPF 推荐在宿主机原生交叉编译**（Clang 18 + `/opt/sysroot-bullseye-arm64`），约 1.5 秒完成 12 个程序；旧的 ARM64 容器 + QEMU 路径已废弃，仅在无 sysroot 时作为兜底
+- **旧容器路径必须用 `-j1`**，QEMU 模拟下高并行度会 segfault；**原生交叉编译可直接 `-j$(nproc)`**
 - **开发板测试需要 sudo**，脚本已内置 `dbus-run-session`
 - **部署前需清理残留目录**，脚本已自动处理
-- **增量编译**：ARM64 容器内 QEMU 模拟编译极慢（全量约 10-20 分钟），**必须保留 build-arm64 目录做增量编译**。只有改了代码的文件会被重编译（几秒完成），切勿每次 `rm -rf build-arm64` 清目录全量重编。仅在 CMakeLists.txt 变更或头文件依赖变化时才需要清理重编。
+- **增量编译**：保留 `build-arm64-native` 目录做增量编译，只有改动文件会被重编。原生路径全量约 40 秒，不必每次清目录重编；仅在 CMakeLists.txt 变更或头文件依赖变化时才需要清理重编。
 
 ### 正确的工作流程
 

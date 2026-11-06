@@ -103,7 +103,7 @@
       "path": "CLAUDE.md",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:e964c46d69da2408c2d47127e4bcd5a09b050b9f677bb63fd5960cf7e189e1a6"
+      "content_sha256": "sha256:b91b1d03b86cf2aee1a296d86197dc3c3dbb14fe2b4e570fbffd2342a86abdf0"
     },
     {
       "path": "debt-register.md",
@@ -188,12 +188,6 @@
       "ownership": "template",
       "template_version": 2,
       "content_sha256": "sha256:a624823ee98b3915a9777435eb348b01582ad49f8042811d43c62773c658bfbf"
-    },
-    {
-      "path": "init.sh",
-      "ownership": "template",
-      "template_version": 2,
-      "content_sha256": "sha256:b75d19400cf24698f245b3583da56c594e36d0f4b47d431b512e8f64bb813041"
     },
     {
       "path": "openspec/changes/",
@@ -439,7 +433,7 @@
       "path": "scripts/manifest_policy.js",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:812dc2e0343fc81adac11a5079f40ba8b07b6c8a29a2cb39e8a1f5bc4b495769"
+      "content_sha256": "sha256:1f7b7ef89073b1b9d048016b63159a566b3274a3c90ea6c349634d6e4d1516f0"
     },
     {
       "path": "scripts/manifest_sync.sh",
