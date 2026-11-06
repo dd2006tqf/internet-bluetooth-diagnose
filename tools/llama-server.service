@@ -19,10 +19,15 @@ After=network.target
 #   * 安装方式见 docs/本地LLM部署方案.md §3.4：scp 本文件到
 #     /etc/systemd/system/llama-server.service 后 daemon-reload + enable。
 #
-# 板端（Radxa Cubie A7A）CPU 拓扑：8× Cortex-A55（实测 /proc/cpuinfo 与
-# 频率表均无 A76 大核），因此 CPUAffinity 绑定的是低编号核心，含义是
-# "把推理压在固定两颗核上、把其余核心留给 weaknet-server 与系统"，
-# 而不是文档早期所说的"绑定 A76 大核"。
+# 板端（Radxa Cubie A7A）CPU 拓扑（2026-11-05 逐核复核）：cpu0-5 为 Cortex-A55
+# （`CPU part` = 0xd05，最高 1.79 GHz，cpu_capacity = 385），cpu6-7 为 Cortex-A76
+# （0xd0b，最高 2.00 GHz，cpu_capacity = 1024）。因此 CPUAffinity=0 1 绑定的是
+# **两颗 A55 小核**，含义是"把推理压在固定两颗核上、把其余核心留给
+# weaknet-server 与系统"。
+#
+# 待定项：若要给推理留大核，此处应改为 CPUAffinity=6 7。当前保持 0 1 是因为
+# 尚未实测改绑大核对推理吞吐与弱网服务的影响，不做无依据的调整。
+# 注意 lscpu 只报 cpu0 的型号，据它推断全核型号会得出"全是 A55"的错误结论。
 
 [Service]
 Type=simple

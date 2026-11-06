@@ -121,9 +121,15 @@ bash tools/ota_p0c1_drill.sh          → PASS=36  FAIL=0
 
 ### 已知的口径修正
 
-- 板端 CPU **是 8× Cortex-A55，没有 A76 大核**（实测 `/proc/cpuinfo` 与
-  `scaling_available_frequencies`）。文档旧称"绑定两颗 A76 大核"已改写为
-  "固定两颗核、其余留给弱网服务与系统"。
+- ~~板端 CPU **是 8× Cortex-A55，没有 A76 大核**~~ ← **此结论已于 2026-11-05 被推翻，是误判。**
+  当时的依据是 `lscpu` 与 `scaling_available_frequencies`，但两者都只反映 **cpu0**
+  （第一个核）的型号与频率，据此推断全核型号会出错。
+  2026-11-05 逐核读 `/proc/cpuinfo` 的 `CPU part` 实测：cpu0-5 为 `0xd05`
+  （Cortex-A55，最高 1.79 GHz，`cpu_capacity`=385），cpu6-7 为 `0xd0b`
+  （Cortex-A76，最高 2.00 GHz，`cpu_capacity`=1024）。
+  因此本板是 **2×A76 + 6×A55 big.LITTLE**，`CPUAffinity=0 1` 绑的是两颗 A55 小核。
+  更正后的口径已同步到 `docs/本地LLM部署方案.md`、`docs/架构设计-模块与代码结构.md`、
+  `tools/llama-server.service` 与 `弱网项目简历知识库.md`。
 
 ## 结果
 

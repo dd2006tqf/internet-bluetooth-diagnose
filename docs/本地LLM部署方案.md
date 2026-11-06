@@ -2,7 +2,11 @@
 
 > **⚠️ 版本说明（2026-09-24 更新）**：本文档撰写时规划目标为 Qwen2.5-3B，但板端**实测选型为 Qwen2.5-0.5B-Instruct-Q4_K_M**（469MB，解码 ~3.49 tok/s，详见 `架构设计-模块与代码结构.md` §12.4 实测基线）。下文 3B 的容量/性能数字为规划预估值，非实测值。
 >
-> **SoC 拓扑**：Radxa Cubie A7A 搭载 Allwinner A733（`sun60iw2`），为 **2× Cortex-A76 + 6× Cortex-A55** big.LITTLE（§1.1 正确）。注意 `AI_EDGE_DEPLOYMENT_PLAN.md` §3 误写为 "8 核 Cortex-A55"，以本节为准。
+> **SoC 拓扑**：Radxa Cubie A7A 搭载 Allwinner A733（`sun60iw2`），为 **2× Cortex-A76 + 6× Cortex-A55** big.LITTLE。
+>
+> 2026-11-05 板端复核（`/proc/cpuinfo` 的 `CPU part` 逐核统计）：cpu0-5 为 `0xd05`（Cortex-A55，最高 1.79 GHz，`cpu_capacity=385`），cpu6-7 为 `0xd0b`（Cortex-A76，最高 2.00 GHz，`cpu_capacity=1024`）。
+>
+> **注意**：本文一度贴过"实测为 8× A55、无 A76"的纠正，那是误判——`lscpu` 与 `scaling_available_frequencies` 只报 cpu0（第一个核）的型号与频率，据此推断全核型号会得出错误结论。必须逐核读 `CPU part` 才能分辨大小核。
 
 ## 一、硬件能力分析
 
@@ -10,9 +14,9 @@
 
 | 资源 | 规格 | LLM 推理适用性 |
 |------|------|---------------|
-| CPU 大核 | 2× Cortex-A76 @ 2.0GHz | 推理主计算单元，单核 IPC 接近 Intel Skylake 的 70% |
-| CPU 小核 | 6× Cortex-A55 @ 1.8GHz | 辅助计算，token 生成时参与 batch 处理 |
-| RAM | 8GB LPDDR5 (带宽 ~25GB/s) | 足够加载 3-4B 参数的 INT4 量化模型 |
+| CPU 大核 | 2× Cortex-A76 @ 2.0GHz（cpu6-7） | 推理主计算单元，单核 IPC 接近 Intel Skylake 的 70% |
+| CPU 小核 | 6× Cortex-A55 @ 1.8GHz（cpu0-5） | 辅助计算，token 生成时参与 batch 处理 |
+| RAM | 8GB（板端未暴露内存型号，`MemTotal` 实测 8112516 kB ≈ 7.7 GiB） | 足够加载 3-4B 参数的 INT4 量化模型 |
 | GPU | Imagination BXM-4-64 MC1 (Vulkan 1.3 / OpenCL 3.0) | 单核 GPU，Vulkan 后端可卸载部分矩阵运算 |
 | NPU | Vivante VIP9000 (3 TOPS@INT8, FP16/BF16) | Transformer 算子支持有限，不推荐用于 LLM |
 | 存储 | UFS 3.1 128GB (读 ~200MB/s) | 3GB 模型文件 ~15 秒加载完毕 |
@@ -54,7 +58,7 @@ Python RAG 服务             ~200MB        FAISS + LangChain
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  Cubie A7A (Debian 11, ARM64, 8GB LPDDR5)                       │
+│  Cubie A7A (Debian 11, ARM64, 2×A76 + 6×A55, 8GB)              │
 │                                                                  │
 │  ┌─────────────────────┐   ┌──────────────────────────────┐     │
 │  │ weaknet-dbus-server │   │ llama.cpp server              │     │
@@ -310,9 +314,14 @@ echo "状态: ssh $BOARD 'sudo systemctl status llama-server'"
 > ```
 > 若 `MemoryMax` 显示 `infinity`，说明装上去的不是本仓库这份文件。
 >
-> **板端 CPU 拓扑纠正**：实测 `/proc/cpuinfo` 为 8× Cortex-A55（无 A76 大核），
-> 因此 `CPUAffinity=0 1` 的含义是"把推理钉在固定两颗核上、其余核留给
-> weaknet-server 与系统"，而非本文早期所称的"绑定 A76 大核"。
+> **板端 CPU 拓扑（2026-11-05 逐核复核）**：cpu0-5 为 Cortex-A55（`CPU part` = `0xd05`，
+> 最高 1.79 GHz，`cpu_capacity` = 385），cpu6-7 为 Cortex-A76（`0xd0b`，最高 2.00 GHz，
+> `cpu_capacity` = 1024）。因此 `CPUAffinity=0 1` 绑定的是 **两颗 A55 小核**，
+> 含义是"把推理压在固定两颗核上、其余核留给 weaknet-server 与系统"。
+>
+> **若要给推理留大核，应改成 `CPUAffinity=6 7`**——当前 unit 用的是 0 1。
+> 这是 2026-11-01 单源化时的一处遗留：当时误判"全核皆 A55"，于是把绑小核
+> 当成了等价操作。是否改绑大核是待定项，需实测后再定。
 
 `llama-server` 参数详解：
 
@@ -322,11 +331,11 @@ echo "状态: ssh $BOARD 'sudo systemctl status llama-server'"
 | `--host 127.0.0.1` | 仅本地 | 安全：不暴露到网络 |
 | `--port 8080` | 8080 | HTTP 服务端口 |
 | `-c 2048` | 2048 | 上下文窗口（token 数） |
-| `-t 4` | 4 线程 | A76×2 + A55×2，留核给弱网服务 |
+| `-t 4` | 4 线程 | 2×A55 + 2×A76 各取一半，留核给弱网服务 |
 | `-np 2` | 2 线程 | prompt 处理并行度 |
 | `--mlock` | 锁定内存 | 防止模型被 swap 到 UFS（利用 8GB 充裕的优势） |
 
-线程分配逻辑：2 个 A76 大核承担推理主力 + 2 个 A55 辅助，留 4 个 A55 给弱网服务和系统。
+线程分配逻辑：2 个 A76 大核承担推理主力 + 2 个 A55 辅助。注意 `CPUAffinity=0 1` 只框住两颗 A55，线程实际落在哪几颗核上由调度器决定——单元文件的核绑定与这里的线程数设计目前并不自洽，属于待收拾的遗留项。
 
 ### 3.5 步骤 4：开发板模型下载策略
 
@@ -552,7 +561,7 @@ VIP9000 的 SDK（TIM-VX）面向 CNN/RNN，对 Transformer Attention 的支持�
 └────────────────────────────────────────────┘
 ```
 
-这些任务可以在 NPU 上 24/7 运行，不占用 A76 大核的 LLM 推理资源。
+这些任务可以在 NPU 上 24/7 运行，不占用 CPU 的 LLM 推理资源。
 
 ---
 
@@ -616,8 +625,9 @@ VIP9000 的 SDK（TIM-VX）面向 CNN/RNN，对 Transformer Attention 的支持�
 
 ```
 排查清单：
-1. 确认 A76 大核被使用：taskset -cp $(pgrep llama-server)
-   应显示 0-7（8 核），或手动绑定 taskset -c 0,1,4,5
+1. 确认大核被使用：taskset -cp $(pgrep llama-server)
+   板端 cpu6-7 是 A76 大核；当前 unit 是 CPUAffinity=0 1，即在两颗 A55 上运行。
+   要让推理上大核，改 CPUAffinity=6 7（需实测确认影响）
 2. 检查是否在 swap：grep VmSwap /proc/$(pgrep llama-server)/status
 3. 检查 CPU 频率：cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq
 4. 如果没有开启 BLAS，重新编译开启 OpenBLAS
