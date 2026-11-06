@@ -4,6 +4,9 @@
 目的是把项目的观测能力从用户态/eBPF 延伸到内核态，验证这条技术路线是否值得
 继续投入。
 
+目录里有三个模块，分两类：`weaknet_cpu_stat` 与 `weaknet_softirq` 是**数据采集**，
+`weaknet_lradc_keys` 是**驱动技术栈练习**（见第八节）。
+
 > **定位：实验代码，不进生产链路。**
 > 不进 `tools/ci.sh`、不进 OTA manifest、不注册 `IMonitorPlugin`、
 > 不新增 D-Bus 方法、不进 `config.yaml`。全部使用方式就是板端手工
@@ -21,14 +24,18 @@
 
 ---
 
-## 一、两个模块
+## 一、三个模块
 
-| 模块 | 源文件 | 作用 | 设备节点 |
+| 模块 | 源文件 | 作用 | 用户态出口 |
 | --- | --- | --- | --- |
 | `weaknet_cpu_stat` | `weaknet_cpu_stat.c` | per-CPU 累计时间（user/nice/system/idle/iowait/irq/softirq/steal/guest/guest_nice） | `/dev/weaknet_cpu_stat` |
 | `weaknet_softirq` | `weaknet_softirq.c` | per-CPU 十类软中断累计触发次数 | `/dev/weaknet_softirq` |
+| `weaknet_lradc_keys` | `weaknet_lradc_keys.c` | Allwinner A733 LRADC 按键驱动（L1 骨架 / L2 中断 / L3 input / L4 debugfs） | `/dev/input/eventN` |
 
-两者同构：`hrtimer` 1 Hz 采样 → 写入内核私有缓冲区 → seqlock 保护下
+前两个同构，是**数据采集**类模块；第三个性质不同，是**驱动技术栈练习**，见第八节。
+三者都不进生产链路。
+
+前两个模块同构：`hrtimer` 1 Hz 采样 → 写入内核私有缓冲区 → seqlock 保护下
 `memcpy` 到 `vmalloc_user` 共享页 → 用户态 `mmap` 只读访问。
 
 共享的 ABI 结构定义在 `weaknet_kmod_abi.h`，内核模块与用户态工具**包含同一份头文件**，
@@ -296,8 +303,154 @@ per-CPU 的累计快照与基线，这是当前实现没有做的。
   （本板未开，`kcpustat_cpu_fetch` 走的是内联 `*dst = kcpustat_cpu(cpu)` 分支）。
 - **没有**做长期稳定性测试（>1 小时）与内存泄漏检测。
 - **没有**做跨内核版本兼容性矩阵，只验证了 5.15.147 与编译期的 6.8。
+- **没有**在 `weaknet_lradc_keys` 上验证到真实 ADC 转换（本板硬件行为，见第八节）。
+  它的 L3 链路是靠 debugfs 注入证明的，不是靠物理按键。
+- **没有**让 `weaknet_lradc_keys` 的 `input->close` 被观察到（X server 常驻占用
+  evdev 节点，open 计数不归零，见第八节）。
 
-## 八、来源与许可
+## 八、`weaknet_lradc_keys`：LRADC 按键驱动
+
+前两个模块是数据采集，这第三个性质不同：它是**驱动技术栈的完整练习**，覆盖
+`platform_driver` / OF 匹配 / MMIO / 时钟 / 复位 / 中断 / input 子系统 / debugfs
+七件事。目标板 `radxa cubie a7a`（Allwinner A733 / sun60iw2p1）。
+
+### 为什么不用 mainline 驱动
+
+Linux 主线有 `drivers/input/keyboard/sun4i-lradc-keys.c`，但在这个板上用不了：
+
+1. **compatible 不匹配**——主线只认 `allwinner,sun4i-a10-lradc-keys` 和
+   `allwinner,sun8i-a83t-r-lradc`，本板 DT 用的是 BSP 私有串
+   `allwinner,keyboard_1350mv`。
+2. **DT 键表格式不同**——主线用 `channel { linux,code; ... }` 子节点；本板用
+   `key_cnt = <5>` + `key0..key4 = <voltage_mv keycode>` 成对属性，没有子节点。
+3. **没有 `vref-supply`**——主线靠 regulator 取参考电压，本板把电压编码在
+   compatible 字符串后缀里（`1350mv`），只能从字符串解析。
+4. **时钟/复位没被主线驱动管**——主线完全不碰 clk 与 reset，本板不显式
+   `clk_prepare_enable` + `reset_control_deassert` 就拿不到可用寄存器。
+
+因此这里选择重写而非移植，寄存器与位定义参照主线（GPL-2.0-or-later,
+Copyright (C) 2014 Hans de Goede），其余部分为本项目重写。
+
+### 硬件事实（实测）
+
+| 项 | 值 |
+| --- | --- |
+| 寄存器基址 | `0x02524000`，长度 `0x100` |
+| 中断 | IRQ 428（SPI 37，电平触发） |
+| 时钟 | `lradc`，26 MHz |
+| 复位 | DT resets phandle `0x12` / `0x47` |
+| 上电初值 | `CTRL=0x01000168`（ENABLE=0），`DATA0=DATA1=0x3f` |
+| 参考电压 | 1350 mV（来自 compatible 后缀） |
+| 按键表 | key0 210mV→KEY_VOLUMEUP(115) / key1 410→VOLUMEDOWN(114) / key2 590→MENU(139) / key3 750→ENTER(28) / key4 880→HOMEPAGE(172) |
+
+寄存器布局集中在源文件 1.2 节的 `#define` 块：`CTRL 0x00` / `INTC 0x04` /
+`INTS 0x08` / `DATA0 0x0c` / `DATA1 0x10`，`INTS` 为写 1 清零（W1C），
+采样值取 `DATA0 & 0x3f`（6 bit，满量程 63）。
+
+### 四层实现
+
+| 层 | 内容 | 关键点 |
+| --- | --- | --- |
+| L1 骨架 | `platform_driver` + `of_match_table` + DT 解析 + `devm_platform_ioremap_resource` + clk + reset | 资源全部走 `devm_*`，错误路径自动回收 |
+| L2 中断 | `devm_request_irq` + `INTS` 判源 + `DATA0` 读值 + 电压换算 + W1C 清中断 | 先 `request_irq` 再打 `INTC` 使能位，避免电平中断无人应答被记 spurious |
+| L3 input | `devm_input_allocate_device` + `set_bit(EV_KEY/EV_SYN)` + 逐键 `keybit` + `input_report_key` + `input_sync` | 上报在**锁外**做（input 子系统自带锁，嵌套会死锁） |
+| L4 debugfs | `regs` / `sample` / `selftest` / `raw` / `inject` 五个节点 | `raw` 可读写任意偏移，是定位「硬件为什么不转换」的关键工具 |
+
+**省电语义**是 L3 的核心：probe 之后 ADC **不转换**，只有用户态 `open`
+`/dev/input/eventN` 才在 `input->open` 回调里 `wn_lradc_enable()`，最后一个 fd
+关闭时在 `input->close` 里 `wn_lradc_disable()`。这是键盘类驱动的标准做法。
+
+### 本板实测：L3 通过，ADC 不转换
+
+**已验证通过的部分：**
+
+- probe 全链路：解析出 5 个键、映射寄存器、取得 26 MHz 时钟、复位 deassert、
+  `irq 428 registered`
+- `/proc/bus/input/devices` 出现 `weaknet-lradc-keys`，`Handlers=kbd event11`，
+  `EV=3`（EV_SYN+EV_KEY），KEY 位图精确对应 5 个键码
+- `/dev/input/event11` 节点生成
+- **端到端注入验证**：往 debugfs `inject` 写 raw 值，evdev 收到正确事件序列
+
+```text
+echo 19   > inject   →  EV_KEY code=114 value=1  + EV_SYN   (KEY_VOLUMEDOWN)
+echo 41   > inject   →  EV_KEY code=114 value=0  + EV_SYN
+                        EV_KEY code=172 value=1  + EV_SYN   (KEY_HOMEPAGE)
+echo release > inject →  EV_KEY code=172 value=0  + EV_SYN
+echo 0    > inject   →  EV_KEY code=115 value=1  + EV_SYN   (最近邻匹配到 210mV)
+echo 200  > inject   →  拒绝，out of range 0-63
+```
+
+- `input->open` 回调生效：probe 后 `CTRL=0x02000141` 的 `ENABLE=1` 只可能由
+  open 回调写入（probe 代码本身不调 `wn_lradc_enable()`）
+
+**未能验证的部分，以及原因：**
+
+本板 LRADC 的**模拟转换从未启动**。`CTRL` 可精确回读、位布局与 mainline sun4i
+逐位相同（写全 1 回读 `0xffcf7fff`）、`INTC` 回读 `0x00001f1f`、时钟 26 MHz、
+复位已 deassert——但 `INTS` 恒 `0`、`DATA0` 恒 `0x3f`、IRQ 计数恒 `0`。
+横扫 `CHAN_SELECT×4`、`SAMPLE_RATE×4`、`KEY_MODE_SEL×LEVELB_VOL` 全 16 组合、
+`CONTINUE_TIME_SEL`、`FIRST_CONVERT_DLY`、`LEVELA_B_CNT`、纯 `ENABLE=1`、
+vendor 复位值 `0x01000168` + `INTC=0x1f1f`，全部零响应；已排除 gpadc 争用
+（unbind `sunxi-gpadc` 后无变化）。
+
+因此 `selftest` 会打出 `selftest FAILED: ISR path is dead`——这是**正确结论**，
+不是 bug。`inject` 节点的存在就是为了在这种情况下仍能端到端证明 L3 链路正确。
+
+`input->close` 也未能观察到：本设备被标成 `Handlers=kbd`，X server 会常驻
+持有 `event11`（实测 PID 546 持有 fd 34），open 计数永不为零，内核自然不调
+close。这是真实桌面环境的既定行为，不是驱动缺陷。
+
+**诚实结论：本驱动在 A733 上不能作为可用的按键输入设备。** 它的价值是完整的
+驱动链路实现与诊断设施（`raw` / `inject` / `selftest`），以及换到 mainline
+兼容 SoC 时的适配基座。
+
+### 最终判定（2026-11-06 补充）
+
+后续在核对「驱动面引入」时，拿到了两条互补的实测证据，足以把结论从
+「ADC 不转换（原因待查）」升级为「本板 LRADC IP 不可用」：
+
+| 证据 | 观测 |
+| --- | --- |
+| LRADC（`2524000.lradc`） | 驱动侧一切正常（probe 通过、寄存器可回读、时钟 26 MHz、复位已 deassert、IRQ 428 已注册），但硬件侧 `INTS` 恒 0、`DATA0` 恒 `0x3f`、IRQ 计数恒 0 |
+| GPADC（`2521000.gpadc`） | `iio:device0` 正常工作，`in_voltage0..3_raw` 实测有稳定读数（1797 / 608 / 1567 / 1311） |
+
+同一块 A733 上，同属 ADC 类的两个 IP：一个驱动全对但硬件不响应，另一个
+驱动与硬件都正常。这排除了「我们驱动写错了」的可能性。
+
+结合本文件前面「根因定位」一节已有的三条证据（`# CONFIG_AW_LRADC is not set`、
+`sunxi-gpadc ... warn: keyadc not select`、DT 属性对比显示模拟前端配置全在 gpadc 上），
+可以给出定论：**A733 上 LRADC 的按键功能已被 gpadc 取代**。`DATA0 = 0x3f`
+不是「转换失败」，而是「模拟输入未连接，通道浮到 VREF 满量程」。缺的是 BSP
+层面的模拟前端配置，不是驱动代码。
+
+**因此本模块的处置是：保留、不接生产、不改写成 GPADC 驱动。**
+
+不改写为 GPADC 的具体理由：
+
+1. **通道已被占满**——`sunxi-gpadc` 已绑定 `iio:device0`，DT 里
+   `channel_select = 0xff`（8 通道全开），没有空闲通道；
+2. **要与在树驱动仲裁**——想接管就得 unbind `sunxi-gpadc` 或用裸 MMIO 强占。
+   注意：实测板上**没有任何进程持有** `/dev/iio:device0`，仓库内也没有 iio
+   消费者，所以「破坏下游」并不成立；真正的成本是与在树驱动打架；
+3. **业务上无需求**——见下方「业务价值判定」。
+
+### 业务价值判定
+
+按键输入对本项目**零业务价值**。产品定位是工业无线诊断网关
+（`docs/产品定位-工业无线诊断网关.md:39`：「不控制、不管理，只做观测与诊断」），
+部署形态是无人值守的机柜侧设备：
+
+- 没有用户会站在机柜前按设备上的键；
+- 现场误触会污染事件流；
+- 远程操作走 `weaknet-cli` → D-Bus，不需要本地按键。
+
+所以本模块**不应被「修好」**。它的价值是驱动技术栈纵深 + 一套可复用的
+硬件诊断方法学（`raw` 任意偏移读写 / `inject` 不依赖硬件验证上报链路 /
+`selftest` 自证 ISR 是否活着），以及这个诚实的负面结论本身。
+
+> 完整方案见仓库根目录 `驱动面能力引入与业务融合方案.md` 第 13 节。
+
+## 九、来源与许可
 
 本目录代码为本项目重写，遵循 GNU General Public License v2.0（见各文件
 `SPDX-License-Identifier: GPL-2.0`）——内核模块必须与内核许可兼容。

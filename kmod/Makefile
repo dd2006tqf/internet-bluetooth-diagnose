@@ -20,6 +20,7 @@
 
 obj-m += weaknet_cpu_stat.o
 obj-m += weaknet_softirq.o
+obj-m += weaknet_lradc_keys.o
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
