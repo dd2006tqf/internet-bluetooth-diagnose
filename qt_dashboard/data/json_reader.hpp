@@ -107,29 +107,11 @@ public:
     bool has(const std::string& path) const;
 
     /**
-     * @brief 判断根节点是不是数组
-     *
-     * `GetHistory` 返回的是顶层数组，`locate()` 只处理对象根节点，
-     * 因此需要这个额外入口。
-     */
-    bool rootIsArray() const;
-
-    /**
      * @brief 取根数组的每个元素原始 JSON
      *
-     * 仅在 `rootIsArray()` 为真时有意义。
+     * 仅在根节点是数组时有意义（`GetHistory` 返回顶层数组）。
      */
     std::vector<std::string> getRootObjectArray() const;
-
-    /**
-     * @brief 取根数组的长度
-     */
-    size_t rootArraySize() const;
-
-    /**
-     * @brief 取原始 JSON 字符串（用于调试）
-     */
-    const std::string& raw() const { return json_; }
 
 private:
     /**

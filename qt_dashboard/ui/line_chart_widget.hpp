@@ -60,27 +60,13 @@ public:
      * @brief 设置要绘制的数据
      *
      * 传入前应保证点已按时间正序排列（`parse_history()` 已做翻转）。
+     *
+     * `legacy` 数据点（v1 旧评分模型）会画成灰色空心点，且**不与相邻点连线**：
+     * 旧模型与新模型的分数不在同一个量纲上，连成一条线会读出不存在的趋势。
      */
     void setSeries(const HistorySeries& series);
 
-    /// 清空数据
-    void clear();
-
-    /// 数据点数量
-    int pointCount() const { return scores_.size(); }
-
-    // --- 外观配置 ---
-
-    void setLineColor(const QColor& color);
     void setTitle(const QString& title);
-
-    /**
-     * @brief Y 轴是否自动适配数据范围
-     *
-     * true（默认）：按数据 min/max 留边距
-     * false：固定 [0, 100]
-     */
-    void setAutoScale(bool auto_scale);
 
     /**
      * @brief 纯绘制函数
@@ -95,9 +81,10 @@ protected:
 private:
     QVector<double> scores_;
     QVector<QString> labels_;
+    /// 与 scores_ 等长：该点是否为 v1 旧评分模型的数据
+    QVector<bool> legacy_;
     QColor line_color_{0x2E, 0x7D, 0x32};
     QString title_;
-    bool auto_scale_{true};
 };
 
 } // namespace dashboard

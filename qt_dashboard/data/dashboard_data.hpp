@@ -77,17 +77,6 @@ struct SleItem {
 };
 
 /**
- * @brief 单条证据
- *
- * 对应 JSON: `network_health.ip_reachability.evidence[]`
- */
-struct EvidenceItem {
-    std::string metric;
-    double value = 0.0;
-    std::string detail;
-};
-
-/**
  * @brief 网络体验快照（schema v2）
  *
  * 对应 `GetNetworkExperience` 的返回。
@@ -219,9 +208,6 @@ struct DiagnosisSnapshot {
 
     /// 人读摘要模板
     std::string summary_template;
-
-    /// 原始 JSON（保留，便于调试与后续扩展）
-    std::string raw_json;
 };
 
 /**
@@ -243,24 +229,21 @@ struct HistoryPoint {
     /// 该时刻的综合分（来自 `score`，与 `overall_score` 同值）
     double score = 0.0;
 
-    /// 该时刻的整体质量等级（来自 `overall_quality`）
-    std::string overall_quality;
-
-    /// 网卡名（来自 `iface`）
-    std::string iface;
-
-    /// 该行是否为 v2 之前的历史数据（来自 `legacy`）
+    /// 该行是否为 v2 之前的历史数据（来自 `legacy`，即 `data_version < 2`）
+    ///
+    /// 关键语义：v1 用的是旧的加权模型，同一分数在不同模型下**不可直接比较**。
+    /// 图表必须把它画得与 v2 点不同，否则会读出一条不存在的趋势。
     bool legacy = false;
 };
 
 /**
  * @brief 历史趋势序列
+ *
+ * 不携带网卡名：查询「全部网卡」时任意一条记录的 iface 都不代表整个序列，
+ * 请求侧的网卡由调用方（MainWindow::interface_）持有。
  */
 struct HistorySeries {
-    std::string interface_name;
     std::vector<HistoryPoint> points;
-
-    bool empty() const { return points.empty(); }
 };
 
 // ---------------------------------------------------------------------------

@@ -118,8 +118,6 @@ TEST(JsonReaderTest, DoesNotConfuseNestedBracesInStrings) {
 
 TEST(JsonReaderTest, ReadsRootArray) {
     const JsonReader r(R"([{"x":1},{"x":2}])");
-    EXPECT_TRUE(r.rootIsArray());
-    EXPECT_EQ(r.rootArraySize(), 2u);
     const auto elems = r.getRootObjectArray();
     ASSERT_EQ(elems.size(), 2u);
     EXPECT_EQ(JsonReader(elems[1]).getInt("x", -1), 2);
@@ -127,8 +125,6 @@ TEST(JsonReaderTest, ReadsRootArray) {
 
 TEST(JsonReaderTest, EmptyRootArray) {
     const JsonReader r("[]");
-    EXPECT_TRUE(r.rootIsArray());
-    EXPECT_EQ(r.rootArraySize(), 0u);
     EXPECT_TRUE(r.getRootObjectArray().empty());
 }
 
@@ -266,6 +262,31 @@ TEST(ExperienceTest, EmptyStringYieldsUnavailable) {
     EXPECT_FALSE(snap.available());
 }
 
+TEST(ExperienceTest, UnknownSchemaVersionIsRejectedNotMisparsed) {
+    // schema v3 的字段布局可能与 v2 不同。继续按 v2 的路径取值会静默取到空串，
+    // 界面上表现为「13 个维度全是 UNKNOWN」，比明确说「不支持」更难排查。
+    const char* json = R"({"schema_version":3,"overall":{"state":"GOOD",)"
+                       R"("coverage":"FULL_FOR_PROFILE","display_score":90}})";
+    const ExperienceSnapshot snap = weaknet::dashboard::parse_experience(json);
+
+    EXPECT_FALSE(snap.available());
+    EXPECT_EQ(snap.unavailable_reason, "unsupported_schema_version_3");
+    // 关键：没有把 v3 的数据按 v2 解析出来
+    EXPECT_DOUBLE_EQ(snap.display_score, 0.0);
+}
+
+TEST(ExperienceTest, MissingSchemaVersionStillParses) {
+    // 缺 schema_version 时不拒绝：降级形状与老样本都没有这个字段，
+    // 一刀切拒绝会把可用的数据也挡在外面。
+    const char* json = R"({"overall":{"state":"GOOD","coverage":"FULL_FOR_PROFILE",)"
+                       R"("display_score":88},"interface":"wlan0"})";
+    const ExperienceSnapshot snap = weaknet::dashboard::parse_experience(json);
+
+    EXPECT_TRUE(snap.available());
+    EXPECT_EQ(snap.schema_version, 0);
+    EXPECT_DOUBLE_EQ(snap.display_score, 88.0);
+}
+
 // ---------------------------------------------------------------------------
 // DiagnosisSnapshot
 // ---------------------------------------------------------------------------
@@ -333,26 +354,24 @@ TEST(HistoryTest, ParsesHistoryArray) {
     const HistorySeries series = weaknet::dashboard::parse_history(json);
 
     ASSERT_EQ(series.points.size(), 2u);
-    EXPECT_EQ(series.interface_name, "wlan0");
 
     // 服务端按 ts DESC 返回，解析后应翻转为时间正序
     EXPECT_EQ(series.points[0].ts, "2026-11-05 14:23:10");
     EXPECT_DOUBLE_EQ(series.points[0].score, 45.0);
-    EXPECT_EQ(series.points[0].overall_quality, "POOR");
     EXPECT_EQ(series.points[1].ts, "2026-11-05 14:23:20");
     EXPECT_DOUBLE_EQ(series.points[1].score, 88.0);
 }
 
 TEST(HistoryTest, EmptyArray) {
     const HistorySeries series = weaknet::dashboard::parse_history("[]");
-    EXPECT_TRUE(series.empty());
+    EXPECT_TRUE(series.points.empty());
 }
 
 TEST(HistoryTest, DatabaseUnavailableObject) {
     // 逐字取自 server/src/dbus_service.cpp:1530
     const HistorySeries series =
         weaknet::dashboard::parse_history(R"({"error":"database not available"})");
-    EXPECT_TRUE(series.empty());
+    EXPECT_TRUE(series.points.empty());
 }
 
 TEST(HistoryTest, LegacyFlagIsPreserved) {
@@ -507,8 +526,6 @@ TEST(BoardRealSampleTest, ParsesRealHistoryTimestampsAndFlipsOrder) {
     EXPECT_NE(series.points.front().ts.find('T'), std::string::npos);
 
     EXPECT_DOUBLE_EQ(series.points.front().score, 55.0);
-    EXPECT_EQ(series.points.front().overall_quality, "FAIR");
-    EXPECT_EQ(series.points.front().iface, "wlan0");
     EXPECT_FALSE(series.points.front().legacy);
 }
 

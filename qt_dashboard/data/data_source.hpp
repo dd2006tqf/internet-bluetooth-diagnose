@@ -50,9 +50,6 @@ struct FetchResult {
 
     /// 原始 JSON（调试用；失败时可能为空或被截断）
     std::string json;
-
-    /// 实际使用的缓冲区大小（调试用，便于判断是否需要调大）
-    size_t buffer_used = 0;
 };
 
 /**
@@ -84,9 +81,6 @@ public:
      * 析构时自动调用。
      */
     void cleanup();
-
-    /// 是否已成功初始化
-    bool initialized() const { return initialized_; }
 
     /// 最近一次 init() 失败的原因
     const std::string& last_error() const { return last_error_; }

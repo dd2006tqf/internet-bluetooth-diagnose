@@ -75,23 +75,56 @@ qt_dashboard/
     └── test_json_reader.cpp   30 个用例
 ```
 
-## 验证状态（2026-11-05 实测）
+## 验证状态（2026-11-05 实测，2026-11-06 续验）
 
 | 项 | 状态 | 证据 |
 |------|------|------|
-| 数据层单测 | ✅ **34/34 通过** | `ctest` 0.03s，含 6 个真机样本用例 |
+| 数据层单测 | ✅ **36/36 通过** | `ctest` 0.03s，含 6 个真机样本用例 |
 | 取数层编译 | ✅ 通过 | 链接真实 `weaknet_client.h`，签名全对 |
 | UI 层 **moc** | ✅ **3/3 生成成功** | `Q_OBJECT`/信号槽声明语法正确 |
-| UI 层编译 | ✅ **零警告** | `-Wall -Wextra` 全部通过 |
-| **完整链接** | ✅ **成功** | 365 KB 可执行文件，无 undefined reference |
+| UI 层编译 | ✅ **零警告** | `-Wall -Wextra` 全部通过（10/10 编译单元） |
+| **完整链接** | ✅ **成功** | 413 KB 可执行文件，无 undefined reference |
 | **x86 实际运行** | ✅ **启动正常** | `--help` 正确输出；`offscreen` 下持续运行不崩溃 |
 | **ARM64 交叉编译** | ✅ **成功** | `tools/build-arm64.sh`，最高 glibc 需求 `2.17`（板端 `2.31`） |
 | **板端真实运行** | ✅ **成功** | arm64 二进制在 `radxa-cubie-a7a` 上启动，D-Bus 连接建立 |
 | **真实取数** | ✅ **5/5 成功** | experience 4129B / diagnosis 285B / history 50KB / interfaces / health |
-| **真实渲染** | ✅ **像素级验证** | offscreen 截图 1024x700，折线横跨绘图区 674px，状态色齐全 |
+| **真实渲染** | ✅ **像素级验证** | offscreen 截图 1024x742，折线横跨绘图区，状态色齐全 |
+| **新控件真渲染到屏** | ✅ **逐项对账** | 顶栏色块 `绿●8 琥珀●1 红●0 灰●4` 与 `busctl GetNetworkExperience` 的 13 维度状态完全一致 |
+| **legacy 断开连线** | ✅ **对照探针 PASS** | 非 legacy `green_mid=1 grey_plot=0`；legacy `green_mid=0 grey_plot=8` |
 | **VNC 图形栈** | ✅ **外部取帧验证** | `libqvnc.so` 跑通，RFB 客户端读到真实帧缓冲 1024x700/32bpp |
 | **15 分钟长稳** | ✅ **零泄漏零错误** | RSS 稳定 60300 kB 不变，fd/线程恒定，日志 0 错 |
 | HDMI 实机显示 | ⏳ 待做 | 显示器未在位（`HDMI disconnected`） |
+
+### 2026-11-06 续：孤儿清理与真实消费者
+
+上一轮遗留两类问题，已按 CLAUDE.md 的 orphan 铁律处理完毕：
+
+**A 类 —— 删除无消费者的接口**
+
+`LineChartWidget::clear/pointCount/setLineColor/setAutoScale`、`JsonReader::rootIsArray/rootArraySize/raw`、
+`EvidenceItem` 结构体、`FetchResult::buffer_used`、`DataSource::initialized()`、
+`DiagnosisSnapshot::raw_json`、`HistoryPoint::overall_quality/iface`、
+`HistorySeries::interface_name/empty()`。全部零调用，保留即为孤儿。
+
+**B 类 —— 给已解析字段接入真实消费者**
+
+| 字段 | 去向 |
+|------|------|
+| `count_by_state` | 顶栏彩色 ● 汇总「绿 8 / 黄 1 / 红 0 / 灰 4」 |
+| `assessment_profile` + `overall_coverage` | 顶栏「档位 INTERNET_ACCESS / 覆盖 PARTIAL」 |
+| `warnings` | 底栏红色警告行（无警告时隐藏、不占版面） |
+| `primary_issue` | 并入 experience 结论行 |
+| `summary_template` | 底栏独立人读摘要行 |
+| `secondary_issues` / `excluded_causes` / `evidence_refs` | 计数上屏 + 明细进 tooltip |
+| `actions[].priority` | 诊断行显示「建议动作 N 项（最高优先级 P）」 |
+| `SleItem::reason` | 每个维度状态标签的 tooltip |
+| `HistoryPoint::legacy` | 折线图断开连线 + 灰色空心点（v1/v2 不同量纲） |
+| `schema_version` | 解析守卫：非 0/2 直接标成不可用，避免按 v2 路径静默取空 |
+
+底栏按数据源拆分成 5 个独立 QLabel（experience 2 个、diagnosis 3 个），
+每个只有一个写者，任一侧晚到或失败都不会抹掉另一侧已经显示的内容。
+
+
 
 ### 板端验证是怎么做的（无显示器）
 
@@ -293,12 +326,49 @@ $ grep -c '^Inst' /tmp/qt-dryrun.txt   →  23
 
 ## 下一步
 
-1. 接显示器后走 `-platform eglfs` 实机验证（**唯一剩余项**；VNC 已验证图形栈，
-   但 HDMI 时序/EDID/热插拔仍需实机）
-2. 视需要补充维度详情、告警高亮等交互
-3. 考虑趋势图纵轴策略：当前 `auto_scale` 会把小波动放大到撑满全高
-   （实测 20↔55 的 4 个低谷即撑满 121..561），诊断场景下可能让轻微波动
-   看起来像剧烈抖动。是否改固定 0–100 或提供切换，待实机看过效果再定
+> **2026-11-06 审计结论**：代码层面已无孤儿接口，每个 `QLabel` 都有唯一写者，
+> 每个 `JsonReader` / `DataSource` 公开方法都有真实调用者，数据层 36/36 通过，
+> ARM64 交叉编译 10/10 单元零警告。**但「代码写完」不等于「可交付」**，
+> 下列 5 项仍未完成，按优先级排列。
+
+### 1. HDMI 实机验收（唯一功能性阻塞项）
+
+接显示器后走 `-platform eglfs` 实机验证。VNC 只能证明图形栈、光栅化与事件循环
+是通的，**不能**替代 HDMI 时序、EDID 协商、分辨率切换与热插拔。
+
+### 2. `line_chart_widget.hpp` 的声明与实现不符（需修正）
+
+头文件 `:9-12` 与 `:20-28` 明确写着「自绘可以 `render()` 到 `QImage` 做像素级断言，
+不需要显示器」「渲染到 QImage 让 UI 层也能在 x86 上单测」，并给了一段示例代码。
+**但 `tests/` 下没有任何 UI 测试**，那条路径只在一次性探针里跑过（已删除）。
+
+这构成一个真问题：`paint(QPainter*, QRect)` 之所以和 `paintEvent()` 分离、
+之所以不读 `this->width()`，**唯一动机就是可被像素测试**。如果永远不写这个测试，
+这个分离设计本身就没有消费者 —— 按项目 orphan 铁律，要么补测试，要么把接口合回去。
+二选一，不能维持现状。
+
+### 3. `auto_scale` 纵轴策略未决
+
+当前会把小波动放大到撑满全高（实测 20↔55 的 4 个低谷即撑满 121..561），
+诊断场景下可能让「轻微波动」看起来像「剧烈抖动」。是否改固定 0–100、
+或提供两种模式切换，**需要产品决策而非技术决策**，待实机看过效果再定。
+
+### 4. UI 层自动化测试为零
+
+36 项测试全部是数据层（JSON→POD）。`MainWindow` 的接线、`LineChartWidget` 的绘制、
+`DataFetchThread` 的并发，目前只有「板端跑一次截图 + 人眼对账」，没有可重复的回归。
+新接入的 10 个控件（`summary_label_` 等）的行为变化不会被任何自动化捕获。
+
+### 5. `main.cpp` 的 eglfs 默认值与实现不一致
+
+头注释 `:16` 写「因此默认走 `eglfs`」，但代码**没有设置任何默认值**，
+完全依赖 `QT_QPA_PLATFORM` 环境变量。未设置时 Qt 自行在可用插件里挑选，
+板端挑到哪个不确定。需明确：补默认值，还是把注释改成「需显式指定」。
+
+### 其他（非阻塞）
+
+- 视需要补充维度详情、告警高亮等交互
+- 15 分钟长稳不等于周级；断网重连、服务重启等异常路径未覆盖
 
 是否升格为正式 OpenSpec change：**待 HDMI 实机验证后再评估**。
 当前代码仍是探索性质，未接入根构建、未修改任何既有文件。

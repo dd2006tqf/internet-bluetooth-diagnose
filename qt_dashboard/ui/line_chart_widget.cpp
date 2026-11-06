@@ -38,32 +38,19 @@ LineChartWidget::LineChartWidget(QWidget* parent) : QWidget(parent) {
 void LineChartWidget::setSeries(const HistorySeries& series) {
     scores_.clear();
     labels_.clear();
+    legacy_.clear();
     scores_.reserve(static_cast<int>(series.points.size()));
+    legacy_.reserve(static_cast<int>(series.points.size()));
     for (const HistoryPoint& p : series.points) {
         scores_.push_back(p.score);
         labels_.push_back(QString::fromStdString(p.ts));
+        legacy_.push_back(p.legacy);
     }
-    update();
-}
-
-void LineChartWidget::clear() {
-    scores_.clear();
-    labels_.clear();
-    update();
-}
-
-void LineChartWidget::setLineColor(const QColor& color) {
-    line_color_ = color;
     update();
 }
 
 void LineChartWidget::setTitle(const QString& title) {
     title_ = title;
-    update();
-}
-
-void LineChartWidget::setAutoScale(bool auto_scale) {
-    auto_scale_ = auto_scale;
     update();
 }
 
@@ -106,12 +93,13 @@ void LineChartWidget::paint(QPainter* painter, const QRect& area) const {
     }
 
     // --- Y 轴范围 ---
+    // 按数据 min/max 自适应，上下各留 10% 边距；全等值时给最小跨度避免除零。
+    // 注意：小范围波动会被放大到撑满全高（如 20↔55 会铺满整个绘图区）。
     double lo = 0.0;
     double hi = 100.0;
-    if (auto_scale_ && !scores_.isEmpty()) {
+    if (!scores_.isEmpty()) {
         lo = *std::min_element(scores_.constBegin(), scores_.constEnd());
         hi = *std::max_element(scores_.constBegin(), scores_.constEnd());
-        // 上下各留 10% 边距；全等值时给一个最小跨度避免除零
         const double span = hi - lo;
         if (span < 1e-6) {
             lo -= 5.0;
@@ -154,19 +142,33 @@ void LineChartWidget::paint(QPainter* painter, const QRect& area) const {
     // --- 折线 ---
     // 单点时画一个点，避免除零
     const int n = scores_.size();
-    QPainterPath path;
+
+    // 先把所有点换算成屏幕坐标，连线与画点共用同一份，避免两处公式漂移
+    QVector<QPointF> pts;
+    pts.reserve(n);
     for (int i = 0; i < n; ++i) {
         const double x_ratio =
             (n == 1) ? 0.5 : static_cast<double>(i) / static_cast<double>(n - 1);
         const double y_ratio = (hi - lo) < 1e-9 ? 0.5 : (scores_[i] - lo) / (hi - lo);
+        pts.push_back(QPointF(plot.left() + x_ratio * plot.width(),
+                              plot.bottom() - y_ratio * plot.height()));
+    }
 
-        const double x = plot.left() + x_ratio * plot.width();
-        const double y = plot.bottom() - y_ratio * plot.height();
-
-        if (i == 0) {
-            path.moveTo(x, y);
+    // 只连 v2 点；遇到 legacy 点就断开。
+    // legacy 是 v1 旧评分模型的分数（`data_version < 2`），与 v2 不同量纲，
+    // 把两者连成一条线会读出一段根本不存在的趋势。
+    QPainterPath path;
+    bool pen_down = false;
+    for (int i = 0; i < n; ++i) {
+        if (legacy_.at(i)) {
+            pen_down = false;
+            continue;
+        }
+        if (pen_down) {
+            path.lineTo(pts[i]);
         } else {
-            path.lineTo(x, y);
+            path.moveTo(pts[i]);
+            pen_down = true;
         }
     }
 
@@ -179,12 +181,19 @@ void LineChartWidget::paint(QPainter* painter, const QRect& area) const {
         painter->setBrush(line_color_);
         painter->setPen(Qt::NoPen);
         for (int i = 0; i < n; ++i) {
-            const double x_ratio =
-                (n == 1) ? 0.5 : static_cast<double>(i) / static_cast<double>(n - 1);
-            const double y_ratio = (hi - lo) < 1e-9 ? 0.5 : (scores_[i] - lo) / (hi - lo);
-            const double x = plot.left() + x_ratio * plot.width();
-            const double y = plot.bottom() - y_ratio * plot.height();
-            painter->drawEllipse(QPointF(x, y), 2.5, 2.5);
+            if (!legacy_.at(i)) {
+                painter->drawEllipse(pts[i], 2.5, 2.5);
+            }
+        }
+    }
+
+    // legacy 点**始终**标记（灰色空心）：它们不在折线上，若再不给标记就等于
+    // 从图上凭空消失，比画错更糟。空心也让「不是同一条趋势」一眼可辨。
+    painter->setBrush(Qt::NoBrush);
+    painter->setPen(QPen(QColor(0x9E, 0x9E, 0x9E), 1.5));
+    for (int i = 0; i < n; ++i) {
+        if (legacy_.at(i)) {
+            painter->drawEllipse(pts[i], 2.5, 2.5);
         }
     }
 

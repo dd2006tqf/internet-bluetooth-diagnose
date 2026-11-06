@@ -1,10 +1,11 @@
 # Qt 看板代码骨架与完整调用链
 
-> 日期：2026-11-05
+> 日期：2026-11-05（2026-11-06 续：孤儿清理 + 真实消费者接入）
 > 分类：探索 / 工作流外实施
 > 结果：**ARM64 已构建并上板跑通**，真实 D-Bus 取数 5/5 成功，离屏渲染做像素级验证；
 > VNC 平台插件跑通完整图形栈并做 15 分钟长稳（零泄漏、零错误）；
-> 仅剩 HDMI 实机显示（显示器未在位）
+> 已删除全部孤儿接口并给已解析字段接入真实消费者（数据层 36/36 通过）；
+> **代码层面已无孤儿，但可交付性仍差 5 项**（见文末「下一步（2026-11-06 审计）」）
 
 ## 构思
 
@@ -425,7 +426,7 @@ RSS 从 52 MB 抬到 60 MB 后**完全持平**：连续 10 次、每 30 秒的�
 - 15 分钟不等于长稳周级；断网重连、服务重启等异常路径未覆盖
 - 因此 **HDMI 实机仍是唯一剩余验收项**，不能拿 VNC 顶替
 
-### 后续
+### 后续（2026-11-05 当时判断，已被文末「下一步」取代）
 
 1. 接 HDMI 显示器，走 `-platform eglfs` 实机验证（**唯一剩余项**；
    VNC 已验证图形栈，但 HDMI 时序/EDID/热插拔仍需实机）
@@ -434,6 +435,131 @@ RSS 从 52 MB 抬到 60 MB 后**完全持平**：连续 10 次、每 30 秒的�
    放大到撑满全高（如 20↔55 的 4 个低谷就撑满 121..561）。诊断看板上
    这可能让「轻微波动」看起来像「剧烈抖动」。是否改为固定 0–100 纵轴、
    或提供两种模式切换，待实机看过效果后再定
+
+---
+
+## 2026-11-06 四续：孤儿清理（A）与真实消费者（B）
+
+上一轮遗留两类问题：**A 类是没有任何消费者的接口**，**B 类是解析了却不给用户看的字段**。
+两类都违反 CLAUDE.md 的 orphan 铁律——「没有 approved requirement、真实消费者和
+可观测命令的接口属于 orphan：移除，或交回 Planner」。
+
+### A 类：删除无消费者的接口
+
+| 删除对象 | 依据 |
+|---------|------|
+| `LineChartWidget::clear()` / `pointCount()` / `setLineColor()` / `setAutoScale()` + `auto_scale_` 成员 | 全仓零调用；`auto_scale_` 恒为 true，条件判断已是死代码 |
+| `JsonReader::rootIsArray()` / `rootArraySize()` / `raw()` | 全仓零调用；`getRootObjectArray()` 已覆盖根数组场景 |
+| `EvidenceItem` 结构体 | 只有声明，既无解析也无消费者 |
+| `FetchResult::buffer_used` 字段 | 写入 4 次、读取 0 次 |
+| `DataSource::initialized()` | 只有 `data_source.cpp` 内部用私有成员，公开 getter 零调用 |
+| `DiagnosisSnapshot::raw_json` | 只是 JSON 副本，无任何读取方 |
+| `HistoryPoint::overall_quality` / `iface`、`HistorySeries::interface_name` / `empty()` | `overall_quality` 与 `score` 是同一信息的两种编码；`interface_name` 取首点 iface，多网卡查询时是错的 |
+
+对应测试同步删除断言（`ReadsRootArray` 等改为直接验证 `getRootObjectArray()`）。
+
+### B 类：给已解析字段接入真实消费者
+
+| 字段 | 消费者 | 语义 |
+|------|--------|------|
+| `ExperienceSnapshot::count_by_state` | 顶栏 `summary_label_`（html 彩色 ●） | 一眼看出有几个 BAD/DEGRADED，不必逐行扫 |
+| `assessment_profile` / `overall_coverage` | 顶栏 `profile_label_` | 不同档位阈值不同，不标出来会让「同样是 GOOD」看起来可比 |
+| `warnings` | 底栏 `experience_detail_label_`（红色，无警告时隐藏） | 服务端主动标记的异常，不该被界面吞掉 |
+| `primary_issue` | 并入 `experience_label_` 结论行 | 与诊断侧的故障域/置信度互为补充 |
+| `summary_template` | 底栏 `summary_template_label_` | 服务端给的是完整人读句子 |
+| `secondary_issues` / `excluded_causes` / `evidence_refs` | 底栏 `diagnosis_extra_label_` + tooltip | 计数上屏，明细进 tooltip（证据 ID 是机器标识，铺在界面上是噪声） |
+| `actions[].priority` | 并入 `diagnosis_label_` | 只提示数量与最高优先级；看板不执行动作 |
+| `SleItem::reason` | 每个状态标签的 tooltip | 解释「为什么是这个状态」，不占版面 |
+| `HistoryPoint::legacy` | `LineChartWidget` 渲染 | v1 旧评分模型与 v2 不同量纲，**断开连线**并画灰色空心点 |
+| `ExperienceSnapshot::schema_version` | `parse_experience()` 守卫 | 非 0 且非 2 时直接标成不可用，避免按 v2 路径静默取空 |
+
+### 控件归属：每个 QLabel 只有一个写者
+
+`experience` 与 `diagnosis` 是两个独立的异步数据源，到达顺序不保证。
+共用一个 QLabel 会让后到者覆盖先到者的内容，因此底栏按来源拆分控件：
+
+```
+experience_label_        ← experience（等待评估 / 状态 + 首要问题）
+experience_detail_label_ ← experience（警告，无警告时隐藏）
+diagnosis_label_         ← diagnosis （故障域 + 置信度 + 动作数）
+summary_template_label_  ← diagnosis （人读摘要）
+diagnosis_extra_label_   ← diagnosis （次要问题 / 排除原因 / 证据）
+```
+
+任一侧刷新失败或晚到都不会抹掉另一侧已经显示的内容。
+
+### 验证证据
+
+| 项 | 命令 | 结果 |
+|----|------|------|
+| 数据层单测 | `cmake --build` + `ctest --test-dir /tmp/qt-final` | **36/36 通过**（原 34，新增 schema 守卫正/负两项） |
+| ARM64 交叉编译 | `BUILD_DIR=/tmp/qt-b-arm64 ./qt_dashboard/tools/build-arm64.sh` | 通过，**10/10 个编译单元零警告**，产物 413744 字节，最高 glibc 需求 `2.17` |
+| 板端离屏截图 | `QT_QPA_PLATFORM=offscreen ./weaknet_dashboard --screenshot` | 1024x742（比改动前 700 高 42px，正是新增两行控件） |
+| 新控件真的渲染 | 纯 Python 解码 PNG 后按 x/y 分段统计像素 | 顶栏色块 `绿●8 琥珀●1 红●0 灰●4`，与 `busctl GetNetworkExperience` 返回的 13 维度状态**逐项一致**；档位 `INTERNET_ACCESS / PARTIAL` 与真机一致 |
+| 隐藏控件不占版面 | 同上，扫描文字行 | 底栏只有 3 行可见文本；警告行与 extra 行在无数据/无警告时确实不占位 |
+| `legacy` 断开连线 | 一次性探针（同进程对比，唯一差别是中间点的 `legacy`） | 非 legacy：`green_mid=1, grey_plot=0`；legacy：`green_mid=0, grey_plot=8`。**PROBE PASS** |
+
+> 探针教训：第一版判据「中间列无绿色」FAIL 过一次，原因是统计了 Y 轴刻度文字的
+> 抗锯齿边缘（`0x88` 混白后恰好落在 `0x9E`）。改为只统计绘图区内部，
+> 并在同一进程内跑对照组，判据才真正能区分两条渲染路径。
+> 单点像素断言必须配对照组，否则恒真条件也会「通过」。
+
+### 两个刻意的设计取舍
+
+1. **没有新增 `MainWindow::renderToImage()`**：`main.cpp` 的 `--screenshot`
+   走 `window.grab()` 已经触发 `paintEvent → paint()`，板端 VNC 外部取帧
+   也验证过同一条链路。再加一个没人调用的方法只会造出新的孤儿。
+2. **`history`: 用请求侧网卡做图表标题，不取数据里的 `iface`**：查询全部网卡时
+   序列里混着多个 iface，取任意一条都会把标题写错。`MainWindow::interface_`
+   记录请求侧事实，`setInterface()` 同步更新标题。
+
+
+## 下一步（2026-11-06 审计）
+
+代码层面已无孤儿接口：每个 `QLabel` 有唯一写者，每个 `JsonReader` / `DataSource`
+公开方法有真实调用者，数据层 36/36 通过，ARM64 交叉编译 10/10 单元零警告。
+**但「代码写完」不等于「可交付」**，下列 5 项按优先级排列，均未完成。
+
+### 1. HDMI 实机验收（唯一功能性阻塞项）
+
+接显示器后走 `-platform eglfs` 实机验证。VNC 只能证明图形栈、光栅化与事件循环
+是通的，**不能**替代 HDMI 时序、EDID 协商、分辨率切换与热插拔。
+
+### 2. `line_chart_widget.hpp` 的声明与实现不符（需修正）
+
+头文件 `:9-12` 与 `:20-28` 明确写着「自绘可以 `render()` 到 `QImage` 做像素级断言，
+不需要显示器」「渲染到 QImage 让 UI 层也能在 x86 上单测」，并给了一段示例代码。
+**但 `tests/` 下没有任何 UI 测试**，那条路径只在一次性探针里跑过（已删除）。
+
+这构成一个真问题：`paint(QPainter*, QRect)` 之所以和 `paintEvent()` 分离、
+之所以不读 `this->width()`，**唯一动机就是可被像素测试**。如果永远不写这个测试，
+这个分离设计本身就没有消费者 —— 按项目 orphan 铁律，要么补测试，要么把接口合回去。
+二选一，不能维持现状。
+
+### 3. `auto_scale` 纵轴策略未决
+
+当前会把小波动放大到撑满全高（实测 20↔55 的 4 个低谷即撑满 121..561），
+诊断场景下可能让「轻微波动」看起来像「剧烈抖动」。是否改固定 0–100、
+或提供两种模式切换，**需要产品决策而非技术决策**，待实机看过效果再定。
+
+### 4. UI 层自动化测试为零
+
+36 项测试全部是数据层（JSON→POD）。`MainWindow` 的接线、`LineChartWidget` 的绘制、
+`DataFetchThread` 的并发，目前只有「板端跑一次截图 + 人眼对账」，没有可重复的回归。
+新接入的 10 个控件（`summary_label_` 等）的行为变化不会被任何自动化捕获。
+与第 2 项是同一个缺口的两面：补 UI 测试可以同时把 `paint(QPainter*, QRect)`
+的分离设计变成有消费者的设计。
+
+### 5. `main.cpp` 的 eglfs 默认值与实现不一致
+
+头注释 `:16` 写「因此默认走 `eglfs`」，但代码**没有设置任何默认值**，
+完全依赖 `QT_QPA_PLATFORM` 环境变量。未设置时 Qt 自行在可用插件里挑选，
+板端挑到哪个不确定。需明确：补默认值，还是把注释改成「需显式指定」。
+
+### 其他（非阻塞）
+
+- 视需要补充维度详情、告警高亮等交互
+- 15 分钟长稳不等于周级；断网重连、服务重启等异常路径未覆盖
 
 是否升格为正式 OpenSpec change：**待 HDMI 实机验证后再评估**。
 当前代码仍是探索性质，未接入根构建、未修改任何既有文件。

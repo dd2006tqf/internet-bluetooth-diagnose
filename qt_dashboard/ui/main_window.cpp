@@ -12,6 +12,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSplitter>
+#include <QStringList>
 #include <QStatusBar>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -104,7 +105,14 @@ void MainWindow::start() {
 
 void MainWindow::setInterface(const QString& interface_name) {
     // 历史查询的网卡过滤在后台线程里读取，这里同步进去
+    interface_ = interface_name;
     fetcher_->setHistoryQuery(interface_name, kHistoryLimit);
+
+    // 标题只用请求侧的网卡：查询全部网卡时序列里混着多个 iface，
+    // 取数据里任意一条都会把标题写错。
+    chart_->setTitle(interface_.isEmpty()
+                         ? QStringLiteral("历史趋势（分数，全部网卡）")
+                         : QStringLiteral("历史趋势（分数，%1）").arg(interface_));
 }
 
 void MainWindow::build_ui() {
@@ -132,7 +140,18 @@ void MainWindow::build_ui() {
     score_label_->setFont(score_font);
     top->addWidget(score_label_);
 
+    // 各维度状态汇总。左侧维度列表只能逐行看，这里给出整体分布，
+    // 一眼看出「有几个 BAD」比逐行扫快得多。
+    summary_label_ = new QLabel;
+    top->addWidget(summary_label_);
+
     top->addStretch();
+
+    // 评估档位：不同 profile 下同一维度的判定阈值不同，
+    // 不标出来会让「同样是 GOOD」看起来可比，实际不可比。
+    profile_label_ = new QLabel(QStringLiteral("--"));
+    profile_label_->setStyleSheet(QStringLiteral("color: #666666;"));
+    top->addWidget(profile_label_);
 
     timestamp_label_ = new QLabel(QStringLiteral("--"));
     top->addWidget(timestamp_label_);
@@ -180,10 +199,45 @@ void MainWindow::build_ui() {
     splitter->setStretchFactor(1, 2);
     root->addWidget(splitter, 1);
 
-    // --- 底栏：诊断结论 ---
+    // --- 底栏 ---
+    // 每个 QLabel 只有一个所有者：写它的地方唯一，读的人随意。
+    // 这样任一侧刷新都不会抹掉另一侧的内容。
+    //
+    // 归属：
+    //   experience_label_          ← experience（等待评估 / 首要问题）
+    //   experience_detail_label_   ← experience（警告，无警告时隐藏）
+    //   diagnosis_label_           ← diagnosis （故障域 + 置信度 + 动作数）
+    //   summary_template_label_    ← diagnosis （人读摘要）
+    //   diagnosis_extra_label_     ← diagnosis （次要问题 / 排除原因 / 证据）
+    experience_label_ = new QLabel(QStringLiteral("体验：等待数据…"));
+    experience_label_->setWordWrap(true);
+    root->addWidget(experience_label_);
+
+    // 体验警告（experience 独占）：服务端主动标记的异常，红色单独一行，
+    // 不与 experience_label_ 抢位置——两者会同时有内容
+    experience_detail_label_ = new QLabel;
+    experience_detail_label_->setWordWrap(true);
+    experience_detail_label_->setStyleSheet(QStringLiteral("color: #C62828;"));
+    experience_detail_label_->hide();
+    root->addWidget(experience_detail_label_);
+
     diagnosis_label_ = new QLabel(QStringLiteral("诊断：等待数据…"));
     diagnosis_label_->setWordWrap(true);
     root->addWidget(diagnosis_label_);
+
+    // 诊断的人读摘要（diagnosis 独占）：服务端给的是完整句子，
+    // 比 primary_issue 这类机器 token 更适合直接展示给用户
+    summary_template_label_ = new QLabel;
+    summary_template_label_->setWordWrap(true);
+    summary_template_label_->hide();
+    root->addWidget(summary_template_label_);
+
+    // 次要问题 / 已排除原因 / 证据（diagnosis 独占，默认折叠）
+    diagnosis_extra_label_ = new QLabel;
+    diagnosis_extra_label_->setWordWrap(true);
+    diagnosis_extra_label_->setStyleSheet(QStringLiteral("color: #666666;"));
+    diagnosis_extra_label_->hide();
+    root->addWidget(diagnosis_extra_label_);
 
     setCentralWidget(central);
 
@@ -215,22 +269,91 @@ void MainWindow::onDiagnosisReady(const QByteArray& json) {
     const DiagnosisSnapshot snap =
         parse_diagnosis(std::string(json.constData(),
                                     static_cast<size_t>(json.size())));
+    apply_diagnosis(snap);
+}
 
+void MainWindow::apply_diagnosis(const DiagnosisSnapshot& snap) {
     if (!snap.valid) {
         diagnosis_label_->setText(QStringLiteral("诊断：数据无效"));
+        summary_template_label_->hide();
+        diagnosis_extra_label_->hide();
         return;
     }
 
-    QString text = QStringLiteral("诊断：故障域 %1 · 首要问题 %2 · 置信度 %3")
+    // 第一行：机器可判定的结论（故障域 + 置信度）
+    // 注意 fault_domain == "NONE" 表示服务端明确判定「无需排查」
+    // （见 diagnosis_engine.hpp:135 的 all_metrics_healthy 分支），
+    // 不是「不知道」，所以照样展示，但把置信度放前面更醒目。
+    QString text = QStringLiteral("诊断：故障域 %1 · 置信度 %2")
                        .arg(QString::fromStdString(snap.fault_domain),
-                            QString::fromStdString(snap.primary_issue),
                             QString::fromStdString(snap.confidence));
 
     if (!snap.actions.empty()) {
-        text += QStringLiteral(" · 建议动作 %1 项")
-                    .arg(static_cast<int>(snap.actions.size()));
+        // 动作只提示数量与最优先级别，不展示 action_id：
+        // 看板不执行任何动作，真正执行必须走 weaknet_execute_action() 且需 root。
+        int top_priority = snap.actions.front().priority;
+        for (const ActionSuggestion& action : snap.actions) {
+            top_priority = std::min(top_priority, action.priority);
+        }
+        text += QStringLiteral(" · 建议动作 %1 项（最高优先级 %2）")
+                    .arg(static_cast<int>(snap.actions.size()))
+                    .arg(top_priority);
     }
     diagnosis_label_->setText(text);
+
+    // 第二行：人读摘要。default_summary_template 是完整句子，
+    // 比 primary_issue 这类机器 token 更适合直接呈现给用户。
+    if (!snap.summary_template.empty()) {
+        summary_template_label_->setText(
+            QString::fromStdString(snap.summary_template));
+        summary_template_label_->show();
+    } else {
+        summary_template_label_->hide();
+    }
+
+    // 第三行：次要问题 / 已排除原因 / 证据 ID。
+    // 默认折叠成一行灰色小字；证据 ID（形如 ev_radxa_..._s101_01）是机器标识，
+    // 铺在界面上纯噪声，放进 tooltip 让需要排查的人能查到即可。
+    QStringList extra;
+    QStringList evidence_tooltip;
+    if (!snap.secondary_issues.empty()) {
+        QStringList items;
+        for (const std::string& issue : snap.secondary_issues) {
+            items.append(QString::fromStdString(issue));
+        }
+        extra.append(QStringLiteral("次要问题 %1 项").arg(items.size()));
+        evidence_tooltip.append(QStringLiteral("次要问题：") +
+                                items.join(QStringLiteral("、")));
+    }
+    if (!snap.excluded_causes.empty()) {
+        QStringList items;
+        for (const ExcludedCause& cause : snap.excluded_causes) {
+            items.append(QStringLiteral("%1（%2）")
+                             .arg(QString::fromStdString(cause.cause),
+                                  QString::fromStdString(cause.reason)));
+        }
+        extra.append(QStringLiteral("已排除 %1 项").arg(items.size()));
+        evidence_tooltip.append(QStringLiteral("已排除原因：") +
+                                items.join(QStringLiteral("、")));
+    }
+    if (!snap.evidence_refs.empty()) {
+        QStringList items;
+        for (const std::string& ref : snap.evidence_refs) {
+            items.append(QString::fromStdString(ref));
+        }
+        extra.append(QStringLiteral("证据 %1 条").arg(items.size()));
+        evidence_tooltip.append(QStringLiteral("证据 ID：") +
+                                items.join(QStringLiteral("\n")));
+    }
+
+    if (extra.isEmpty()) {
+        diagnosis_extra_label_->hide();
+        diagnosis_extra_label_->setToolTip(QString());
+    } else {
+        diagnosis_extra_label_->setText(extra.join(QStringLiteral("　")));
+        diagnosis_extra_label_->setToolTip(evidence_tooltip.join(QStringLiteral("\n")));
+        diagnosis_extra_label_->show();
+    }
 }
 
 void MainWindow::onHistoryReady(const QByteArray& json) {
@@ -266,8 +389,14 @@ void MainWindow::apply_experience(const ExperienceSnapshot& snap) {
         iface_label_->setText(QString::fromStdString(snap.interface_name));
         score_label_->setText(QStringLiteral("--"));
         score_label_->setStyleSheet(QString());
-        diagnosis_label_->setText(
-            QStringLiteral("等待评估：%1")
+        summary_label_->clear();
+        profile_label_->setText(QStringLiteral("--"));
+        experience_detail_label_->hide();
+        // 不清空 summary_template_label_ / diagnosis_extra_label_ / diagnosis_label_：
+        // 它们归 diagnosis 所有，experience 无权处置。反过来也一样，
+        // 这样任一侧晚到或失败都不会抹掉另一侧已经显示的内容。
+        experience_label_->setText(
+            QStringLiteral("体验：等待评估（%1）")
                 .arg(QString::fromStdString(snap.unavailable_reason)));
         return;
     }
@@ -278,6 +407,51 @@ void MainWindow::apply_experience(const ExperienceSnapshot& snap) {
     // 整体分数按状态着色
     const QString color = state_color(QString::fromStdString(snap.overall_state));
     score_label_->setStyleSheet(QStringLiteral("color: %1;").arg(color));
+
+    // 评估档位：同一维度在不同 profile 下的判定阈值不同，必须标出来
+    profile_label_->setText(QStringLiteral("档位 %1 / 覆盖 %2")
+                                .arg(QString::fromStdString(snap.assessment_profile),
+                                     QString::fromStdString(snap.overall_coverage)));
+
+    // 各维度状态汇总：一眼看出有几个 BAD / DEGRADED，不必逐行扫
+    int healthy = 0;
+    int degraded = 0;
+    int failed = 0;
+    int unknown = 0;
+    snap.count_by_state(&healthy, &degraded, &failed, &unknown);
+    summary_label_->setText(
+        QStringLiteral("<span style=\"color:#2E7D32\">● %1</span> "
+                       "<span style=\"color:#F9A825\">● %2</span> "
+                       "<span style=\"color:#C62828\">● %3</span> "
+                       "<span style=\"color:#9E9E9E\">● %4</span>")
+            .arg(healthy)
+            .arg(degraded)
+            .arg(failed)
+            .arg(unknown));
+
+    // 服务端给出的警告直接展示：这是它主动标记的异常，不该被界面吞掉
+    if (!snap.warnings.empty()) {
+        QStringList parts;
+        parts.reserve(static_cast<int>(snap.warnings.size()));
+        for (const std::string& warning : snap.warnings) {
+            parts.append(QString::fromStdString(warning));
+        }
+        experience_detail_label_->setText(
+            QStringLiteral("⚠ %1").arg(parts.join(QStringLiteral(" · "))));
+        experience_detail_label_->show();
+    } else {
+        experience_detail_label_->hide();
+    }
+
+    // 首要问题并入结论行：experience_label_ 此时已被本函数独占写入，
+    // 不会再被 diagnosis 侧覆盖，所以不需要第二个标签。
+    QString text = QStringLiteral("体验：%1")
+                       .arg(QString::fromStdString(snap.overall_state));
+    if (!snap.primary_issue.empty()) {
+        text += QStringLiteral(" · 首要问题 %1")
+                    .arg(QString::fromStdString(snap.primary_issue));
+    }
+    experience_label_->setText(text);
 
     update_status_label(snap.ip_reachability, ip_reachability_label_);
     update_status_label(snap.responsiveness, responsiveness_label_);
@@ -299,6 +473,14 @@ void MainWindow::update_status_label(const SleItem& item, QLabel* state_label) {
     if (!state_label) {
         return;
     }
+
+    // reason 是服务端给出的人可读 token（如 jitter_excessive、no_dns_observations），
+    // 它解释了「为什么是这个状态」。用 tooltip 挂在标签上，不占版面但可查。
+    const QString reason = QString::fromStdString(item.reason);
+    state_label->setToolTip(reason.isEmpty()
+                                ? QString()
+                                : QStringLiteral("%1：%2")
+                                      .arg(QString::fromStdString(item.key), reason));
 
     // 不适用的维度（如有线链路下的 RF 健康）显式标注，不显示 GOOD/BAD
     if (!item.applicable()) {

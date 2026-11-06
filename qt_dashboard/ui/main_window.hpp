@@ -83,17 +83,30 @@ private slots:
 private:
     void build_ui();
     void apply_experience(const ExperienceSnapshot& snap);
+    void apply_diagnosis(const DiagnosisSnapshot& snap);
     void update_status_label(const SleItem& item, QLabel* state_label);
     static QString state_color(const QString& state);
 
     DataFetchThread* fetcher_ = nullptr;
     LineChartWidget* chart_ = nullptr;
 
+    /// 历史查询使用的网卡（空表示全部）。
+    ///
+    /// 这是**请求侧**的事实，不能从 `HistorySeries` 推断：
+    /// 查询全部网卡时，任意一条记录的 iface 都不代表整个序列。
+    /// 折线图标题直接用它，避免出现「标题写着 wlan0，实际混了 eth0」。
+    QString interface_;
+
     // 顶栏
     QPushButton* refresh_button_ = nullptr;
     QLabel* iface_label_ = nullptr;
     QLabel* score_label_ = nullptr;
     QLabel* timestamp_label_ = nullptr;
+
+    /// 各维度状态汇总「● 3 ● 2 ● 1 ○ 7」（count_by_state 的消费者）
+    QLabel* summary_label_ = nullptr;
+    /// 评估档位与覆盖度（assessment_profile 的消费者）
+    QLabel* profile_label_ = nullptr;
 
     // 维度状态标签（顺序与 dashboard_data.hpp 中字段一致）
     QLabel* ip_reachability_label_ = nullptr;
@@ -112,7 +125,21 @@ private:
     QLabel* active_portal_label_ = nullptr;
 
     // 底栏
+    //
+    // experience 与 diagnosis 是**两个独立的异步数据源**，返回时序不定
+    // （DataFetchThread 先发 experienceReady 再发 diagnosisReady，但二者
+    // 都是队列连接，实际到达顺序不保证）。因此它们各自拥有独立控件：
+    // 共用一个 QLabel 会让后到者覆盖先到者的内容。
+    /// 体验快照的结论行：等待评估原因 / 首要问题（experience 独占）
+    QLabel* experience_label_ = nullptr;
+    /// 体验快照的警告（experience 独占，无警告时隐藏）
+    QLabel* experience_detail_label_ = nullptr;
+    /// 诊断结论行：故障域 + 置信度 + 动作数（diagnosis 独占）
     QLabel* diagnosis_label_ = nullptr;
+    /// 诊断的人读摘要（diagnosis 独占，default_summary_template 的消费者）
+    QLabel* summary_template_label_ = nullptr;
+    /// 次要问题 / 已排除原因 / 证据（diagnosis 独占，可折叠）
+    QLabel* diagnosis_extra_label_ = nullptr;
     QLabel* status_bar_label_ = nullptr;
 
     bool refresh_in_flight_ = false;

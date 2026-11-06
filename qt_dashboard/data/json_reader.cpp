@@ -422,11 +422,6 @@ JsonReader::getObjectArray(const std::string& path) const {
 // 顶层数组支持
 // ---------------------------------------------------------------------------
 
-bool JsonReader::rootIsArray() const {
-    const size_t begin = skipWhitespace(0);
-    return begin < json_.size() && json_[begin] == '[';
-}
-
 std::vector<std::string> JsonReader::getRootObjectArray() const {
     std::vector<std::string> out;
     const size_t begin = skipWhitespace(0);
@@ -449,29 +444,6 @@ std::vector<std::string> JsonReader::getRootObjectArray() const {
         }
     }
     return out;
-}
-
-size_t JsonReader::rootArraySize() const {
-    size_t count = 0;
-    const size_t begin = skipWhitespace(0);
-    if (begin >= json_.size() || json_[begin] != '[') {
-        return 0;
-    }
-    const size_t end = skipContainer(begin);
-    size_t cursor = begin + 1;
-    while (cursor < end) {
-        cursor = skipWhitespace(cursor);
-        if (cursor >= end || json_[cursor] == ']') {
-            break;
-        }
-        cursor = skipValue(cursor);
-        ++count;
-        cursor = skipWhitespace(cursor);
-        if (cursor < end && json_[cursor] == ',') {
-            ++cursor;
-        }
-    }
-    return count;
 }
 
 } // namespace dashboard

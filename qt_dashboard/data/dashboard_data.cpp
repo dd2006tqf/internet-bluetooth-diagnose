@@ -89,6 +89,16 @@ ExperienceSnapshot parse_experience(const std::string& json) {
 
     snap.schema_version = reader.getInt("schema_version", 0);
 
+    // schema_version 是本层唯一能判断「契约是否还是我以为的那个」的依据。
+    // 2 是当前服务端版本；0 表示字段缺失（老样本/降级形状兼容）。
+    // 其余版本说明服务端契约已经变了，继续按 v2 字段名取值只会静默取空，
+    // 所以直接标成不可用，让界面显示「等待评估」而不是一堆 UNKNOWN。
+    if (snap.schema_version != 0 && snap.schema_version != 2) {
+        snap.unavailable_reason =
+            "unsupported_schema_version_" + std::to_string(snap.schema_version);
+        return snap;
+    }
+
     // 先判断是否是「无快照 / 过期」的降级形状：
     // {"schema_version":2,"state":"UNKNOWN","coverage":"NONE","reason":"..."}
     // 这种形状顶层没有 overall 对象。
@@ -139,7 +149,6 @@ ExperienceSnapshot parse_experience(const std::string& json) {
 
 DiagnosisSnapshot parse_diagnosis(const std::string& json) {
     DiagnosisSnapshot snap;
-    snap.raw_json = json;
 
     JsonReader reader(json);
     if (!reader.valid()) {
@@ -200,8 +209,6 @@ HistorySeries parse_history(const std::string& json) {
         HistoryPoint point;
         point.ts = item.getString("ts");
         point.score = item.getDouble("score", 0.0);
-        point.overall_quality = item.getString("overall_quality");
-        point.iface = item.getString("iface");
         point.legacy = item.getBool("legacy", false);
         points.push_back(std::move(point));
     }
@@ -209,9 +216,6 @@ HistorySeries parse_history(const std::string& json) {
     // 服务端按 ts DESC 返回（最新在前），翻转为时间正序便于画图
     std::reverse(points.begin(), points.end());
     series.points = std::move(points);
-    if (!series.points.empty()) {
-        series.interface_name = series.points.front().iface;
-    }
     return series;
 }
 

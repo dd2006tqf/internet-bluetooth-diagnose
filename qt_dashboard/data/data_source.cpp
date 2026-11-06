@@ -88,7 +88,6 @@ FetchResult DataSource::invoke(Caller caller) const {
                                ? "C API returned false without error message"
                                : error_text;
             result.json.assign(buffer.data());
-            result.buffer_used = buffer.size();
             return result;
         }
 
@@ -98,7 +97,6 @@ FetchResult DataSource::invoke(Caller caller) const {
 
         if (candidate.empty()) {
             result.error = "C API returned true but buffer is empty";
-            result.buffer_used = buffer.size();
             return result;
         }
 
@@ -110,7 +108,6 @@ FetchResult DataSource::invoke(Caller caller) const {
         if (complete && !near_full) {
             result.ok = true;
             result.json = std::move(candidate);
-            result.buffer_used = buffer.size();
             return result;
         }
 
@@ -119,7 +116,6 @@ FetchResult DataSource::invoke(Caller caller) const {
             result.error = "response exceeds max buffer (" +
                            std::to_string(kMaxBuffer) + " bytes) or is malformed";
             result.json = std::move(candidate);
-            result.buffer_used = buffer.size();
             return result;
         }
 
