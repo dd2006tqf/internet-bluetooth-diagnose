@@ -88,7 +88,7 @@ qt_dashboard/
 | **完整链接** | ✅ **成功** | 378 KB（386856 B）可执行文件，无 undefined reference |
 | **x86 实际运行** | ✅ **启动正常** | `--help` 正确输出；`offscreen` 下持续运行不崩溃 |
 | **ARM64 交叉编译** | ✅ **成功** | `tools/build-arm64.sh`，最高 glibc 需求 `2.17`（板端 `2.31`） |
-| **初始失败可恢复** | ✅ **实测重试循环** | 指向不存在的 D-Bus socket → 每 2s 重试一次并 `weaknet_cleanup()`，线程不退出、界面仍可截图 |
+| **初始失败不卡死线程** | ✅ **实测重试循环** | 指向不存在的 D-Bus socket → 每 2s 重试一次并 `weaknet_cleanup()`，线程不退出、界面仍可截图 |
 | **默认平台插件** | ✅ **三场景实测** | 无变量→eglfs；`--screenshot`→offscreen；已设变量不覆盖 |
 | **板端真实运行** | ✅ **成功** | arm64 二进制在 `radxa-cubie-a7a` 上启动，D-Bus 连接建立 |
 | **真实取数** | ✅ **3/3 成功** | experience 4129B / diagnosis 285B / history 50KB（interfaces/health 已随孤儿清理删除） |
@@ -354,6 +354,10 @@ $ grep -c '^Inst' /tmp/qt-dryrun.txt   →  23
 - 15 分钟长稳不等于周级；断网重连、服务重启等异常路径未覆盖
 - `MainWindow` 的接线与 `DataFetchThread` 的并发仍无自动化回归
   （`LineChartWidget` 已补 8 条像素测试，但窗口层只靠板端截图人眼对账）
+- **初始化失败后的「自动重连成功」未经实测**。已验证的是「持续失败时线程不退出、
+  按 2s 重试」，**没有**验证「环境恢复后自己连上」——那需要中途修复 D-Bus 环境，
+  x86 上无法构造。该路径目前只有代码推理支撑（`weaknet_cleanup()` 置空全局客户端
+  → 下次 `weaknet_init()` 走完整重建），不能宣称已恢复
 
 是否升格为正式 OpenSpec change：**待 HDMI 实机验证后再评估**。
 当前代码仍是探索性质，未接入根构建、未修改任何既有文件。
