@@ -40,6 +40,17 @@ bool DataSource::init() {
     }
     last_error_.clear();
     if (!weaknet_init()) {
+        // 必须 cleanup，否则本层将永久卡死在失败状态。
+        //
+        // weaknet_init() 在 client.cpp:1348 的实现是：g_client 非空时直接
+        // return g_client->isConnected()，而 connected_ 只在 initConnection()
+        // 里赋值一次。连接失败后 g_client 仍留在全局，于是后续每次
+        // weaknet_init() 都走 "already initialized" 分支、永远返回 false。
+        //
+        // weaknet_cleanup() 把 g_client 置空并 disconnect，下一次 init() 才会
+        // 真正重建连接。副作用是它会调用 Logger::shutdown()，下次 init 再
+        // InitGoogleLogging()——已实测 Init/Shutdown 反复循环安全。
+        weaknet_cleanup();
         last_error_ = "weaknet_init() failed: cannot establish D-Bus connection";
         return false;
     }

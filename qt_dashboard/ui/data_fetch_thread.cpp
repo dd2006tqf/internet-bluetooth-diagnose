@@ -18,6 +18,18 @@ namespace {
 /// 两次刷新之间的最小间隔，防止用户狂点按钮打爆服务端
 constexpr int kMinRefreshIntervalMs = 500;
 
+/**
+ * @brief 初始化失败后的重试间隔
+ *
+ * 板端服务由 systemd 管理，冷启动时看板可能先于服务就绪；D-Bus 系统总线
+ * 也可能在开机早期还没开始接受连接。此时 `weaknet_init()` 会失败，
+ * 但几秒后再试就能成功。
+ *
+ * 取 2 秒：短到用户不会察觉"界面卡在等待"，长到不会在服务真的没装时
+ * 把 CPU 和日志刷爆（一次失败会写一行 glog）。
+ */
+constexpr int kInitRetryMs = 2000;
+
 } // namespace
 
 DataFetchThread::DataFetchThread(QObject* parent) : QThread(parent) {}
@@ -47,12 +59,37 @@ void DataFetchThread::stop() {
 void DataFetchThread::run() {
     DataSource source;
 
-    // 初始化失败时不要静默退出：把原因发给 UI，让用户看到
-    if (!source.init()) {
-        emit fetchFailed(QStringLiteral("init"),
-                         QString::fromStdString(source.last_error()));
-        emit refreshFinished();
-        return;
+    // 初始化失败**不能直接 return**：那样线程就结束了，之后 requestRefresh()
+    // 只是往一个死掉的线程里设标志位，定时器每 10 秒照常触发但界面永远停在
+    // 第一条"取数失败"上。这里改成重试循环，直到成功或收到退出请求。
+    //
+    // 每轮重试只发一次 fetchFailed，避免每隔 2 秒刷屏；成功之后 state
+    // 复位，下次再断连时还能重新提示。
+    bool init_ok = source.init();
+    bool failure_reported = false;
+    while (!init_ok) {
+        if (!failure_reported) {
+            emit fetchFailed(QStringLiteral("init"),
+                             QString::fromStdString(source.last_error()));
+            // 也要发 refreshFinished：主线程用它清 refresh_in_flight_，
+            // 否则手动刷新按钮会永久失效。之后线程仍在重试，成功后
+            // 会自动取数并再发一次 refreshFinished。
+            emit refreshFinished();
+            failure_reported = true;
+        }
+
+        // 分片休眠：stop() 之后最多 kInitRetryMs 才退出，不会卡住析构
+        for (int slept = 0; slept < kInitRetryMs; slept += 100) {
+            {
+                QMutexLocker lock(&mutex_);
+                if (quit_requested_) {
+                    return;
+                }
+            }
+            QThread::msleep(100);
+        }
+
+        init_ok = source.init();
     }
 
     while (true) {

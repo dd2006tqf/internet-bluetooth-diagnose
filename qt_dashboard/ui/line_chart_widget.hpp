@@ -16,7 +16,8 @@
  * `paint(QPainter*, QRect)` 是纯绘制函数，接收 QPainter 和矩形区域，
  * 不读 `this->width()`。`paintEvent()` 只是把 `rect()` 转给它。
  *
- * 这样测试可以：
+ * 这样测试可以对任意画布做像素断言，`tests/test_line_chart_widget.cpp`
+ * 就是这么用的：
  *
  * ```cpp
  * QImage img(400, 200, QImage::Format_RGB32);
@@ -26,6 +27,10 @@
  * p.end();
  * // 断言 img 里出现了曲线颜色的像素
  * ```
+ *
+ * **这个测试必须存在**。`paint(QPainter*, QRect)` 之所以与 `paintEvent()`
+ * 分离、之所以不读 `this->width()`，唯一动机就是可被像素测试；没有测试，
+ * 这个分离设计本身就是只有测试才会用的孤儿接口。
  */
 
 #ifndef WEAKNET_QT_DASHBOARD_LINE_CHART_WIDGET_HPP

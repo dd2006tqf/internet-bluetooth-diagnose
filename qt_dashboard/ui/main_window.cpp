@@ -192,7 +192,8 @@ void MainWindow::build_ui() {
 
     // 右侧：趋势图
     chart_ = new LineChartWidget;
-    chart_->setTitle(QStringLiteral("历史趋势（分数）"));
+    // 标题由 setInterface() 统一设置（main.cpp 无条件调用）：
+    // 这里不再给默认值，避免两处文案各自演化后对不上实际查询范围。
     splitter->addWidget(chart_);
 
     splitter->setStretchFactor(0, 1);
@@ -303,9 +304,19 @@ void MainWindow::apply_diagnosis(const DiagnosisSnapshot& snap) {
 
     // 第二行：人读摘要。default_summary_template 是完整句子，
     // 比 primary_issue 这类机器 token 更适合直接呈现给用户。
+    //
+    // primary_issue 作为兜底：服务端若没给 default_summary_template，
+    // 这里就只剩 primary_issue 可选。丢掉它会让整行隐藏，而"没有摘要"
+    // 和"没有诊断结论"在界面上是同一个样子，信息就白解析了。
     if (!snap.summary_template.empty()) {
         summary_template_label_->setText(
             QString::fromStdString(snap.summary_template));
+        summary_template_label_->show();
+    } else if (!snap.primary_issue.empty()) {
+        // 加前缀标明这是机器标识而非完整句子，避免被当成结论直接引用
+        summary_template_label_->setText(
+            QStringLiteral("首要问题 %1")
+                .arg(QString::fromStdString(snap.primary_issue)));
         summary_template_label_->show();
     } else {
         summary_template_label_->hide();
@@ -365,15 +376,20 @@ void MainWindow::onHistoryReady(const QByteArray& json) {
 
 void MainWindow::onFetchFailed(const QString& stage, const QString& error) {
     // 只在状态栏提示，不弹窗：自动刷新时弹窗会烦人
+    round_had_failure_ = true;
     status_bar_label_->setText(
         QStringLiteral("取数失败（%1）：%2").arg(stage, error));
 }
 
 void MainWindow::onRefreshFinished() {
     refresh_in_flight_ = false;
-    if (!status_bar_label_->text().startsWith(QStringLiteral("取数失败"))) {
+    // 按轮复位：本轮全部成功才回到「就绪」。
+    // 之前用「状态栏文字是否以『取数失败』开头」判断，那是跨轮持久状态——
+    // 只要历史上失败过一次，后面每轮成功也永远停在失败文案上。
+    if (!round_had_failure_) {
         status_bar_label_->setText(QStringLiteral("就绪"));
     }
+    round_had_failure_ = false;
 }
 
 // ---------------------------------------------------------------------------

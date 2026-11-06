@@ -72,25 +72,29 @@ qt_dashboard/
 │   ├── data_fetch_thread.{hpp,cpp}  后台取数
 │   └── main_window.{hpp,cpp}        主窗口
 └── tests/
-    └── test_json_reader.cpp   30 个用例
+    ├── test_json_reader.cpp        39 个用例（数据层）
+    └── test_line_chart_widget.cpp   8 个用例（UI 像素级）
 ```
 
 ## 验证状态（2026-11-05 实测，2026-11-06 续验）
 
 | 项 | 状态 | 证据 |
 |------|------|------|
-| 数据层单测 | ✅ **36/36 通过** | `ctest` 0.03s，含 6 个真机样本用例 |
+| 数据层单测 | ✅ **39/39 通过** | `ctest` 0.02s，含 6 个真机样本用例 |
+| UI 像素级测试 | ✅ **8/8 通过** | `QImage` 渲染断言，含对照组与变异验证 |
 | 取数层编译 | ✅ 通过 | 链接真实 `weaknet_client.h`，签名全对 |
 | UI 层 **moc** | ✅ **3/3 生成成功** | `Q_OBJECT`/信号槽声明语法正确 |
-| UI 层编译 | ✅ **零警告** | `-Wall -Wextra` 全部通过（10/10 编译单元） |
-| **完整链接** | ✅ **成功** | 413 KB 可执行文件，无 undefined reference |
+| UI 层编译 | ✅ **零警告** | `-Wall -Wextra` 全部通过（12/12 编译单元） |
+| **完整链接** | ✅ **成功** | 378 KB（386856 B）可执行文件，无 undefined reference |
 | **x86 实际运行** | ✅ **启动正常** | `--help` 正确输出；`offscreen` 下持续运行不崩溃 |
 | **ARM64 交叉编译** | ✅ **成功** | `tools/build-arm64.sh`，最高 glibc 需求 `2.17`（板端 `2.31`） |
+| **初始失败可恢复** | ✅ **实测重试循环** | 指向不存在的 D-Bus socket → 每 2s 重试一次并 `weaknet_cleanup()`，线程不退出、界面仍可截图 |
+| **默认平台插件** | ✅ **三场景实测** | 无变量→eglfs；`--screenshot`→offscreen；已设变量不覆盖 |
 | **板端真实运行** | ✅ **成功** | arm64 二进制在 `radxa-cubie-a7a` 上启动，D-Bus 连接建立 |
-| **真实取数** | ✅ **5/5 成功** | experience 4129B / diagnosis 285B / history 50KB / interfaces / health |
+| **真实取数** | ✅ **3/3 成功** | experience 4129B / diagnosis 285B / history 50KB（interfaces/health 已随孤儿清理删除） |
 | **真实渲染** | ✅ **像素级验证** | offscreen 截图 1024x742，折线横跨绘图区，状态色齐全 |
 | **新控件真渲染到屏** | ✅ **逐项对账** | 顶栏色块 `绿●8 琥珀●1 红●0 灰●4` 与 `busctl GetNetworkExperience` 的 13 维度状态完全一致 |
-| **legacy 断开连线** | ✅ **对照探针 PASS** | 非 legacy `green_mid=1 grey_plot=0`；legacy `green_mid=0 grey_plot=8` |
+| **legacy 断开连线** | ✅ **自动化测试 + 变异验证** | 8 条像素测试，破坏 legacy 逻辑后 3 条立即可靠失败 |
 | **VNC 图形栈** | ✅ **外部取帧验证** | `libqvnc.so` 跑通，RFB 客户端读到真实帧缓冲 1024x700/32bpp |
 | **15 分钟长稳** | ✅ **零泄漏零错误** | RSS 稳定 60300 kB 不变，fd/线程恒定，日志 0 错 |
 | HDMI 实机显示 | ⏳ 待做 | 显示器未在位（`HDMI disconnected`） |
@@ -113,7 +117,7 @@ qt_dashboard/
 | `count_by_state` | 顶栏彩色 ● 汇总「绿 8 / 黄 1 / 红 0 / 灰 4」 |
 | `assessment_profile` + `overall_coverage` | 顶栏「档位 INTERNET_ACCESS / 覆盖 PARTIAL」 |
 | `warnings` | 底栏红色警告行（无警告时隐藏、不占版面） |
-| `primary_issue` | 并入 experience 结论行 |
+| `primary_issue` | `summary_template` 为空时兜底成「首要问题 xxx」；两者都空则隐藏 |
 | `summary_template` | 底栏独立人读摘要行 |
 | `secondary_issues` / `excluded_causes` / `evidence_refs` | 计数上屏 + 明细进 tooltip |
 | `actions[].priority` | 诊断行显示「建议动作 N 项（最高优先级 P）」 |
@@ -326,49 +330,94 @@ $ grep -c '^Inst' /tmp/qt-dryrun.txt   →  23
 
 ## 下一步
 
-> **2026-11-06 审计结论**：代码层面已无孤儿接口，每个 `QLabel` 都有唯一写者，
-> 每个 `JsonReader` / `DataSource` 公开方法都有真实调用者，数据层 36/36 通过，
-> ARM64 交叉编译 10/10 单元零警告。**但「代码写完」不等于「可交付」**，
-> 下列 5 项仍未完成，按优先级排列。
+> **2026-11-06 首次审计**列出 5 项：代码层面已无孤儿接口，每个 `QLabel` 都有唯一写者，
+> 每个 `JsonReader` / `DataSource` 公开方法都有真实调用者。**但「代码写完」不等于「可交付」**。
+>
+> **2026-11-06 五续**：首次审计的第 2（声明与实现不符）、4（UI 测试为零）、
+> 5（eglfs 默认值）项已完成，明细见文末「本轮修复记录」。
+> 剩余 **2 项**：HDMI 实机验收、`auto_scale` 产品决策。
 
-### 1. HDMI 实机验收（唯一功能性阻塞项）
+### 1. HDMI 实机验收（唯一功能性阻塞项，仍待完成）
 
 接显示器后走 `-platform eglfs` 实机验证。VNC 只能证明图形栈、光栅化与事件循环
 是通的，**不能**替代 HDMI 时序、EDID 协商、分辨率切换与热插拔。
 
-### 2. `line_chart_widget.hpp` 的声明与实现不符（需修正）
-
-头文件 `:9-12` 与 `:20-28` 明确写着「自绘可以 `render()` 到 `QImage` 做像素级断言，
-不需要显示器」「渲染到 QImage 让 UI 层也能在 x86 上单测」，并给了一段示例代码。
-**但 `tests/` 下没有任何 UI 测试**，那条路径只在一次性探针里跑过（已删除）。
-
-这构成一个真问题：`paint(QPainter*, QRect)` 之所以和 `paintEvent()` 分离、
-之所以不读 `this->width()`，**唯一动机就是可被像素测试**。如果永远不写这个测试，
-这个分离设计本身就没有消费者 —— 按项目 orphan 铁律，要么补测试，要么把接口合回去。
-二选一，不能维持现状。
-
-### 3. `auto_scale` 纵轴策略未决
+### 2. `auto_scale` 纵轴策略未决（仍待完成，需产品决策）
 
 当前会把小波动放大到撑满全高（实测 20↔55 的 4 个低谷即撑满 121..561），
 诊断场景下可能让「轻微波动」看起来像「剧烈抖动」。是否改固定 0–100、
 或提供两种模式切换，**需要产品决策而非技术决策**，待实机看过效果再定。
 
-### 4. UI 层自动化测试为零
-
-36 项测试全部是数据层（JSON→POD）。`MainWindow` 的接线、`LineChartWidget` 的绘制、
-`DataFetchThread` 的并发，目前只有「板端跑一次截图 + 人眼对账」，没有可重复的回归。
-新接入的 10 个控件（`summary_label_` 等）的行为变化不会被任何自动化捕获。
-
-### 5. `main.cpp` 的 eglfs 默认值与实现不一致
-
-头注释 `:16` 写「因此默认走 `eglfs`」，但代码**没有设置任何默认值**，
-完全依赖 `QT_QPA_PLATFORM` 环境变量。未设置时 Qt 自行在可用插件里挑选，
-板端挑到哪个不确定。需明确：补默认值，还是把注释改成「需显式指定」。
-
 ### 其他（非阻塞）
 
 - 视需要补充维度详情、告警高亮等交互
 - 15 分钟长稳不等于周级；断网重连、服务重启等异常路径未覆盖
+- `MainWindow` 的接线与 `DataFetchThread` 的并发仍无自动化回归
+  （`LineChartWidget` 已补 8 条像素测试，但窗口层只靠板端截图人眼对账）
 
 是否升格为正式 OpenSpec change：**待 HDMI 实机验证后再评估**。
 当前代码仍是探索性质，未接入根构建、未修改任何既有文件。
+
+## 本轮修复记录（2026-11-06 五续）
+
+上一轮审计列出 5 项，本轮清掉 3 项，全部有可复算证据。
+
+### ① `line_chart_widget.hpp` 声明与实现不符 → 补 8 条像素测试
+
+`paint(QPainter*, QRect)` 之所以与 `paintEvent()` 分离、之所以不读
+`this->width()`，**唯一动机就是可被像素测试**。本轮补上那个消费者：
+`tests/test_line_chart_widget.cpp`（8 个用例，341 行）。
+
+覆盖：空序列不画线、非空序列画线、**legacy 在中间断开连线**（带同进程对照组）、
+legacy 点仍留灰色标记、单点不除零、全等值不贴边、换数据后 `legacy_` 与
+`scores_` 保持等长、退化矩形安全返回。
+
+判据刻意排除坐标轴文字行列（上一轮抗锯齿边缘 `0x88` 混白落到 `0x9E` 导致假失败），
+并用**变异验证**证明断言可失败：把 `if (legacy_.at(i))` 改成 `if (false)` 后
+3 条用例立即失败，改回后 `git diff` 为空。
+
+### ② UI 层自动化测试为零 → 数据层同时补到 39 条
+
+新增 3 条数据层用例（`PrimaryIssueSurvivesWithoutSummaryTemplate` 等），
+数据层从 36 条升到 **39 条**。配合上面的 8 条像素测试，
+`ctest` 现在覆盖 JSON 解析 + 图表绘制两层，仅剩窗口接线无自动化。
+
+### ③ `main.cpp` 的 eglfs 默认值与实现不一致 → 补 `apply_default_platform()`
+
+头注释写「默认走 `eglfs`」但代码没设置任何默认值。现在由
+`apply_default_platform()` 落实，优先级为：
+环境变量已设 → 不动；显式 `-platform` → Qt 自行覆盖；`--screenshot` → `offscreen`；
+其余 → `eglfs`。
+
+三场景实测（x86 无 DRM）：
+- 不设环境变量、不带 `--screenshot` → 报 `Could not initialize egl display`（eglfs 生效）
+- `--screenshot` 且不设环境变量 → 成功保存 1024×700 PNG（自动切 offscreen）
+- 已设 `QT_QPA_PLATFORM=offscreen` → 正常运行（不被覆盖）
+
+注：`--screenshot` 必须抢在 `QApplication` 构造前判断，所以手工扫 `argv`，
+不能用 `QCommandLineParser`（构造时平台插件已定）。
+
+### ④ 顺带修掉的四个真问题（不在首次审计的 5 项内）
+
+**初始化失败会永久卡死取数线程。** `weaknet_init()` 在 `client.cpp:1348` 的实现是
+`g_client` 非空时直接 `return g_client->isConnected()`，而 `connected_` 只在
+`initConnection()` 里赋值一次。连接失败后全局客户端仍留着，于是后续每次
+`weaknet_init()` 都走「已初始化」分支、永远返回 `false` —— 板端开机早期
+D-Bus 未就绪时，看板就再也连不上了。修法：`DataSource::init()` 失败路径调用
+`weaknet_cleanup()` 把全局客户端置空（副作用是 `Logger::shutdown()`，
+已实测 glog Init/Shutdown 反复循环安全），`DataFetchThread::run()` 改为按
+2s 退避重试并切片睡眠以响应 `quit_requested_`。
+
+**状态栏「就绪」会吃掉失败提示。** 原来 `onRefreshFinished` 靠检查状态栏文字
+是否以「失败」开头来决定是否复位，但那是跨轮持久状态：第一轮失败、第二轮成功时
+第二轮会被误判成仍失败。改成每轮独立的 `round_had_failure_` 标志。
+
+**`DiagnosisSnapshot::primary_issue` 是孤儿字段。** 解析了从未读过。
+按「给已解析字段接入真实消费者」处理：`summary_template` 为空时用它兜底显示
+「首要问题 xxx」，两者都空则隐藏。补了 3 条用例覆盖（含空串不等于缺失）。
+
+**标题与实际查询不符。** `-i` 不传时标题停在 `build_ui()` 的
+「历史趋势（分数）」，但实际查的是全部网卡，且 `history_limit_` 也停在类默认值。
+现在 `main.cpp` **无条件**调用 `setInterface()`（不传则传空串），
+`build_ui()` 不再写标题，`setInterface()` 成为唯一标题写者。
+帮助文案也从「默认自动检测」改成「不传则查询全部网卡」——「自动检测」在代码里不存在。

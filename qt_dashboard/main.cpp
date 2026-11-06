@@ -13,7 +13,10 @@
  * | `xcb` | Xorg | ❌ 无图形栈运行 |
  * | `offscreen` | 无 | ✅ 仅用于测试，不显示 |
  *
- * 因此默认走 `eglfs`，但允许用 `-platform` 参数覆盖（调试时用 `offscreen`）。
+ * 因此默认走 `eglfs`，但允许用 `-platform` 参数或 `QT_QPA_PLATFORM` 环境变量
+ * 覆盖（调试时用 `offscreen`）。两个例外由 `apply_default_platform()` 处理：
+ * 显式指定时完全不干预；带 `--screenshot` 时自动改用 `offscreen`，因为该选项
+ * 的用途就是「无显示器验证」，此时 eglfs 会在启动阶段因拿不到 DRM 而失败。
  *
  * ## 权限
  *
@@ -39,14 +42,73 @@
  */
 
 #include <QApplication>
+#include <QByteArray>
 #include <QCommandLineParser>
 #include <QPixmap>
-#include <QScreen>
 #include <QTimer>
+
+#include <cstdlib>
+#include <cstring>
 
 #include "ui/main_window.hpp"
 
+/**
+ * @brief argv 里是否出现了 `--screenshot`（或 `--screenshot=...`）
+ *
+ * 为什么手工扫 argv 而不是用 QCommandLineParser：
+ * 平台插件在 `QApplication` **构造时**就要确定，而 parser 是构造之后
+ * 才能处理的。要在那之前决定默认平台插件，只能自己看 argv。
+ *
+ * 只认长选项：`--screenshot` 没有短形式，这里也不该为它发明一个。
+ */
+static bool has_screenshot_option(int argc, char* argv[]) {
+    static const char kOpt[] = "--screenshot";
+    constexpr size_t kOptLen = sizeof(kOpt) - 1;
+    for (int i = 1; i < argc; ++i) {
+        const char* arg = argv[i];
+        if (!arg) {
+            continue;
+        }
+        if (std::strncmp(arg, kOpt, kOptLen) == 0 &&
+            (arg[kOptLen] == '\0' || arg[kOptLen] == '=')) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief 未显式指定平台插件时，决定默认值
+ *
+ * 头注释推荐了 `eglfs`，但在此之前代码里没有设置任何默认值：完全依赖
+ * `QT_QPA_PLATFORM` 环境变量，未设置时由 Qt 在可用插件里自行挑选，板端
+ * 挑到哪个不确定。这里把推荐落到实处。
+ *
+ * 优先级（已实测确认，见下）：
+ *
+ * 1. `QT_QPA_PLATFORM` 环境变量已设置 → 不动
+ * 2. 显式 `-platform <x>` → 由 Qt 自己处理，会压过这里 qputenv 的值
+ * 3. `--screenshot` → 用 `offscreen`。这个选项的用途就是「无显示器验证」，
+ *    此时默认 eglfs 会在 QApplication 构造时因拿不到 DRM/EGL 直接失败，
+ *    根本走不到截图逻辑。
+ * 4. 其余 → `eglfs`
+ *
+ * 实测依据（x86 无 DRM 环境）：
+ *   - 不设环境变量：报 "Could not initialize egl display"（默认 eglfs 生效）
+ *   - `-platform offscreen`：platformName() == "offscreen"（命令行压过默认）
+ *   - 环境变量 offscreen：platformName() == "offscreen"（不被覆盖）
+ */
+static void apply_default_platform(int argc, char* argv[]) {
+    if (!qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
+        return;  // 调用方已显式指定（命令行 -platform 或环境变量）
+    }
+    qputenv("QT_QPA_PLATFORM",
+            has_screenshot_option(argc, argv) ? QByteArrayLiteral("offscreen")
+                                             : QByteArrayLiteral("eglfs"));
+}
+
 int main(int argc, char* argv[]) {
+    apply_default_platform(argc, argv);
     QApplication app(argc, argv);
 
     QApplication::setApplicationName(QStringLiteral("weaknet-dashboard"));
@@ -61,7 +123,7 @@ int main(int argc, char* argv[]) {
 
     QCommandLineOption iface_option(
         QStringList() << QStringLiteral("i") << QStringLiteral("interface"),
-        QStringLiteral("指定网卡（默认自动检测）"),
+        QStringLiteral("指定网卡；不传则查询全部网卡"),
         QStringLiteral("name"));
     parser.addOption(iface_option);
 
@@ -81,9 +143,13 @@ int main(int argc, char* argv[]) {
     parser.process(app);
 
     weaknet::dashboard::MainWindow window;
-    if (parser.isSet(iface_option)) {
-        window.setInterface(parser.value(iface_option));
-    }
+    // 无论是否传 -i 都调用：setInterface("") 会把标题写成「全部网卡」，
+    // 同时把 history_limit_ 设成与 -i 时同一个值。之前只在 isSet 时调用，
+    // 导致不传 -i 时标题停在 build_ui 的默认文案、limit 也停在类默认值，
+    // 与「查询全部网卡」的实际行为对不上。
+    window.setInterface(parser.isSet(iface_option)
+                            ? parser.value(iface_option)
+                            : QString());
     window.show();
     window.start();
 

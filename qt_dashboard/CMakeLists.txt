@@ -133,6 +133,31 @@ if(WEAKN_DASHBOARD_BUILD_TESTS)
             GTest::gtest_main
         )
         add_test(NAME dashboard_data COMMAND test_dashboard_data)
+
+        # UI 层像素测试：必须有 Qt，否则 LineChartWidget 根本不存在。
+        # 这里不要求 libweaknet —— paint() 只依赖数据结构与 Qt，不碰 D-Bus。
+        if(WEAKN_DASHBOARD_WITH_UI)
+            add_executable(test_line_chart_widget tests/test_line_chart_widget.cpp)
+            target_link_libraries(test_line_chart_widget PRIVATE
+                weaknet_dashboard_ui
+                weaknet_dashboard_data
+                Qt${QT_VERSION_MAJOR}::Widgets
+                GTest::gtest
+                GTest::gtest_main
+            )
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test_line_chart_widget PRIVATE -Wall -Wextra)
+            endif()
+            add_test(NAME line_chart_widget COMMAND test_line_chart_widget)
+
+            # 像素测试用 offscreen 平台，不需要显示器。
+            # 不设 QT_QPA_PLATFORM 时，无 X11/Wayland 的机器上 Qt 会直接
+            # abort（"could not connect to display"），测试就变成"环境挂了"
+            # 而不是"代码错了"。
+            set_tests_properties(line_chart_widget PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            )
+        endif()
     else()
         message(WARNING "未找到 GTest，跳过数据层单元测试")
     endif()

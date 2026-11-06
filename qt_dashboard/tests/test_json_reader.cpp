@@ -551,4 +551,60 @@ TEST(BoardRealSampleTest, RealHistoryFlatScoreKeepsTimeOrderAndValues) {
     EXPECT_DOUBLE_EQ(hi, 55.0);
 }
 
+// ---------------------------------------------------------------------------
+// 本轮新增行为：诊断 primary_issue 的兜底契约
+// ---------------------------------------------------------------------------
+
+TEST(DiagnosisTest, PrimaryIssueSurvivesWithoutSummaryTemplate) {
+    // UI 在 default_summary_template 为空时用 primary_issue 兜底。
+    // 这条测试守住前提：解析层必须把 primary_issue 留着，
+    // 否则兜底分支永远走不到，那一行会整个隐藏。
+    const char* json = R"({
+      "fault_domain":"DNS",
+      "primary_issue":"dns_resolution_slow",
+      "confidence":"MEDIUM",
+      "secondary_issues":[],
+      "evidence_refs":[],
+      "excluded_causes":[],
+      "actions":[],
+      "default_summary_template":""
+    })";
+    const DiagnosisSnapshot snap = weaknet::dashboard::parse_diagnosis(json);
+
+    ASSERT_TRUE(snap.valid);
+    EXPECT_TRUE(snap.summary_template.empty());
+    EXPECT_EQ(snap.primary_issue, "dns_resolution_slow");
+}
+
+TEST(DiagnosisTest, MissingPrimaryIssueAndSummaryBothEmpty) {
+    // 两者都缺失时 UI 会隐藏整行。这里确认解析层给的是空串而不是
+    // 某个占位 token——否则界面会显示一句「首要问题 no_issue_detected」。
+    // 注意 fault_domain 有 UNKNOWN 兜底，primary_issue 的兜底是
+    // "no_issue_detected"，只在字段真的缺失时才生效。
+    const char* json = R"({"fault_domain":"NONE","confidence":"LOW"})";
+    const DiagnosisSnapshot snap = weaknet::dashboard::parse_diagnosis(json);
+
+    ASSERT_TRUE(snap.valid);
+    EXPECT_TRUE(snap.summary_template.empty());
+    // 字段缺失 → 走 fallback
+    EXPECT_EQ(snap.primary_issue, "no_issue_detected");
+}
+
+TEST(DiagnosisTest, EmptyStringPrimaryIssueIsNotFallback) {
+    // 区分「字段缺失」和「字段存在但为空串」：
+    // 后者不应被 getString 的 fallback 覆盖成 no_issue_detected，
+    // 否则界面会给用户看一个服务端并没有说过的结论。
+    const char* json = R"({
+      "fault_domain":"NONE",
+      "primary_issue":"",
+      "confidence":"LOW",
+      "default_summary_template":""
+    })";
+    const DiagnosisSnapshot snap = weaknet::dashboard::parse_diagnosis(json);
+
+    ASSERT_TRUE(snap.valid);
+    EXPECT_TRUE(snap.primary_issue.empty());
+    EXPECT_TRUE(snap.summary_template.empty());
+}
+
 } // namespace

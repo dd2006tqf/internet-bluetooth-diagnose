@@ -65,10 +65,12 @@ public:
     void start();
 
     /**
-     * @brief 指定历史趋势查询的网卡
+     * @brief 指定历史趋势查询的网卡，并据此设置图表标题
      *
-     * 空字符串表示不限制（服务端按全部网卡返回）。
-     * 必须在 start() 之前调用，否则首轮取数用的是默认值。
+     * 空字符串表示不限制（服务端按全部网卡返回），标题会写成「全部网卡」。
+     *
+     * 必须在 `start()` 之前调用。`main.cpp` **无条件调用**（不传 `-i` 时传空串）：
+     * 它同时负责设置 `history_limit_` 和标题，跳过调用会让标题与实际查询范围对不上。
      */
     void setInterface(const QString& interface_name);
 
@@ -141,6 +143,13 @@ private:
     /// 次要问题 / 已排除原因 / 证据（diagnosis 独占，可折叠）
     QLabel* diagnosis_extra_label_ = nullptr;
     QLabel* status_bar_label_ = nullptr;
+
+    /// 本轮刷新是否出现过失败。
+    ///
+    /// 不能用「状态栏文字是否以『取数失败』开头」判断：那是跨轮持久的状态，
+    /// 一旦出现过失败，之后即使每轮都成功也永远不会复位回「就绪」。
+    /// 这里按轮记录，onRefreshFinished 时消费并清空。
+    bool round_had_failure_ = false;
 
     bool refresh_in_flight_ = false;
 };

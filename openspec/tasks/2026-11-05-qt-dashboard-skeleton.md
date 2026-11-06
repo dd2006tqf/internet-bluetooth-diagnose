@@ -1,11 +1,11 @@
 # Qt 看板代码骨架与完整调用链
 
-> 日期：2026-11-05（2026-11-06 续：孤儿清理 + 真实消费者接入）
+> 日期：2026-11-05（2026-11-06 续：孤儿清理 + 真实消费者接入；2026-11-06 五续：补 UI 测试与三个真 bug）
 > 分类：探索 / 工作流外实施
-> 结果：**ARM64 已构建并上板跑通**，真实 D-Bus 取数 5/5 成功，离屏渲染做像素级验证；
+> 结果：**ARM64 已构建并上板跑通**，真实 D-Bus 取数 3/3 成功，离屏渲染做像素级验证；
 > VNC 平台插件跑通完整图形栈并做 15 分钟长稳（零泄漏、零错误）；
-> 已删除全部孤儿接口并给已解析字段接入真实消费者（数据层 36/36 通过）；
-> **代码层面已无孤儿，但可交付性仍差 5 项**（见文末「下一步（2026-11-06 审计）」）
+> 已删除全部孤儿接口并给已解析字段接入真实消费者（数据层 39/39 通过）；
+> **代码层面已无孤儿，可交付性只剩 2 项**（HDMI 实机验收、`auto_scale` 产品决策）
 
 ## 构思
 
@@ -41,23 +41,24 @@
 ### 新增文件（全部在独立目录，未改动任何既有文件）
 
 ```
-qt_dashboard/                          19 个文件，代码 3192 行（含 2 个构建脚本）
+qt_dashboard/                          19 个文件，代码 4423 行（含 2 个构建脚本）
 ├── README.md                  设计决定与验证状态
-├── CMakeLists.txt             139 行，独立 project，三 target
-├── main.cpp                   入口，QCommandLineParser
+├── CMakeLists.txt             164 行，独立 project，四 target
+├── main.cpp                   181 行，入口，QCommandLineParser
 ├── data/                      ← 不依赖 Qt
-│   ├── json_reader.hpp/cpp    178 / 478 行，路径式查找 + 根数组支持
-│   ├── dashboard_data.hpp/cpp 301 / 235 行，POD + 解析
-│   └── data_source.hpp/cpp    152 / 197 行，调 libweaknet + 缓冲扩容
+│   ├── json_reader.hpp/cpp    160 / 450 行，路径式查找 + 根数组支持
+│   ├── dashboard_data.hpp/cpp 281 / 223 行，POD + 解析
+│   └── data_source.hpp/cpp    134 / 163 行，调 libweaknet + 缓冲扩容
 ├── ui/                        ← 依赖 Qt
-│   ├── line_chart_widget.hpp/cpp  106 / 208 行，QPainter 折线图
-│   ├── data_fetch_thread.hpp/cpp  115 / 120 行，QThread 后台取数
-│   └── main_window.hpp/cpp        116 / 336 行，主窗口
+│   ├── line_chart_widget.hpp/cpp  98 / 217 行，QPainter 折线图
+│   ├── data_fetch_thread.hpp/cpp  115 / 157 行，QThread 后台取数 + init 重试
+│   └── main_window.hpp/cpp        160 / 539 行，主窗口
 ├── tools/
 │   ├── build-arm64.sh                ARM64 交叉编译（x86 moc + arm64 clang）
 │   └── fetch-qt-arm64-sysroot.sh     往 sysroot 装 arm64 Qt 头/库
 └── tests/
-    ├── test_json_reader.cpp   34 个用例（含 6 个真机样本）
+    ├── test_json_reader.cpp         39 个用例（数据层，含 6 个真机样本）
+    ├── test_line_chart_widget.cpp    8 个用例（UI 像素级，QImage 断言）
     └── fixtures/
         └── board_experience_real.json   板端实测快照（带来源标注）
 ```
@@ -254,6 +255,13 @@ Qt 运行库实测齐全。
 
 `interfaces` 返回裸字符串是个**易踩的坑**：它不是 JSON。当前看板没有消费它，
 所以未受影响；将来接入时必须按纯文本处理，不能丢给 `JsonReader`。
+
+> **后续变化（2026-11-06 四续）**：`DataSource` 未加 `interfaces` / `health`
+> 的取数方法后，`weaknet_get_interfaces` 与 `weaknet_health_check` 在看板侧
+> 无任何消费者，属于孤儿，已连同 `FetchResult` 的对应字段一并删除。
+> 因此「真实取数」从 5/5 收窄为 **3/3**（experience / diagnosis / history）。
+> 这两个 C API 本身仍在 `client/weaknet_client.h` 里，由 `weaknet_cli` 使用，
+> 不是项目级孤儿。
 
 #### 真实渲染：像素级差分验证
 
@@ -514,52 +522,162 @@ diagnosis_extra_label_   ← diagnosis （次要问题 / 排除原因 / 证据�
    记录请求侧事实，`setInterface()` 同步更新标题。
 
 
-## 下一步（2026-11-06 审计）
+## 下一步（2026-11-06 审计 → 五续后更新）
 
-代码层面已无孤儿接口：每个 `QLabel` 有唯一写者，每个 `JsonReader` / `DataSource`
-公开方法有真实调用者，数据层 36/36 通过，ARM64 交叉编译 10/10 单元零警告。
-**但「代码写完」不等于「可交付」**，下列 5 项按优先级排列，均未完成。
+> **首次审计（2026-11-06）**列出 5 项：代码层面已无孤儿接口，每个 `QLabel` 有唯一写者，
+> 每个 `JsonReader` / `DataSource` 公开方法有真实调用者。
+> **但「代码写完」不等于「可交付」**。
+>
+> **五续（2026-11-06）**：第 2（声明与实现不符）、4（UI 测试为零）、5（eglfs 默认值）
+> 项已完成，明细见下方「2026-11-06 五续」。**剩余 2 项**。
 
-### 1. HDMI 实机验收（唯一功能性阻塞项）
+### 1. HDMI 实机验收（唯一功能性阻塞项，仍待完成）
 
 接显示器后走 `-platform eglfs` 实机验证。VNC 只能证明图形栈、光栅化与事件循环
 是通的，**不能**替代 HDMI 时序、EDID 协商、分辨率切换与热插拔。
 
-### 2. `line_chart_widget.hpp` 的声明与实现不符（需修正）
-
-头文件 `:9-12` 与 `:20-28` 明确写着「自绘可以 `render()` 到 `QImage` 做像素级断言，
-不需要显示器」「渲染到 QImage 让 UI 层也能在 x86 上单测」，并给了一段示例代码。
-**但 `tests/` 下没有任何 UI 测试**，那条路径只在一次性探针里跑过（已删除）。
-
-这构成一个真问题：`paint(QPainter*, QRect)` 之所以和 `paintEvent()` 分离、
-之所以不读 `this->width()`，**唯一动机就是可被像素测试**。如果永远不写这个测试，
-这个分离设计本身就没有消费者 —— 按项目 orphan 铁律，要么补测试，要么把接口合回去。
-二选一，不能维持现状。
-
-### 3. `auto_scale` 纵轴策略未决
+### 2. `auto_scale` 纵轴策略未决（仍待完成，需产品决策）
 
 当前会把小波动放大到撑满全高（实测 20↔55 的 4 个低谷即撑满 121..561），
 诊断场景下可能让「轻微波动」看起来像「剧烈抖动」。是否改固定 0–100、
 或提供两种模式切换，**需要产品决策而非技术决策**，待实机看过效果再定。
 
-### 4. UI 层自动化测试为零
-
-36 项测试全部是数据层（JSON→POD）。`MainWindow` 的接线、`LineChartWidget` 的绘制、
-`DataFetchThread` 的并发，目前只有「板端跑一次截图 + 人眼对账」，没有可重复的回归。
-新接入的 10 个控件（`summary_label_` 等）的行为变化不会被任何自动化捕获。
-与第 2 项是同一个缺口的两面：补 UI 测试可以同时把 `paint(QPainter*, QRect)`
-的分离设计变成有消费者的设计。
-
-### 5. `main.cpp` 的 eglfs 默认值与实现不一致
-
-头注释 `:16` 写「因此默认走 `eglfs`」，但代码**没有设置任何默认值**，
-完全依赖 `QT_QPA_PLATFORM` 环境变量。未设置时 Qt 自行在可用插件里挑选，
-板端挑到哪个不确定。需明确：补默认值，还是把注释改成「需显式指定」。
-
 ### 其他（非阻塞）
 
 - 视需要补充维度详情、告警高亮等交互
 - 15 分钟长稳不等于周级；断网重连、服务重启等异常路径未覆盖
+- `MainWindow` 的接线与 `DataFetchThread` 的并发仍无自动化回归
+  （`LineChartWidget` 已补 8 条像素测试，但窗口层只靠板端截图人眼对账）
 
 是否升格为正式 OpenSpec change：**待 HDMI 实机验证后再评估**。
 当前代码仍是探索性质，未接入根构建、未修改任何既有文件。
+
+---
+
+## 2026-11-06 五续：补 UI 测试 + 三个真 bug
+
+首次审计列出 5 项缺口。本轮补掉其中 3 项（第 2、4、5），
+并在补测试的过程中发现并修掉 4 个此前未记录的**真 bug**。
+
+### ① 补 `tests/test_line_chart_widget.cpp`（8 个用例，341 行）
+
+首次审计第 2 项指出：`paint(QPainter*, QRect)` 与 `paintEvent()` 分离、
+不读 `this->width()`，**唯一动机就是可被像素测试**，但仓库里没有那个测试，
+分离设计本身就成了只有测试才会用的孤儿接口。本轮补上消费者。
+
+| 用例 | 断言要点 |
+|------|---------|
+| `EmptySeriesShowsNoLine` | 空序列绘图区内折线像素严格为 0 |
+| `NonEmptySeriesDrawsLine` | 对照组：非空序列必须有折线像素 |
+| `LegacyBreaksTheLineInTheMiddle` | 同进程对照：中间点 legacy → 中间列折线像素 0；全 v2 → >0；且两侧线段仍在 |
+| `LegacyPointsAreStillMarked` | 全 legacy 无折线，但必须有灰色空心标记（不能静默消失） |
+| `SinglePointRendersWithoutDivisionByZero` | n==1 时画点不除零 |
+| `FlatSeriesDoesNotCollapseToEdge` | 全等值序列画在垂直中部（±6px），不贴顶/沉底 |
+| `LegacyVectorStaysInSyncWithScores` | 连换两次数据后 `legacy_` 与 `scores_` 仍等长 |
+| `DegenerateAreaIsIgnored` | 空矩形 / 小于边距的矩形安全返回 |
+
+两条硬性判据纪律（上一轮踩坑后固化）：
+
+1. **只统计绘图区内部**，排除坐标轴文字行列——第一版「中间列无绿色」假失败的
+   原因是 Y 轴刻度文字抗锯齿边缘 `0x88` 混白后恰好落在 `0x9E`；
+2. **每条断言配对照组**，同一进程内只改一个变量跑两次。单点断言没有对照组时，
+   恒真条件也会「通过」。
+
+**变异验证**（证明断言能失败）：把 `line_chart_widget.cpp` 里
+`if (legacy_.at(i))` 改成 `if (false)` → 3 条用例立即失败；改回后 `git diff` 为空。
+
+技术要点：`QWidget` 构造要求进程里先有 `QApplication`（`QGuiApplication` 不够），
+用 gtest 全局环境 `::testing::AddGlobalTestEnvironment` 在首个测试前建、最后销毁；
+CMake 里给该测试设 `ENVIRONMENT "QT_QPA_PLATFORM=offscreen"`，
+否则无 X11 的机器上 Qt 直接 abort，测试会变成「环境挂了」而非「代码错了」。
+
+### ② 数据层补 3 条用例（36 → 39）
+
+配合下面第 ④ 项的 `primary_issue` 兜底逻辑，新增
+`PrimaryIssueSurvivesWithoutSummaryTemplate`、`MissingPrimaryIssueAndSummaryBothEmpty`、
+`EmptyStringPrimaryIssueIsNotFallback`。最后一条覆盖「空串不等于缺失」——
+若只判 `empty()` 就返回，会把空串当成有效值写进界面。
+
+### ③ `main.cpp` 补 `apply_default_platform()`
+
+首次审计第 5 项：头注释写「默认走 `eglfs`」，代码却没设置任何默认值。
+现在优先级明确为：
+
+1. `QT_QPA_PLATFORM` 已设置 → 不动
+2. 显式 `-platform <x>` → Qt 自行覆盖（会压过 `qputenv`）
+3. `--screenshot` → `offscreen`（该选项用途就是「无显示器验证」，
+   默认 eglfs 会在 `QApplication` 构造时因拿不到 DRM 直接失败，走不到截图逻辑）
+4. 其余 → `eglfs`
+
+`--screenshot` 必须抢在 `QApplication` 构造前判断，因此手工扫 `argv`，
+不能用 `QCommandLineParser`（构造时平台插件已定）。
+
+三场景实测（x86 无 DRM）：不设变量 → 报 `Could not initialize egl display`
+（eglfs 生效）；`--screenshot` → 成功保存 1024×700 PNG；
+已设 `QT_QPA_PLATFORM=offscreen` → 正常运行（不被覆盖）。
+
+### ④ 顺带修掉的四个真 bug（不在首次审计的 5 项内）
+
+**bug 1：初始化失败会永久卡死取数线程。**
+
+`weaknet_init()` 在 `client/client.cpp:1348` 的实现是：
+
+```cpp
+if (g_client) return g_client->isConnected();
+```
+
+而 `connected_` 只在 `initConnection()` 里赋值一次。连接失败后 `g_client`
+仍留在全局，于是后续每次 `weaknet_init()` 都走「已初始化」分支、
+**永远返回 false**——板端开机早期 D-Bus 尚未就绪时，看板再也连不上，
+而原 `DataFetchThread::run()` 在 init 失败时直接 `return`，线程直接退出。
+
+修法两层：
+
+- `DataSource::init()` 失败路径调用 `weaknet_cleanup()` 把全局客户端置空
+  （副作用是 `Logger::shutdown()`，下次 init 再 `InitGoogleLogging()`——
+  已实测 glog 的 Init/Shutdown 反复循环 3 轮安全）；
+- `DataFetchThread::run()` 改为按 2s 退避重试，睡眠切成 100ms 片以响应
+  `quit_requested_`；首次失败时发 `fetchFailed` + `refreshFinished`
+  （后者是必需的，主线程靠它清 `refresh_in_flight_`，否则手动刷新按钮永久失效）。
+
+**bug 2：状态栏「就绪」会吃掉失败提示。**
+
+原 `onRefreshFinished` 靠检查状态栏文字是否以「失败」开头来决定是否复位。
+但那是**跨轮持久状态**：第一轮失败、第二轮成功时，第二轮会被误判成仍失败，
+永远停在错误文案。改成每轮独立的 `round_had_failure_` 标志，
+`onFetchFailed` 置位、`onRefreshFinished` 读取并清零。
+
+**bug 3：`DiagnosisSnapshot::primary_issue` 是孤儿字段。**
+
+`dashboard_data.cpp:160` 解析了，`apply_diagnosis()` 里从未读过
+（`:450`/`:452` 那两处 `snap.primary_issue` 属于 `apply_experience` 的
+`ExperienceSnapshot`，不是同一个字段）。按「B 类：给已解析字段接入真实消费者」
+处理：`summary_template` 为空时用它兜底显示「首要问题 xxx」，两者都空则隐藏。
+
+**bug 4：`-i` 不传时标题与实际查询不符。**
+
+`main.cpp` 原来只在 `parser.isSet(iface_option)` 时调 `setInterface()`，
+不传 `-i` 时标题停在 `build_ui()` 的「历史趋势（分数）」，但实际查的是全部网卡，
+且 `history_limit_` 也停在类默认值（100）而不是 `kHistoryLimit`(120)。
+现在 **无条件**调用（不传则传空串），`build_ui()` 不再写标题，
+`setInterface()` 成为唯一标题写者。帮助文案也从「默认自动检测」改成
+「不传则查询全部网卡」——「自动检测」在代码里根本不存在。
+
+### 验证证据
+
+| 项 | 命令 | 结果 |
+|----|------|------|
+| 数据层单测 | `ctest --test-dir /tmp/qt-verify` | **39/39 通过**（实测输出 `39 tests from 5 test suites ran`） |
+| UI 像素测试 | 同上 | **8/8 通过**（实测输出 `8 tests from 1 test suite ran`），变异验证确认可失败 |
+| x86 完整链接 | `cmake --build` | 386856 字节，无 undefined reference（staging 重解压后复算；旧记录 404040 B 来自已清理的临时 staging，无法重现，以本次为准） |
+| 三平台场景 | 手工三场景 | 不设变量 → `Could not initialize egl display`（eglfs 生效）；`--screenshot` → 存 1024x700 PNG（自动 offscreen）；已设 `QT_QPA_PLATFORM=offscreen` → 正常运行（不被覆盖） |
+| 初始失败重试 | `DBUS_SYSTEM_BUS_ADDRESS=unix:path=/tmp/no_such_bus` | 每 2s 重试一次、每次 `weaknet_cleanup`，线程不退出；9 秒后仍能截图成功（66776 B，界面在、无数据） |
+| ARM64 交叉编译 | `BUILD_DIR=/tmp/qt-arm64-refresh ./qt_dashboard/tools/build-arm64.sh` | 通过，**零警告**，产物 414472 字节，最高 glibc 需求 `2.17` |
+
+### 五续后仍未完成
+
+| 项 | 原因 |
+|----|------|
+| **HDMI 实机显示** | 显示器未在位（`HDMI disconnected`），eglfs 真机路径未跑 |
+| `auto_scale` 纵轴策略 | 需产品决策（固定 0–100 / 双模式），待实机看效果 |
+| 窗口层自动化 | `MainWindow` 接线与 `DataFetchThread` 并发仍只靠板端截图人眼对账 |
