@@ -119,6 +119,7 @@ SOURCES=(
     data/json_reader
     data/dashboard_data
     data/data_source
+    ui/theme
     ui/line_chart_widget
     ui/data_fetch_thread
     ui/main_window

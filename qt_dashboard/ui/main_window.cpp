@@ -20,6 +20,7 @@
 #include "data/dashboard_data.hpp"
 #include "data_fetch_thread.hpp"
 #include "line_chart_widget.hpp"
+#include "theme.hpp"
 
 namespace weaknet {
 namespace dashboard {
@@ -42,17 +43,28 @@ constexpr int kHistoryLimit = 120;
  *
  * @param name        维度中文名
  * @param state_label 输出：状态标签控件
+ * @param dot_label   输出：状态圆点控件（跟随状态着色）
  * @return 该行的布局
+ *
+ * 布局用固定列宽而非 stretch：14 行对齐后能当表格读，
+ * 不会因为某个维度名长一点就把状态列推歪。
  */
-QWidget* make_status_row(const QString& name, QLabel** state_label) {
+QWidget* make_status_row(const QString& name, QLabel** state_label,
+                         QLabel** dot_label) {
     auto* row = new QWidget;
     auto* layout = new QHBoxLayout(row);
-    layout->setContentsMargins(4, 2, 4, 2);
+    layout->setContentsMargins(2, 2, 2, 2);
+    layout->setSpacing(8);
 
     auto* name_label = new QLabel(name);
-    name_label->setMinimumWidth(90);
+    name_label->setMinimumWidth(84);
+    name_label->setObjectName(QStringLiteral("dim_name"));
 
     auto* dot = new QLabel(QStringLiteral("●"));
+    dot->setObjectName(QStringLiteral("state_dot"));
+    dot->setFixedWidth(14);
+    dot->setAlignment(Qt::AlignCenter);
+
     auto* state = new QLabel(QStringLiteral("--"));
     state->setObjectName(QStringLiteral("state_text"));
 
@@ -62,6 +74,7 @@ QWidget* make_status_row(const QString& name, QLabel** state_label) {
     layout->addStretch();
 
     *state_label = state;
+    *dot_label = dot;
     return row;
 }
 
@@ -118,43 +131,62 @@ void MainWindow::setInterface(const QString& interface_name) {
 void MainWindow::build_ui() {
     auto* central = new QWidget;
     auto* root = new QVBoxLayout(central);
+    root->setContentsMargins(12, 8, 12, 6);
+    root->setSpacing(6);
 
     // --- 顶栏 ---
+    //
+    // 改进前是一个扁平 QHBoxLayout：刷新按钮、网卡名、分数、状态汇总、
+    // 档位、时间戳全部挤在同一行同一种字重里，看不出哪一项是主信息。
+    //
+    // 现在分三层视觉层级：
+    //   左：操作（刷新）+ 网卡名（等宽，避免 wlan0/wlan1 混淆）
+    //   中：分数（26pt 大字，整体状态色）+ 状态汇总色块
+    //   右：元信息（档位、时间戳，弱化小字）
     auto* top = new QHBoxLayout;
+    top->setSpacing(10);
 
     refresh_button_ = new QPushButton(QStringLiteral("刷新"));
+    refresh_button_->setCursor(Qt::PointingHandCursor);
     connect(refresh_button_, &QPushButton::clicked,
             this, &MainWindow::onRefreshClicked);
-    top->addWidget(refresh_button_);
+    top->addWidget(refresh_button_, 0, Qt::AlignVCenter);
 
     iface_label_ = new QLabel(QStringLiteral("--"));
-    QFont iface_font = iface_label_->font();
-    iface_font.setBold(true);
-    iface_label_->setFont(iface_font);
-    top->addWidget(iface_label_);
+    iface_label_->setObjectName(QStringLiteral("iface_name"));
+    top->addWidget(iface_label_, 0, Qt::AlignVCenter);
 
+    // 分数单独一列、右对齐：数字宽度会变（9.0 / 100.0），右对齐不会抖动
     score_label_ = new QLabel(QStringLiteral("--"));
-    QFont score_font = score_label_->font();
-    score_font.setPointSizeF(score_font.pointSizeF() * 1.8);
-    score_font.setBold(true);
-    score_label_->setFont(score_font);
-    top->addWidget(score_label_);
+    score_label_->setObjectName(QStringLiteral("score_value"));
+    score_label_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    score_label_->setMinimumWidth(96);
+    top->addWidget(score_label_, 0, Qt::AlignVCenter);
 
     // 各维度状态汇总。左侧维度列表只能逐行看，这里给出整体分布，
     // 一眼看出「有几个 BAD」比逐行扫快得多。
     summary_label_ = new QLabel;
-    top->addWidget(summary_label_);
+    top->addWidget(summary_label_, 0, Qt::AlignVCenter);
 
     top->addStretch();
 
+    // 右侧元信息竖排：档位在上、时间戳在下，避免横向挤占主信息宽度
+    auto* meta = new QVBoxLayout;
+    meta->setSpacing(0);
+
     // 评估档位：不同 profile 下同一维度的判定阈值不同，
-    // 不标出来会让「同样是 GOOD」看起来可比，实际不可比。
+    // 不标出来会让「同样是 GOOD」看起来不可比。
     profile_label_ = new QLabel(QStringLiteral("--"));
-    profile_label_->setStyleSheet(QStringLiteral("color: #666666;"));
-    top->addWidget(profile_label_);
+    profile_label_->setObjectName(QStringLiteral("meta_info"));
+    profile_label_->setAlignment(Qt::AlignRight);
+    meta->addWidget(profile_label_);
 
     timestamp_label_ = new QLabel(QStringLiteral("--"));
-    top->addWidget(timestamp_label_);
+    timestamp_label_->setObjectName(QStringLiteral("meta_info"));
+    timestamp_label_->setAlignment(Qt::AlignRight);
+    meta->addWidget(timestamp_label_);
+
+    top->addLayout(meta);
 
     root->addLayout(top);
 
@@ -167,24 +199,45 @@ void MainWindow::build_ui() {
 
     auto* net_group = new QGroupBox(QStringLiteral("网络健康"));
     auto* net_layout = new QVBoxLayout(net_group);
-    net_layout->addWidget(make_status_row(QStringLiteral("IP 可达"), &ip_reachability_label_));
-    net_layout->addWidget(make_status_row(QStringLiteral("响应性"), &responsiveness_label_));
-    net_layout->addWidget(make_status_row(QStringLiteral("可靠性"), &reliability_label_));
-    net_layout->addWidget(make_status_row(QStringLiteral("RF 健康"), &rf_health_label_));
+    net_layout->addWidget(make_status_row(QStringLiteral("IP 可达"),
+                                          &ip_reachability_label_,
+                                          &ip_reachability_dot_));
+    net_layout->addWidget(make_status_row(QStringLiteral("响应性"),
+                                          &responsiveness_label_,
+                                          &responsiveness_dot_));
+    net_layout->addWidget(make_status_row(QStringLiteral("可靠性"),
+                                          &reliability_label_,
+                                          &reliability_dot_));
+    net_layout->addWidget(make_status_row(QStringLiteral("RF 健康"),
+                                          &rf_health_label_, &rf_health_dot_));
     net_layout->addStretch();
     left_layout->addWidget(net_group);
 
     auto* svc_group = new QGroupBox(QStringLiteral("服务健康"));
     auto* svc_layout = new QVBoxLayout(svc_group);
-    svc_layout->addWidget(make_status_row(QStringLiteral("DNS"), &dns_label_));
-    svc_layout->addWidget(make_status_row(QStringLiteral("TCP 连接"), &tcp_connect_label_));
-    svc_layout->addWidget(make_status_row(QStringLiteral("TCP RTT"), &tcp_rtt_label_));
-    svc_layout->addWidget(make_status_row(QStringLiteral("HTTP 访问"), &http_access_label_));
-    svc_layout->addWidget(make_status_row(QStringLiteral("Portal 检测"), &captive_portal_label_));
-    svc_layout->addWidget(make_status_row(QStringLiteral("主动 DNS"), &active_dns_label_));
-    svc_layout->addWidget(make_status_row(QStringLiteral("主动 TCP"), &active_tcp_label_));
-    svc_layout->addWidget(make_status_row(QStringLiteral("主动 HTTPS"), &active_https_label_));
-    svc_layout->addWidget(make_status_row(QStringLiteral("主动 Portal"), &active_portal_label_));
+    svc_layout->addWidget(make_status_row(QStringLiteral("DNS"), &dns_label_,
+                                          &dns_dot_));
+    svc_layout->addWidget(make_status_row(QStringLiteral("TCP 连接"),
+                                          &tcp_connect_label_,
+                                          &tcp_connect_dot_));
+    svc_layout->addWidget(make_status_row(QStringLiteral("TCP RTT"),
+                                          &tcp_rtt_label_, &tcp_rtt_dot_));
+    svc_layout->addWidget(make_status_row(QStringLiteral("HTTP 访问"),
+                                          &http_access_label_,
+                                          &http_access_dot_));
+    svc_layout->addWidget(make_status_row(QStringLiteral("Portal 检测"),
+                                          &captive_portal_label_,
+                                          &captive_portal_dot_));
+    svc_layout->addWidget(make_status_row(QStringLiteral("主动 DNS"),
+                                          &active_dns_label_, &active_dns_dot_));
+    svc_layout->addWidget(make_status_row(QStringLiteral("主动 TCP"),
+                                          &active_tcp_label_, &active_tcp_dot_));
+    svc_layout->addWidget(make_status_row(QStringLiteral("主动 HTTPS"),
+                                          &active_https_label_,
+                                          &active_https_dot_));
+    svc_layout->addWidget(make_status_row(QStringLiteral("主动 Portal"),
+                                          &active_portal_label_,
+                                          &active_portal_dot_));
     svc_layout->addStretch();
     left_layout->addWidget(svc_group);
 
@@ -211,32 +264,35 @@ void MainWindow::build_ui() {
     //   summary_template_label_    ← diagnosis （人读摘要）
     //   diagnosis_extra_label_     ← diagnosis （次要问题 / 排除原因 / 证据）
     experience_label_ = new QLabel(QStringLiteral("体验：等待数据…"));
+    experience_label_->setObjectName(QStringLiteral("primary_text"));
     experience_label_->setWordWrap(true);
     root->addWidget(experience_label_);
 
     // 体验警告（experience 独占）：服务端主动标记的异常，红色单独一行，
     // 不与 experience_label_ 抢位置——两者会同时有内容
     experience_detail_label_ = new QLabel;
+    experience_detail_label_->setObjectName(QStringLiteral("warn_text"));
     experience_detail_label_->setWordWrap(true);
-    experience_detail_label_->setStyleSheet(QStringLiteral("color: #C62828;"));
     experience_detail_label_->hide();
     root->addWidget(experience_detail_label_);
 
     diagnosis_label_ = new QLabel(QStringLiteral("诊断：等待数据…"));
+    diagnosis_label_->setObjectName(QStringLiteral("primary_text"));
     diagnosis_label_->setWordWrap(true);
     root->addWidget(diagnosis_label_);
 
     // 诊断的人读摘要（diagnosis 独占）：服务端给的是完整句子，
     // 比 primary_issue 这类机器 token 更适合直接展示给用户
     summary_template_label_ = new QLabel;
+    summary_template_label_->setObjectName(QStringLiteral("primary_text"));
     summary_template_label_->setWordWrap(true);
     summary_template_label_->hide();
     root->addWidget(summary_template_label_);
 
     // 次要问题 / 已排除原因 / 证据（diagnosis 独占，默认折叠）
     diagnosis_extra_label_ = new QLabel;
+    diagnosis_extra_label_->setObjectName(QStringLiteral("detail_text"));
     diagnosis_extra_label_->setWordWrap(true);
-    diagnosis_extra_label_->setStyleSheet(QStringLiteral("color: #666666;"));
     diagnosis_extra_label_->hide();
     root->addWidget(diagnosis_extra_label_);
 
@@ -436,13 +492,17 @@ void MainWindow::apply_experience(const ExperienceSnapshot& snap) {
     int unknown = 0;
     snap.count_by_state(&healthy, &degraded, &failed, &unknown);
     summary_label_->setText(
-        QStringLiteral("<span style=\"color:#2E7D32\">● %1</span> "
-                       "<span style=\"color:#F9A825\">● %2</span> "
-                       "<span style=\"color:#C62828\">● %3</span> "
-                       "<span style=\"color:#9E9E9E\">● %4</span>")
+        QStringLiteral("<span style=\"color:%1\">● %2</span> "
+                       "<span style=\"color:%3\">● %4</span> "
+                       "<span style=\"color:%5\">● %6</span> "
+                       "<span style=\"color:%7\">● %8</span>")
+            .arg(QString::fromLatin1(ThemeColors::kGood))
             .arg(healthy)
+            .arg(QString::fromLatin1(ThemeColors::kDegraded))
             .arg(degraded)
+            .arg(QString::fromLatin1(ThemeColors::kBad))
             .arg(failed)
+            .arg(QString::fromLatin1(ThemeColors::kUnknown))
             .arg(unknown));
 
     // 服务端给出的警告直接展示：这是它主动标记的异常，不该被界面吞掉
@@ -469,23 +529,29 @@ void MainWindow::apply_experience(const ExperienceSnapshot& snap) {
     }
     experience_label_->setText(text);
 
-    update_status_label(snap.ip_reachability, ip_reachability_label_);
-    update_status_label(snap.responsiveness, responsiveness_label_);
-    update_status_label(snap.reliability, reliability_label_);
-    update_status_label(snap.rf_health, rf_health_label_);
+    update_status_label(snap.ip_reachability, ip_reachability_label_,
+                        ip_reachability_dot_);
+    update_status_label(snap.responsiveness, responsiveness_label_,
+                        responsiveness_dot_);
+    update_status_label(snap.reliability, reliability_label_, reliability_dot_);
+    update_status_label(snap.rf_health, rf_health_label_, rf_health_dot_);
 
-    update_status_label(snap.dns_service, dns_label_);
-    update_status_label(snap.tcp_connect, tcp_connect_label_);
-    update_status_label(snap.tcp_rtt, tcp_rtt_label_);
-    update_status_label(snap.http_access, http_access_label_);
-    update_status_label(snap.captive_portal, captive_portal_label_);
-    update_status_label(snap.active_dns, active_dns_label_);
-    update_status_label(snap.active_tcp, active_tcp_label_);
-    update_status_label(snap.active_https, active_https_label_);
-    update_status_label(snap.active_portal, active_portal_label_);
+    update_status_label(snap.dns_service, dns_label_, dns_dot_);
+    update_status_label(snap.tcp_connect, tcp_connect_label_, tcp_connect_dot_);
+    update_status_label(snap.tcp_rtt, tcp_rtt_label_, tcp_rtt_dot_);
+    update_status_label(snap.http_access, http_access_label_, http_access_dot_);
+    update_status_label(snap.captive_portal, captive_portal_label_,
+                        captive_portal_dot_);
+    update_status_label(snap.active_dns, active_dns_label_, active_dns_dot_);
+    update_status_label(snap.active_tcp, active_tcp_label_, active_tcp_dot_);
+    update_status_label(snap.active_https, active_https_label_,
+                        active_https_dot_);
+    update_status_label(snap.active_portal, active_portal_label_,
+                        active_portal_dot_);
 }
 
-void MainWindow::update_status_label(const SleItem& item, QLabel* state_label) {
+void MainWindow::update_status_label(const SleItem& item, QLabel* state_label,
+                                     QLabel* dot_label) {
     if (!state_label) {
         return;
     }
@@ -493,21 +559,37 @@ void MainWindow::update_status_label(const SleItem& item, QLabel* state_label) {
     // reason 是服务端给出的人可读 token（如 jitter_excessive、no_dns_observations），
     // 它解释了「为什么是这个状态」。用 tooltip 挂在标签上，不占版面但可查。
     const QString reason = QString::fromStdString(item.reason);
-    state_label->setToolTip(reason.isEmpty()
-                                ? QString()
-                                : QStringLiteral("%1：%2")
-                                      .arg(QString::fromStdString(item.key), reason));
+    const QString tip = reason.isEmpty()
+                            ? QString()
+                            : QStringLiteral("%1：%2")
+                                  .arg(QString::fromStdString(item.key), reason);
+    state_label->setToolTip(tip);
+    if (dot_label) {
+        dot_label->setToolTip(tip);
+    }
+
+    // 圆点与文字同色：改进前圆点恒为默认灰，看得出「有个点」但看不出状态，
+    // 状态只能靠右侧文字颜色辨认，14 行扫下来很容易漏。
+    auto paint_dot = [dot_label](const QString& color) {
+        if (dot_label) {
+            dot_label->setStyleSheet(QStringLiteral("color: %1;").arg(color));
+        }
+    };
 
     // 不适用的维度（如有线链路下的 RF 健康）显式标注，不显示 GOOD/BAD
     if (!item.applicable()) {
+        const QString grey = QString::fromLatin1(ThemeColors::kUnknown);
         state_label->setText(QStringLiteral("不适用"));
-        state_label->setStyleSheet(QStringLiteral("color: #9E9E9E;"));
+        state_label->setStyleSheet(QStringLiteral("color: %1;").arg(grey));
+        paint_dot(grey);
         return;
     }
 
     if (!item.has_value()) {
+        const QString grey = QString::fromLatin1(ThemeColors::kUnknown);
         state_label->setText(QStringLiteral("未知"));
-        state_label->setStyleSheet(QStringLiteral("color: #9E9E9E;"));
+        state_label->setStyleSheet(QStringLiteral("color: %1;").arg(grey));
+        paint_dot(grey);
         return;
     }
 
@@ -516,23 +598,26 @@ void MainWindow::update_status_label(const SleItem& item, QLabel* state_label) {
     if (item.coverage == "PARTIAL") {
         text += QStringLiteral(" (部分)");
     }
+    const QString color = state_color(QString::fromStdString(item.state));
     state_label->setText(text);
-    state_label->setStyleSheet(
-        QStringLiteral("color: %1;").arg(state_color(QString::fromStdString(item.state))));
+    state_label->setStyleSheet(QStringLiteral("color: %1;").arg(color));
+    paint_dot(color);
 }
 
 QString MainWindow::state_color(const QString& state) {
     // 取值依据 server/include/assurance/health_state.hpp:15-23
+    // 色值统一从 ThemeColors 取，不在这里重写一遍：同一个绿色曾在
+    // state_color()、summary_label_ 的 html、折线图默认色三处各写一遍。
     if (state == QLatin1String("GOOD")) {
-        return QStringLiteral("#2E7D32");      // 绿
+        return QString::fromLatin1(ThemeColors::kGood);
     }
     if (state == QLatin1String("DEGRADED")) {
-        return QStringLiteral("#F9A825");      // 黄
+        return QString::fromLatin1(ThemeColors::kDegraded);
     }
     if (state == QLatin1String("BAD")) {
-        return QStringLiteral("#C62828");      // 红
+        return QString::fromLatin1(ThemeColors::kBad);
     }
-    return QStringLiteral("#9E9E9E");          // 灰（UNKNOWN）
+    return QString::fromLatin1(ThemeColors::kUnknown);
 }
 
 } // namespace dashboard

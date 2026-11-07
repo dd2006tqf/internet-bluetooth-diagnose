@@ -86,7 +86,8 @@ private:
     void build_ui();
     void apply_experience(const ExperienceSnapshot& snap);
     void apply_diagnosis(const DiagnosisSnapshot& snap);
-    void update_status_label(const SleItem& item, QLabel* state_label);
+    void update_status_label(const SleItem& item, QLabel* state_label,
+                             QLabel* dot_label);
     static QString state_color(const QString& state);
 
     DataFetchThread* fetcher_ = nullptr;
@@ -125,6 +126,26 @@ private:
     QLabel* active_tcp_label_ = nullptr;
     QLabel* active_https_label_ = nullptr;
     QLabel* active_portal_label_ = nullptr;
+
+    // 每个维度左侧的状态圆点。
+    //
+    // 圆点与状态文本分别持有指针：`update_status_label()` 要在一次调用里
+    // 同时给两者上色。改进前圆点由 `make_status_row()` 创建后就没再被引用，
+    // 永远保持默认前景色，14 行扫下来看不出哪几项异常。
+    QLabel* ip_reachability_dot_ = nullptr;
+    QLabel* responsiveness_dot_ = nullptr;
+    QLabel* reliability_dot_ = nullptr;
+    QLabel* rf_health_dot_ = nullptr;
+
+    QLabel* dns_dot_ = nullptr;
+    QLabel* tcp_connect_dot_ = nullptr;
+    QLabel* tcp_rtt_dot_ = nullptr;
+    QLabel* http_access_dot_ = nullptr;
+    QLabel* captive_portal_dot_ = nullptr;
+    QLabel* active_dns_dot_ = nullptr;
+    QLabel* active_tcp_dot_ = nullptr;
+    QLabel* active_https_dot_ = nullptr;
+    QLabel* active_portal_dot_ = nullptr;
 
     // 底栏
     //

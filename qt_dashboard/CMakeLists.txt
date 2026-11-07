@@ -90,6 +90,7 @@ if(WEAKN_DASHBOARD_WITH_UI)
     set(CMAKE_AUTOMOC ON)
 
     add_library(weaknet_dashboard_ui STATIC
+        ui/theme.cpp
         ui/line_chart_widget.cpp
         ui/data_fetch_thread.cpp
         ui/main_window.cpp
@@ -150,11 +151,29 @@ if(WEAKN_DASHBOARD_BUILD_TESTS)
             endif()
             add_test(NAME line_chart_widget COMMAND test_line_chart_widget)
 
+            # 主题测试：验证全局 QSS 真的落到控件上，以及圆点跟随状态着色。
+            # 与像素测试同样要求 offscreen 平台。
+            add_executable(test_theme tests/test_theme.cpp)
+            target_link_libraries(test_theme PRIVATE
+                weaknet_dashboard_ui
+                weaknet_dashboard_data
+                Qt${QT_VERSION_MAJOR}::Widgets
+                GTest::gtest
+                GTest::gtest_main
+            )
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test_theme PRIVATE -Wall -Wextra)
+            endif()
+            add_test(NAME theme COMMAND test_theme)
+
             # 像素测试用 offscreen 平台，不需要显示器。
             # 不设 QT_QPA_PLATFORM 时，无 X11/Wayland 的机器上 Qt 会直接
             # abort（"could not connect to display"），测试就变成"环境挂了"
             # 而不是"代码错了"。
             set_tests_properties(line_chart_widget PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            )
+            set_tests_properties(theme PROPERTIES
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             )
         endif()

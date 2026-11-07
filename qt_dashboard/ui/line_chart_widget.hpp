@@ -36,7 +36,6 @@
 #ifndef WEAKNET_QT_DASHBOARD_LINE_CHART_WIDGET_HPP
 #define WEAKNET_QT_DASHBOARD_LINE_CHART_WIDGET_HPP
 
-#include <QColor>
 #include <QString>
 #include <QVector>
 #include <QWidget>
@@ -88,7 +87,6 @@ private:
     QVector<QString> labels_;
     /// 与 scores_ 等长：该点是否为 v1 旧评分模型的数据
     QVector<bool> legacy_;
-    QColor line_color_{0x2E, 0x7D, 0x32};
     QString title_;
 };
 

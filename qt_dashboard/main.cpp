@@ -51,6 +51,7 @@
 #include <cstring>
 
 #include "ui/main_window.hpp"
+#include "ui/theme.hpp"
 
 /**
  * @brief argv 里是否出现了 `--screenshot`（或 `--screenshot=...`）
@@ -114,6 +115,10 @@ int main(int argc, char* argv[]) {
     QApplication::setApplicationName(QStringLiteral("weaknet-dashboard"));
     QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
     QApplication::setOrganizationName(QStringLiteral("WeakNet"));
+
+    // 全局外观必须在窗口构造前就位：QSS 是「样式已设置时立刻重算」，
+    // 晚设置会让窗口先以原生样式布局一次，再跳变成主题样式。
+    qInfo("theme: %s", qPrintable(weaknet::dashboard::apply_theme()));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
