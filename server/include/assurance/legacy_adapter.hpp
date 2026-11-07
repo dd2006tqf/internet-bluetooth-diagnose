@@ -250,6 +250,28 @@ public:
         }
         json << "],";
 
+        // 视频 QoE 归因（业务侧体验）。
+        //
+        // 与前两个归因同一个理由必须进这里：本函数是 GetNetworkExperience
+        // 的唯一出口，不序列化就是孤儿字段。三者刻意并列而**不合并**：
+        //   observer_attribution → CPU 被任务占满
+        //   thermal_attribution  → CPU 被硬件限频
+        //   video_qoe_attribution→ 用户看到的画面卡不卡
+        // 这是三个不同成因，合并会丢信息。
+        //
+        // 默认 NONE（无摄像头 / 未启用帧源）。NONE 不是"坏"，是"没有结论"，
+        // 上层必须呈现为 unavailable，绝不能当成 healthy。
+        json << "\"video_qoe_attribution\":\""
+             << videoQoeAttributionToString(exp.video_qoe_attribution) << "\",";
+        json << "\"video_qoe_attribution_detail\":"
+             << "\"" << exp.video_qoe_attribution_detail << "\",";
+        json << "\"video_qoe_issues\":[";
+        for (size_t i = 0; i < exp.video_qoe_issues.size(); ++i) {
+            json << "\"" << exp.video_qoe_issues[i] << "\"";
+            if (i + 1 < exp.video_qoe_issues.size()) json << ",";
+        }
+        json << "],";
+
         json << "\"primary_issue\":" << (exp.primary_issue.has_value() ? ("\"" + exp.primary_issue.value() + "\"") : "null");
         json << "}";
         return json.str();

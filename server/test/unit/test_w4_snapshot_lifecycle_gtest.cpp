@@ -172,3 +172,53 @@ TEST_F(W4SnapshotLifecycleTest, ThermalAttributionEscapesThroughV2Json) {
     // 既有字段不受影响
     EXPECT_NE(clean_json.find("\"observer_attribution\":\"NONE\""), std::string::npos);
 }
+
+// 视频 QoE 归因必须经 V2 JSON 走出进程。
+//
+// 与 thermal 那条同一个理由：字段写进 NetworkExperience 后，
+// toExperienceJsonV2 是 GetNetworkExperience 的唯一出口，
+// 不序列化就是孤儿字段——代码里算了、运维看不到，等于没做。
+//
+// 这里同时钉死两件事：
+//   1. 有结论时三个字段都出现在 JSON 里（含 issues 数组的两条元素）；
+//   2. 未评估时稳定输出 NONE + 空数组，且既有字段一字不动
+//      （默认态与引入前逐字节等价的承诺）。
+TEST_F(W4SnapshotLifecycleTest, VideoQoeAttributionEscapesThroughV2Json) {
+    auto s = std::make_shared<AssessmentSnapshot>();
+    s->experience.overall = HealthState::UNKNOWN;
+    s->experience.video_qoe_attribution = VideoQoeAttribution::CONFIRMED_LINK_FAULT;
+    s->experience.video_qoe_attribution_detail =
+        "Frames degraded while network also degraded for 3 consecutive windows";
+    s->experience.video_qoe_issues = {"SEQ_GAP_BURST", "CORRUPT_FRAMES"};
+    store.publish(s);
+
+    auto snap = store.latest();
+    ASSERT_NE(snap, nullptr);
+
+    const std::string json = LegacyAdapter::toExperienceJsonV2(snap->experience);
+    EXPECT_NE(json.find("\"video_qoe_attribution\":\"CONFIRMED_LINK_FAULT\""), std::string::npos)
+        << json;
+    EXPECT_NE(json.find("\"video_qoe_attribution_detail\":\"Frames degraded"), std::string::npos)
+        << json;
+    // 两条 issue 都要出现：只留主结论会丢掉"有坏帧"这条信息
+    EXPECT_NE(json.find("\"video_qoe_issues\":[\"SEQ_GAP_BURST\",\"CORRUPT_FRAMES\"]"),
+              std::string::npos)
+        << json;
+
+    // 未评估时必须稳定输出 NONE + 空列表。
+    //
+    // NONE 的语义是"没有结论"，不是"画面很好"——上层必须把它呈现为
+    // unavailable。这条断言防止有人为了"好看"把默认值改成
+    // CONSISTENT_HEALTHY，那会把"没接摄像头"伪装成"画面正常"。
+    auto clean = std::make_shared<AssessmentSnapshot>();
+    clean->experience.overall = HealthState::GOOD;
+    store.publish(clean);
+    const std::string clean_json =
+        LegacyAdapter::toExperienceJsonV2(store.latest()->experience);
+    EXPECT_NE(clean_json.find("\"video_qoe_attribution\":\"NONE\""), std::string::npos);
+    EXPECT_NE(clean_json.find("\"video_qoe_issues\":[]"), std::string::npos);
+    EXPECT_NE(clean_json.find("\"schema_version\":2"), std::string::npos);
+    // 既有三个归因字段不受影响（字段之间不得互相污染）
+    EXPECT_NE(clean_json.find("\"observer_attribution\":\"NONE\""), std::string::npos);
+    EXPECT_NE(clean_json.find("\"thermal_attribution\":\"NONE\""), std::string::npos);
+}

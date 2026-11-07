@@ -54,6 +54,7 @@
 #include "assurance/overall_policy.hpp"
 #include "assurance/observer_attribution.hpp"
 #include "thermal_monitor.hpp"
+#include "video_qoe_attribution.hpp"
 #include "assurance/state_stabilizer.hpp"
 #include "assurance/ip_reachability_evaluator.hpp"
 #include "assurance/responsiveness_evaluator.hpp"
@@ -668,6 +669,69 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                                 LOG_WARNING(LogModule::NETWORK,
                                     "thermal state unavailable; cannot rule out thermal throttling");
                             }
+                        }
+                    }
+
+                    // ------------------------------------------------------------
+                    // 视频 QoE 归因（业务侧体验，与上面两个归因并列）
+                    //
+                    // 前两个归因看的是**采集端自身**（CPU 忙 / 被限频），
+                    // 本块看的是**用户真实体验**：画面到底卡不卡。
+                    //
+                    // 为什么也放在 decide() 之后：帧统计是业务侧事实，不是链路
+                    // 健康度。它能解释"协议栈指标与用户感知为什么不一致"，但
+                    // 绝不能反过来改写链路结论。若把帧统计传进 evaluator，
+                    // 同一份网络证据会因视频有没有在推流而得出不同结论，
+                    // 同源纪律（SR 系列）立即失效。
+                    //
+                    // 为什么现在接的是"不启动帧源"而非 SyntheticFrameSource：
+                    // 合成源产出的是**注入的假数据**，让它流进生产快照会让
+                    // 运维把 "CONSISTENT_HEALTHY" 当成真实观测。这与
+                    // "不可用不得发布 0" 是同一条纪律的不同面——
+                    // 不知道就说不知道（NONE），不能伪装成健康。
+                    // 合成源只应出现在单测里；真机源等摄像头到货、
+                    // overlay 启用后再接（方案 §6.2.1 的 L2→L4 路径）。
+                    // ------------------------------------------------------------
+                    {
+                        // 帧源为空 → 本轮没有帧统计 → 归因函数会走
+                        // frames_unavailable 分支并返回 NONE，这是当前预期形态。
+                        weaknet::FrameStats frames;   // 默认构造 = valid()==false
+                        weaknet::VideoNetworkObservation net_obs;
+                        // 网络侧观测：直接取本轮已算出的 SLE 结论，不重复采集。
+                        // available 取"至少有一个核心 SLE 有结论"，避免在
+                        // 全部 UNKNOWN 的冷启动窗口里假装做了一次归因。
+                        net_obs.available =
+                            reach_sle.coverage != weaknet::Coverage::NONE ||
+                            rel_sle.coverage != weaknet::Coverage::NONE ||
+                            dns_sle.coverage != weaknet::Coverage::NONE;
+                        net_obs.degraded =
+                            reach_sle.state == weaknet::HealthState::BAD ||
+                            rel_sle.state == weaknet::HealthState::BAD ||
+                            dns_sle.state == weaknet::HealthState::BAD;
+                        // 持续性由本处累计（纯函数不持有跨调用状态）。
+                        // 只在"本轮确实做了归因"时推进，避免 NONE 窗口
+                        // 把计数清零或虚增。
+                        static uint32_t consecutive_degraded = 0;
+                        if (net_obs.degraded) ++consecutive_degraded;
+                        else consecutive_degraded = 0;
+                        net_obs.consecutive_degraded_windows = consecutive_degraded;
+                        net_obs.interval_ms = 0;  // 帧源未接入，窗口时长未知
+
+                        auto video = weaknet::attributeVideoQoe(frames, net_obs);
+                        if (video.evaluated) {
+                            exp.video_qoe_attribution = video.attribution;
+                            exp.video_qoe_attribution_detail = video.explanation;
+                            // 只有画面确实判为差才进 warnings；CONSISTENT_HEALTHY
+                            // 每轮刷一条会让 warnings 变成噪音。
+                            if (video.frames_bad) {
+                                exp.warnings.push_back(video.explanation);
+                            }
+                            LOG_INFO(LogModule::NETWORK,
+                                "video qoe attribution: "
+                                << weaknet::videoQoeAttributionToString(video.attribution)
+                                << " frames_bad=" << (video.frames_bad ? "yes" : "no")
+                                << " net_degraded=" << (net_obs.degraded ? "yes" : "no")
+                                << " consecutive=" << consecutive_degraded);
                         }
                     }
 

@@ -172,6 +172,18 @@ add_executable(test_observer_attribution_gtest
     unit/test_observer_attribution_gtest.cpp)
 target_link_libraries(test_observer_attribution_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+# 视频 QoE L2/L3 层：IFrameSource 契约 + SyntheticFrameSource 四种丢帧模式。
+# 无硬件依赖，纯时间推进（不 sleep），CI 上结果确定。
+add_executable(test_frame_source_gtest
+    unit/test_frame_source_gtest.cpp)
+target_link_libraries(test_frame_source_gtest PRIVATE ${TEST_COMMON_LIBS})
+
+# 视频 QoE L4 归因：五行真值表 + 三条拒绝归因的前置检查。
+# 纯函数，无状态，无硬件依赖。
+add_executable(test_video_qoe_attribution_gtest
+    unit/test_video_qoe_attribution_gtest.cpp)
+target_link_libraries(test_video_qoe_attribution_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 add_executable(test_thermal_monitor_gtest
     unit/test_thermal_monitor_gtest.cpp)
 target_link_libraries(test_thermal_monitor_gtest PRIVATE ${TEST_COMMON_LIBS})
@@ -294,6 +306,8 @@ foreach(test_target
     test_captive_portal_evaluator_gtest
     test_assurance_policy_source_gtest
     test_observer_attribution_gtest
+    test_frame_source_gtest
+    test_video_qoe_attribution_gtest
     test_thermal_monitor_gtest
     test_active_connectivity_gtest
     test_tls_probe_client_gtest

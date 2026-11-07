@@ -52,6 +52,7 @@ set(SERVER_SOURCES
     src/site_incident_correlator.cpp
     src/site_incident.cpp
     src/skb_drop_monitor.cpp
+    src/synthetic_frame_source.cpp
     src/tcp_connect_monitor.cpp
     src/tcp_conn_monitor.cpp
     src/tcp_loss_monitor.cpp
@@ -65,6 +66,7 @@ set(SERVER_SOURCES
     src/using_iface.cpp
     src/utils/bpf_map_sizing.cpp
     src/utils/json_escape.cpp
+    src/video_qoe_attribution.cpp
     src/weaknet_config.cpp
     src/weak_netmgr.cpp
     src/wifi_packet_loss_monitor.cpp
