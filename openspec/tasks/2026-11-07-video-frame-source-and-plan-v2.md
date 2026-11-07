@@ -242,7 +242,11 @@ thermal 走同一路线已完成并真机验证（`2026-11-06-thermal-monitor.md
 
 ### 待办（按文档 §15.2 顺序）
 
-1. **把视频归因接进 `NetworkExperience`**（三处改动，当前唯一剩余工作）
+1. ~~把视频归因接进 `NetworkExperience`~~ **✅ 2026-11-07 完成**（`1b48564` 三字段接线，
+   本轮补 `issues` 唯一生产赋值点）。
+   注意：生产态仍恒为 `NONE`——`frames` 是默认构造的 `FrameStats`（`valid()==false`）、
+   `net_obs.interval_ms=0`，必然走 `frames_unavailable` 返回。
+   这是**正确**的：不把合成假数据灌进生产快照。要出真结论必须先有帧源（待办 4）。
 2. 插 HDMI 显示器（¥0，关闭 `qt_dashboard` 最后一个 ⏳）
 3. 阶段 2 overlay 演练（第一个有变砖风险的动作，串口线已备）
 4. 摄像头 overlay 启用 + `V4l2FrameSource`
