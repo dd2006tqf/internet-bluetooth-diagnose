@@ -104,9 +104,14 @@ static enum hrtimer_restart wn_timer_cb(struct hrtimer *t)
 	return HRTIMER_RESTART;
 }
 
+/*
+ * 访问门禁：CAP_PERFMON 或 CAP_SYS_ADMIN。理由与 weaknet_cpu_stat.c
+ * 的同名函数完全一致——服务的 systemd 单元只授予 CAP_PERFMON 这一
+ * "观测系统"专用能力，不含 CAP_SYS_ADMIN。详见该文件的长注释。
+ */
 static int wn_open(struct inode *inode, struct file *file)
 {
-	if (!capable(CAP_SYS_ADMIN))
+	if (!capable(CAP_PERFMON) && !capable(CAP_SYS_ADMIN))
 		return -EPERM;
 	return 0;
 }

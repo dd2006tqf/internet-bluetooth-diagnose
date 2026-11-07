@@ -221,6 +221,45 @@ TEST(HostCpuPressureSampler, MissingDeviceIsReportedEveryTime) {
     }
 }
 
+TEST(HostCpuPressureSampler, PermissionDeniedIsNotReportedAsDeviceAbsent) {
+    // 回归守护（2026-11-07 真机踩坑）：
+    //
+    // 模块的 open() 曾经只校验 CAP_SYS_ADMIN，而服务的 systemd 单元只授予
+    // CAP_PERFMON 等能力。结果是设备节点明明存在、模块明明加载着，服务端
+    // 却一直报 "device_absent" —— 因为它把**所有** open() 失败都映射成了
+    // 这一个原因。排查时先怀疑了模块没装、又怀疑了 namespace/DAC，
+    // 最后才发现是 EPERM。
+    //
+    // 这条测试钉死分类边界：设备不存在（ENOENT/ENXIO）与打不开（EPERM/
+    // EACCES）必须是两个不同的 reason，因为处置方式完全不同
+    // —— 前者装模块，后者改 capability。
+    //
+    // 为什么直接测纯函数而不是造真实的 open 失败：root 会绕过大部分权限
+    // 检查，无法构造在 root 与普通用户下表现一致的夹具。分类逻辑本身
+    // 与运行身份无关，抽出来测才稳定。
+    EXPECT_STREQ(openErrnoToReason(EPERM), "open_failed");
+    EXPECT_STREQ(openErrnoToReason(EACCES), "open_failed");
+    EXPECT_STREQ(openErrnoToReason(EISDIR), "open_failed");
+    EXPECT_STREQ(openErrnoToReason(EBUSY), "open_failed");
+    EXPECT_STREQ(openErrnoToReason(EMFILE), "open_failed");
+}
+
+TEST(HostCpuPressureSampler, GenuinelyMissingDeviceMapsToDeviceAbsent) {
+    // 反向守护：真正的"缺失"必须仍然报 device_absent。
+    // 现场设备没装模块是常态，这个语义不能被上面的细化改动误伤。
+    EXPECT_STREQ(openErrnoToReason(ENOENT), "device_absent");
+    EXPECT_STREQ(openErrnoToReason(ENXIO), "device_absent");
+
+    // 端到端确认：不存在的路径确实走 ENOENT 分支
+    HostCpuPressureSampler sampler("/nonexistent/weaknet_cpu_stat_probe");
+    auto p = sampler.sample();
+    EXPECT_FALSE(p.available);
+    EXPECT_EQ(p.reason, "device_absent");
+    EXPECT_FALSE(p.detail.empty()) << "detail 应带 errno 文本，供排障定位";
+    EXPECT_NE(p.detail.find("open: "), std::string::npos)
+        << "实际 detail: " << p.detail;
+}
+
 TEST(HostCpuPressureSampler, ReportsConfiguredDevicePath) {
     HostCpuPressureSampler sampler("/tmp/some_probe_node");
     EXPECT_EQ(sampler.devPath(), "/tmp/some_probe_node");

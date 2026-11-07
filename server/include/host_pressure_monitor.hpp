@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include <cerrno>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -39,6 +40,36 @@
 namespace weaknet_dbus {
 
 class ServerContext;
+
+/**
+ * @brief 把 open(2) 的 errno 映射成 HostCpuPressure 的机器可读原因
+ *
+ * 为什么单独抽成纯函数：分类逻辑必须能被单测钉死，而"造一个真实的
+ * EPERM/EACCES 让 open 失败"在 root 与普通用户下行为不同（root 会绕过
+ * 大部分权限检查），做不出稳定的测试夹具。把纯逻辑分离出来，
+ * 测试就不依赖运行身份。
+ *
+ * 语义边界（这条边界是踩坑换来的）：
+ *   ENOENT / ENXIO  → "device_absent"：设备节点根本没有，模块没加载。
+ *                     这是现场设备的**常态**，属预期降级。
+ *   EPERM / EACCES  → "open_failed"：设备在，但当前进程权限不够。
+ *                     处置方式是改 capability，与装模块完全不同。
+ *   其它             → "open_failed"：一律归入"打不开"，绝不冒充缺失。
+ *
+ * 历史教训（2026-11-07 真机）：模块的 open() 只校验 CAP_SYS_ADMIN，而服务
+ * 的 systemd 单元只授予 CAP_PERFMON。设备节点明明存在，服务端却持续报
+ * "device_absent" —— 因为这里曾经把所有 open 失败都归成这一个原因，
+ * 直接掩盖了真因，误导排查方向。
+ */
+inline const char* openErrnoToReason(int err) {
+    switch (err) {
+        case ENOENT:
+        case ENXIO:
+            return "device_absent";
+        default:
+            return "open_failed";
+    }
+}
 
 /**
  * @brief 一次 CPU 压力采样结果
@@ -70,6 +101,12 @@ struct HostCpuPressure {
     ///   "read_failed"      seqlock 重试耗尽
     ///   "no_delta_cpus"    两次采样间没有任何核可做差值
     std::string reason;
+
+    /// available=false 时的人类可读补充信息（errno 文本等）。
+    ///
+    /// 与 @reason 分工：@reason 是机器可读的分类，@detail 是排障线索。
+    /// 只用于日志，**不得**作为判定依据——分类判断一律看 @reason。
+    std::string detail;
 };
 
 /**

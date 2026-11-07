@@ -167,6 +167,25 @@ info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(npr
     install -m 0644 "${ROOT}/VERSION" dist-arm64/VERSION
     install -m 0755 "${ROOT}/tools/weaknet-local-update.sh" dist-arm64/weaknet-local-update.sh
 
+    # 内核模块（观测面）：weaknet_cpu_stat 是 CPU 压力的数据来源，
+    # 服务端 host_pressure 插件经 /dev/weaknet_cpu_stat 读取它。
+    #
+    # 为什么也要打进 OTA 包：模块与用户态消费者共享 kmod/weaknet_kmod_abi.h，
+    # 两者的 ABI 版本必须同源发布。若模块靠板端就地编译，就会出现"用户态
+    # 升了、模块还是旧的"这种跨版本错配，而 abi_mismatch 虽然能拦住错误数据，
+    # 却会让观测能力静默失效。
+    #
+    # 编译失败**不中断**主构建：这是实验性观测模块，缺它业务链路照常运行
+    # （host_pressure 报 unavailable），不该因为它让整个发布卡住。
+    echo "--- 交叉编译 kmod（宿主机原生，vermagic 校验）---"
+    if "${ROOT}/tools/kmod_cross_build.sh" --out dist-arm64/kmod 2>&1; then
+        echo "kmod 产物:"
+        ls -1 dist-arm64/kmod/*.ko 2>/dev/null || echo "  (无)"
+    else
+        echo "警告: kmod 交叉编译失败——本次发布不含内核模块，观测面将报 unavailable（不影响业务链路）"
+        rm -rf dist-arm64/kmod
+    fi
+
     echo "产物: $(find dist-arm64 -type f | wc -l) 个文件"
     file dist-arm64/server/bin/weaknet-dbus-server
 
@@ -347,6 +366,25 @@ if [ "$SKIP_DEPLOY" = false ]; then
         sudo systemctl enable weaknet-server"
     pass "weaknet-server 单元已落盘（依赖 weaknet-ota-gate.service）"
 
+    # 观测用内核模块加载单元：**可选能力**，失败不阻塞 weaknet-server。
+    #
+    # 依赖方向要看清：本单元 Wants/After=weaknet-server（等它先起），
+    # 而 weaknet-server **不**引用本单元。这正是"可选"的结构表达——
+    # 模块没加载，服务端 host_pressure 插件报 unavailable，业务照常。
+    #
+    # 模块文件本身随 release 走（dist-arm64/kmod/*.ko → releases/<ver>/kmod/），
+    # 单元里经 current 软链寻址，OTA 翻链后自动跟着翻。
+    # 这里只做"落盘 + enable"，实际加载在 adopt 翻链之后单独触发——
+    # 因为翻链前 current 还指向旧版本，此时 insmod 会拿到旧的 .ko。
+    if [ -f "${ROOT}/tools/weaknet-kmod.service" ]; then
+        scp "${ROOT}/tools/weaknet-kmod.service" "${BOARD}:/tmp/weaknet-kmod.service" 2>/dev/null \
+            && ssh "${BOARD}" "sudo cp /tmp/weaknet-kmod.service /etc/systemd/system/weaknet-kmod.service && \
+                sudo systemctl daemon-reload && \
+                sudo systemctl enable weaknet-kmod.service" \
+            || warn "kmod 加载单元落盘失败（观测能力缺失，业务不受影响）"
+        pass "kmod 加载单元已落盘（weaknet-kmod.service，可选能力）"
+    fi
+
     # OTA 布局迁移/切换（板端重启唯一入口）：暂存产物 → releases/${VERSION}
     # →（首次）旧扁平布局归档 legacy-flat → 原子翻转 current + 兼容软链
     # → 重启 → 健康窗口（失败自动回滚上一版）→ .committed 转正。
@@ -425,6 +463,29 @@ if [ "$SKIP_DEPLOY" = false ]; then
             fi
         }
     pass "部署完成（releases/${VERSION} 已转正）"
+
+    # 观测用内核模块加载：**必须在 adopt 之后**。
+    #
+    # 单元里的 ExecStart 走 /home/radxa/weaknet/current/kmod/*.ko，
+    # 而 current 直到 adopt 成功那一刻才指向新版本。提前加载会拿到上一个
+    # 版本的 .ko，造成「用户态新版 + 模块旧版」的跨版本错配。
+    #
+    # 失败**绝不**影响部署结论：这是可选观测能力，模块没加载时服务端
+    # host_pressure 插件会报 unavailable，业务链路行为不变。
+    if [ -f "${ROOT}/tools/weaknet-kmod.service" ]; then
+        if ssh "${BOARD}" "sudo systemctl restart weaknet-kmod.service" 2>/dev/null; then
+            # 只做事实播报，不做通过/失败判定：模块能不能加载取决于
+            # 目标板内核与发布包里 .ko 的匹配情况，不是本次部署的对错。
+            KMOD_STATE=$(ssh "${BOARD}" "lsmod 2>/dev/null | awk '\$1==\"weaknet_cpu_stat\"{print \"loaded\"}' | head -1" 2>/dev/null || true)
+            if [ "$KMOD_STATE" = "loaded" ]; then
+                pass "观测内核模块已加载（weaknet_cpu_stat，CPU 压力归因生效）"
+            else
+                warn "观测内核模块未加载——host_pressure 将报 unavailable（业务不受影响；看 sudo journalctl -u weaknet-kmod）"
+            fi
+        else
+            warn "kmod 加载单元执行异常（业务不受影响）"
+        fi
+    fi
 
     # 部署已完成，立即恢复常驻服务（不必等脚本整体结束——后面还有隧道重启
     # 与板端测试，那些阶段同样需要恢复服务在位）。

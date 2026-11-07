@@ -25,7 +25,7 @@
  *       busy 之外（user 已含 guest、nice 已含 guest_nice）。
  *   D4  头部携带 nr_cpus，用户态不再硬编码上限
  *   D5  每条记录带 online 标记，可区分离线 CPU
- *   D6  open 校验 CAP_SYS_ADMIN
+ *   D6  open 校验 CAP_PERFMON（v5.8+ 的"观测系统"专用能力）
  *   D7  Makefile 的 KDIR 可覆盖，支持交叉编译
  */
 
@@ -216,9 +216,31 @@ static enum hrtimer_restart wn_timer_cb(struct hrtimer *t)
 	return HRTIMER_RESTART;
 }
 
+/*
+ * 访问门禁：CAP_PERFMON 或 CAP_SYS_ADMIN。
+ *
+ * 为什么不是只要 CAP_SYS_ADMIN（本文件初版的写法）：
+ * 服务的 systemd 单元（tools/weaknet-server.service）只授予
+ *   CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_DAC_OVERRIDE
+ * **刻意不含 CAP_SYS_ADMIN**——它是近乎全能的能力，为了读一份 per-CPU
+ * 时间片统计去授予它，等于把整个系统的管理权交给一个采集进程。
+ *
+ * 而 CAP_PERFMON 正是 Linux 5.8 为"观测系统"拆出来的专用能力
+ * （perf_event_open / bpf / tracefs 走它），语义上恰好覆盖
+ * "读取内核采集的 CPU 时间片"这件事。用它与服务的现有能力集对齐，
+ * 不需要给服务加任何特权。
+ *
+ * 保留 CAP_SYS_ADMIN 作为兼容路径：历史上这是这类访问的唯一门禁，
+ * 容器/脚本里的受限 root 可能只带它。两者都是特权能力，
+ * 这个 OR 不会让非特权进程通过。
+ *
+ * 实测（2026-11-07，板端）：服务端 capability 集下（drop CAP_SYS_ADMIN，
+ * 保留 CAP_PERFMON）打开设备成功、读到 abi=2 / 8 核；同时 drop 掉
+ * CAP_PERFMON 则返回 EPERM(1)——门禁仍然是真门禁，不是形同虚设。
+ */
 static int wn_open(struct inode *inode, struct file *file)
 {
-	if (!capable(CAP_SYS_ADMIN))
+	if (!capable(CAP_PERFMON) && !capable(CAP_SYS_ADMIN))
 		return -EPERM;
 	return 0;
 }

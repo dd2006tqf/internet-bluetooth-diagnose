@@ -102,13 +102,19 @@ HostCpuPressure HostCpuPressureSampler::sample() {
     if (impl_->fd < 0) {
         impl_->fd = ::open(dev_path_.c_str(), O_RDONLY | O_CLOEXEC);
         if (impl_->fd < 0) {
-            out.reason = "device_absent";
+            // 分类交给纯函数（可单测，见 host_pressure_monitor.hpp）。
+            // errno 必须在任何其它调用之前捕获：std::strerror 之后 errno
+            // 可能被改写。
+            const int open_errno = errno;
+            out.reason = openErrnoToReason(open_errno);
+            out.detail = std::string("open: ") + std::strerror(open_errno);
             return out;
         }
         impl_->map_size = sizeof(struct wn_cpu_snapshot);
         impl_->map = mmap(nullptr, impl_->map_size, PROT_READ, MAP_SHARED, impl_->fd, 0);
         if (impl_->map == MAP_FAILED) {
             out.reason = "mmap_failed";
+            out.detail = std::string("mmap: ") + std::strerror(errno);
             close(impl_->fd);
             impl_->fd = -1;
             return out;
@@ -265,9 +271,14 @@ void start_host_pressure_monitor_thread(ServerContext* ctx, std::thread* worker)
                     } else if (p.reason != "baseline_only") {
                         // 不可用时发布 UNAVAILABLE，**不发布 0**：
                         // 0 会被下游解读成"CPU 很闲"，从而掩盖真实故障。
-                        // baseline_only 是启动后的正常状态，不值得刷警告
+                        // baseline_only 是启动后的正常状态，不值得刷警告。
+                        //
+                        // detail 必须打出来：reason 只说"打不开"，
+                        // detail 才说"是 EPERM 还是 ENOENT"，而这两者
+                        // 的处置完全不同（改 capability vs 装模块）。
                         LOG_WARNING(LogModule::HOST_PRESSURE,
-                                    "cpu pressure unavailable: " << p.reason);
+                                    "cpu pressure unavailable: " << p.reason
+                                    << (p.detail.empty() ? "" : " (" + p.detail + ")"));
                     }
                 }
 

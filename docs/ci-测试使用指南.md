@@ -16,15 +16,29 @@
 
 自动完成 5 步：
 1. ARM64 编译（宿主机原生交叉编译，Clang + Bullseye Sysroot，`-j$(nproc)`）
-2. 打包部署目录（dist-arm64/）
+2. 打包部署目录（dist-arm64/）+ **交叉编译内核模块**
 3. rsync 部署到开发板
 4. 远程运行功能测试（health/get/eBPF/指标/历史）
 5. 生成报告到 `ci-reports/`
 
-> **单元测试不在开发板上跑**。56 个 gtest 套件的归属是 x86：
+> **单元测试不在开发板上跑**。57 个 gtest 套件的归属是 x86：
 > `ctest --test-dir build-x86/server`（本地，也是 `.ai-harness/project-profile.json`
 > 的 `test-all` 命令）与 GitHub Actions。板端只部署 `test_ebpf`
 > （需要 root + 内核 eBPF，只能真机跑），由 `weaknet-test-full.sh` 的 Phase 11 执行。
+
+### 内核模块（kmod）也在 CI 里
+
+Step 2 会调用 `tools/kmod_cross_build.sh` 交叉编译 `kmod/*.ko` 到
+`dist-arm64/kmod/`，随后随 OTA 落到 `releases/<ver>/kmod/`，
+由 `tools/weaknet-kmod.service` 加载。
+
+**这条链路失败不中断主构建**：模块是可选观测能力，缺它业务照常运行
+（`host_pressure` 报 `unavailable`）。日志里看到
+`警告: kmod 交叉编译失败` 说明本次发布不含内核模块，而不是发布失败。
+
+kmod 构建依赖板端内核头文件缓存（`$HOME/.cache/weaknet-kmod-headers/`，
+约 59 MB，不进仓库）。首次需要板子在线同步一次；之后**不需要板子在线**
+也能出包，CI 与无板环境都适用。详见 `kmod/README.md` 第零节。
 
 ### 部署阶段会做什么（2026-11-01 加固）
 
@@ -50,7 +64,7 @@
 只在本地编译并打包 `dist-arm64/`，不部署到开发板。
 
 > 注意：`ci.sh` **不在本地跑单元测试**。本地跑单测请直接用
-> `ctest --test-dir build-x86/server`（x86，56 个套件）或容器内
+> `ctest --test-dir build-x86/server`（x86，57 个套件）或容器内
 > `ctest --test-dir build-arm64-native/server`。
 
 ### 完整参数列表
@@ -105,7 +119,7 @@ ci-reports/
 
 ## 测试覆盖
 
-### 单元测试（56 个套件）
+### 单元测试（57 个套件）
 
 跑法：`ctest --test-dir build-x86/server --output-on-failure`
 
@@ -165,7 +179,7 @@ ci-reports/
 | test_bt_events_lifecycle_gtest | 跨插件指针读写锁纪律与 UsingInterfaceManager 显式停机 |
 | test_client_cli_contract_gtest | test_client CLI 子命令契约与板端冒烟脚本一致（静态分析，防假绿灯） |
 | test_looper_dispatch_gtest | D-Bus 派发层排空语义（单次只派发一条 / poll 不为内部积压唤醒 / 64 轮上限） |
-| test_observer_attribution_gtest | 观测者降级归因四分支真值表 + CPU 采样器缺失不得回落成 0 |
+| test_observer_attribution_gtest | 观测者降级归因四分支真值表 + CPU 采样器缺失不得回落成 0 + `open` 失败分类（EPERM 不得误报成 `device_absent`） |
 | test_thermal_monitor_gtest | 采集端热状态：sysfs 读取真值表（缺数据不得回落成 0℃/0%）+ 归因五分支真值表（节流/低温满载/高温停转/正常/不可用） |
 | test_update_status_gtest | OTA 版本号数值比较（非字典序）+ apply 策略矩阵 + manifest 全量校验 |
 

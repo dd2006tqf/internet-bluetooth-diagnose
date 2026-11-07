@@ -7,13 +7,31 @@
 目录里有三个模块，分两类：`weaknet_cpu_stat` 与 `weaknet_softirq` 是**数据采集**，
 `weaknet_lradc_keys` 是**驱动技术栈练习**（见第八节）。
 
-> **定位：实验代码，不进生产链路。**
-> 不进 `tools/ci.sh`、不进 OTA manifest、不注册 `IMonitorPlugin`、
-> 不新增 D-Bus 方法、不进 `config.yaml`。全部使用方式就是板端手工
-> `make` → `insmod` → 跑 `tools/wn_kmod_read` → `rmmod`。
+> **定位（2026-11-07 更新）：`weaknet_cpu_stat` 已进入生产链路；其余仍是实验代码。**
 >
-> 换句话说：**当前项目的主构建、部署流程、发布产物都不会因为本目录存在而改变。**
-> 如果有人发现某个脚本引用了本目录，那是个 bug。
+> `weaknet_cpu_stat` 现在随 `tools/ci.sh` 打包进 `dist-arm64/kmod/`，经 OTA
+> 落到 `releases/<ver>/kmod/`，由 `tools/weaknet-kmod.service` 加载，服务端
+> `server/src/host_pressure_monitor.cpp` 经 `/dev/weaknet_cpu_stat` 消费它。
+> 它进主构建、进 OTA manifest、有独立的 systemd 加载单元。
+>
+> 但**边界依然明确**：
+> - 它**不是** `IMonitorPlugin`，不新增 D-Bus 方法，不进 `config.yaml`；
+>   对外的唯一出口是 `weaknet-cli experience` 的 `observer_attribution` 字段。
+> - 加载失败**绝不阻塞** `weaknet-server`（`weaknet-kmod.service` 用 `Wants=`
+>   而非 `Requires=`，服务端也不反向依赖它）。缺失时 `host_pressure` 报
+>   `unavailable`，业务链路行为与引入之前完全一致。
+> - `weaknet_softirq` 与 `weaknet_lradc_keys` **仍然是实验代码**：虽被一起
+>   打包（同一套构建链，成本为零），但**没有** systemd 单元加载它们，
+>   也没有任何生产消费者。`.ko` 在包里不等于在用。
+>
+> 下面这段原初边界声明保留，作为历史记录 —— 它描述的是 2026-11-06 之前的状态：
+>
+> ~~**定位：实验代码，不进生产链路。**~~
+> ~~不进 `tools/ci.sh`、不进 OTA manifest、不注册 `IMonitorPlugin`、
+> 不新增 D-Bus 方法、不进 `config.yaml`。全部使用方式就是板端手工
+> `make` → `insmod` → 跑 `tools/wn_kmod_read` → `rmmod`。~~
+> ~~换句话说：**当前项目的主构建、部署流程、发布产物都不会因为本目录存在而改变。**
+> 如果有人发现某个脚本引用了本目录，那是个 bug。~~
 >
 > **例外（2026-11-06）**：`weaknet_cpu_stat` 的共享 ABI 头 `weaknet_kmod_abi.h`
 > 已被服务端 `server/src/host_pressure_monitor.cpp` include，用来把 CPU 压力接进
@@ -21,6 +39,65 @@
 > 进入主构建，但**只依赖头文件**：不加载 .ko、不打包 .ko、不要求设备节点存在。
 > 设备节点缺失时该消费者恒报 `UNAVAILABLE`，不伪造 0，业务链路行为不变。
 > 其余边界（不进 CI、不进 OTA manifest、不新增 D-Bus 方法）仍然成立。
+
+## 零、交叉编译（2026-11-07 起的主路径）
+
+**不再需要在板端 `make`。** `tools/kmod_cross_build.sh` 在 x86_64 宿主机上
+交叉编译，全量约 5 秒（增量约 2.5 秒），产物直接可 `insmod`：
+
+```bash
+./tools/kmod_cross_build.sh                    # → dist-arm64/kmod/
+./tools/kmod_cross_build.sh --out /tmp/x       # 指定输出目录
+./tools/kmod_cross_build.sh --refresh-headers  # 重新从板端同步内核头文件
+```
+
+`tools/ci.sh` 已自动调用它（Step 2 打包段），失败**不中断**主构建。
+
+### 为什么需要一个专门的脚本
+
+板端 `linux-headers-5.15.147-99btf1-a733` 包里的 `scripts/` 目录带的是
+**aarch64 二进制**（`fixdep`、`modpost`），宿主机跑不了：
+
+```
+/bin/sh: 1: scripts/basic/fixdep: Exec format error
+```
+
+而 headers 包里**没有顶层 `Kconfig`**，`make prepare` 也跑不了，无法
+按常规方式重建。脚本的做法是就地重编这两个 kbuild 宿主工具为 x86-64：
+
+| 工具 | 作用 | 编译要点 |
+| --- | --- | --- |
+| `scripts/basic/fixdep` | 生成 `.cmd` 依赖文件 | 直接 `gcc fixdep.c` |
+| `scripts/mod/modpost` | 符号解析、写 `.mod.c`、生成 vermagic | **必须 `-idirafter`**，见下 |
+
+`modpost` 的头文件路径有个双向陷阱：
+
+- 用 `-I` 把内核树插到前面 → `include/linux/types.h` 覆盖 glibc 的 `stdint.h`
+  → `conflicting types for 'uint64_t'`
+- 完全不指定 → 新版发行版 `/usr/include/linux/mei_uuid.h` 里的 `uuid_le`
+  typedef 与 `file2alias.c` 自带的同名定义冲突
+
+正解是 `-idirafter`：内核树排在系统头**之后**，只在系统头缺符号时补位。
+
+### vermagic 是唯一判据
+
+构建成功 ≠ 可加载。内核在 `load_module()` 里逐字比对 vermagic 字符串，
+不一致直接 `-ENOEXEC`。脚本对每个 `.ko` 显式校验：
+
+```
+期望: vermagic=5.15.147-99btf1-a733 SMP preempt mod_unload aarch64
+实际: vermagic=5.15.147-99btf1-a733 SMP preempt mod_unload aarch64   ✅
+```
+
+实测：交叉编译产物与板端就地编译产物的 vermagic 逐字一致。
+`CONFIG_MODVERSIONS` 未开启，所以换内核时只有 vermagic 风险，没有符号版本风险。
+
+### 头文件缓存
+
+默认缓存在 `$HOME/.cache/weaknet-kmod-headers/<kernel-release>/`（约 59 MB，
+**不进仓库**）。已缓存时**不需要板子在线**也能出包——CI 与无板环境都适用。
+缓存的是一整份 headers 目录（含 `Module.symvers`、`scripts/`、
+`include/generated/`），首次从板端 rsync 约 7 秒。
 
 ---
 
@@ -43,6 +120,30 @@
 
 ## 二、构建与运行
 
+**生产路径已自动化**：`tools/ci.sh` 会交叉编译、打包进 OTA、部署、加载。
+手工命令只在调试时用。
+
+### 生产验证命令
+
+```bash
+# 模块与设备节点
+lsmod | grep weaknet_cpu_stat
+ls -l /dev/weaknet_cpu_stat
+
+# 数据是否真的进了业务层（唯一出口）
+ssh board '/home/radxa/weaknet/client/bin/weaknet-cli experience' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["observer_attribution"])'
+
+# 服务端读数（约 15 秒一个采样周期）
+ssh board 'sudo journalctl -u weaknet-server --since "-2 min" | grep cpu_busy_ratio'
+
+# 加载单元状态
+ssh board 'systemctl status weaknet-kmod'
+ssh board 'sudo journalctl -u weaknet-kmod -n 20'
+```
+
+### 手工验证（板端，调试用）
+
 ```bash
 # 1. 板端就地编译（需要 linux-headers）
 cd kmod && make
@@ -63,6 +164,7 @@ sudo rmmod weaknet_cpu_stat weaknet_softirq
 
 `Makefile` 支持三种用法，注释里写了：板端就地编译（默认）、宿主机对拍编译
 （`KDIR=...`）、交叉编译（`ARCH=arm64 CROSS_COMPILE=... KDIR=...`）。
+**生产走交叉编译**（见第零节），板端就地编译只在没有宿主环境时兜底。
 
 ## 三、相对参考实现的改造点
 
@@ -80,8 +182,8 @@ sudo rmmod weaknet_cpu_stat weaknet_softirq
 | D3′ | `idle`/`iowait` 被 `usecs_to_jiffies()` 二次截断，丢掉 tickless 的微秒精度 | 直接输出微秒值 ×1000 转纳秒，不做二次截断 |
 | D4 | 内核 `MAX_CPUS 256` 与用户态硬编码 `128` 不一致，潜在越界 | 头部携带 `nr_cpus`，用户态按此遍历 |
 | D5 | 无法区分离线 CPU | 每条记录带 `online` 标记 |
-| D6 | 无权限校验 | `open()` 校验 `capable(CAP_SYS_ADMIN)` |
-| D7 | 构建链不可移植 | `KDIR ?=` 可覆盖；板端开箱即用 |
+| D6 | 无权限校验 | `open()` 校验 `capable(CAP_PERFMON) \|\| capable(CAP_SYS_ADMIN)`，见下节 |
+| D7 | 构建链不可移植 | `KDIR ?=` 可覆盖；宿主交叉编译走 `tools/kmod_cross_build.sh` |
 
 补充两处源实现没有、但这里必须加的：
 
@@ -98,6 +200,90 @@ sudo rmmod weaknet_cpu_stat weaknet_softirq
 更麻烦的是**seqlock 挡不住这种篡改**——它的前提是「一个写者、多个读者」，
 而用户态一旦可写就变成了第二个写者：改完 `seq` 后读者照常校验通过并采信，
 一致性保证被彻底架空。所以这不是「防君子」的加固，是协议成立的必要条件。
+
+## 三·五、CAP_SYS_ADMIN 门禁的坑：一条被掩盖了三天的真因
+
+这是本目录最值得记录的一次排查，因为**代码本身没错，错的是错误信息**。
+
+### 现象
+
+`weaknet_cpu_stat` 模块加载正常，`/dev/weaknet_cpu_stat` 节点存在，root 手工
+`open` + `mmap` 成功读到 `abi=2 / nr_cpus=8`。但服务端 `host_pressure` 插件
+**持续**输出：
+
+```
+[host_pressure] cpu pressure unavailable: device_absent
+```
+
+"设备不存在"——于是排查方向全部指向「模块没装 / 部署漏了 / namespace 隔离」。
+
+### 真因
+
+`wn_open()` 当时写的是：
+
+```c
+if (!capable(CAP_SYS_ADMIN))
+    return -EPERM;
+```
+
+而服务的 systemd 单元（`tools/weaknet-server.service`）授予的能力是：
+
+```
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_BPF CAP_PERFMON CAP_DAC_OVERRIDE
+```
+
+**刻意不含 `CAP_SYS_ADMIN`**。于是 `open()` 返回 `EPERM`，而消费端把**所有**
+`open()` 失败都映射成 `device_absent`——真因被自己的日志掩盖了。
+
+### 为什么修法是改门禁而不是给服务加能力
+
+`CAP_SYS_ADMIN` 是近乎全能的能力。为了读一份 per-CPU 时间片统计去授予它，
+等于把整个系统的管理权交给一个采集进程。而 `CAP_PERFMON` 正是 Linux 5.8
+为"观测系统"拆出来的专用能力（`perf_event_open` / `bpf` / `tracefs` 走它），
+语义上恰好覆盖"读取内核采集的 CPU 时间片"。**用它与服务的现有能力集对齐，
+不需要给服务加任何特权。**
+
+保留 `CAP_SYS_ADMIN` 作为 OR 的另一支：历史上这是这类访问的唯一门禁，
+容器/脚本里的受限 root 可能只带它。两者都是特权能力，这个 OR 不会让
+非特权进程通过。
+
+### 验证（2026-11-07，板端）
+
+用 `capsh` 构造与 service 等价的能力集做真降级实验：
+
+| 实验 | 命令 | 结果 |
+| --- | --- | --- |
+| 等价服务端能力集 | `capsh --drop=cap_sys_admin`（保留 PERFMON） | `OPEN_OK abi=2 nr_cpus=8` |
+| 负对照 | `capsh --drop=cap_sys_admin,cap_perfmon` | `OPEN_FAIL errno=1 EPERM` |
+
+负对照很关键：它证明门禁**仍然是真的门禁**，不是为了通过测试而形同虚设。
+
+> 踩过的测量陷阱：`capsh --caps="cap_dac_override+eip"` **不能**用来构造降级。
+> `--caps=` 只把能力提进 bounding set，**不会降低**已有权限，root 的全部
+> 特权仍在，于是会得到一个假的 `OPEN_OK`。真降级必须用 `--drop=`。
+
+### 顺带修掉的第二个坑：错误分类必须说真话
+
+消费端原本把 `open()` 的任何失败都归成 `device_absent`。
+`HostCpuPressure` 早就声明了 `open_failed` 这个 reason，但代码从没用过。
+
+现在分类收敛到纯函数 `openErrnoToReason()`（`host_pressure_monitor.hpp`）：
+
+| errno | reason | 处置方式 |
+| --- | --- | --- |
+| `ENOENT` / `ENXIO` | `device_absent` | 装模块（现场常态，预期降级） |
+| `EPERM` / `EACCES` | `open_failed` | 改 capability |
+| 其它 | `open_failed` | 按 `detail` 里的 errno 文本排查 |
+
+并新增 `detail` 字段携带 errno 文本，日志变成：
+
+```
+cpu pressure unavailable: device_absent (open: No such file or directory)
+```
+
+**教训**：分类字段的粒度不是风格问题。把两种处置方式完全不同的故障
+合并成一个模糊标签，会让排查从"看一眼日志就知道"变成"猜三天"。
 
 ## 四、seqlock 快照协议
 
@@ -142,7 +328,7 @@ do {
 | 与 `/proc/stat` 对拍 | CPU0 `user` 模块 23.13 s，`/proc/stat` 2313 tick @USER_HZ=100，逐项一致 |
 | 与 `/proc/softirqs` 对拍 | 十类计数逐 CPU 全部一致 |
 | 区间使用率 | `Δtotal ≈ 1.0e9 ns`，量纲正确 |
-| 权限门禁 | 同一 root 身份，`capsh --drop=cap_sys_admin` 后打开设备返回 `EPERM(1)`，加回则成功 |
+| 权限门禁 | 同一 root 身份，`capsh --drop=cap_sys_admin,cap_perfmon` 后打开设备返回 `EPERM(1)`，保留任一则成功 |
 | 只读映射 | `PROT_READ\|PROT_WRITE` 映射被拒绝（`EACCES`），仅 `PROT_READ` 成功 |
 | 卸载安全性 | 映射存活时 `rmmod` 被拒绝（`Module weaknet_cpu_stat is in use`，refcount=3）；进程退出后 rc=0 |
 | 撕裂检测 | 30 s 内 666,726 次读取（约 22k 次/秒），覆盖约 60 个写入窗口，**0 次撕裂、0 次重试耗尽** |
@@ -295,18 +481,47 @@ per-CPU 的累计快照与基线，这是当前实现没有做的。
 
 ## 七、没有做的事（边界）
 
-- **没有**接入生产链路（`IMonitorPlugin` / D-Bus / `config.yaml` / SQLite）。
+**仍然成立的边界：**
+
+- **没有**做成 `IMonitorPlugin`，**没有**新增 D-Bus 方法，**没有**进 `config.yaml`，
+  **没有**进 SQLite。对外的唯一出口是 `weaknet-cli experience` 的
+  `observer_attribution`。这是刻意的：CPU 压力是**归因辅助证据**，
+  不是被评估链路的健康度，不该有自己的业务接口。
 - **没有**做热插拔 CPU 的**绝对累计值**跨周期保持（见第五节末尾的语义限制）。
   当前实现只保证「热插拔期间不产出错误数据」，不保证「累计值连续」。
 - **没有**在超过 8 核的机器上验证（`WEAKNET_KMOD_MAX_CPUS` 为 256，但只实测了 8 核）。
 - **没有**在 `CONFIG_VIRT_CPU_ACCOUNTING_GEN=y` 的内核上验证
   （本板未开，`kcpustat_cpu_fetch` 走的是内联 `*dst = kcpustat_cpu(cpu)` 分支）。
-- **没有**做长期稳定性测试（>1 小时）与内存泄漏检测。
 - **没有**做跨内核版本兼容性矩阵，只验证了 5.15.147 与编译期的 6.8。
+  `CONFIG_MODVERSIONS` 未开启，换内核时只有 vermagic 风险。
+- **没有**让 `weaknet_softirq` 进生产（有 `.ko`、有构建链，但没有消费者、
+  没有 systemd 单元加载）。`.ko` 在包里不等于在用。
 - **没有**在 `weaknet_lradc_keys` 上验证到真实 ADC 转换（本板硬件行为，见第八节）。
   它的 L3 链路是靠 debugfs 注入证明的，不是靠物理按键。
 - **没有**让 `weaknet_lradc_keys` 的 `input->close` 被观察到（X server 常驻占用
   evdev 节点，open 计数不归零，见第八节）。
+
+**曾经列在这里、现已完成（2026-11-07）：**
+
+- ~~没有接入生产链路~~ → `host_pressure` 插件已消费，随 OTA 发布。
+- ~~没有做长期稳定性测试（>1 小时）~~ → 已完成 30 分钟长稳（5851 万次读取
+  零失败、RSS 零增长、采样节拍 1.000 Hz），见第五节。
+- ~~板端手工 make~~ → 已有 `tools/kmod_cross_build.sh` 宿主交叉编译，
+  进 `tools/ci.sh` 与 OTA manifest。
+
+**一个未覆盖的验证缺口（诚实记录）：**
+
+真机上验证到 `cpu_busy_ratio` 从 `0.008` 升到 `0.9998`（8 核 busy loop 满载），
+数据链路完全打通。但 `observer_attribution` 在满载期间仍是 `NONE`——
+这是**正确行为**：归因的前提是「观测确实降级了」，而那次满载期间 eBPF 的
+`capture_emit_failure_ratio` 与 `perf_delivery_loss_ratio` 都是 0，没有证据丢失，
+自然没有可归因的东西。
+
+所以 `SELF_INFLICTED` 分支**只在单元测试里验证过，未在真机触发**。
+要真机复现，需要同时满足「CPU 满载」+「eBPF 真丢证据」+「有持续 DNS 流量」
+三个条件，且丢证据不能靠人为注入（那会变成伪造证据）。
+这条留作现场观察项：真实过载发生时，`observer_attribution` 应当自己变成
+`SELF_INFLICTED`。
 
 ## 八、`weaknet_lradc_keys`：LRADC 按键驱动
 

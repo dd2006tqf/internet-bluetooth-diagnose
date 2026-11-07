@@ -239,7 +239,7 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 |---------|---------|------|
 | "编译一下" / "build" | `cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build-x86 -j$(nproc)` | x86 本地快速编译 |
 | "跑测试" / "test" | `build-x86/server/test/test_database_manager_gtest` | 运行指定测试 |
-| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure` | x86 全量单元测试（56 套件，无需 D-Bus/真机环境） |
+| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure` | x86 全量单元测试（57 套件，无需 D-Bus/真机环境） |
 
 ### 部署到开发板
 

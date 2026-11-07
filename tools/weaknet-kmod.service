@@ -1,0 +1,77 @@
+[Unit]
+# ============================================================================
+# WeakNet 观测用内核模块加载单元（weaknet_cpu_stat）
+#
+# 定位：**可选能力**。加载成功 → 服务端 host_pressure 插件经
+# /dev/weaknet_cpu_stat 读到 per-CPU 时间片，从而能区分「网络真故障」与
+# 「采集端 CPU 过载导致丢证据」；加载失败 → 插件报 unavailable，业务链路
+# 行为与引入本模块之前完全一致。
+#
+# === 最重要的一条不变量 ===
+# 本单元失败**绝不能**阻塞 weaknet-server。所以：
+#   * 这里只写 Wants=，**不写 Requires=**（Requires 会把失败传播给依赖方）
+#   * 服务端单元也**不**把本单元列进 After=/Requires=
+# 反过来，本单元要在服务端之后跑（After=），因为模块一加载、device 节点
+# 出现，服务端下一轮采样就会自己认领它（懒加载 + 每轮重试）。
+#
+# 加载失败的各种真实成因（都在板上见过）：
+#   * 内核升级后 vermagic 不匹配        → insmod 报 Invalid module format
+#   * 与已加载模块同名冲突              → File exists
+#   * 板端没有对应 .ko（旧发布包）      → No such file
+# 这些全部记日志后退出 0。退出 0 不是掩盖问题——状态在日志与
+# `weaknet-cli experience` 的 observer_attribution 里都能看见；
+# 而退出非 0 会让 systemd 把本单元标成 failed，运维 alarms 里多一条
+# 与业务无关的噪声，且一旦有人将来加了 Requires 就会连锁拖垮服务。
+# ============================================================================
+
+Description=WeakNet observational kernel module (weaknet_cpu_stat)
+Documentation=file:///home/radxa/weaknet/kmod/README.md
+
+# 服务端先起，模块后插。服务端是懒加载+每轮重试，不存在时序依赖。
+After=weaknet-server.service
+Wants=weaknet-server.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Restart=no
+
+# 卸载上一次可能残留的同名模块，再加载本版本。
+#
+# 为什么要 rmmod：OTA 升级后 releases/<newver>/kmod/*.ko 是新文件，
+# 而内核里跑的还是旧版本模块。直接 insmod 会报 "File exists"；
+# 不卸载就升级，会出现「用户态已升、模块还是旧的」的跨版本错配
+# （ABI 版本变了会被 abi_mismatch 拦住，表现为观测静默失效）。
+#
+# 用 - 前缀忽略失败：模块本来就没加载是常态，不算错误。
+# 映射存活时 rmmod 会被内核拒绝（refcount>0），这是设计行为；
+# 那种情况下本轮的 insmod 也会失败，模块保持旧版本继续工作——
+# 比强行杀掉服务去换模块安全得多（下次服务重启时自然收敛）。
+ExecStart=-/sbin/rmmod weaknet_cpu_stat
+ExecStart=-/sbin/rmmod weaknet_softirq
+
+# 加载 weaknet_cpu_stat：CPU 压力的唯一数据来源。
+#
+# 路径经 current 软链寻址，与 weaknet-server.service 的寻址方式一致，
+# 这样 OTA 翻链后模块也跟着翻，不需要额外同步。
+#
+# 为什么用 insmod 而不是 modprobe：本模块没有任何依赖模块，insmod 足够；
+# 更重要的是 modprobe 只接受模块名，会去 /lib/modules 下找，而我们的模块
+# 住在 OTA 的 releases/<ver>/kmod/ 里，不在标准模块目录。用 insmod 直指
+# 绝对路径最直接，且不会误加载系统里同名的其他模块。
+ExecStart=-/sbin/insmod /home/radxa/weaknet/current/kmod/weaknet_cpu_stat.ko
+
+# 关键：无论上面成败，一律报告成功。
+#
+# 不变量是「模块加载失败不阻塞服务」。虽然本单元没被 weaknet-server
+# Requires，但 failed 状态会进 systemctl --failed 与监控告警，
+# 制造与业务无关的噪声。加载是否真的成功，看 device 节点是否存在
+# 与 weaknet-cli experience 的 observer_attribution 更准确。
+ExecStartPost=-/bin/sh -c 'test -c /dev/weaknet_cpu_stat && echo "weaknet_cpu_stat ready" || echo "weaknet_cpu_stat unavailable (module not loaded; host_pressure will report unavailable, business unaffected)"'
+
+# 加载后立刻给一次采样基线：服务端首次读到的是累计值，需要两次才有差值。
+# 这一段纯粹是热身，失败无影响。
+ExecStartPost=-/bin/sh -c 'sleep 2'
+
+[Install]
+WantedBy=multi-user.target
