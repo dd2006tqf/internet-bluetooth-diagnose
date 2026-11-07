@@ -2,7 +2,8 @@
 
 > 日期：2026-11-07
 > 分类：工作流外实施 + 文档迭代
-> 结果：已完成（代码 22 项单测全绿；文档三处结构性订正已落地；硬件阻塞项全部消除）
+> 结果：已完成（代码 48 项单测全绿：帧源 22 + 归因 26；文档三处结构性订正已落地；
+> 硬件阻塞项全部消除；已提交 `1b48564` + `75e7901`）
 
 ## 构思
 
@@ -66,7 +67,8 @@ card0-HDMI-A-1         disconnected   ← 唯一缺的是一台显示器
 「HDMI 实机显示（显示器未在位）」。
 
 所以 DSI 屏「补图形栈空白」的理由消失，它现在唯一独有价值是「MIPI DSI 总线经验」。
-再加上「官方屏太贵」和「触摸暂无消费者」，结论是**不买**。
+再加上「官方屏太贵」和「触摸暂无消费者」（*2026-11-07 晚补记：该理由已由产品定位 v1.2 解除，
+但「不买 DSI 屏」的结论不变——触摸应走 USB 触控板，价格差 10 倍*），结论是**不买**。
 
 ### 关键取舍三：USB 触屏「必须重编内核」是错的（我自己上一轮的误判，此处订正）
 
@@ -119,16 +121,16 @@ $ sudo rmmod t       → rc=0
 
 ## 实现方式
 
-### 新增代码（未提交）
+### 新增代码
 
 | 文件 | 行数 | 内容 |
 | --- | --- | --- |
-| `server/include/frame_source.hpp` | 205 | `FrameStats`（纯数据，含 `valid()` / `framesLost()` / `frameLossRatio()`）、`IFrameSource`（5 方法抽象）、`SyntheticPattern`（HEALTHY / PERIODIC_LOSS / BURST_LOSS / REORDERED）、`SyntheticFrameSource`（pimpl） |
-| `server/src/synthetic_frame_source.cpp` | 202 | 时间驱动实现，不 sleep |
+| `server/include/frame_source.hpp` | 214 | `FrameStats`（纯数据，含 `valid()` / `framesLost()` / `frameLossRatio()`）、`IFrameSource`（5 方法抽象）、`SyntheticPattern`（HEALTHY / PERIODIC_LOSS / BURST_LOSS / REORDERED）、`SyntheticFrameSource`（pimpl） |
+| `server/src/synthetic_frame_source.cpp` | 204 | 时间驱动实现，不 sleep |
 | `server/test/unit/test_frame_source_gtest.cpp` | 386 | 22 项测试（3 套件） |
-| `server/include/video_qoe_attribution.hpp` | 189 | 枚举 6 值（5 象限 + `NONE`）、`videoQoeAttributionToString()`、`VideoNetworkObservation`、判定纯函数 |
-| `server/src/video_qoe_attribution.cpp` | 201 | 判定实现 |
-| `server/test/unit/test_video_qoe_attribution_gtest.cpp` | 344 | 21 项测试 |
+| `server/include/video_qoe_attribution.hpp` | 206 | 枚举 6 值（5 象限 + `NONE`）、`videoQoeAttributionToString()`、`VideoNetworkObservation`、`VideoQoeThresholds`、`VideoQoeAttributionResult`（含 `issues`）、判定纯函数 |
+| `server/src/video_qoe_attribution.cpp` | 221 | 判定实现 + `collectFrameIssues()` 唯一阈值判定点 |
+| `server/test/unit/test_video_qoe_attribution_gtest.cpp` | 414 | 26 项测试 |
 | `server/CMakeLists.txt` | +2 | `src/synthetic_frame_source.cpp` + `src/video_qoe_attribution.cpp` 登记 |
 | `server/test/CMakeLists.txt` | +12 | 两套 `add_executable` + `target_link_libraries` + `foreach` 列表 |
 
@@ -150,8 +152,10 @@ $ sudo rmmod t       → rc=0
 ### 验证
 
 ```bash
-cmake --build build-x86 --target test_frame_source_gtest -j$(nproc)
-build-x86/server/test/test_frame_source_gtest
+cmake --build build-x86 -j$(nproc)
+./build-x86/server/test/test_frame_source_gtest
+./build-x86/server/test/test_video_qoe_attribution_gtest
+ctest --test-dir build-x86/server --output-on-failure
 ```
 
 结果：
@@ -159,10 +163,18 @@ build-x86/server/test/test_frame_source_gtest
 ```
 [==========] 22 tests from 3 test suites ran. (0 ms total)
 [  PASSED  ] 22 tests.
+
+[==========] 26 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 26 tests.
+
+100% tests passed, 0 tests failed out of 59, Total Test time 8.66 sec
 ```
 
 22 项 = `FrameStats` 契约（含 `valid` / `framesLost` / `frameLossRatio` 边界）
 + `IFrameSource` 多态可用性 + `SyntheticFrameSource` 四种模式 × 各窗口推进。
+
+26 项 = 五行真值表 + 三条拒绝归因前置检查 + 证据条目 + 阈值语义
++ 纯函数性质 + `issues` 清单（5 项）。
 
 ### 文档改动
 
@@ -174,7 +186,7 @@ build-x86/server/test/test_frame_source_gtest
 | §0 类别表 | D 类从「MIPI DSI 屏 + 触摸」改为「HDMI 输出 + USB 触控面板（可选）」 |
 | §3.1 / §3.2 | ASCII 图改 HDMI 优先；总表第 3/4 行的消费者与出口同步 |
 | §4.3.3 / §4.3.4 | 加 ⚠️「已被否决，仅存档」头注，保留作为反面论证 |
-| §6.2.1 | 分层图按实际落地状态标注（L2/L3 ✅，L4 ⬜） |
+| §6.2.1 | 分层图按实际落地状态标注（L2/L3/L4 全 ✅，仅 `V4l2FrameSource` ⬜） |
 | §6.2.4 | 标题「四象限」→「五象限」（表里 5 个非 NONE 象限，原表述错误） |
 | §6.2.5 | **整节重写**：数据出口进 `NetworkExperience`，附「零新增接口清单」与诚实代价 |
 | §6.2.6 | 消费者表逐项标注 ✅/⬜/❌，删掉 `stats video` 命令 |
@@ -196,31 +208,37 @@ build-x86/server/test/test_frame_source_gtest
 ### 已完成
 
 - `FrameStats` + `IFrameSource` + `SyntheticFrameSource` 落地，22 项单测全绿
-- `VideoQoeAttribution` 纯函数落地，21 项单测全绿（**合计 43 项**）
+- `VideoQoeAttribution` 纯函数落地，26 项单测全绿（**合计 48 项**）
+- 视频归因接进 `NetworkExperience`（`1b48564` 三字段 + `75e7901` 补 `issues` 唯一生产赋值点）
 - 方案文档 v2 定稿，三处结构性订正全部写入（归因出口 / 摄像头阻塞消除 / 显示路线改向）
 - 交叉引用校验：全部 `§x.y` 引用均指向存在章节
 - 表格列数校验：0 处异常
-- 关键数字一致性校验：22 项 / 21 项 / 39/39 / 8/8 / GT911@0x14 / GT9271@0x5d 全文一致
+- 关键数字一致性校验：22 项 / 26 项 / 39/39 / 8/8 / GT911@0x14 / GT9271@0x5d 全文一致
 
 ### 未做（有意为之）
 
-- **视频归因未接进 `NetworkExperience`**。这是 `VideoQoeAttribution` 落地的最后一步
-  （三处改动：加三个字段 / `legacy_adapter.hpp` 序列化 / `server.cpp` 评估循环采样）。
-  纯函数写完了但还没有调用方——**当前它还不是可观测的能力**，`weaknet-cli experience`
-  读不到任何 video 字段。
 - **`hid-multitouch` 外部模块未编**。技术上已验证可行（空模块能编译加载），
   但触摸当前无真实消费者，用户明确表示后续会修改产品定位，改完再接入。
+  （补记：后由并行会话以 `e45f28f` 落地，与本任务的视频线无关；
+  同日稍晚产品定位修订为 v1.2，消费者已定义，剩余阻塞为 `qt_dashboard` 交互点。）
 - **HDMI 未实机验证**。零成本但需要一台显示器在位。
-- **未提交**。工作区还有 8 个文件未提交（6 新增 + 2 修改），等用户授权。
+- **视频结论不写进诊断 `excluded_causes`**（2026-11-07 定）。理由三条：
+  ① thermal 同样未接入，单独给 video 接会让三者形态不一致；
+  ② 生产态 `attribution` 恒为 `NONE`，写规则也永远不触发、无法验证；
+  ③ 顺序不对——应先等真帧，再与 thermal 一并评估。详见方案 §6.2.6 / §15.3。
 
 ### 诚实边界
 
 1. **`SyntheticFrameSource` 是唯一可用实现**。`V4l2FrameSource` 要等阶段 2
-   overlay 演练完成、摄像头到货后才能写。
-2. **没有任何真实帧统计跑过**。22 项测试验证的是合成源，不是真机帧。
+   overlay 演练完成才能写（摄像头硬件已到货，阻塞点是 overlay 未启用）。
+2. **没有任何真实帧统计跑过**。22 项测试验证的是合成源，不是真机帧；
+   26 项归因测试的输入也全部是手工构造的 `FrameStats`。
+   生产态 `video_qoe_attribution` 恒为 `NONE`，因为 `server.cpp` 里 `frames`
+   是默认构造（`valid()==false`）、`net_obs.interval_ms=0`，必然返回
+   `frames_unavailable`。这是**正确**的：不把合成假数据灌进生产快照。
 3. **文档里所有「实测」都来自板端命令回读**，但 `hid-multitouch` 只验证了
    「空模块能加载」，没验证「真实的 hid-multitouch 能驱动某块具体触控板」。
-   后者需要真硬件在手。
+   后者需要真硬件在手。（`e45f28f` 已把模块编进来了，但这条边界仍未关闭。）
 4. **两条我说错又订正的结论**已明确写入文档，避免以讹传讹：
    - 「USB 触屏免驱、内核自带」→ 假（`CONFIG_HID_MULTITOUCH` 未开）
    - 「USB 触屏必须重编内核」→ 假（外部模块即可）
@@ -251,4 +269,6 @@ thermal 走同一路线已完成并真机验证（`2026-11-06-thermal-monitor.md
 3. 阶段 2 overlay 演练（第一个有变砖风险的动作，串口线已备）
 4. 摄像头 overlay 启用 + `V4l2FrameSource`
 5. SSD1306 OLED（可选，¥20）
-6. 触摸接线（等产品定位修订完成）
+6. 触摸接线 —— **定位已改完（v1.2），阻塞项转为 `qt_dashboard` 交互点**。
+   见 `docs/产品定位-工业无线诊断网关.md` 第三节之二、
+   `驱动面能力引入与业务融合方案.md` §7.6、`kmod/hid_multitouch/README.md`「消费者状态」。
