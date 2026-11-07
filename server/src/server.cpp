@@ -721,6 +721,13 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                         if (video.evaluated) {
                             exp.video_qoe_attribution = video.attribution;
                             exp.video_qoe_attribution_detail = video.explanation;
+                            // 画面侧的具体劣化成因。这是该字段的**唯一**生产
+                            // 赋值点：NetworkExperience 声明了它、
+                            // legacy_adapter 序列化了它、w4 测试直接构造了它，
+                            // 但此前没有任何生产者 —— 运维永远读到空数组。
+                            // 字段存在而无人赋值，比字段不存在更糟：读的人
+                            // 会以为"没数据"是"没问题的证据"。
+                            exp.video_qoe_issues = video.issues;
                             // 只有画面确实判为差才进 warnings；CONSISTENT_HEALTHY
                             // 每轮刷一条会让 warnings 变成噪音。
                             if (video.frames_bad) {
@@ -731,7 +738,8 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                                 << weaknet::videoQoeAttributionToString(video.attribution)
                                 << " frames_bad=" << (video.frames_bad ? "yes" : "no")
                                 << " net_degraded=" << (net_obs.degraded ? "yes" : "no")
-                                << " consecutive=" << consecutive_degraded);
+                                << " consecutive=" << consecutive_degraded
+                                << " issues=" << video.issues.size());
                         }
                     }
 

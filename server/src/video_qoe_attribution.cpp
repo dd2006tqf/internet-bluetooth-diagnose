@@ -19,23 +19,48 @@
 #include "video_qoe_attribution.hpp"
 
 #include <algorithm>
-#include <sstream>
 
 namespace weaknet {
 
 namespace {
 
-/// 把 double 格式化成稳定的小数串（证据里不用科学计数法，便于人工阅读）
-std::string fmt(double v) {
-    std::ostringstream os;
-    os.setf(std::ios::fixed);
-    os.precision(4);
-    os << v;
-    return os.str();
-}
-
 std::string fmtMs(uint32_t v) {
     return std::to_string(v) + "ms";
+}
+
+/// 画面侧的具体劣化项（唯一阈值判定处）
+///
+/// `isFrameQualityBad` 由它派生，绝不另写一份 —— 两份阈值实现迟早会漂移，
+/// 届时「是否判为差」与「差的具体成因」会互相矛盾。
+///
+/// 放在匿名命名空间是因为它只服务于本文件的判定表；对外暴露会让调用方
+/// 误以为可以绕过 attributeVideoQoe 单独取成因，而那会丢掉窗口对齐检查。
+std::vector<std::string> collectFrameIssues(const FrameStats& frames,
+                                            const VideoQoeThresholds& thresholds) {
+    std::vector<std::string> issues;
+
+    // 无效统计一律视为「不知道」，不产生任何结论。
+    // 这里返回空表示「没有明确地差」，由调用方决定怎么呈现 unavailable。
+    if (!frames.valid()) return issues;
+
+    if (frames.frameLossRatio() >= thresholds.frame_loss_ratio_bad) {
+        issues.emplace_back("FRAME_LOSS");
+    }
+
+    if (frames.p95_gap_ms >= thresholds.frame_gap_p95_bad_ms) {
+        issues.emplace_back("FRAME_GAP_P95");
+    }
+
+    if (frames.frames_expected > 0) {
+        const double corrupt_ratio =
+            static_cast<double>(frames.frames_corrupt) /
+            static_cast<double>(frames.frames_expected);
+        if (corrupt_ratio >= thresholds.frame_corrupt_ratio_bad) {
+            issues.emplace_back("CORRUPT_FRAMES");
+        }
+    }
+
+    return issues;
 }
 
 }  // namespace
@@ -45,20 +70,7 @@ bool isFrameQualityBad(const FrameStats& frames,
     // 注意：无效统计一律视为「不知道」，由调用方决定怎么呈现。
     // 这里返回 false 是为了让 isFrameQualityBad 只回答「是否明确地差」，
     // 而不是把「不知道」也算进「差」——否则上游会把 unavailable 报成故障。
-    if (!frames.valid()) return false;
-
-    if (frames.frameLossRatio() >= thresholds.frame_loss_ratio_bad) return true;
-
-    if (frames.p95_gap_ms >= thresholds.frame_gap_p95_bad_ms) return true;
-
-    if (frames.frames_expected > 0) {
-        const double corrupt_ratio =
-            static_cast<double>(frames.frames_corrupt) /
-            static_cast<double>(frames.frames_expected);
-        if (corrupt_ratio >= thresholds.frame_corrupt_ratio_bad) return true;
-    }
-
-    return false;
+    return !collectFrameIssues(frames, thresholds).empty();
 }
 
 VideoQoeAttributionResult attributeVideoQoe(
@@ -125,7 +137,15 @@ VideoQoeAttributionResult attributeVideoQoe(
     }
 
     // ================= 五行真值表 =================
-    const bool frames_bad = isFrameQualityBad(frames, thresholds);
+    //
+    // 成因清单只在这里填：四条拒绝归因的路径都提前 return 了，issues 保持
+    // 默认空 —— 「没采到帧」不得编造成因，与「没采到帧」不得报健康同理。
+    //
+    // frames_bad 直接由清单派生，不再单独调 isFrameQualityBad：两处各算一遍
+    // 没有问题，但让「是否判为差」与「差在哪」共用同一次判定，将来加阈值
+    // 时不可能只改一边。
+    result.issues = collectFrameIssues(frames, thresholds);
+    const bool frames_bad = !result.issues.empty();
     const bool network_bad = network.degraded;
     result.frames_bad = frames_bad;
     result.evaluated = true;

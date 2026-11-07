@@ -318,6 +318,75 @@ TEST(VideoQoeAttribution, DoesNotMutateInputs) {
 }
 
 // ---------------------------------------------------------------------------
+// 6.5 问题清单（issues）：机器可读的成因标签
+//
+// 这三个字段的形态与 thermal 同构：`<x>_attribution` 是主结论，
+// `<x>_issues` 是「同一轮里还发现了哪些具体问题」。
+//
+// 此前 cases 缺失的后果不是"少一个字段"，而是**孤儿字段**：
+// NetworkExperience 有它、legacy_adapter 序列化它、w4 测试赋值它，
+// 但 server.cpp 从不赋值 —— 代码算了，运维永远读到空数组。
+// ---------------------------------------------------------------------------
+
+TEST(VideoQoeAttribution, IssuesIsEmptyWhenFramesAreGood) {
+    auto r = attributeVideoQoe(goodFrames(), netGood());
+
+    EXPECT_EQ(r.attribution, VideoQoeAttribution::CONSISTENT_HEALTHY);
+    EXPECT_TRUE(r.issues.empty())
+        << "画面与网络都正常时不得产生问题条目——每轮刷一条会变成噪音";
+}
+
+TEST(VideoQoeAttribution, IssuesReportEachBadAspectSeparately) {
+    // 丢帧 + 卡顿 + 坏帧三种劣化同时发生，三条都要如实列出。
+    // 只报主结论会丢掉"画面为什么差"的具体线索。
+    FrameStats f = goodFrames();
+    f.frames_received = 15;   // 丢 50% > 5%
+    f.p95_gap_ms = 500;       // > 100ms
+    f.frames_corrupt = 3;     // 3/30 = 10% > 1%
+
+    auto r = attributeVideoQoe(f, netGood());
+
+    ASSERT_EQ(r.attribution, VideoQoeAttribution::APP_LAYER_SUSPECT);
+    ASSERT_EQ(r.issues.size(), 3u) << "三种劣化应各报一条";
+
+    std::set<std::string> got(r.issues.begin(), r.issues.end());
+    EXPECT_TRUE(got.count("FRAME_LOSS")) << "丢帧率超阈值必须报";
+    EXPECT_TRUE(got.count("FRAME_GAP_P95")) << "帧间隔 P95 超阈值必须报";
+    EXPECT_TRUE(got.count("CORRUPT_FRAMES")) << "坏帧率超阈值必须报";
+}
+
+TEST(VideoQoeAttribution, IssuesOnlyReportsWhatActuallyExceeded) {
+    // 只有丢帧超标，不得顺手把卡顿与坏帧也报上。
+    // 误报会让现场去查一个根本不存在的问题。
+    FrameStats f = goodFrames();
+    f.frames_received = 15;
+
+    auto r = attributeVideoQoe(f, netGood());
+
+    ASSERT_EQ(r.issues.size(), 1u);
+    EXPECT_EQ(r.issues[0], "FRAME_LOSS");
+}
+
+TEST(VideoQoeAttribution, IssuesIsEmptyWhenRefusingToAttribute) {
+    // 拒绝归因时没有采到任何帧，"问题清单"必须是空的——
+    // 把"不知道"写成"有问题"与把"不知道"写成"健康"同样有害。
+    auto r = attributeVideoQoe(FrameStats{}, netGood());
+
+    EXPECT_EQ(r.attribution, VideoQoeAttribution::NONE);
+    EXPECT_TRUE(r.issues.empty()) << "没有帧统计时不得编造成因";
+}
+
+TEST(VideoQoeAttribution, IssuesDoNotDependOnNetworkSide) {
+    // 网络差但画面好 → 问题在观测方法，不在帧质量。
+    // 此时 issues 必须为空：没有任何帧级劣化可报。
+    auto r = attributeVideoQoe(goodFrames(), netBad(1000, 5));
+
+    EXPECT_EQ(r.attribution, VideoQoeAttribution::NETWORK_UNVERIFIED);
+    EXPECT_TRUE(r.issues.empty())
+        << "画面侧没问题时不报帧级 issue，网络侧结论由 attribution 表达";
+}
+
+// ---------------------------------------------------------------------------
 // 7. 枚举与字符串一致（证据/D-Bus 序列化的稳定契约）
 // ---------------------------------------------------------------------------
 

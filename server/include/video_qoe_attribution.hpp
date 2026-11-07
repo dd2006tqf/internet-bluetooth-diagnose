@@ -155,6 +155,23 @@ struct VideoQoeAttributionResult {
     /// 人类可读解释（进 warnings / 证据 detail）
     std::string explanation;
 
+    /// 机器可读问题清单（画面侧的具体劣化项，可多条并存）
+    ///
+    /// 为什么它与 `explanation` 并存而不是二选一：解释是给人看的自然语言，
+    /// 会被改写、会被本地化；清单是给机器匹配的稳定短标签，用于告警规则、
+    /// 前端筛选与后续统计。把两者混成一个字符串字段，任何措辞调整都会
+    /// 静默破坏下游匹配。
+    ///
+    /// 语义边界：
+    /// - **只描述画面侧**。网络侧结论由 `attribution` 表达，绝不混进来。
+    /// - 拒绝归因（帧缺失 / 窗口错位 / 网络不可用）时**必须为空**。
+    ///   没有采到帧却说"有问题"，与把"不知道"说成"健康"同样有害。
+    /// - 画面正常时为空。每轮刷一条会让告警变成噪音。
+    ///
+    /// 当前取值：`FRAME_LOSS` / `FRAME_GAP_P95` / `CORRUPT_FRAMES`，
+    /// 与 `VideoQoeThresholds` 的三条画面阈值一一对应。
+    std::vector<std::string> issues;
+
     /// 机器可读证据条目，直接挂到 SleResult.evidence 上
     std::vector<EvidenceItem> evidence;
 };
