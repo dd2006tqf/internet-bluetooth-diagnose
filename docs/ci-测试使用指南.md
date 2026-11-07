@@ -166,6 +166,7 @@ ci-reports/
 | test_client_cli_contract_gtest | test_client CLI 子命令契约与板端冒烟脚本一致（静态分析，防假绿灯） |
 | test_looper_dispatch_gtest | D-Bus 派发层排空语义（单次只派发一条 / poll 不为内部积压唤醒 / 64 轮上限） |
 | test_observer_attribution_gtest | 观测者降级归因四分支真值表 + CPU 采样器缺失不得回落成 0 |
+| test_thermal_monitor_gtest | 采集端热状态：sysfs 读取真值表（缺数据不得回落成 0℃/0%）+ 归因五分支真值表（节流/低温满载/高温停转/正常/不可用） |
 | test_update_status_gtest | OTA 版本号数值比较（非字典序）+ apply 策略矩阵 + manifest 全量校验 |
 
 ### 功能测试

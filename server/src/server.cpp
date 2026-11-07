@@ -53,6 +53,7 @@
 #include "assurance/legacy_adapter.hpp"
 #include "assurance/overall_policy.hpp"
 #include "assurance/observer_attribution.hpp"
+#include "thermal_monitor.hpp"
 #include "assurance/state_stabilizer.hpp"
 #include "assurance/ip_reachability_evaluator.hpp"
 #include "assurance/responsiveness_evaluator.hpp"
@@ -361,6 +362,11 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
         weaknet::StateStabilizer stabilizer;
         weaknet::HealthState lastStableState = weaknet::HealthState::UNKNOWN;
 
+        // 热状态读取器：三个 sysfs 根路径用默认值，生产零配置。
+        // 放在循环外只是为了避免每轮重建三个 std::string；它本身无状态，
+        // 每次 read() 都重新 open/close，不会读到陈旧数据。
+        weaknet::ThermalStateReader thermal_reader;
+
         // 拓扑元数据 30 秒 TTL 缓存：避免每 15 秒评估循环都频繁调用 getifaddrs 和 wpa 命令
         std::chrono::steady_clock::time_point last_topo_time{};
         weaknet::TopologySnapshot cached_topo;
@@ -617,6 +623,51 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                                 << " cpu_available=" << (attr.cpu_available ? "yes" : "no")
                                 << " cpu_busy=" << attr.observed_cpu_busy
                                 << " threshold=" << attr.cpu_threshold);
+                        }
+                    }
+
+                    // ------------------------------------------------------------
+                    // 采集端热状态归因（同一轮评估，与上面的 observer 归因并列）
+                    //
+                    // 为什么也放在 decide() 之后：同 observer_attribution 的
+                    // 理由——热节流是**采集端**的物理状态，不是被观测链路的
+                    // 健康度。它只能解释"这份观测为什么不可靠"，不能改变
+                    // 链路结论。把它传进任何 evaluator 都会让同一份网络证据
+                    // 在板子烫与不烫时得出不同结论，同源纪律立刻失效。
+                    //
+                    // 为什么在这里采样而不是单开一个 15s 插件线程：
+                    // 热状态唯一的消费者就是本轮评估，采一次用一次；另开线程
+                    // 就得为它发明 MetricId（封闭枚举）、D-Bus 方法和配置项，
+                    // 那才是真正的孤儿接口。3 个 sysfs 目录的读取总耗时在
+                    // 百微秒量级，放在这条 15 秒一轮的线程里可以忽略。
+                    // ------------------------------------------------------------
+                    {
+                        const auto thermal_snapshot = thermal_reader.read();
+                        auto thermal = weaknet::attributeThermalState(thermal_snapshot);
+                        if (thermal.evaluated) {
+                            exp.thermal_attribution = thermal.attribution;
+                            exp.thermal_attribution_detail = thermal.explanation;
+                            exp.thermal_issues = thermal.issues;
+
+                            // 只有异常才进 warnings。NORMAL 与 UNAVAILABLE 都
+                            // 进 warnings 会把 warnings 变成噪音：正常态每轮都
+                            // 刷一条，现场会很快学会无视这个字段。
+                            // UNAVAILABLE 单独用 WARNING 日志记录，不进 warnings。
+                            if (thermal.attribution == weaknet::ThermalAttribution::THROTTLED ||
+                                thermal.attribution == weaknet::ThermalAttribution::FAN_ANOMALY) {
+                                exp.warnings.push_back(thermal.explanation);
+                                LOG_WARNING(LogModule::NETWORK,
+                                    "thermal attribution: "
+                                    << weaknet::thermalAttributionToString(thermal.attribution)
+                                    << " temp=" << thermal.max_temp_c << "C"
+                                    << " fan=" << (thermal.fan_present ? "yes" : "no")
+                                    << " duty=" << thermal.fan_duty_ratio
+                                    << " freq_ceiling=" << thermal.freq_ceiling_ratio
+                                    << " issues=" << thermal.issues.size());
+                            } else if (thermal.attribution == weaknet::ThermalAttribution::UNAVAILABLE) {
+                                LOG_WARNING(LogModule::NETWORK,
+                                    "thermal state unavailable; cannot rule out thermal throttling");
+                            }
                         }
                     }
 

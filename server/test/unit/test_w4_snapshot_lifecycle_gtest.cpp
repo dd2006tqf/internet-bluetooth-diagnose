@@ -131,3 +131,44 @@ TEST_F(W4SnapshotLifecycleTest, ObserverAttributionEscapesThroughV2Json) {
     EXPECT_NE(clean_json.find("\"schema_version\":2"), std::string::npos);
     EXPECT_NE(clean_json.find("\"observer_attribution_detail\":\"\""), std::string::npos);
 }
+
+// --- 6. 热状态归因字段必须同样走出进程 ---
+//
+// 与 observer_attribution 同款要求，但也有一个不同的陷阱：本字段有两条
+// 序列化内容（主结论 + issues 列表）。只序列化主结论会让
+// 「风扇坏了但没节流」这种情况在 JSON 里消失——enum 只能存一个值，
+// 而两条问题可以同时成立。
+TEST_F(W4SnapshotLifecycleTest, ThermalAttributionEscapesThroughV2Json) {
+    auto s = std::make_shared<AssessmentSnapshot>();
+    s->experience.overall = HealthState::UNKNOWN;
+    s->experience.thermal_attribution = ThermalAttribution::THROTTLED;
+    s->experience.thermal_attribution_detail =
+        "Collector host CPU frequency ceiling is reduced to 50% of hardware max";
+    s->experience.thermal_issues = {"CPU_THROTTLED", "LOW_TEMP_FULL_SPEED"};
+    store.publish(s);
+
+    auto snap = store.latest();
+    ASSERT_NE(snap, nullptr);
+
+    const std::string json = LegacyAdapter::toExperienceJsonV2(snap->experience);
+    EXPECT_NE(json.find("\"thermal_attribution\":\"THROTTLED\""), std::string::npos)
+        << json;
+    EXPECT_NE(json.find("\"thermal_attribution_detail\":\"Collector host"), std::string::npos)
+        << json;
+    // 两条 issue 都要出现：只留主结论会丢掉"风扇也异常"这条信息
+    EXPECT_NE(json.find("\"thermal_issues\":[\"CPU_THROTTLED\",\"LOW_TEMP_FULL_SPEED\"]"),
+              std::string::npos)
+        << json;
+
+    // 未评估时必须稳定输出 NONE + 空列表，且既有关键字段一字不动
+    auto clean = std::make_shared<AssessmentSnapshot>();
+    clean->experience.overall = HealthState::GOOD;
+    store.publish(clean);
+    const std::string clean_json =
+        LegacyAdapter::toExperienceJsonV2(store.latest()->experience);
+    EXPECT_NE(clean_json.find("\"thermal_attribution\":\"NONE\""), std::string::npos);
+    EXPECT_NE(clean_json.find("\"thermal_issues\":[]"), std::string::npos);
+    EXPECT_NE(clean_json.find("\"schema_version\":2"), std::string::npos);
+    // 既有字段不受影响
+    EXPECT_NE(clean_json.find("\"observer_attribution\":\"NONE\""), std::string::npos);
+}

@@ -3,6 +3,7 @@
 #include "assurance/health_state.hpp"
 #include "assurance/dns_types.hpp"
 #include "assurance/observer_attribution.hpp"
+#include "assurance/thermal_attribution.hpp"
 #include <string>
 #include <vector>
 #include <optional>
@@ -55,6 +56,27 @@ struct NetworkExperience {
 
     /// 归因的人类可读解释（NONE 时为空）
     std::string observer_attribution_detail;
+
+    /**
+     * @brief 采集端热状态归因（同一轮评估的热域证据）
+     *
+     * observer_attribution 回答"CPU 有没有被任务占满"，本字段回答
+     * "CPU 有没有被硬件限频"。两者是不同的成因，不能互相替代：
+     *   THROTTLED     → 频率上限被 cpufreq cooling device 压低，采集端受限
+     *   FAN_ANOMALY   → 温度与风扇匹配异常，只影响设备寿命，不影响观测质量
+     *   NORMAL        → 温度正常、未节流
+     *   UNAVAILABLE   → 读不到 sysfs，不猜
+     *   NONE          → 本轮没评估（上一轮快照的默认值）
+     *
+     * 边界同 observer_attribution：**不参与** OverallPolicy 的评分与 veto。
+     */
+    ThermalAttribution thermal_attribution{ThermalAttribution::NONE};
+
+    /// 归因的人类可读解释（NONE 时为空）
+    std::string thermal_attribution_detail;
+
+    /// 机器可读问题清单；允许"既节流又风扇异常"这类组合同时存在
+    std::vector<std::string> thermal_issues;
 };
 
 } // namespace weaknet

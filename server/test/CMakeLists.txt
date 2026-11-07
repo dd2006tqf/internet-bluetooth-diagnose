@@ -172,6 +172,10 @@ add_executable(test_observer_attribution_gtest
     unit/test_observer_attribution_gtest.cpp)
 target_link_libraries(test_observer_attribution_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+add_executable(test_thermal_monitor_gtest
+    unit/test_thermal_monitor_gtest.cpp)
+target_link_libraries(test_thermal_monitor_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 add_executable(test_active_connectivity_gtest
     unit/test_active_connectivity_gtest.cpp)
 target_link_libraries(test_active_connectivity_gtest PRIVATE ${TEST_COMMON_LIBS})
@@ -290,6 +294,7 @@ foreach(test_target
     test_captive_portal_evaluator_gtest
     test_assurance_policy_source_gtest
     test_observer_attribution_gtest
+    test_thermal_monitor_gtest
     test_active_connectivity_gtest
     test_tls_probe_client_gtest
     test_w3_time_dynamics_gtest

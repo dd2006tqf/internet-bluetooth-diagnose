@@ -57,6 +57,7 @@ set(SERVER_SOURCES
     src/tcp_loss_monitor.cpp
     src/tcp_retransmit_monitor.cpp
     src/tcp_rtt_monitor.cpp
+    src/thermal_monitor.cpp
     src/tls_probe_client.cpp
     src/topology_collector.cpp
     src/traffic_analyzer.cpp

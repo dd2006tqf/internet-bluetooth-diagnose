@@ -233,6 +233,23 @@ public:
         json << "\"observer_attribution_detail\":"
              << "\"" << exp.observer_attribution_detail << "\",";
 
+        // 采集端热状态归因（机器可读）。
+        //
+        // 与 observer_attribution 同一个理由必须进这里：该字段写进
+        // NetworkExperience 后，本函数是 GetNetworkExperience 的唯一出口，
+        // 不序列化就是孤儿字段。两者刻意并列而非合并成一个字段——
+        // "CPU 被任务占满"与"CPU 被硬件限频"是不同成因，合并会丢信息。
+        json << "\"thermal_attribution\":\""
+             << thermalAttributionToString(exp.thermal_attribution) << "\",";
+        json << "\"thermal_attribution_detail\":"
+             << "\"" << exp.thermal_attribution_detail << "\",";
+        json << "\"thermal_issues\":[";
+        for (size_t i = 0; i < exp.thermal_issues.size(); ++i) {
+            json << "\"" << exp.thermal_issues[i] << "\"";
+            if (i + 1 < exp.thermal_issues.size()) json << ",";
+        }
+        json << "],";
+
         json << "\"primary_issue\":" << (exp.primary_issue.has_value() ? ("\"" + exp.primary_issue.value() + "\"") : "null");
         json << "}";
         return json.str();
