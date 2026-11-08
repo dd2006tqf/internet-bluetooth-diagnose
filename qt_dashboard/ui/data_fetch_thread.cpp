@@ -8,6 +8,8 @@
 #include <QMutexLocker>
 #include <QThread>
 
+#include <ctime>
+
 #include "data/data_source.hpp"
 
 namespace weaknet {
@@ -44,11 +46,11 @@ void DataFetchThread::requestRefresh() {
     refresh_pending_ = true;
 }
 
-void DataFetchThread::setHistoryQuery(const QString& interface_name, int limit) {
+void DataFetchThread::setHistoryQuery(const QString& interface_name,
+                                      HistoryWindow window) {
     QMutexLocker lock(&mutex_);
     history_interface_ = interface_name;
-    // 服务端会把 limit <= 0 钳制为 1，这里先自己兜底
-    history_limit_ = (limit > 0) ? limit : 100;
+    history_window_ = window;
 }
 
 void DataFetchThread::stop() {
@@ -96,14 +98,14 @@ void DataFetchThread::run() {
         bool should_quit = false;
         bool should_fetch = false;
         QString iface;
-        int limit = 100;
+        HistoryWindow window = HistoryWindow::Last1h;
 
         {
             QMutexLocker lock(&mutex_);
             should_quit = quit_requested_;
             should_fetch = refresh_pending_;
             iface = history_interface_;
-            limit = history_limit_;
+            window = history_window_;
             // 取走这次请求，避免重复执行
             refresh_pending_ = false;
         }
@@ -137,8 +139,10 @@ void DataFetchThread::run() {
                              QString::fromStdString(diag.error));
         }
 
-        const FetchResult hist =
-            source.fetch_history_raw(iface.toStdString(), limit);
+        const FetchResult hist = source.fetch_history_raw(
+            iface.toStdString(), history_window_limit(window),
+            history_window_start(window, std::time(nullptr)),
+            std::string());
         if (hist.ok) {
             emit historyReady(QByteArray::fromStdString(hist.json));
         } else {

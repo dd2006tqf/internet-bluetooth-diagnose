@@ -149,9 +149,8 @@ int main(int argc, char* argv[]) {
 
     weaknet::dashboard::MainWindow window;
     // 无论是否传 -i 都调用：setInterface("") 会把标题写成「全部网卡」，
-    // 同时把 history_limit_ 设成与 -i 时同一个值。之前只在 isSet 时调用，
-    // 导致不传 -i 时标题停在 build_ui 的默认文案、limit 也停在类默认值，
-    // 与「查询全部网卡」的实际行为对不上。
+    // 同时把网卡与当前时间窗一起同步进取数线程。之前只在 isSet 时调用，
+    // 导致不传 -i 时标题停在空串、查询范围也与「全部网卡」的实际行为对不上。
     window.setInterface(parser.isSet(iface_option)
                             ? parser.value(iface_option)
                             : QString());

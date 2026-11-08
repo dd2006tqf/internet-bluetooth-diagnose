@@ -31,6 +31,8 @@
 #include <QString>
 #include <QThread>
 
+#include "data/dashboard_data.hpp"
+
 namespace weaknet {
 namespace dashboard {
 
@@ -67,11 +69,17 @@ public:
     void requestRefresh();
 
     /**
-     * @brief 设置历史查询的网卡与条数
+     * @brief 设置历史查询参数
      *
      * 在下一次 `requestRefresh()` 生效。可在任意线程调用。
+     *
+     * @param interface_name 网卡名；空串表示全部
+     * @param window         时间窗（决定 start 时间与 limit）
+     *
+     * 参数在**下一次刷新**时生效，不在这里同步取数：本方法是主线程调的，
+     * 而取数在后台线程，同步取数会把界面卡住。
      */
-    void setHistoryQuery(const QString& interface_name, int limit);
+    void setHistoryQuery(const QString& interface_name, HistoryWindow window);
 
     /**
      * @brief 请求线程退出
@@ -106,7 +114,7 @@ private:
     bool refresh_pending_ = false;
     bool quit_requested_ = false;
     QString history_interface_;
-    int history_limit_ = 100;
+    HistoryWindow history_window_ = HistoryWindow::Last1h;
 };
 
 } // namespace dashboard

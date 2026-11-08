@@ -112,8 +112,50 @@ public:
      *
      * @param interface 网卡名；空字符串表示全部
      * @param limit     最多返回条数（服务端上限 10000，且 <=0 会被钳制为 1）
+     * @param start     起始时间（含），格式与 `ts` 列一致 `%Y-%m-%dT%H:%M:%S`；
+     *                  空串表示不限
+     * @param end       结束时间（含），同上
+     *
+     * ## start/end 的真实语义
+     *
+     * `server/src/database_manager.cpp` 的 `queryHistory()` 把它们拼成
+     * `ts >= ?` / `ts <= ?`，**不是**降采样、不是聚合。因此
+     * 「取最近 6 小时」= 算出一个 start 时间串 + 给一个足够大的 limit。
+     *
+     * ## limit 与时间窗必须同时给足，缺一不可
+     *
+     * 服务端是 `ORDER BY ts DESC LIMIT ?`——先按时间倒序，再截断。
+     * 若 start 给 13 小时前、limit 只给 720，返回的是
+     * **最新 720 条**（落库周期 5 秒 → 只有 1 小时），
+     * 标签写着 13h、图里只有 1h。这是数据保真度上的谎报，比多花几 MB 内存坏得多。
+     *
+     * 所以 limit 必须按 `窗口秒数 / 落库周期` 算足：
+     *
+     * | 窗口 | 落库周期 | 需要的点 | 服务端上限 10000 |
+     * | --- | --- | --- | --- |
+     * | 1h  | 5s | 720  | 够 |
+     * | 6h  | 5s | 4320 | 够 |
+     * | 13h | 5s | 9360 | 够（留 640 余量） |
+     *
+     * ## 为什么最大窗口是 13h 而不是 24h
+     *
+     * 上限 10000 条 × 5 秒 = 50000 秒 ≈ 13.89 小时，这就是服务端能给的
+     * 最大连续覆盖。24h 需要 17280 条，超出上限 73%，会被**静默钳制**到
+     * 10000 条——板端实测：请求 7 天 / `limit=20000` 时恰好返回 10000 条、
+     * 跨度 69.99h 而非请求的 7 天。所以界面不提供 24h 与 7d，而不是
+     * 挂一个必然说谎的按钮。
+     *
+     * ## 字节数是上界，不是常态
+     *
+     * 板端实测（2026-11-08）：24h 请求在历史有大量空档时只取回 2610 条 /
+     * 2.19 MB；而 10000 条满载约 7.5 MB。`kMaxBuffer` 按**满载上界**定，
+     * 因为稀疏是偶然、连续运行才是常态。
+     *
+     * 缓冲区的 `kMaxBuffer` 已按满载体积上调（见 data_source.cpp）。
      */
-    FetchResult fetch_history_raw(const std::string& interface, int limit) const;
+    FetchResult fetch_history_raw(const std::string& interface, int limit,
+                                  const std::string& start = std::string(),
+                                  const std::string& end = std::string()) const;
 
 private:
     /**

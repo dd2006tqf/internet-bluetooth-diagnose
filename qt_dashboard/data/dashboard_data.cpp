@@ -10,6 +10,9 @@
 #include "json_reader.hpp"
 
 #include <algorithm>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
 
 namespace weaknet {
 namespace dashboard {
@@ -191,6 +194,183 @@ DiagnosisSnapshot parse_diagnosis(const std::string& json) {
 // HistorySeries
 // ---------------------------------------------------------------------------
 
+bool is_history_metric_absent(HistoryMetric metric, double value) {
+    switch (metric) {
+        case HistoryMetric::Score:
+            // 分数没有「未测量」语义：服务端总会落一个分数，
+            // 0 分就是「极差」，不能当成缺数据。
+            return false;
+        case HistoryMetric::Rtt:
+            return value <= kNoRttMs;
+        case HistoryMetric::Jitter:
+            return value <= kNoJitterMs;
+        case HistoryMetric::Rssi:
+            return value <= kNoRssiDbm;
+        case HistoryMetric::TcpLoss:
+            return value <= kNoTcpLossPct;
+    }
+    return true;
+}
+
+double HistoryPoint::value(HistoryMetric metric) const {
+    switch (metric) {
+        case HistoryMetric::Score:
+            return score;
+        case HistoryMetric::Rtt:
+            return rtt_ms;
+        case HistoryMetric::Jitter:
+            return jitter_ms;
+        case HistoryMetric::Rssi:
+            return rssi_dbm;
+        case HistoryMetric::TcpLoss:
+            return tcp_loss;
+    }
+    return 0.0;
+}
+
+int HistorySeries::count_with(HistoryMetric metric) const {
+    int count = 0;
+    for (const HistoryPoint& p : points) {
+        if (p.has(metric)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+const char* history_metric_label(HistoryMetric metric) {
+    switch (metric) {
+        case HistoryMetric::Score:
+            return "综合分";
+        case HistoryMetric::Rtt:
+            return "RTT";
+        case HistoryMetric::Jitter:
+            return "抖动";
+        case HistoryMetric::Rssi:
+            return "RSSI";
+        case HistoryMetric::TcpLoss:
+            return "TCP 丢包率";
+    }
+    return "未知指标";
+}
+
+const char* history_metric_unit(HistoryMetric metric) {
+    switch (metric) {
+        case HistoryMetric::Score:
+            return "";
+        case HistoryMetric::Rtt:
+        case HistoryMetric::Jitter:
+            return "ms";
+        case HistoryMetric::Rssi:
+            return "dBm";
+        case HistoryMetric::TcpLoss:
+            return "%";
+    }
+    return "";
+}
+
+HistoryRange history_metric_range(HistoryMetric metric) {
+    HistoryRange range;
+    switch (metric) {
+        case HistoryMetric::Score:
+            // 归一化量纲，按数据自适应即可
+            return range;
+        case HistoryMetric::Rtt:
+            // 0-300ms：覆盖「良好（<50）」到「严重（>200，见
+            // responsiveness_evaluator 的判定量级）」的全程，
+            // 又不至于让 20ms 的日常波动看起来像断崖
+            range.lo = 0.0;
+            range.hi = 300.0;
+            range.fixed = true;
+            return range;
+        case HistoryMetric::Jitter:
+            // 0-150ms：抖动比 RTT 更早劣化，阈值量级也更小
+            range.lo = 0.0;
+            range.hi = 150.0;
+            range.fixed = true;
+            return range;
+        case HistoryMetric::Rssi:
+            // -100 到 -30 dBm：Wi-Fi 的物理下限到「贴着 AP」。
+            // 真机常在 -40~-70，落在这条轴的中间偏右，波动幅度看起来是
+            // 它真实的样子，不会被放大成噪声
+            range.lo = -100.0;
+            range.hi = -30.0;
+            range.fixed = true;
+            return range;
+        case HistoryMetric::TcpLoss:
+            // 0-10%：可靠性评估的 bad 阈值是 4%（reliability_evaluator.hpp:14），
+            // 10% 的上限让它落在轴的 40% 位置，仍有余量看清更差的情况
+            range.lo = 0.0;
+            range.hi = 10.0;
+            range.fixed = true;
+            return range;
+    }
+    return range;
+}
+
+int history_window_seconds(HistoryWindow window) {
+    switch (window) {
+        case HistoryWindow::Last1h:
+            return 60 * 60;
+        case HistoryWindow::Last6h:
+            return 6 * 60 * 60;
+        case HistoryWindow::Last13h:
+            // 13 小时不是产品审美选择，是服务端能力上界反推出来的：
+            // kMaxHistoryLimit = 10000，落库周期 5 秒 → 最多覆盖 50000 秒
+            // ≈ 13.89 小时。取 13 留约 6% 余量。
+            //
+            // 为什么不是 24h：需要 17280 条，超出上限 73%，服务端会静默
+            // 钳制到 10000 条（板端实测：请求 7 天 / limit=20000 时返回
+            // 恰好 10000 条，跨度 69.99h）。那会变成「标签写 24h、
+            // 图里只有 13.9h」——代码注释里早就警告过这类谎报。
+            return 13 * 60 * 60;
+    }
+    return 60 * 60;
+}
+
+int history_window_limit(HistoryWindow window) {
+    return history_window_seconds(window) / kHistorySampleIntervalSeconds;
+}
+
+const char* history_window_label(HistoryWindow window) {
+    switch (window) {
+        case HistoryWindow::Last1h:
+            return "1 小时";
+        case HistoryWindow::Last6h:
+            return "6 小时";
+        case HistoryWindow::Last13h:
+            return "13 小时";
+    }
+    return "未知窗口";
+}
+
+std::string history_window_start(HistoryWindow window,
+                                 long long now_epoch_seconds) {
+    const std::time_t moment =
+        static_cast<std::time_t>(now_epoch_seconds -
+                                 history_window_seconds(window));
+
+    std::tm local{};
+#if defined(_WIN32)
+    if (localtime_s(&local, &moment) != 0) {
+        return std::string();
+    }
+#else
+    if (localtime_r(&moment, &local) == nullptr) {
+        return std::string();
+    }
+#endif
+
+    // 格式必须与 `database_manager.cpp` 的 `currentTimestamp()` 逐字一致：
+    // `%Y-%m-%dT%H:%M:%S`，用 localtime。理由：
+    //   1. `ts` 列按 TEXT 存、按字符串比较（`ts >= ?`），格式不同会静默比较失败
+    //   2. 用 UTC 而数据库存的是本地时间，会整体偏 8 小时（本机在东八区），
+    //      表现为「13h 窗口只取回 5 小时」
+    std::ostringstream oss;
+    oss << std::put_time(&local, "%Y-%m-%dT%H:%M:%S");
+    return oss.str();
+}
+
 HistorySeries parse_history(const std::string& json) {
     HistorySeries series;
     JsonReader reader(json);
@@ -210,6 +390,21 @@ HistorySeries parse_history(const std::string& json) {
         point.ts = item.getString("ts");
         point.score = item.getDouble("score", 0.0);
         point.legacy = item.getBool("legacy", false);
+
+        // 服务端对未测量的指标输出 JSON null（见 database_manager.cpp 的
+        // queryHistory()：`row.rtt_null ? "null" : ...`）。
+        //
+        // JsonReader::getDouble 对 null 返回 fallback（"null" 的首字符是 'n'，
+        // 不满足数字起始字符，直接走 fallback 分支），所以把 fallback
+        // 设成哨兵值，null 与「字段缺失」就自动落到同一个语义上。
+        //
+        // 绝不能把 fallback 写成 0.0：那会让「没测到 RTT」在图上显示成
+        // 「RTT = 0ms」，是最好看的假象。
+        point.rtt_ms = item.getDouble("rtt_ms", kNoRttMs);
+        point.jitter_ms = item.getDouble("jitter_ms", kNoJitterMs);
+        point.rssi_dbm = item.getDouble("rssi_dbm", kNoRssiDbm);
+        point.tcp_loss = item.getDouble("tcp_loss", kNoTcpLossPct);
+
         points.push_back(std::move(point));
     }
 

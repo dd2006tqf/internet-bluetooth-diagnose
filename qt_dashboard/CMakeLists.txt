@@ -41,6 +41,34 @@ target_include_directories(weaknet_dashboard_data PUBLIC
 )
 
 # ---------------------------------------------------------------------------
+# 图表几何层（不依赖 Qt）
+#
+# 轴范围计算与坐标映射是纯算术，从 LineChartWidget 里拆出来单独成 target。
+# 这样「RTT=150 应该画在轴中间」这类判断可以直接断言，
+# 不必先渲染成 QImage 再去数像素间接反推。
+#
+# 代价是这个 target 只有 chart_geometry.cpp 一个文件，看起来"为一个文件建库"。
+# 收益是它可以在没有 Qt 开发包的机器上编译并跑测试——本机就是这种情况
+# （只有 qtbase5-dev-tools 即 moc，没有 qtbase5-dev 本体）。
+# ---------------------------------------------------------------------------
+
+add_library(weaknet_dashboard_geometry STATIC
+    ui/chart_geometry.cpp
+)
+
+target_include_directories(weaknet_dashboard_geometry PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(weaknet_dashboard_geometry PUBLIC
+    weaknet_dashboard_data
+)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(weaknet_dashboard_geometry PRIVATE -Wall -Wextra)
+endif()
+
+# ---------------------------------------------------------------------------
 # 取数层（依赖 libweaknet 的 C API，但不依赖 Qt）
 #
 # 单独一个 target：数据层可以完全没有 D-Bus 依赖地单测，
@@ -87,6 +115,59 @@ if(WEAKN_DASHBOARD_WITH_UI)
 
     message(STATUS "Qt 看板使用 Qt${QT_VERSION_MAJOR}")
 
+    # -----------------------------------------------------------------------
+    # 交叉编译：moc/rcc/uic 必须用**宿主机**版本
+    #
+    # 从 sysroot 里 find_package 进来的 Qt 会把 `Qt5::moc` 的
+    # IMPORTED_LOCATION 指向 `${_qt5Core_install_prefix}/lib/qt5/bin/moc`，
+    # 那是 **aarch64 二进制**，在 x86 宿主机上跑起来只会得到
+    # `ELF ...: not found` / `Syntax error: word unexpected`。
+    #
+    # `-DQT_MOC_EXECUTABLE=...` 没用：`Qt5CoreConfigExtras.cmake:43` 在
+    # find_package 期间就把这个变量重新赋成了 `Qt5::moc` 这个 target 名，
+    # 命令行传进去的值被覆盖。只能在这里、find_package 之后重设
+    # IMPORTED_LOCATION。
+    #
+    # 判据用「能不能在本机执行」而不是「路径里有没有 sysroot」：
+    # 原生构建（宿主机自己就是目标架构）时这两条路径本来就可执行，不该干预。
+    # -----------------------------------------------------------------------
+    if(CMAKE_CROSSCOMPILING)
+        foreach(__tool moc rcc uic)
+            if(TARGET Qt${QT_VERSION_MAJOR}::${__tool})
+                get_target_property(__qt_tool_location
+                    Qt${QT_VERSION_MAJOR}::${__tool} IMPORTED_LOCATION)
+                if(__qt_tool_location)
+                    execute_process(
+                        COMMAND "${__qt_tool_location}" -v
+                        RESULT_VARIABLE __qt_tool_rc
+                        OUTPUT_QUIET ERROR_QUIET)
+                    if(NOT __qt_tool_rc EQUAL 0)
+                        # 目标架构的二进制跑不了，换成宿主机上的同名工具
+                        find_program(__qt_host_${__tool}
+                            NAMES ${__tool}
+                            PATHS /usr/lib/qt5/bin /usr/lib/qt6/libexec
+                                  /usr/lib/x86_64-linux-gnu/qt5/bin
+                            NO_DEFAULT_PATH)
+                        if(__qt_host_${__tool})
+                            message(STATUS
+                                "交叉编译：${__tool} 使用宿主机版本 "
+                                "${__qt_host_${__tool}}（sysroot 里的是目标架构）")
+                            set_target_properties(Qt${QT_VERSION_MAJOR}::${__tool}
+                                PROPERTIES IMPORTED_LOCATION
+                                "${__qt_host_${__tool}}")
+                        else()
+                            message(WARNING
+                                "交叉编译但找不到宿主机版 ${__tool}。"
+                                "Automoc 会在构建时因无法执行 sysroot 里的 "
+                                "目标架构二进制而失败。"
+                                "请安装：apt install qtbase5-dev-tools")
+                        endif()
+                    endif()
+                endif()
+            endif()
+        endforeach()
+    endif()
+
     set(CMAKE_AUTOMOC ON)
 
     add_library(weaknet_dashboard_ui STATIC
@@ -102,6 +183,7 @@ if(WEAKN_DASHBOARD_WITH_UI)
 
     target_link_libraries(weaknet_dashboard_ui PUBLIC
         weaknet_dashboard_source
+        weaknet_dashboard_geometry
         Qt${QT_VERSION_MAJOR}::Widgets
     )
 
@@ -135,6 +217,20 @@ if(WEAKN_DASHBOARD_BUILD_TESTS)
         )
         add_test(NAME dashboard_data COMMAND test_dashboard_data)
 
+        # 几何层：不需要 Qt，因此不受 WEAKN_DASHBOARD_WITH_UI 约束。
+        # 这是本机（无 qtbase5-dev）唯一能验证的 UI 相关逻辑。
+        add_executable(test_chart_geometry tests/test_chart_geometry.cpp)
+        target_link_libraries(test_chart_geometry PRIVATE
+            weaknet_dashboard_geometry
+            weaknet_dashboard_data
+            GTest::gtest
+            GTest::gtest_main
+        )
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(test_chart_geometry PRIVATE -Wall -Wextra)
+        endif()
+        add_test(NAME chart_geometry COMMAND test_chart_geometry)
+
         # UI 层像素测试：必须有 Qt，否则 LineChartWidget 根本不存在。
         # 这里不要求 libweaknet —— paint() 只依赖数据结构与 Qt，不碰 D-Bus。
         if(WEAKN_DASHBOARD_WITH_UI)
@@ -166,6 +262,23 @@ if(WEAKN_DASHBOARD_BUILD_TESTS)
             endif()
             add_test(NAME theme COMMAND test_theme)
 
+            # 展示态控制的交互测试：验证「切指标不重置窗口」这类语义。
+            # 必须真跑 QWidget（下拉框、按钮点击），因此依赖 UI 层。
+            # 不启动 fetcher：Windows 构造后不会自动取数，
+            # 切换动作只改状态与触发一次 requestRefresh()，不发 D-Bus 请求。
+            add_executable(test_main_window tests/test_main_window.cpp)
+            target_link_libraries(test_main_window PRIVATE
+                weaknet_dashboard_ui
+                weaknet_dashboard_data
+                Qt${QT_VERSION_MAJOR}::Widgets
+                GTest::gtest
+                GTest::gtest_main
+            )
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test_main_window PRIVATE -Wall -Wextra)
+            endif()
+            add_test(NAME main_window COMMAND test_main_window)
+
             # 像素测试用 offscreen 平台，不需要显示器。
             # 不设 QT_QPA_PLATFORM 时，无 X11/Wayland 的机器上 Qt 会直接
             # abort（"could not connect to display"），测试就变成"环境挂了"
@@ -174,6 +287,9 @@ if(WEAKN_DASHBOARD_BUILD_TESTS)
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             )
             set_tests_properties(theme PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            )
+            set_tests_properties(main_window PROPERTIES
                 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             )
         endif()

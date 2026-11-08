@@ -19,9 +19,35 @@ namespace {
 /// 初始缓冲区大小。schema v2 快照典型 3-8 KB，先给 8 KB。
 constexpr size_t kInitialBuffer = 8 * 1024;
 
-/// 缓冲区上限。防止异常情况下无限翻倍。
-/// 服务端 GetHistory 的 D-Bus 消息上限是 128 MB，但看板不需要那么大。
-constexpr size_t kMaxBuffer = 4 * 1024 * 1024;
+/**
+ * @brief 缓冲区上限
+ *
+ * 由 4 MB 上调到 12 MB。原因不是"多给点总没错"，而是有一个具体的
+ * 满载需求装不下：
+ *
+ *   服务端 `kMaxHistoryLimit` = 10000 点（这是任何窗口的硬上界）
+ *   真机实测每行 JSON 约 784 字节（kBoardRealHistory 的字段形状）
+ *   → 10000 × 784 ≈ 7.5 MB，超过原上限 4 MB。
+ *
+ * 超过上限时的行为是**报错**（不是静默截断），所以原有代码不会给出假数据；
+ * 代价是满载查询永远失败。既然时间窗切换是白名单批准的现场功能，
+ * 就得让它真能工作。
+ *
+ * ## 为什么按 10000 点算而不是按某个窗口的常态算
+ *
+ * 板端实测（2026-11-08）：24h 请求在历史有大量空档时只取回 2610 条 /
+ * 2.19 MB。若按这个常态定上限，就会在设备连续运行、数据变密之后突然失败。
+ * 稀疏是偶然，满载才是要保证的上界。
+ *
+ * 取 12 MB 而不是刚好 7.5 MB：留出约 1.6 倍余量，因为
+ *   - 每行含 iface / rssi_source / score_model 等字符串字段，长度可变
+ *   - 全部网卡查询（interface 为空）时行数不变但字段可能更长
+ *   - assessment_profile 从 UNSPECIFIED 变成 INTERNET_ACCESS 会让每行长几字节
+ *
+ * 内存代价：这块缓冲只存在于取数线程的栈外堆上，且只在一次调用期间存在，
+ * 板端（1GB+ 内存）完全承受得起。相比之下，静默少画几个小时更不可接受。
+ */
+constexpr size_t kMaxBuffer = 12 * 1024 * 1024;
 
 /// 错误信息缓冲区大小
 constexpr size_t kErrorBufferSize = 512;
@@ -151,11 +177,14 @@ FetchResult DataSource::fetch_diagnosis_raw() const {
 }
 
 FetchResult DataSource::fetch_history_raw(const std::string& interface,
-                                          int limit) const {
-    return invoke([&interface, limit](char* b, size_t n, char* e, size_t en) {
+                                          int limit,
+                                          const std::string& start,
+                                          const std::string& end) const {
+    return invoke([&interface, limit, &start, &end](char* b, size_t n, char* e,
+                                                    size_t en) {
         // start / end 传空串表示不限时间范围
-        return weaknet_get_history(interface.c_str(), "", "", limit,
-                                   b, n, e, en);
+        return weaknet_get_history(interface.c_str(), start.c_str(), end.c_str(),
+                                   limit, b, n, e, en);
     });
 }
 

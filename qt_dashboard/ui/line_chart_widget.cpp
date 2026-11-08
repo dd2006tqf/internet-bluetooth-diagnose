@@ -14,8 +14,9 @@
 #include <QPen>
 
 #include <algorithm>
-#include <limits>
+#include <vector>
 
+#include "chart_geometry.hpp"
 #include "theme.hpp"
 
 namespace weaknet {
@@ -39,8 +40,21 @@ constexpr int kGridLines = 4;
 /// 与折线色 (46,125,50) 的红通道差 171，远超测试的 28 容差。
 constexpr int kAreaFillAlpha = 56;
 
+/// 点数不超过这个值时补圆点，便于看清具体采样
+constexpr int kDotThreshold = 30;
+
 QColor theme_color(const char* hex) {
     return QColor(QString::fromLatin1(hex));
+}
+
+/// 把 Qt 矩形转换成几何层用的纯数值矩形
+PlotRect to_plot_rect(const QRect& plot) {
+    PlotRect out;
+    out.left = plot.left();
+    out.top = plot.top();
+    out.width = plot.width();
+    out.height = plot.height();
+    return out;
 }
 
 } // namespace
@@ -51,17 +65,42 @@ LineChartWidget::LineChartWidget(QWidget* parent) : QWidget(parent) {
 }
 
 void LineChartWidget::setSeries(const HistorySeries& series) {
-    scores_.clear();
-    labels_.clear();
-    legacy_.clear();
-    scores_.reserve(static_cast<int>(series.points.size()));
-    legacy_.reserve(static_cast<int>(series.points.size()));
-    for (const HistoryPoint& p : series.points) {
-        scores_.push_back(p.score);
-        labels_.push_back(QString::fromStdString(p.ts));
-        legacy_.push_back(p.legacy);
-    }
+    series_ = series;
+    rebuild_from_series();
     update();
+}
+
+void LineChartWidget::setMetric(HistoryMetric metric) {
+    if (metric_ == metric) {
+        return;
+    }
+    metric_ = metric;
+    rebuild_from_series();
+    update();
+}
+
+void LineChartWidget::rebuild_from_series() {
+    points_.clear();
+    labels_.clear();
+    const int n = static_cast<int>(series_.points.size());
+    points_.reserve(n);
+    labels_.reserve(n);
+
+    for (const HistoryPoint& p : series_.points) {
+        PlotPoint point;
+        point.value = p.value(metric_);
+
+        // 未测量：服务端 null → 哨兵值。必须显式标出来，
+        // 否则 0 与「没测到」在图上完全一样。
+        point.absent = is_history_metric_absent(metric_, point.value);
+
+        // legacy 只对 Score 有意义：它标的是「评分模型是旧的」。
+        // RSSI / RTT 这类原始测量值不受评分模型换代影响，不该被断开。
+        point.break_line = (metric_ == HistoryMetric::Score) && p.legacy;
+
+        points_.push_back(point);
+        labels_.push_back(QString::fromStdString(p.ts));
+    }
 }
 
 void LineChartWidget::setTitle(const QString& title) {
@@ -84,14 +123,28 @@ void LineChartWidget::paint(QPainter* painter, const QRect& area) const {
     painter->save();
 
     // --- 标题 ---
+    //
+    // 指标名与单位由本控件拼进标题，而不是让调用方传完整字符串：
+    // 那样 `setMetric()` 之后标题会停留在旧指标上，图和标题各说一套。
+    // 现场终端最不能出的错就是「图上画的是 RSSI，标题写着综合分」。
     if (!title_.isEmpty()) {
+        QString title = title_;
+        title += QStringLiteral(" · ");
+        title += QString::fromUtf8(history_metric_label(metric_));
+        const char* unit = history_metric_unit(metric_);
+        if (unit && unit[0] != '\0') {
+            title += QStringLiteral(" (") + QString::fromUtf8(unit) +
+                     QStringLiteral(")");
+        }
+
         QFont f = painter->font();
         f.setBold(true);
         painter->setFont(f);
         painter->setPen(theme_color(ThemeColors::kTextPrimary));
         painter->drawText(QRect(area.left() + kMarginLeft, area.top() + 4,
-                                area.width() - kMarginLeft - kMarginRight, kMarginTop - 6),
-                          Qt::AlignLeft | Qt::AlignVCenter, title_);
+                                area.width() - kMarginLeft - kMarginRight,
+                                kMarginTop - 6),
+                          Qt::AlignLeft | Qt::AlignVCenter, title);
         f.setBold(false);
         painter->setFont(f);
     }
@@ -108,23 +161,19 @@ void LineChartWidget::paint(QPainter* painter, const QRect& area) const {
     }
 
     // --- Y 轴范围 ---
-    // 按数据 min/max 自适应，上下各留 10% 边距；全等值时给最小跨度避免除零。
-    // 注意：小范围波动会被放大到撑满全高（如 20↔55 会铺满整个绘图区）。
-    double lo = 0.0;
-    double hi = 100.0;
-    if (!scores_.isEmpty()) {
-        lo = *std::min_element(scores_.constBegin(), scores_.constEnd());
-        hi = *std::max_element(scores_.constBegin(), scores_.constEnd());
-        const double span = hi - lo;
-        if (span < 1e-6) {
-            lo -= 5.0;
-            hi += 5.0;
-        } else {
-            const double pad = span * 0.1;
-            lo -= pad;
-            hi += pad;
+    //
+    // 只喂**有效值**给轴计算：未测量点的哨兵（-1 / -1000）若混进去，
+    // RSSI 的轴会被拉到 -1000，真实数据全挤成一条贴顶的线。
+    std::vector<double> valid_values;
+    valid_values.reserve(static_cast<size_t>(points_.size()));
+    for (const PlotPoint& p : points_) {
+        if (!p.absent) {
+            valid_values.push_back(p.value);
         }
     }
+
+    const AxisRange range = compute_axis_range(valid_values, metric_);
+    const PlotRect plot_rect = to_plot_rect(plot);
 
     // --- 网格 + Y 轴刻度 ---
     painter->setPen(QPen(theme_color(ThemeColors::kGrid), 1, Qt::SolidLine));
@@ -132,6 +181,7 @@ void LineChartWidget::paint(QPainter* painter, const QRect& area) const {
     small.setPointSizeF(std::max(7.0, small.pointSizeF() - 1.0));
     painter->setFont(small);
 
+    const int decimals = axis_label_decimals(metric_);
     for (int i = 0; i <= kGridLines; ++i) {
         const double ratio = static_cast<double>(i) / kGridLines;
         const int y = plot.bottom() - static_cast<int>(ratio * plot.height());
@@ -139,52 +189,60 @@ void LineChartWidget::paint(QPainter* painter, const QRect& area) const {
         painter->setPen(QPen(theme_color(ThemeColors::kGrid), 1, Qt::SolidLine));
         painter->drawLine(plot.left(), y, plot.right(), y);
 
-        const double value = lo + ratio * (hi - lo);
+        const double value = range.lo + ratio * (range.hi - range.lo);
         painter->setPen(theme_color(ThemeColors::kTextMuted));
         painter->drawText(QRect(area.left(), y - 8, kMarginLeft - 6, 16),
                           Qt::AlignRight | Qt::AlignVCenter,
-                          QString::number(value, 'f', 0));
+                          QString::number(value, 'f', decimals));
     }
 
     // --- 数据为空时的提示 ---
-    if (scores_.isEmpty()) {
+    //
+    // 两种「空」要分开说，否则用户会去查服务端，而实际上只是这个指标
+    // 从来没被采集过（如没有射频接口时的 RSSI）。
+    if (points_.isEmpty() || valid_values.empty()) {
         painter->setPen(theme_color(ThemeColors::kTextMuted));
-        painter->drawText(plot, Qt::AlignCenter, QStringLiteral("暂无历史数据"));
+        const QString message =
+            points_.isEmpty()
+                ? QStringLiteral("暂无历史数据")
+                : QStringLiteral("该指标无历史数据（%1 个采样点均未测量）")
+                      .arg(static_cast<int>(points_.size()));
+        painter->drawText(plot, Qt::AlignCenter, message);
         painter->restore();
         return;
     }
 
     // --- 折线 ---
-    // 单点时画一个点，避免除零
-    const int n = scores_.size();
+    const int n = points_.size();
 
     // 折线色从主题取：改进前这里是一个可写成员 `line_color_`，
     // 但 `setLineColor()` 作为孤儿接口被删掉后再没有人改它，
     // 留着成员只是把「常量」伪装成「状态」。现在直接取语义色。
     const QColor line_color = theme_color(ThemeColors::kGood);
 
-    // 先把所有点换算成屏幕坐标，连线与画点共用同一份，避免两处公式漂移
+    // 先把所有点换算成屏幕坐标，连线与画点共用同一份，避免两处公式漂移。
+    // 公式本身在 chart_geometry.cpp 里，可脱离 Qt 单测。
     QVector<QPointF> pts;
     pts.reserve(n);
     for (int i = 0; i < n; ++i) {
-        const double x_ratio =
-            (n == 1) ? 0.5 : static_cast<double>(i) / static_cast<double>(n - 1);
-        const double y_ratio = (hi - lo) < 1e-9 ? 0.5 : (scores_[i] - lo) / (hi - lo);
-        pts.push_back(QPointF(plot.left() + x_ratio * plot.width(),
-                              plot.bottom() - y_ratio * plot.height()));
+        const ChartPoint mapped = map_point(static_cast<size_t>(i),
+                                            static_cast<size_t>(n),
+                                            points_[i].value, range, plot_rect);
+        pts.push_back(QPointF(mapped.x, mapped.y));
     }
 
-    // 只连 v2 点；遇到 legacy 点就断开。
-    // legacy 是 v1 旧评分模型的分数（`data_version < 2`），与 v2 不同量纲，
-    // 把两者连成一条线会读出一段根本不存在的趋势。
+    // 遇到断点就断开。两种断点：
+    //   1. `break_line`（legacy 旧评分模型点）——分数与 v2 不同量纲，
+    //      连成一条线会读出一段根本不存在的趋势
+    //   2. `absent`（该指标未测量）——没有值可画，连过去就是凭空造数
     //
     // 同时记下每个连续段的起止下标：下面的面积填充要按段闭合，
-    // 跨段填充会在 legacy 处画出一块凭空多出来的三角。
+    // 跨段填充会在断点处画出一块凭空多出来的三角。
     QPainterPath path;
     QVector<QPair<int, int>> runs;
     int run_begin = -1;
     for (int i = 0; i < n; ++i) {
-        if (legacy_.at(i)) {
+        if (points_[i].absent || points_[i].break_line) {
             if (run_begin >= 0) {
                 runs.push_back(qMakePair(run_begin, i - 1));
                 run_begin = -1;
@@ -223,14 +281,14 @@ void LineChartWidget::paint(QPainter* painter, const QRect& area) const {
         if (run.second <= run.first) {
             continue;
         }
-        QPainterPath area;
-        area.moveTo(pts[run.first].x(), plot.bottom());
+        QPainterPath area_path;
+        area_path.moveTo(pts[run.first].x(), plot.bottom());
         for (int i = run.first; i <= run.second; ++i) {
-            area.lineTo(pts[i]);
+            area_path.lineTo(pts[i]);
         }
-        area.lineTo(pts[run.second].x(), plot.bottom());
-        area.closeSubpath();
-        painter->drawPath(area);
+        area_path.lineTo(pts[run.second].x(), plot.bottom());
+        area_path.closeSubpath();
+        painter->drawPath(area_path);
     }
     painter->restore();
 
@@ -238,12 +296,12 @@ void LineChartWidget::paint(QPainter* painter, const QRect& area) const {
     painter->setBrush(Qt::NoBrush);
     painter->drawPath(path);
 
-    // 数据点少于 30 个时补圆点，便于看清具体采样
-    if (n <= 30) {
+    // 数据点少于阈值时补圆点，便于看清具体采样
+    if (n <= kDotThreshold) {
         painter->setBrush(line_color);
         painter->setPen(Qt::NoPen);
         for (int i = 0; i < n; ++i) {
-            if (!legacy_.at(i)) {
+            if (!points_[i].absent && !points_[i].break_line) {
                 painter->drawEllipse(pts[i], 2.5, 2.5);
             }
         }
@@ -254,7 +312,7 @@ void LineChartWidget::paint(QPainter* painter, const QRect& area) const {
     painter->setBrush(Qt::NoBrush);
     painter->setPen(QPen(theme_color(ThemeColors::kUnknown), 1.5));
     for (int i = 0; i < n; ++i) {
-        if (legacy_.at(i)) {
+        if (points_[i].break_line) {
             painter->drawEllipse(pts[i], 2.5, 2.5);
         }
     }

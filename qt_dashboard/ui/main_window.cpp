@@ -5,17 +5,24 @@
 
 #include "main_window.hpp"
 
+#include <QComboBox>
 #include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
 #include <QFont>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPixmap>
 #include <QPushButton>
 #include <QSplitter>
-#include <QStringList>
 #include <QStatusBar>
+#include <QStorageInfo>
+#include <QStringList>
 #include <QTimer>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 #include "data/dashboard_data.hpp"
 #include "data_fetch_thread.hpp"
@@ -30,13 +37,130 @@ namespace {
 /**
  * @brief 自动刷新间隔
  *
- * 服务端采集间隔是 10 秒（CLAUDE.md「数据采集间隔：10 秒」），
- * 看板刷新快于采集没有意义，只会白耗 D-Bus。这里取 10 秒对齐。
+ * 历史数据落库周期是 5 秒（`server/src/server.cpp` 的
+ * `start_history_persistence_thread()` 硬编码，与 config.yaml 的
+ * 各监控器 `interval_ms` 不是同一件事）。
+ *
+ * 这里取 **10 秒**而不是贴着 5 秒：一次刷新要打三次 D-Bus（experience /
+ * diagnosis / history），24h→13h 满载时 history 单次就返回近 10000 行 JSON。
+ * 每 5 秒重复拉一遍满载数据，换来的是「图上一分钟多两个点」——用户看不出差别，
+ * 但 D-Bus 与 SQLite 的负载翻倍。10 秒是「比落库周期慢一档」的折中。
  */
 constexpr int kAutoRefreshMs = 10000;
 
-/// 历史趋势默认取多少点
-constexpr int kHistoryLimit = 120;
+/// 截图导出的文件名前缀（后面接时间戳）
+constexpr const char* kScreenshotPrefix = "weaknet-dashboard-";
+
+/// 没有 U 盘时的兜底目录
+///
+/// 板端 rootfs 是只读挂载的（OTA 需要原子切换），所以**不能**写 `/` 或
+/// 可执行文件所在目录。`/tmp` 挂在 tmpfs 上一定可写，但掉电即失。
+/// 因此它是兜底而不是默认：状态栏会明确写出实际路径，让用户知道
+/// 「这张图现在只在内存里」。
+constexpr const char* kScreenshotFallbackDir = "/tmp";
+
+/**
+ * @brief 判断某个路径是不是一个真实可写的挂载点
+ *
+ * ## 为什么不能只看 `QStorageInfo::isReady()`
+ *
+ * `QStorageInfo` 对一个**普通目录**也会返回 `isReady() == true`，
+ * 此时它的 `rootPath()` 是所属文件系统的挂载点（通常是 `/`）。
+ * 实测（本机 `/media/ubuntu`、`/media/nomachine` 都只是 rootfs 上的
+ * 空目录，没有挂载任何东西）：
+ *
+ * ```
+ * /media/ubuntu   valid=1 ready=1 ro=0 root=/        fs=ext4
+ * /dev/shm        valid=1 ready=1 ro=0 root=/dev/shm fs=tmpfs
+ * ```
+ *
+ * 只看 isReady 会把 `/media/<user>` 这种空壳当成 U 盘，于是截图被写进
+ * rootfs——而板端 rootfs 是为 OTA 原子切换准备的只读分区，写在那里
+ * 既不持久（下次 OTA 就没了），也可能直接失败。
+ *
+ * 正确判据：**`rootPath()` 必须等于候选路径本身**，才说明它是挂载点。
+ *
+ * 另外排除 proc / sysfs / tmpfs 等伪文件系统：它们同样是「挂载点」，
+ * 但不是 U 盘，不该被选为落盘位置。
+ */
+bool is_real_writable_mount(const QString& path) {
+    if (path.isEmpty()) {
+        return false;
+    }
+
+    QStorageInfo info(path);
+    if (!info.isValid() || !info.isReady() || info.isReadOnly()) {
+        return false;
+    }
+
+    // 必须本身是挂载点，而不是「位于某个挂载点之下」
+    const QString root = info.rootPath();
+    if (root.isEmpty()) {
+        return false;
+    }
+    const QString normalized =
+        QDir::cleanPath(QFileInfo(root).canonicalFilePath());
+    const QString wanted = QDir::cleanPath(QFileInfo(path).canonicalFilePath());
+    if (normalized.isEmpty() || wanted.isEmpty() || normalized != wanted) {
+        return false;
+    }
+
+    // 排除伪文件系统：U 盘是块设备，不会是这些
+    const QByteArray fs = info.fileSystemType().toLower();
+    static const char* kPseudoFs[] = {"proc", "sysfs", "tmpfs", "devtmpfs",
+                                      "devpts", "cgroup", "cgroup2", "overlay",
+                                      "squashfs", "ramfs", "none"};
+    for (const char* pseudo : kPseudoFs) {
+        if (fs == pseudo) {
+            return false;
+        }
+    }
+
+    // 还要真能写：挂载点存在不代表当前用户有权限
+    return QFileInfo(path).isWritable();
+}
+
+/**
+ * @brief 找一个已挂载的 U 盘目录
+ *
+ * 板端 U 盘由 udisks/udev 自动挂到 `/media/<user>/<label>`（新版）
+ * 或 `/media/<label>`（老版），两种都扫。
+ *
+ * 这里**只判断「是不是一个已就绪的挂载点」，不做写探测**：真的要写的时候
+ * 由 `export_screenshot()` 直接尝试保存，写失败再兜底——那才是唯一可靠的
+ * 判据，而「先建个临时文件试试」会在 U 盘根目录留下垃圾，也可能在只读
+ * 介质上报错刷日志。
+ *
+ * @return 可用目录；没有则返回空 QString（由调用方决定兜底到哪）
+ */
+QString find_usb_dir() {
+    QDir media(QStringLiteral("/media"));
+    if (!media.exists()) {
+        return QString();
+    }
+
+    // 先 `/media/<user>/<label>` 再 `/media/<user>`：前者是新版 udisks
+    // 的布局。顺序保证有真实挂载时不会先命中后者那个空壳中间层。
+    QStringList candidates;
+    const QStringList users =
+        media.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+    for (const QString& user : users) {
+        QDir user_dir(media.filePath(user));
+        const QStringList labels =
+            user_dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+        for (const QString& label : labels) {
+            candidates.append(user_dir.filePath(label));
+        }
+        candidates.append(media.filePath(user));
+    }
+
+    for (const QString& path : candidates) {
+        if (is_real_writable_mount(path)) {
+            return path;
+        }
+    }
+    return QString();
+}
 
 /**
  * @brief 创建一行「名称 + 状态点 + 状态文本」
@@ -117,18 +241,26 @@ void MainWindow::start() {
 }
 
 void MainWindow::setInterface(const QString& interface_name) {
-    // 历史查询的网卡过滤在后台线程里读取，这里同步进去
+    // 历史查询的网卡过滤在后台线程里读取，这里同步进去。
+    // 时间窗取 current_window_（不是常量）：本方法在 start() 前调用一次，
+    // 之后用户切窗口由 onWindowSelected() 再同步一次。
     interface_ = interface_name;
-    fetcher_->setHistoryQuery(interface_name, kHistoryLimit);
+    fetcher_->setHistoryQuery(interface_name, current_window_);
 
     // 标题只用请求侧的网卡：查询全部网卡时序列里混着多个 iface，
     // 取数据里任意一条都会把标题写错。
-    chart_->setTitle(interface_.isEmpty()
-                         ? QStringLiteral("历史趋势（分数，全部网卡）")
-                         : QStringLiteral("历史趋势（分数，%1）").arg(interface_));
+    //
+    // 指标名与时间窗也一并交给 refresh_chart_title()，不再在这里硬编码
+    // 「分数」二字——否则切到 RSSI 之后标题还停留在「分数」。
+    refresh_chart_title();
 }
 
 void MainWindow::build_ui() {
+    // 趋势图控件最先创建：顶部的展示态控制区（指标下拉框）在构造时就会
+    // 连上 currentIndexChanged，而那个槽要调 chart_->setMetric()。
+    // 控件指针先于所有可能回调它的 connect 就绪，才不用在槽里到处判空。
+    chart_ = new LineChartWidget;
+
     auto* central = new QWidget;
     auto* root = new QVBoxLayout(central);
     root->setContentsMargins(12, 8, 12, 6);
@@ -190,6 +322,19 @@ void MainWindow::build_ui() {
 
     root->addLayout(top);
 
+    // --- 展示态控制行 ---
+    //
+    // 单独一行而不是塞进顶栏：顶栏已经有刷新、网卡名、分数、状态汇总、
+    // 档位、时间戳六组信息，1024 宽的 7 寸屏上再挤进一个下拉框和四个按钮，
+    // 分数就会被压到看不清——而分数是这块屏上最该一眼读到的东西。
+    //
+    // 这一行离主区更近，语义上也更贴切：它控制的就是下面这张图。
+    auto* controls = new QHBoxLayout;
+    controls->setSpacing(8);
+    build_view_controls(controls);
+    controls->addStretch();
+    root->addLayout(controls);
+
     // --- 主区：左维度列表 / 右趋势图 ---
     auto* splitter = new QSplitter(Qt::Horizontal);
 
@@ -244,9 +389,10 @@ void MainWindow::build_ui() {
     splitter->addWidget(left);
 
     // 右侧：趋势图
-    chart_ = new LineChartWidget;
-    // 标题由 setInterface() 统一设置（main.cpp 无条件调用）：
-    // 这里不再给默认值，避免两处文案各自演化后对不上实际查询范围。
+    //
+    // 控件已在 build_ui() 开头创建（展示态控制区的槽需要它先存在），
+    // 这里只负责挂进布局。标题由 setInterface() 统一设置（main.cpp
+    // 无条件调用）：这里不给默认值，避免两处文案各自演化后对不上实际查询范围。
     splitter->addWidget(chart_);
 
     splitter->setStretchFactor(0, 1);
@@ -300,6 +446,238 @@ void MainWindow::build_ui() {
 
     status_bar_label_ = new QLabel(QStringLiteral("就绪"));
     statusBar()->addWidget(status_bar_label_);
+}
+
+// ---------------------------------------------------------------------------
+// 展示态控制（现场交互终端白名单的三项）
+// ---------------------------------------------------------------------------
+
+void MainWindow::build_view_controls(QHBoxLayout* controls) {
+    // --- 指标选择器 ---
+    //
+    // 五个指标全部来自 `network_history` 表的真实列，服务端一次查询就
+    // 把它们一起返回（见 `queryHistory()` 的 SELECT 列表），所以**切指标
+    // 不需要重新取数**：`LineChartWidget` 里已经缓存着完整的原始序列，
+    // `setMetric()` 只是换个字段重画。这一点决定了下面 onMetricSelected
+    // 里没有 `requestRefresh()`——多打一次 D-Bus 只会让界面闪一下。
+    auto* metric_caption = new QLabel(QStringLiteral("指标"));
+    metric_caption->setObjectName(QStringLiteral("meta_info"));
+    controls->addWidget(metric_caption, 0, Qt::AlignVCenter);
+
+    metric_combo_ = new QComboBox;
+    const HistoryMetric kMetrics[] = {
+        HistoryMetric::Score,  HistoryMetric::Rtt, HistoryMetric::Jitter,
+        HistoryMetric::Rssi,   HistoryMetric::TcpLoss,
+    };
+    for (HistoryMetric metric : kMetrics) {
+        // 带上单位，避免把「RTT 20」读成「20 分」这类跨量纲误读
+        QString text = QString::fromUtf8(history_metric_label(metric));
+        const char* unit = history_metric_unit(metric);
+        if (unit != nullptr && unit[0] != '\0') {
+            text += QStringLiteral(" (") + QString::fromUtf8(unit) +
+                    QStringLiteral(")");
+        }
+        // 存 enum 的整数值而不是靠下标对齐：以后若调整枚举顺序，
+        // 下标会静默错位，存值则直接跟着枚举走
+        metric_combo_->addItem(text, static_cast<int>(metric));
+    }
+    // 与 current_metric_ 对齐，而不是硬写 0：默认值只在一个地方定义
+    metric_combo_->setCurrentIndex(
+        metric_combo_->findData(static_cast<int>(current_metric_)));
+    // 用显式 static_cast 取重载，不用 QOverload：后者要求 Qt 5.7+ 且在
+    // 不同 Qt 版本里的可见性依赖间接包含的头文件。这里只有一个 int 重载，
+    // 写全类型最稳。
+    connect(metric_combo_,
+            static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged),
+            this, &MainWindow::onMetricSelected);
+    controls->addWidget(metric_combo_, 0, Qt::AlignVCenter);
+
+    controls->addSpacing(16);
+
+    // --- 时间窗按钮 ---
+    //
+    // 三个互斥按钮而不是下拉框：现场只有三个固定窗口，摆出来一眼可见、
+    // 一次点击就切；下拉框要点两下且收起后看不出当前选的是哪个。
+    //
+    // 最大窗口是 13 小时而不是 24 小时：服务端 `kMaxHistoryLimit = 10000`，
+    // 落库周期 5 秒 → 最多覆盖 50000 秒 ≈ 13.89 小时。24h 需要 17280 个点，
+    // 超出上限 73%，会被**静默钳制**（板端实测确认），结果是「标签写 24h、
+    // 图里只有 13.9h」。7 天更不可能。
+    // 详见 `data_source.hpp` 的表格与 `dashboard_data.hpp` 的窗口定义注释。
+    auto* window_caption = new QLabel(QStringLiteral("时间窗"));
+    window_caption->setObjectName(QStringLiteral("meta_info"));
+    controls->addWidget(window_caption, 0, Qt::AlignVCenter);
+
+    struct WindowSpec {
+        QPushButton** slot;
+        HistoryWindow window;
+        const char* text;
+        const char* tip;
+    };
+    const WindowSpec specs[] = {
+        {&window_1h_button_, HistoryWindow::Last1h, "1 小时",
+         "最近 1 小时（约 360 个采样点）"},
+        {&window_6h_button_, HistoryWindow::Last6h, "6 小时",
+         "最近 6 小时（约 2160 个采样点）"},
+        {&window_13h_button_, HistoryWindow::Last13h, "13 小时",
+         "最近 13 小时（约 9360 个采样点，服务端上限内最优覆盖）"},
+    };
+    for (const WindowSpec& spec : specs) {
+        auto* button = new QPushButton(QString::fromUtf8(spec.text));
+        button->setCheckable(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setToolTip(QString::fromUtf8(spec.tip));
+        button->setChecked(spec.window == current_window_);
+        const int id = static_cast<int>(spec.window);
+        connect(button, &QPushButton::clicked, this, [this, id]() {
+            onWindowSelected(id);
+        });
+        *spec.slot = button;
+        controls->addWidget(button, 0, Qt::AlignVCenter);
+    }
+
+    controls->addSpacing(16);
+
+    // --- 截图导出 ---
+    export_button_ = new QPushButton(QStringLiteral("导出截图"));
+    export_button_->setCursor(Qt::PointingHandCursor);
+    export_button_->setToolTip(
+        QStringLiteral("把当前画面存成 PNG：优先写 U 盘，没有 U 盘时写 /tmp"));
+    connect(export_button_, &QPushButton::clicked,
+            this, &MainWindow::onExportClicked);
+    controls->addWidget(export_button_, 0, Qt::AlignVCenter);
+}
+
+void MainWindow::onMetricSelected(int index) {
+    if (index < 0 || metric_combo_ == nullptr) {
+        return;
+    }
+    const HistoryMetric metric =
+        static_cast<HistoryMetric>(metric_combo_->itemData(index).toInt());
+    if (metric == current_metric_) {
+        return;
+    }
+    current_metric_ = metric;
+
+    // 只换视图，不重置时间窗、不重新取数：
+    //   1. 时间窗是用户上一次的选择，切指标不该把它悄悄改回 1 小时
+    //   2. 五个指标在同一条记录里，序列已经在内存中
+    chart_->setMetric(metric);
+    refresh_chart_title();
+}
+
+void MainWindow::onWindowSelected(int window_id) {
+    const HistoryWindow window = static_cast<HistoryWindow>(window_id);
+
+    // 先把三个按钮的选中态统一回写到 current_window_。
+    // 可勾选按钮被点一下会自己翻转状态，用户点「已经选中的那个」会把它
+    // 取消勾选，界面上就出现「三个都不亮」——此时必须复位。
+    const auto sync_buttons = [this]() {
+        if (window_1h_button_ != nullptr) {
+            window_1h_button_->setChecked(current_window_ == HistoryWindow::Last1h);
+        }
+        if (window_6h_button_ != nullptr) {
+            window_6h_button_->setChecked(current_window_ == HistoryWindow::Last6h);
+        }
+        if (window_13h_button_ != nullptr) {
+            window_13h_button_->setChecked(current_window_ == HistoryWindow::Last13h);
+        }
+    };
+
+    if (window == current_window_) {
+        sync_buttons();
+        return;
+    }
+
+    current_window_ = window;
+    sync_buttons();
+
+    // 只换查询范围，不重置指标——用户选 RSSI 之后想看的仍是 RSSI。
+    // 网卡沿用 interface_（它在 setInterface() 里定下，之后的切换不该动它）。
+    fetcher_->setHistoryQuery(interface_, current_window_);
+    refresh_chart_title();
+
+    // 时间窗变了必须重新取数：内存里只有上一窗口的数据，
+    // 13h 视图拿 1h 的 720 个点画出来只是「最近一小时被拉宽」，是假的。
+    //
+    // 不判断 refresh_in_flight_：requestRefresh() 只是置一个标志位，
+    // 正在进行的那一轮结束后会被立即消费，最多多跑一轮，不会堆积。
+    refresh_in_flight_ = true;
+    status_bar_label_->setText(QStringLiteral("切换时间窗，刷新中…"));
+    fetcher_->requestRefresh();
+}
+
+void MainWindow::refresh_chart_title() {
+    if (chart_ == nullptr) {
+        return;
+    }
+
+    // 这里**只写网卡与时间窗**，不写指标名。
+    // 指标名与单位由 `LineChartWidget::paint()` 自己在标题后面拼接
+    // （见该文件），这样 `setMetric()` 之后标题不可能停留在旧指标上。
+    // 两处都拼会得到「· 综合分 · 综合分」。
+    //
+    // 拆分顺序按「越靠左越先回答现场最常问的问题」：
+    //   图是什么 → 哪个网卡 → 多长时间 → 哪个指标（由控件补）
+    const QString iface =
+        interface_.isEmpty() ? QStringLiteral("全部网卡") : interface_;
+    chart_->setTitle(QStringLiteral("历史趋势 · %1 · %2")
+                         .arg(iface,
+                              QString::fromUtf8(history_window_label(current_window_))));
+}
+
+QString MainWindow::export_screenshot() {
+    const QString filename =
+        QString::fromLatin1(kScreenshotPrefix) +
+        QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss")) +
+        QStringLiteral(".png");
+
+    // 先找目标目录再抓图：grab() 会触发一次完整重绘，是这里最贵的动作。
+    const QString usb = find_usb_dir();
+
+    const QPixmap shot = grab();
+    if (shot.isNull()) {
+        return QString();
+    }
+
+    if (!usb.isEmpty()) {
+        const QString path = QDir(usb).filePath(filename);
+        if (shot.save(path, "PNG")) {
+            return path;
+        }
+        // U 盘在、但写不进去（只读挂载 / 权限 / 刚好被拔）。
+        // 不在这里 return：兜底继续走，失败必须由调用方如实报告。
+    }
+
+    const QString fallback =
+        QDir(QString::fromLatin1(kScreenshotFallbackDir)).filePath(filename);
+    if (shot.save(fallback, "PNG")) {
+        return fallback;
+    }
+    return QString();
+}
+
+void MainWindow::onExportClicked() {
+    const QString path = export_screenshot();
+    if (path.isEmpty()) {
+        status_bar_label_->setText(
+            QStringLiteral("导出截图失败：U 盘与 %1 均无法写入")
+                .arg(QString::fromLatin1(kScreenshotFallbackDir)));
+        return;
+    }
+
+    // 必须说出**实际**路径，不能笼统写「已保存」：
+    // 没有 U 盘时图落在 /tmp（tmpfs），重启或掉电就没了，
+    // 现场会以为证据还在。这条提示是唯一能让人知道这件事的地方。
+    const QString fallback_prefix =
+        QString::fromLatin1(kScreenshotFallbackDir) + QLatin1Char('/');
+    if (path.startsWith(fallback_prefix)) {
+        status_bar_label_->setText(
+            QStringLiteral("截图已存 %1（未检测到 U 盘，临时目录，重启即失）")
+                .arg(path));
+    } else {
+        status_bar_label_->setText(QStringLiteral("截图已存 %1").arg(path));
+    }
 }
 
 // ---------------------------------------------------------------------------

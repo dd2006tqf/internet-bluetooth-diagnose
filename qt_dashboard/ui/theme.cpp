@@ -129,6 +129,30 @@ QPushButton:pressed {
     background-color: #E2E6ED;
 }
 
+/* 选中态（时间窗的 1/6/13 小时按钮是 checkable 的）。
+ *
+ * 这一条是补的，不是初版就有：初版只写了 :hover 与 :pressed，于是
+ * checkable 按钮在选中与未选中之间**渲染完全相同**（真机截图上三者
+ * 边框 `(224,227,232)`、内部 `(255,255,255)` 一模一样，实测差异 0 像素）。
+ * 逻辑上「恰好一个 isChecked() 为真」全部正确，但用户看不见——控件存在、
+ * 状态也对，唯独这个状态不可见。
+ *
+ * 配色用主文字色做填充 + 白字：与默认白底/深字的按钮形成最强对比，
+ * 且不引入新的语义色（绿色在这里会被误读成「GOOD 状态」）。
+ */
+QPushButton:checked {
+    background-color: %5;
+    border-color: %5;
+    color: %3;
+}
+
+/* 选中后再 hover：保持选中底色，只调边框，避免鼠标划过时「选中看起来消失」 */
+QPushButton:checked:hover {
+    background-color: #37474F;
+    border-color: #37474F;
+    color: %3;
+}
+
 QPushButton:disabled {
     color: %7;
     background-color: #F0F1F3;
