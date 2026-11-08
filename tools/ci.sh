@@ -385,6 +385,29 @@ if [ "$SKIP_DEPLOY" = false ]; then
         pass "kmod 加载单元已落盘（weaknet-kmod.service，可选能力）"
     fi
 
+    # 触摸屏按需加载规则：**与上面那个单元是两种加载模型**。
+    #
+    #   weaknet-kmod.service  → 开机无条件加载观测模块（只读内核数据，无副作用）
+    #   本规则                 → 只有插上多点触控设备才加载（改变输入绑定行为）
+    #
+    # hid-multitouch 一旦在内核里，HID 核心会把所有 HID_GROUP_MULTITOUCH
+    # 设备优先绑给它而不是内建的 hid-generic。对触摸屏是改善（拿到
+    # ABS_MT_SLOT / ABS_MT_TRACKING_ID），但这是全局输入行为变更——
+    # 不带触摸屏的网关没理由承担。所以开关由「设备是否存在」驱动，
+    # 而不是由开机顺序驱动。
+    #
+    # 规则只匹配 g0002（HID_GROUP_MULTITOUCH）与 g0004（WIN_8 变体），
+    # 键盘鼠标是 g0001（GENERIC），不会触发。板端已双向实测。
+    #
+    # 落盘失败不影响任何业务：没有触摸屏时这条规则本就不会触发。
+    if [ -f "${ROOT}/tools/weaknet-hid-multitouch.rules" ]; then
+        scp "${ROOT}/tools/weaknet-hid-multitouch.rules" "${BOARD}:/tmp/weaknet-hid-multitouch.rules" 2>/dev/null \
+            && ssh "${BOARD}" "sudo cp /tmp/weaknet-hid-multitouch.rules /etc/udev/rules.d/99-weaknet-hid-multitouch.rules && \
+                sudo udevadm control --reload-rules" \
+            || warn "触摸屏 udev 规则落盘失败（触摸功能不可用，键盘鼠标不受影响）"
+        pass "触摸屏按需加载规则已落盘（99-weaknet-hid-multitouch.rules）"
+    fi
+
     # OTA 布局迁移/切换（板端重启唯一入口）：暂存产物 → releases/${VERSION}
     # →（首次）旧扁平布局归档 legacy-flat → 原子翻转 current + 兼容软链
     # → 重启 → 健康窗口（失败自动回滚上一版）→ .committed 转正。

@@ -1,0 +1,61 @@
+# ============================================================================
+# WeakNet 触摸屏支持：插入多点触控设备时按需加载 hid-multitouch.ko
+#
+# 定位：**按需加载，不做常驻**。这是与 weaknet-kmod.service 的根本区别：
+#   weaknet-kmod.service  → 开机无条件加载观测模块（无副作用，只读内核数据）
+#   本规则                → 只有真的插上多点触控设备才加载（改变输入行为）
+#
+# 为什么不写成 systemd 单元开机加载：
+#   hid-multitouch 一旦在内核里，HID 核心会把**所有**被判为
+#   HID_GROUP_MULTITOUCH 的设备优先绑给它，而不是内建的 hid-generic。
+#   对触摸屏这是改善（拿到 ABS_MT_SLOT / ABS_MT_TRACKING_ID 多点语义），
+#   但它是**全局输入行为变更**——一台不带触摸屏的网关没有任何理由
+#   承担这个变更。所以开关必须由「设备是否存在」这个物理事实驱动。
+#
+# === 匹配条件为什么是 g0002 / g0004 ===
+#
+# HID 设备的 modalias 形如：
+#   hid:b0003g0002v0000222Ap00000003
+#           ^bus  ^group ^vendor  ^product
+#
+# group 字段就是内核判定的 HID group（include/linux/hid.h:370-373）：
+#   HID_GROUP_GENERIC             = 0x0001   ← 普通键鼠、条码枪，**不匹配**
+#   HID_GROUP_MULTITOUCH          = 0x0002   ← 标准多点触控，匹配
+#   HID_GROUP_SENSOR_HUB          = 0x0003   ← 传感器 hub，不匹配
+#   HID_GROUP_MULTITOUCH_WIN_8    = 0x0004   ← Win8 兼容多点触控，匹配
+#
+# 写成 `hid:*g0002v*` 而不是 `hid:*g0002*` 是有原因的：group 后面紧跟
+# `v`+八位十六进制 vendor。带上这个 `v` 分隔符，就不可能误匹配到
+# 恰好含有 "g0002" 子串的其它字段。
+#
+# **这条规则不会因为插键盘而触发。** 键盘是 HID_GROUP_GENERIC（g0001），
+# 不满足任一模式。
+#
+# === 为什么 insmod 前要 test -d ===
+#
+# udev 的 RUN+= 不会去重：同一个 group 下注册多个接口（如触摸屏常同时
+# 暴露 Digitizer 与 Mouse 两个 collection）时，规则可能被触发多次。
+# 第二次 insmod 会以 "File exists" 失败——虽无害，但会让 journal 里
+# 出现看不懂的错误行。`test -d /sys/module/hid_multitouch` 是模块是否
+# 已加载的权威判据（模块名用下划线，内核把连字符规范化为下划线）。
+#
+# === 为什么用 insmod 而不是 modprobe ===
+#
+# 本模块住在 OTA 布局的 releases/<ver>/kmod/ 里，不在 /lib/modules 下，
+# modprobe 找不到。经 current 软链寻址，OTA 翻链后自动指向新版本。
+#
+# === 加载顺序无关性（已实测）===
+#
+# 2026-11-08 板端实测：设备**先**被 hid-generic 绑定，**之后**才
+# insmod hid-multitouch，内核会自动把该设备改绑到 hid-multitouch，无需
+# 任何手动 bind/unbind/new_id。所以本规则即使在 hid-generic 已接管之后
+# 才生效，也能把设备抢回来。
+# ============================================================================
+
+ACTION!="remove", SUBSYSTEM=="hid", \
+  ATTRS{modalias}=="hid:*g0002v*", \
+  RUN+="/bin/sh -c 'test -d /sys/module/hid_multitouch || /sbin/insmod /home/radxa/weaknet/current/kmod/hid-multitouch.ko'"
+
+ACTION!="remove", SUBSYSTEM=="hid", \
+  ATTRS{modalias}=="hid:*g0004v*", \
+  RUN+="/bin/sh -c 'test -d /sys/module/hid_multitouch || /sbin/insmod /home/radxa/weaknet/current/kmod/hid-multitouch.ko'"

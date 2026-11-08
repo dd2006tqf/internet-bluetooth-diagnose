@@ -117,6 +117,22 @@ for t in "$KDIR/scripts/basic/fixdep" "$KDIR/scripts/mod/modpost"; do
 done
 
 # ---- 3. 交叉编译 ------------------------------------------------------------
+#
+# 两个**独立**的构建单元，各自一个 Makefile，因此必须分两次 make：
+#
+#   kmod/                    → weaknet_cpu_stat.ko + weaknet_softirq.ko
+#                              观测类模块，随每个发布包落地并自动加载
+#   kmod/hid_multitouch/     → hid-multitouch.ko
+#                              输入类模块，随包分发但**不自动加载**
+#                              （udev 规则在设备插入时按 HID group 触发）
+#
+# 为什么后者能进发布包（2026-11-08 板端实测推翻旧结论）：
+#   目标板 `CONFIG_MODVERSIONS` 与 `CONFIG_MODULE_SIG` **都未设置**，
+#   因此不存在符号 CRC 校验，宿主机交叉编译的 .ko 只要 vermagic 对得上
+#   就能 insmod。实测 rc=0、lsmod 可见、rmmod 可逆——尽管编译器版本
+#   与建内核的那个不同（gcc 13.3.0 vs 10.2.1）。
+#   旧结论「板端编译是唯一受支持方式」是在未实测 MODVERSIONS 的前提下
+#   写下的保守判断，已被上文证据推翻。
 OUT="${OUT:-$ROOT/dist-arm64/kmod}"
 BUILD="$CACHE/$REL-build"
 rm -rf "$BUILD"
@@ -125,11 +141,42 @@ mkdir -p "$BUILD" "$OUT"
 # 只把源文件和 Makefile 拷进临时构建目录，保持仓库工作区干净
 cp "$ROOT"/kmod/*.c "$ROOT"/kmod/*.h "$ROOT"/kmod/Makefile "$BUILD"/
 
-log "交叉编译（ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-）"
+log "交叉编译 观测模块（weaknet_cpu_stat / weaknet_softirq）"
 make -C "$BUILD" -j"$(nproc)" \
     ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KDIR="$KDIR" \
     > "$BUILD/build.log" 2>&1 \
     || { tail -40 "$BUILD/build.log" >&2; fail "编译失败（完整日志 $BUILD/build.log）"; }
+
+shopt -s nullglob
+kos=("$BUILD"/*.ko)
+shopt -u nullglob
+[[ ${#kos[@]} -gt 0 ]] || fail "没有产出任何 .ko"
+
+# --- hid-multitouch：失败只告警，不连累上面的观测模块 -----------------------
+#
+# 它是**可选输入能力**：没有触摸屏时这个模块毫无用处，缺它不影响任何业务
+# 链路（qt_dashboard 用鼠标键盘照常操作）。而观测模块缺失会让
+# observer_attribution 报 unavailable，是另一回事。
+# 因此这里**不能** fail —— 那会被 ci.sh 的 `rm -rf dist-arm64/kmod` 连带
+# 删掉已经编好的观测模块。
+MT_BUILD="$CACHE/$REL-build-hid-multitouch"
+MT_SRC="$ROOT/kmod/hid_multitouch"
+rm -rf "$MT_BUILD"
+mkdir -p "$MT_BUILD"
+cp "$MT_SRC"/*.c "$MT_SRC"/*.h "$MT_SRC"/Makefile "$MT_BUILD"/
+
+log "交叉编译 输入模块（hid-multitouch）"
+if make -C "$MT_BUILD" -j"$(nproc)" \
+    ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KDIR="$KDIR" \
+    > "$MT_BUILD/build.log" 2>&1; then
+    shopt -s nullglob
+    kos+=("$MT_BUILD"/*.ko)
+    shopt -u nullglob
+else
+    # 打印日志尾部便于定位，但继续走完：观测模块仍要落盘
+    echo "[kmod] 警告: hid-multitouch 编译失败，本次发布不含触摸支持" >&2
+    tail -20 "$MT_BUILD/build.log" >&2
+fi
 
 # ---- 4. 校验并安装产物 ------------------------------------------------------
 #
@@ -139,9 +186,6 @@ make -C "$BUILD" -j"$(nproc)" \
 
 EXPECT_VERMAGIC="vermagic=$REL SMP preempt mod_unload aarch64"
 
-shopt -s nullglob
-kos=("$BUILD"/*.ko)
-shopt -u nullglob
 [[ ${#kos[@]} -gt 0 ]] || fail "没有产出任何 .ko"
 
 for k in "${kos[@]}"; do

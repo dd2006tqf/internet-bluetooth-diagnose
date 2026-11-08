@@ -1,19 +1,23 @@
 # SPDX-License-Identifier: GPL-2.0
 #
-# WeakNet 实验性内核模块构建规则（B1 实验路径）
+# WeakNet 观测类内核模块构建规则
 #
-# 定位：不进 tools/ci.sh、不进 OTA manifest、不注册 IMonitorPlugin。
-# 仅供板端手工 make / insmod 验证，或宿主机对拍编译。
+# 定位：这两个模块随发布包分发，并由 weaknet-kmod.service **开机无条件加载**。
+# 它们是只读观测模块，不改任何系统行为，因此可以无条件生效。
+#
+# 注意：hid_multitouch/ 是**另一个独立构建单元**（有自己的 Makefile），
+# 不能被本 Makefile 的 obj-m 收进来——那个模块会改变 HID 绑定行为，
+# 走的是 udev 按需加载而非开机加载。两种加载模型必须分开。
 #
 # 用法：
-#   板端就地编译（默认，开箱即用）
+#   宿主机交叉编译（推荐，随发布包走）
+#     ./tools/kmod_cross_build.sh      # 三个模块一起编
+#
+#   板端就地编译（调试验证用）
 #     make
 #
-#   宿主机对拍编译（验证 API 在目标内核版本下是否成立，产物不可加载）
+#   宿主机对拍编译（验证 API 在目标内核版本下是否成立）
 #     make KDIR=/path/to/linux-headers-5.15.x
-#
-#   交叉编译（需要完整 ARM64 内核构建树）
-#     make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KDIR=/path/to/build
 #
 #   清理
 #     make clean
