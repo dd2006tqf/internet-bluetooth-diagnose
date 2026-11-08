@@ -113,20 +113,28 @@ struct WeakNetConfig {
     } quality;
 
     /**
-     * @brief 采集端自身 CPU 压力采集（HOST 域证据）
+     * @brief 采集端自身压力采集（HOST 域证据）
      *
-     * 默认 enabled=true，但**能否真的产出数据取决于 /dev/weaknet_cpu_stat
-     * 是否存在**。该设备节点由实验性内核模块 kmod/weaknet_cpu_stat.c 提供，
-     * 不在 OTA manifest 里，因此现场设备默认没有它。
+     * 默认 enabled=true，但**能否真的产出数据取决于设备节点是否存在**：
+     *   /dev/weaknet_cpu_stat → CPU_BUSY_RATIO（采集端忙不忙）
+     *   /dev/weaknet_softirq  → SOFTIRQ_NET_RX_SHARE（忙在哪）
+     * 两者由 kmod/ 下的两个模块提供，随 OTA 发布并由
+     * tools/weaknet-kmod.service 加载。
      *
-     * 缺设备时的行为必须是：指标发布 UNAVAILABLE，且整条业务链路与
+     * 两个节点**互相独立**：现场可能只有其一（旧发布包、vermagic 不匹配、
+     * insmod 失败等），所以各自判可用性，一个缺失不影响另一个。
+     * 缺设备时的行为必须是：对应指标发布 UNAVAILABLE，且整条业务链路与
      * 引入本插件之前完全一致（不改变任何已有判定）。绝不能把"没有数据"
-     * 当成"CPU 很闲"。
+     * 当成"CPU 很闲"（或"没有收包软中断"）。
      */
     struct {
         std::atomic<bool> enabled{true};
         /// 与 quality 线程的评估节奏对齐；CPU 压力是给那一轮评估做归因的，
         /// 采得比它快没有意义，比它慢才会让归因用到过期数据。
+        ///
+        /// 两个设备共用这一个周期：同一线程内顺序采样、间隔 100 ms，
+        /// 让两份读数落在同一时间窗内——否则细分会拿 CPU 饱和时刻的忙率
+        /// 去配另一个时刻的软中断构成。
         std::atomic<uint32_t> interval_ms{15000};
     } host_pressure;
 

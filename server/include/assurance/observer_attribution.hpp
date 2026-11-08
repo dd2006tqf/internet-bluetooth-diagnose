@@ -111,6 +111,30 @@ struct ObserverAttributionResult {
     double observed_cpu_busy{0.0};
     bool cpu_available{false};
 
+    /**
+     * @brief 软中断构成的细分（仅 SELF_INFLICTED 分支有意义）
+     *
+     * CPU 忙只回答"采集端过载了"，回答不了"过载是网络收包造成的，
+     * 还是与网络无关的本机负载造成的"。这两者的处置方向完全相反：
+     *   NET_RX 主导 → 采集端在拼命处理**被观测链路**的流量，
+     *                 过载与观测对象强相关（流量是真的大）
+     *   其它主导   → 与网络无关的本机负载，才是真正意义的"自伤"
+     *
+     * 这一层细分**不改变** ObserverAttribution 枚举值（仍然是
+     * SELF_INFLICTED），只在 explanation 与 evidence 上补充说明。
+     * 理由：加枚举值要同步序列化契约、云端 schema、全部真值表测试，
+     * 而结论本身并没有多出一个新分类——只是把同一结论讲得更清楚。
+     */
+    double softirq_net_rx_share{0.0};
+    bool softirq_available{false};
+
+    /// 收包软中断占主导的判定阈值（默认 0.5）
+    ///
+    /// 注意：这是**事件计数**的构成比，不是时间占比。空载实测约 0.3%，
+    /// 线速小包洪水可达 99%，中间几乎没有分布。0.5 落在这段空白里，
+    /// 对"是不是收包把它压满的"这个问题足够可靠。
+    double softirq_share_threshold{0.5};
+
     /// 人类可读解释（进 warnings / 证据 detail）
     std::string explanation;
 
@@ -121,17 +145,29 @@ struct ObserverAttributionResult {
 /**
  * @brief 归因判定（无状态纯函数）
  *
- * @param sle          第 1 层评估结果（只读，不改）
- * @param sle_name     SLE 名称，进结果便于定位
- * @param cpu_busy     观测到的 CPU 忙率 0~1
- * @param cpu_available CPU 数据是否可用（false 时 cpu_busy 被忽略）
- * @param cfg          阈值配置
+ * @param sle                     第 1 层评估结果（只读，不改）
+ * @param sle_name                SLE 名称，进结果便于定位
+ * @param cpu_busy                观测到的 CPU 忙率 0~1
+ * @param cpu_available           CPU 数据是否可用（false 时 cpu_busy 被忽略）
+ * @param cpu_threshold           CPU 忙率达到多少算"过载"
+ * @param softirq_net_rx_share    收包软中断在全部软中断中的构成比 0~1
+ * @param softirq_available       软中断数据是否可用（false 时上一参数被忽略）
+ * @param softirq_share_threshold 构成比达到多少算"收包占主导"
  *
  * 判定规则：
  *   1. 若 sle.reason 不是已知的 observer 降级原因 → NONE，evaluated=false
  *   2. 若 CPU 数据不可用 → UNATTRIBUTED（不猜）
  *   3. CPU 忙率 >= 阈值 → SELF_INFLICTED
+ *      3a. 软中断数据可用时，在 explanation 与 evidence 上细分为
+ *          「收包路径主导」还是「非网络负载主导」
  *   4. 否则 → NOT_HOST_CPU_BOUND
+ *
+ * 第 3a 步只加证据与解释，**不改枚举值**：分类结论仍是 SELF_INFLICTED，
+ * 只是把它讲清楚。加新枚举值会改序列化契约与云端 schema，而结论本身
+ * 并没有多出一个新分类。
+ *
+ * 软中断参数带默认值，是为了让既有调用点与真值表测试完全不受影响：
+ * 不传这些参数的调用，行为与引入本细分之前逐字一致。
  *
  * 为什么用 reason 字符串前缀而不是给 SleResult 加枚举字段：
  * 加字段会改动所有 SleResult 生产者的初始化路径与全部下游序列化，
@@ -143,6 +179,9 @@ ObserverAttributionResult attributeObserverDegradation(
     const std::string& sle_name,
     double cpu_busy,
     bool cpu_available,
-    double cpu_threshold = 0.85);
+    double cpu_threshold = 0.85,
+    double softirq_net_rx_share = 0.0,
+    bool softirq_available = false,
+    double softirq_share_threshold = 0.5);
 
 }  // namespace weaknet

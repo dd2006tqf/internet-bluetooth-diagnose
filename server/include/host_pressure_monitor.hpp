@@ -151,11 +151,103 @@ private:
 };
 
 /**
+ * @brief 一次软中断构成比采样结果
+ *
+ * 与 HostCpuPressure 的关系：两者互补，不可互相替代。
+ *   HostCpuPressure  回答「忙不忙」（CPU 时间维度）
+ *   本结构           回答「忙在哪」（软中断类型维度）
+ */
+struct HostSoftirqShare {
+    /// 本轮是否得到了可用的构成比。false 时 @net_rx_share 无意义。
+    bool available{false};
+
+    /// 收包软中断（NET_RX）增量在**全部十类软中断**增量中的占比 0~1。
+    ///
+    /// 数值边界：这是**事件计数**的构成比，不是时间占比。
+    ///   空载时 NET_RX 只有约 0.3%（TIMER/SCHED/RCU 在空闲时照常触发，
+    ///   把分母撑得很大）；线速小包洪水可到 99%。
+    ///   所以判断「高」要按数量级，不能按「过半数」。
+    double net_rx_share{0.0};
+
+    /// 本轮统计窗口内收包软中断的触发次数（增量），仅用于日志与排障。
+    uint64_t net_rx_delta{0};
+
+    /// 全部十类软中断的增量合计，即构成比的分母。
+    uint64_t total_softirq_delta{0};
+
+    /// 参与本轮差值的 CPU 数（已排除离线核与计数倒退核）
+    uint32_t sampled_cpus{0};
+
+    /// 系统在线 CPU 总数
+    uint32_t online_cpus{0};
+
+    /// available=false 时的机器可读原因（取值与 HostCpuPressure 同构）：
+    ///   "device_absent" / "open_failed" / "mmap_failed" / "abi_mismatch"
+    ///   "baseline_only" / "read_failed" / "no_delta_cpus"
+    ///   额外一个本模块专有值：
+    ///   "no_softirq_activity"  窗口内十类软中断一次都没触发（分母为 0），
+    ///                          构成比无定义 —— 绝不回落成 0
+    std::string reason;
+
+    /// available=false 时的人类可读补充信息（errno 文本等）
+    std::string detail;
+};
+
+/**
+ * @brief 软中断构成比采样器
+ *
+ * 有状态：保留上一份快照才能做区间差值（原因与 HostCpuPressureSampler 相同）。
+ *
+ * 为什么必须按**类型构成比**发布，而不是直接发布 NET_RX 触发次数：
+ *   触发次数与流量强度、包大小、NAPI 轮询行为全都相关，跨设备跨场景
+ *   没有可比阈值。而「收包在所有软中断里占多大份额」回答的是
+ *   「这块 CPU 的时间瓶颈是不是被网络收包占住了」，这个才与归因有关。
+ *
+ * 与 CPU 采样器的一个重要差异：ABI 里 wn_softirq_stat **没有 valid 字段**
+ * （见 weaknet_kmod_abi.h），因为软中断计数是纯递增次数，不像 idle/iowait
+ * 那样会被 tick_cancel_sched_timer() 清零。但这并不等于不需要防倒退——
+ * 用户态仍然自查两道：online 翻转、任一类计数变小。真出现倒退说明
+ * 前提被破坏（内核行为变化或 ABI 错配），此时跳过该 CPU 而不是硬算。
+ *
+ * 线程安全：非线程安全。同一实例只应由一个线程持有使用。
+ */
+class HostSoftirqShareSampler {
+public:
+    explicit HostSoftirqShareSampler(std::string dev_path = "/dev/weaknet_softirq");
+    ~HostSoftirqShareSampler();
+
+    HostSoftirqShareSampler(const HostSoftirqShareSampler&) = delete;
+    HostSoftirqShareSampler& operator=(const HostSoftirqShareSampler&) = delete;
+
+    /**
+     * @brief 采一次样并与上一样本做差值
+     *
+     * 首次调用只建立基线，返回 available=false, reason="baseline_only"。
+     * 设备不存在时返回 available=false, reason="device_absent"。
+     */
+    HostSoftirqShare sample();
+
+    const std::string& devPath() const { return dev_path_; }
+
+private:
+    struct Impl;
+
+    std::string dev_path_;
+    std::unique_ptr<Impl> impl_;
+};
+
+/**
  * @brief 启动 CPU 压力监控线程
  *
- * 循环内每轮从线程安全配置现读 interval_ms，支持 D-Bus 实时调参。
- * 采样结果经 MetricsRegistry::publishScope(MetricScope::HOST, ...) 发布，
- * 命名空间键为 "host:"（见 metrics_registry.hpp 的 scopeKey）。
+ * 同一线程内**顺序采两个模块**：先 cpu_stat，再 softirq。
+ *
+ * 为什么放在同一个线程而不是各开一个：
+ *   (a) 归因时需要两者属于同一轮评估，同一线程天然对齐采样节奏；
+ *   (b) 停止标志、配置键（host_pressure.enabled / interval_ms）只有一份，
+ *       不新增配置表面；
+ *   (c) 两个设备都是 15 秒一次的低频采样，线程开销可以忽略。
+ *
+ * 两者**互不阻塞**：任一个不可用只影响自己发布 UNAVAILABLE，另一个照常工作。
  */
 void start_host_pressure_monitor_thread(ServerContext* ctx, std::thread* worker);
 

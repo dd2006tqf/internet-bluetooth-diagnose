@@ -1,12 +1,18 @@
 /**
  * @file host_pressure_monitor.cpp
- * @brief 采集端自身 CPU 压力监控器实现
+ * @brief 采集端自身 CPU 压力 / 软中断构成的监控器实现
  *
- * 数据路径：
- *   kmod/weaknet_cpu_stat.c（内核 hrtimer，4 ms）
+ * 数据路径（两条并行，互不依赖）：
+ *   kmod/weaknet_cpu_stat.c（内核 hrtimer，1 s）
  *     → /dev/weaknet_cpu_stat（只读 mmap，seqlock 保护）
  *     → HostCpuPressureSampler::sample()（区间差值 → 加权比率）
  *     → MetricsRegistry::publishScope(MetricScope::HOST, CPU_BUSY_RATIO)
+ *     → quality 线程 / 诊断归因读取
+ *
+ *   kmod/weaknet_softirq.c（内核 hrtimer，1 s）
+ *     → /dev/weaknet_softirq（只读 mmap，seqlock 保护）
+ *     → HostSoftirqShareSampler::sample()（区间差值 → NET_RX 构成比）
+ *     → MetricsRegistry::publishScope(MetricScope::HOST, SOFTIRQ_NET_RX_SHARE)
  *     → quality 线程 / 诊断归因读取
  *
  * 为什么这里直接 include kmod/weaknet_kmod_abi.h：
@@ -15,6 +21,11 @@
  *   服务端会在毫无征兆的情况下读到错位数据——而这个驱动 30 分钟长稳测试
  *   专门验过 seqlock 不撕裂，恰恰说明"读到的是稳定但错误的字段"这种
  *   故障最难发现。共享定义让编译器直接报错。
+ *
+ * 【必须记住的尺寸陷阱】：两个快照结构体大小不同，各自必须用**自己的**
+ * 类型算 map 长度。历史上真实踩过：用 wn_cpu_snapshot 的 sizeof 去映射
+ * softirq，得到 24600 > g_map_size 24576，内核直接返 EINVAL。
+ * weaknet_kmod_abi.h 里有专门一段注释记录此事。
  */
 
 #include "host_pressure_monitor.hpp"
@@ -230,56 +241,280 @@ HostCpuPressure HostCpuPressureSampler::sample() {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// 软中断构成比采样器
+// ---------------------------------------------------------------------------
+
+struct HostSoftirqShareSampler::Impl {
+    /// 单 CPU 的十类软中断累计次数。
+    ///
+    /// 注意这里**没有** valid 字段：ABI 里 wn_softirq_stat 就没有（软中断
+    /// 计数不会被热插拔清零）。防倒退改成用户态自查，见 sample() 第 5 步。
+    struct CpuCounts {
+        uint32_t cpu_id{0};
+        bool online{false};
+        uint64_t cnt[WEAKNET_KMOD_NR_SOFTIRQ]{};
+    };
+
+    std::vector<CpuCounts> prev;
+    bool have_prev{false};
+
+    int fd{-1};
+    void* map{MAP_FAILED};
+    size_t map_size{0};
+};
+
+HostSoftirqShareSampler::HostSoftirqShareSampler(std::string dev_path)
+    : dev_path_(std::move(dev_path)), impl_(std::make_unique<Impl>()) {}
+
+HostSoftirqShareSampler::~HostSoftirqShareSampler() {
+    if (impl_ && impl_->map != MAP_FAILED) {
+        munmap(impl_->map, impl_->map_size);
+    }
+    if (impl_ && impl_->fd >= 0) {
+        close(impl_->fd);
+    }
+}
+
+HostSoftirqShare HostSoftirqShareSampler::sample() {
+    HostSoftirqShare out;
+
+    // ---- 1. 打开设备 + 映射（懒加载，每轮重试，支持模块后插）----
+    if (impl_->fd < 0) {
+        impl_->fd = ::open(dev_path_.c_str(), O_RDONLY | O_CLOEXEC);
+        if (impl_->fd < 0) {
+            const int open_errno = errno;
+            out.reason = openErrnoToReason(open_errno);
+            out.detail = std::string("open: ") + std::strerror(open_errno);
+            return out;
+        }
+        // 必须用 softirq 自己的类型算长度。用 wn_cpu_snapshot 会得到更大的
+        // 值，超过内核 g_map_size 后 mmap 直接 EINVAL（历史真实 bug）。
+        impl_->map_size = sizeof(struct wn_softirq_snapshot);
+        impl_->map = mmap(nullptr, impl_->map_size, PROT_READ, MAP_SHARED, impl_->fd, 0);
+        if (impl_->map == MAP_FAILED) {
+            out.reason = "mmap_failed";
+            out.detail = std::string("mmap: ") + std::strerror(errno);
+            close(impl_->fd);
+            impl_->fd = -1;
+            return out;
+        }
+    }
+
+    // ---- 2. seqlock 读者：校验 → 拷贝 → 再校验 ----
+    auto* snap = static_cast<struct wn_softirq_snapshot*>(impl_->map);
+    struct wn_softirq_snapshot local;
+
+    uint32_t s0 = 0, s1 = 0;
+    bool ok = false;
+    for (int tries = 0; tries < kMaxSeqRetry; ++tries) {
+        s0 = loadSeq(&snap->hdr.seq);
+        if (s0 & 1u) continue;
+
+        std::memcpy(&local, snap, sizeof(local));
+
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        s1 = loadSeq(&snap->hdr.seq);
+
+        if (s0 == s1) {
+            ok = true;
+            break;
+        }
+    }
+    if (!ok) {
+        out.reason = "read_failed";
+        return out;
+    }
+
+    // ---- 3. ABI 版本校验 ----
+    if (local.hdr.abi_version != WEAKNET_KMOD_ABI_VERSION) {
+        out.reason = "abi_mismatch";
+        return out;
+    }
+
+    if (local.hdr.nr_cpus == 0) {
+        out.reason = "no_delta_cpus";
+        return out;
+    }
+
+    // ---- 4. 转成差值友好的形态 ----
+    std::vector<Impl::CpuCounts> cur;
+    cur.reserve(local.hdr.nr_cpus);
+    for (uint32_t i = 0; i < local.hdr.nr_cpus && i < WEAKNET_KMOD_MAX_CPUS; ++i) {
+        const auto& c = local.cpu[i];
+        Impl::CpuCounts t;
+        t.cpu_id = c.cpu_id;
+        t.online = (c.online != 0);
+        for (uint32_t k = 0; k < WEAKNET_KMOD_NR_SOFTIRQ; ++k) {
+            t.cnt[k] = c.cnt[k];
+        }
+        cur.push_back(t);
+    }
+
+    uint32_t online = 0;
+    for (const auto& t : cur) {
+        if (t.online) ++online;
+    }
+    out.online_cpus = online;
+
+    if (!impl_->have_prev) {
+        impl_->prev = std::move(cur);
+        impl_->have_prev = true;
+        out.reason = "baseline_only";
+        return out;
+    }
+
+    // ---- 5. 区间差值 → NET_RX 构成比 ----
+    //
+    // 与 CPU 采样器同款跳过条件（a 本轮离线 / b 上轮离线），再加一条
+    // 本模块专有的防倒退检查（c）：
+    //
+    //   软中断计数是纯递增的，理论上不该倒退。但 ABI 没有 valid 标记可以
+    //   依赖，而「理论上不该发生」正是最难发现的故障来源。任一类计数变小
+    //   就跳过该 CPU——比起算出荒唐的负增量，少统计一个核的代价可以忽略。
+    uint64_t net_rx = 0, total = 0;
+    uint32_t used = 0;
+
+    for (const auto& c : cur) {
+        const Impl::CpuCounts* p = nullptr;
+        for (const auto& pc : impl_->prev) {
+            if (pc.cpu_id == c.cpu_id) {
+                p = &pc;
+                break;
+            }
+        }
+        if (!p || !c.online || !p->online) continue;
+
+        bool backwards = false;
+        uint64_t cpu_total = 0;
+        for (uint32_t k = 0; k < WEAKNET_KMOD_NR_SOFTIRQ; ++k) {
+            if (c.cnt[k] < p->cnt[k]) {
+                backwards = true;
+                break;
+            }
+            cpu_total += (c.cnt[k] - p->cnt[k]);
+        }
+        if (backwards) continue;
+
+        net_rx += (c.cnt[3] - p->cnt[3]);   // 索引 3 = NET_RX，见 ABI 头
+        total += cpu_total;
+        ++used;
+    }
+
+    impl_->prev = std::move(cur);
+
+    out.sampled_cpus = used;
+    out.net_rx_delta = net_rx;
+    out.total_softirq_delta = total;
+
+    if (used == 0) {
+        out.reason = "no_delta_cpus";
+        return out;
+    }
+
+    // 窗口内一次软中断都没触发（分母为 0）：构成比在数学上无定义。
+    // 绝不回落成 0——0 会被读成「完全没有收包软中断」，是伪造的观测。
+    if (total == 0) {
+        out.reason = "no_softirq_activity";
+        return out;
+    }
+
+    out.available = true;
+    out.net_rx_share = static_cast<double>(net_rx) / static_cast<double>(total);
+    if (out.net_rx_share > 1.0) out.net_rx_share = 1.0;
+    if (out.net_rx_share < 0.0) out.net_rx_share = 0.0;
+    return out;
+}
+
+namespace {
+
+/// 双发一个 HOST 域指标到两处注册中心。
+///
+/// 抽成函数是为了让 CPU 与 softirq 两条发布路径**完全同构**——包括
+/// 「不可用时发 UNAVAILABLE 绝不发 0」这条不能走样的纪律。
+///
+/// 【事实订正 2026-11-08，勿再沿用旧说法】
+/// 此前这里的注释写的是「global() 那一份是 database_manager.cpp 唯一会读的，
+/// 漏发会让指标永远进不了 SQLite」。**这句话是错的**，实测核对：
+///   * database_manager.cpp:540 只调 latestGlobal()，读的是 GLOBAL 域，
+///     且只读 TCP_RETRANS_LOSS_PCT / TCP_CONN_ACTIVE / TCP_CONN_ACCEPT_RATE；
+///   * network_history 表没有任何 host 相关列；
+///   * 全仓除本条外，`"host:"` 作用域只有 server.cpp 的读取方，无其它读者。
+/// 也就是说 global() 里这份 HOST 域副本**当前没有任何消费者**，不会进 SQLite。
+///
+/// 仍然保留双发，只为与既有 CPU_BUSY_RATIO 路径保持同构（那条路径自
+/// e5a979e 起就是这么写的），避免两条指标出现"一条发两处、一条发一处"
+/// 的不一致；代价可忽略。**若要让 host 指标真正落库**，需要新增
+/// network_history 列 + insertSnapshot 读取逻辑，那是另一件事，不要
+/// 指望这里已经做好了。
+void publishHostMetric(ServerContext* ctx, weaknet::MetricId id, bool available, double value) {
+    if (!ctx->metrics_registry) return;
+    const auto sample = available ? weaknet::MetricSample::valid(value)
+                                  : weaknet::MetricSample::unavailable();
+    ctx->metrics_registry->publishScope(weaknet::MetricScope::HOST, id, sample);
+    weaknet::MetricsRegistry::global().publishScope(weaknet::MetricScope::HOST, id, sample);
+}
+
+}  // namespace
+
 void start_host_pressure_monitor_thread(ServerContext* ctx, std::thread* worker) {
     // 可 join 句柄，由 MonitorManager 在停止时 join，避免 detached 线程在
     // ctx 析构后野访问（与 rtt_monitor 等既有监控器同一纪律）。
     *worker = std::thread([ctx] {
-        LOG_INFO(LogModule::HOST_PRESSURE, "CPU pressure monitor thread started");
+        LOG_INFO(LogModule::HOST_PRESSURE, "host pressure monitor thread started");
 
-        HostCpuPressureSampler sampler;
+        HostCpuPressureSampler cpu_sampler;
+        HostSoftirqShareSampler softirq_sampler;
 
         while (ctx->running.load() && !ctx->host_pressure_stop.load()) {
             try {
                 const auto interval = readIntervalMs(ctx);
 
-                const HostCpuPressure p = sampler.sample();
+                // ---- 采样 1：CPU 忙碌比（时间维度）----
+                //
+                // 两个采样**顺序执行且互不短路**：即使 cpu_stat 不可用，
+                // softirq 也照常采。两者是独立证据，任一个缺失都不该
+                // 让另一个跟着哑掉。
+                const HostCpuPressure p = cpu_sampler.sample();
+                publishHostMetric(ctx, weaknet::MetricId::CPU_BUSY_RATIO,
+                                 p.available, p.busy_ratio);
 
-                if (ctx->metrics_registry) {
-                    const auto sample = p.available
-                        ? weaknet::MetricSample::valid(p.busy_ratio)
-                        : weaknet::MetricSample::unavailable();
-                    // 双发：与 server.cpp 的 TCP 重传/连接指标同一纪律。
-                    // ctx->metrics_registry 服务评估侧读取（quality 线程归因），
-                    // MetricsRegistry::global() 服务持久化侧读取
-                    // （database_manager.cpp 的 insertSnapshot 只查 global）。
-                    // 只发前者会让 CPU 压力永远进不了 SQLite——"看起来接好了、
-                    // 实际永远 NULL"的典型陷阱。
-                    ctx->metrics_registry->publishScope(
-                        weaknet::MetricScope::HOST,
-                        weaknet::MetricId::CPU_BUSY_RATIO,
-                        sample);
-                    weaknet::MetricsRegistry::global().publishScope(
-                        weaknet::MetricScope::HOST,
-                        weaknet::MetricId::CPU_BUSY_RATIO,
-                        sample);
+                if (p.available) {
+                    LOG_INFO(LogModule::HOST_PRESSURE,
+                             "cpu_busy_ratio=" << p.busy_ratio
+                             << " (" << p.sampled_cpus << "/" << p.online_cpus
+                             << " cpus sampled)");
+                } else if (p.reason != "baseline_only") {
+                    // 不可用时发布 UNAVAILABLE，**不发布 0**：
+                    // 0 会被下游解读成"CPU 很闲"，从而掩盖真实故障。
+                    // baseline_only 是启动后的正常状态，不值得刷警告。
+                    //
+                    // detail 必须打出来：reason 只说"打不开"，
+                    // detail 才说"是 EPERM 还是 ENOENT"，而这两者
+                    // 的处置完全不同（改 capability vs 装模块）。
+                    LOG_WARNING(LogModule::HOST_PRESSURE,
+                                "cpu pressure unavailable: " << p.reason
+                                << (p.detail.empty() ? "" : " (" + p.detail + ")"));
+                }
 
-                    if (p.available) {
-                        LOG_INFO(LogModule::HOST_PRESSURE,
-                                 "cpu_busy_ratio=" << p.busy_ratio
-                                 << " (" << p.sampled_cpus << "/" << p.online_cpus
-                                 << " cpus sampled)");
-                    } else if (p.reason != "baseline_only") {
-                        // 不可用时发布 UNAVAILABLE，**不发布 0**：
-                        // 0 会被下游解读成"CPU 很闲"，从而掩盖真实故障。
-                        // baseline_only 是启动后的正常状态，不值得刷警告。
-                        //
-                        // detail 必须打出来：reason 只说"打不开"，
-                        // detail 才说"是 EPERM 还是 ENOENT"，而这两者
-                        // 的处置完全不同（改 capability vs 装模块）。
-                        LOG_WARNING(LogModule::HOST_PRESSURE,
-                                    "cpu pressure unavailable: " << p.reason
-                                    << (p.detail.empty() ? "" : " (" + p.detail + ")"));
-                    }
+                // ---- 采样 2：软中断构成比（类型维度）----
+                const HostSoftirqShare q = softirq_sampler.sample();
+                publishHostMetric(ctx, weaknet::MetricId::SOFTIRQ_NET_RX_SHARE,
+                                 q.available, q.net_rx_share);
+
+                if (q.available) {
+                    // 把分子分母一起打出来：只有构成比时，一个"38%"看不出
+                    // 是几万次还是几亿次里算出来的，排障时没法判断量级。
+                    LOG_INFO(LogModule::HOST_PRESSURE,
+                             "softirq_net_rx_share=" << q.net_rx_share
+                             << " (net_rx=" << q.net_rx_delta
+                             << "/total=" << q.total_softirq_delta
+                             << ", " << q.sampled_cpus << "/" << q.online_cpus
+                             << " cpus sampled)");
+                } else if (q.reason != "baseline_only") {
+                    LOG_WARNING(LogModule::HOST_PRESSURE,
+                                "softirq share unavailable: " << q.reason
+                                << (q.detail.empty() ? "" : " (" + q.detail + ")"));
                 }
 
                 // 100 ms 分片等待：整段睡眠会让停止请求最长等一个完整周期
@@ -291,14 +526,14 @@ void start_host_pressure_monitor_thread(ServerContext* ctx, std::thread* worker)
                 }
             } catch (const std::exception& e) {
                 LOG_ERROR(LogModule::HOST_PRESSURE,
-                          "CPU pressure monitor exception: " << e.what());
+                          "host pressure monitor exception: " << e.what());
             } catch (...) {
                 LOG_ERROR(LogModule::HOST_PRESSURE,
-                          "CPU pressure monitor unknown exception");
+                          "host pressure monitor unknown exception");
             }
         }
 
-        LOG_INFO(LogModule::HOST_PRESSURE, "CPU pressure monitor thread exiting");
+        LOG_INFO(LogModule::HOST_PRESSURE, "host pressure monitor thread exiting");
     });
 }
 

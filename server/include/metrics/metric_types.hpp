@@ -34,7 +34,29 @@ enum class MetricId {
     ///
     /// 本指标把"观测者自身状态"变成一等证据，使归因可以往下分辨一层。
     /// 数据来源是 kmod/weaknet_cpu_stat（4 ms 粒度的 per-CPU 累计时间）。
-    CPU_BUSY_RATIO
+    CPU_BUSY_RATIO,
+
+    /// 收包软中断在**全部软中断**中所占的构成比（HOST 域，0~1）。
+    ///
+    /// 存在的理由：CPU_BUSY_RATIO 只能回答"板子忙不忙"，回答不了"忙在哪"。
+    /// 采集端被打满时，两种成因的处置方向完全相反：
+    ///   (a) 收包软中断占主导 → CPU 是在处理被观测链路的流量，
+    ///       证据丢失与**观测到的流量本身**相关，不是无关进程捣乱；
+    ///   (b) 其它软中断/用户态占主导 → 与网络无关的本机负载，
+    ///       属于真正意义上的"自伤"。
+    ///
+    /// 数值边界（务必记住，否则会把结论读反）：
+    ///   本指标是**软中断事件数的构成比**，不是时间占比，也不是饱和率。
+    ///   板端实测空载时 NET_RX 仅占约 0.3%（TIMER/SCHED/RCU 这些定频
+    ///   软中断在空闲时照常触发，把分母撑得很大）；线速小包洪水可到 99%。
+    ///   因此"高"是按数量级判的，不是"过半数"。
+    ///
+    /// 单独看没有意义：一台跑大流量的机器 NET_RX 占比天然就高。它唯一的
+    /// 用法是作为 CPU_BUSY_RATIO 的**限定词**，只在"CPU 已饱和"这个分支里
+    /// 被咨询。因此它不参与任何评分与 veto，只进归因证据。
+    ///
+    /// 数据来源是 kmod/weaknet_softirq（per-CPU 十类软中断累计触发次数）。
+    SOFTIRQ_NET_RX_SHARE
 };
 
 inline const char* metricIdToString(MetricId id) {
@@ -57,6 +79,7 @@ inline const char* metricIdToString(MetricId id) {
         case MetricId::TCP_CONN_ACTIVE: return "tcp_conn_active";
         case MetricId::TCP_CONN_ACCEPT_RATE: return "tcp_conn_accept_rate";
         case MetricId::CPU_BUSY_RATIO: return "cpu_busy_ratio";
+        case MetricId::SOFTIRQ_NET_RX_SHARE: return "softirq_net_rx_share";
         default: return "unknown";
     }
 }
@@ -189,6 +212,21 @@ inline MetricDescriptor getMetricDescriptor(MetricId id) {
              * 容许一次抖动而不至于让下游立刻判 STALE。
              */
             return {MetricId::CPU_BUSY_RATIO, "cpu_busy_ratio", MetricUnit::PERCENT, MetricScope::HOST,
+                    SourceSemantics::CUMULATIVE_COUNTER, PublishedSemantics::GAUGE, 15000ms, 30000ms};
+        case MetricId::SOFTIRQ_NET_RX_SHARE:
+            /*
+             * 与 CPU_BUSY_RATIO 同为 HOST 域，但语义完全不同：那个是**时间**
+             * 占比，这个是**事件计数**的构成比。同一个 8 核板子上两者会被
+             * 一起读，绝不能因为单位同名就混用。
+             *
+             * GAUGE：源数据是 /dev/weaknet_softirq 的累计次数，本驱动的插件
+             * 内部已做区间差值并只发布构成比，对外是瞬时值。
+             *
+             * 采样周期 15s、freshness 30s，与 CPU_BUSY_RATIO 严格对齐——
+             * 两者要在同一轮评估里配对使用，若节奏不同就会出现「用 30 秒前
+             * 的软中断构成比去解释 15 秒前的 CPU 忙碌比」这种错配。
+             */
+            return {MetricId::SOFTIRQ_NET_RX_SHARE, "softirq_net_rx_share", MetricUnit::PERCENT, MetricScope::HOST,
                     SourceSemantics::CUMULATIVE_COUNTER, PublishedSemantics::GAUGE, 15000ms, 30000ms};
         default:
             return {id, "unknown", MetricUnit::COUNT, MetricScope::INTERFACE,

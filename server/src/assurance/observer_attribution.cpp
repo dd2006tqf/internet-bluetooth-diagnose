@@ -39,11 +39,15 @@ ObserverAttributionResult attributeObserverDegradation(
     const std::string& sle_name,
     double cpu_busy,
     bool cpu_available,
-    double cpu_threshold) {
+    double cpu_threshold,
+    double softirq_net_rx_share,
+    bool softirq_available,
+    double softirq_share_threshold) {
     ObserverAttributionResult res;
     res.trigger_sle = sle_name;
     res.observer_reason = sle.reason;
     res.cpu_threshold = cpu_threshold;
+    res.softirq_share_threshold = softirq_share_threshold;
 
     // 1. 这个 SLE 根本没在报 observer 问题 → 不归因
     //
@@ -56,6 +60,8 @@ ObserverAttributionResult attributeObserverDegradation(
     res.evaluated = true;
     res.cpu_available = cpu_available;
     res.observed_cpu_busy = cpu_busy;
+    res.softirq_available = softirq_available;
+    res.softirq_net_rx_share = softirq_net_rx_share;
 
     // 2. 没有 CPU 数据 → 老实说不知道
     //
@@ -85,6 +91,36 @@ ObserverAttributionResult attributeObserverDegradation(
                                 "Observer degraded with high host CPU; suspect self-inflicted evidence loss"});
         res.evidence.push_back({"host_cpu_busy_ratio", cpu_busy,
                                 "Host CPU busy ratio at the time of observer degradation"});
+
+        // 3a. 细分：CPU 是被网络收包吃掉的，还是被别的负载吃掉的
+        //
+        // 这一步**不改 attribution**（仍是 SELF_INFLICTED），只补充一句
+        // 说明与一条证据。处置方向完全不同：
+        //   收包主导 → 采集端在处理被观测链路的流量，过载与观测对象相关
+        //   其它主导 → 与网络无关的本机负载，属真正意义上的"自伤"
+        //
+        // 软中断数据不可用时保持沉默，**不加任何猜测性的解释**——
+        // 与 UNATTRIBUTED 分支同一纪律：没数据就说没数据。
+        if (softirq_available) {
+            const bool rx_dominant = softirq_net_rx_share >= softirq_share_threshold;
+            if (rx_dominant) {
+                res.explanation +=
+                    "; softirq activity is dominated by the network receive path, so the collector "
+                    "was busy processing traffic from the observed link itself rather than an "
+                    "unrelated local workload";
+                res.evidence.push_back({"softirq_net_rx_share", softirq_net_rx_share,
+                                        "Network receive softirqs dominate all softirq activity; "
+                                        "CPU pressure correlates with observed traffic"});
+            } else {
+                res.explanation +=
+                    "; softirq activity is NOT dominated by the network receive path, so the "
+                    "collector was kept busy by an unrelated local workload instead of the "
+                    "observed link's traffic";
+                res.evidence.push_back({"softirq_net_rx_share", softirq_net_rx_share,
+                                        "Network receive softirqs do not dominate softirq activity; "
+                                        "CPU pressure comes from non-network local workloads"});
+            }
+        }
         return res;
     }
 

@@ -595,10 +595,28 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                             if (cpu_ok) cpu_busy = cpu_sample->value;
                         }
 
+                        // 软中断构成比：CPU_BUSY_RATIO 的限定词，回答"忙在哪"。
+                        //
+                        // 只有 cpu_ok 为真时才有意义——CPU 没饱和时下游根本
+                        // 不会咨询这个值（见 observer_attribution.cpp 第 3a 步）。
+                        // 这里仍然独立读取、独立判新鲜度，不复用 cpu 的可用性：
+                        // 两个模块是两个设备节点，一个缺失不影响另一个。
+                        double softirq_share = 0.0;
+                        bool softirq_ok = false;
+                        auto softirq_sample = ctx->metrics_registry->latest(
+                            "host:", weaknet::MetricId::SOFTIRQ_NET_RX_SHARE);
+                        if (softirq_sample) {
+                            softirq_ok = softirq_sample->isValid(
+                                weaknet::getMetricDescriptor(
+                                    weaknet::MetricId::SOFTIRQ_NET_RX_SHARE).freshness);
+                            if (softirq_ok) softirq_share = softirq_sample->value;
+                        }
+
                         // DNS 是当前唯一带 observer 质量门禁的 SLE。将来其它
                         // SLE 若也引入 observer 门禁，在这里并列追加即可。
                         auto attr = weaknet::attributeObserverDegradation(
-                            dns_sle, "dns_service", cpu_busy, cpu_ok);
+                            dns_sle, "dns_service", cpu_busy, cpu_ok,
+                            0.85, softirq_share, softirq_ok);
                         if (attr.evaluated) {
                             exp.observer_attribution = attr.attribution;
                             exp.observer_attribution_detail = attr.explanation;
@@ -623,7 +641,9 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                                 << " reason=" << attr.observer_reason
                                 << " cpu_available=" << (attr.cpu_available ? "yes" : "no")
                                 << " cpu_busy=" << attr.observed_cpu_busy
-                                << " threshold=" << attr.cpu_threshold);
+                                << " threshold=" << attr.cpu_threshold
+                                << " softirq_available=" << (attr.softirq_available ? "yes" : "no")
+                                << " softirq_net_rx_share=" << attr.softirq_net_rx_share);
                         }
                     }
 

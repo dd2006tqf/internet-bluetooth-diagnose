@@ -1,11 +1,20 @@
 [Unit]
 # ============================================================================
-# WeakNet 观测用内核模块加载单元（weaknet_cpu_stat）
+# WeakNet 观测用内核模块加载单元（weaknet_cpu_stat + weaknet_softirq）
 #
-# 定位：**可选能力**。加载成功 → 服务端 host_pressure 插件经
-# /dev/weaknet_cpu_stat 读到 per-CPU 时间片，从而能区分「网络真故障」与
+# 两个模块是**互补的一对**，各回答一个问题：
+#   weaknet_cpu_stat  → /dev/weaknet_cpu_stat  → 「采集端忙不忙」（CPU 时间）
+#   weaknet_softirq   → /dev/weaknet_softirq   → 「忙在哪」（软中断类型构成）
+# 归因时先看前者（没饱和就到此为止），饱和了再看后者细分成「收包主导」
+# 还是「非网络负载主导」。缺前者后者没意义，缺后者归因只是停在上层。
+#
+# 定位：**可选能力**。加载成功 → 服务端 host_pressure 插件经这两个设备
+# 读到 per-CPU 时间片与软中断计数，从而能区分「网络真故障」与
 # 「采集端 CPU 过载导致丢证据」；加载失败 → 插件报 unavailable，业务链路
 # 行为与引入本模块之前完全一致。
+#
+# 两个模块**互相独立**：任一个加载失败不影响另一个。因此每条 insmod
+# 都带 - 前缀，各自失败各自忽略，绝不做「一个成功才加载另一个」的耦合。
 #
 # === 最重要的一条不变量 ===
 # 本单元失败**绝不能**阻塞 weaknet-server。所以：
@@ -24,7 +33,7 @@
 # 与业务无关的噪声，且一旦有人将来加了 Requires 就会连锁拖垮服务。
 # ============================================================================
 
-Description=WeakNet observational kernel module (weaknet_cpu_stat)
+Description=WeakNet observational kernel modules (weaknet_cpu_stat, weaknet_softirq)
 Documentation=file:///home/radxa/weaknet/kmod/README.md
 
 # 服务端先起，模块后插。服务端是懒加载+每轮重试，不存在时序依赖。
@@ -50,7 +59,8 @@ Restart=no
 ExecStart=-/sbin/rmmod weaknet_cpu_stat
 ExecStart=-/sbin/rmmod weaknet_softirq
 
-# 加载 weaknet_cpu_stat：CPU 压力的唯一数据来源。
+# 依次加载两个观测模块。顺序无关（互不依赖），但按「先基础后细分」排列
+# 与归因逻辑的层次一致，读日志时更直观。
 #
 # 路径经 current 软链寻址，与 weaknet-server.service 的寻址方式一致，
 # 这样 OTA 翻链后模块也跟着翻，不需要额外同步。
@@ -59,7 +69,13 @@ ExecStart=-/sbin/rmmod weaknet_softirq
 # 更重要的是 modprobe 只接受模块名，会去 /lib/modules 下找，而我们的模块
 # 住在 OTA 的 releases/<ver>/kmod/ 里，不在标准模块目录。用 insmod 直指
 # 绝对路径最直接，且不会误加载系统里同名的其他模块。
+#
+# 为什么两条 insmod 都带 - 前缀、互不短路：这两个设备是两个独立的
+# 证据来源。cpu_stat 加载失败时 softirq 仍然有价值（至少能看见收包
+# 软中断的量级）；反之亦然。用 `&&` 串联会让一个坏模块把另一个也拖死，
+# 那是最没道理的一种降级。
 ExecStart=-/sbin/insmod /home/radxa/weaknet/current/kmod/weaknet_cpu_stat.ko
+ExecStart=-/sbin/insmod /home/radxa/weaknet/current/kmod/weaknet_softirq.ko
 
 # 关键：无论上面成败，一律报告成功。
 #
@@ -67,7 +83,18 @@ ExecStart=-/sbin/insmod /home/radxa/weaknet/current/kmod/weaknet_cpu_stat.ko
 # Requires，但 failed 状态会进 systemctl --failed 与监控告警，
 # 制造与业务无关的噪声。加载是否真的成功，看 device 节点是否存在
 # 与 weaknet-cli experience 的 observer_attribution 更准确。
-ExecStartPost=-/bin/sh -c 'test -c /dev/weaknet_cpu_stat && echo "weaknet_cpu_stat ready" || echo "weaknet_cpu_stat unavailable (module not loaded; host_pressure will report unavailable, business unaffected)"'
+#
+# 两个节点分开报告，不要合成一句「模块已就绪」：任一缺失时运维必须能
+# 一眼看出缺的是哪一个，因为它们的补救动作不同（cpu_stat 缺 → 归因只能
+# 停在「忙不忙」；softirq 缺 → 能判饱和但判不出「忙在哪」）。
+#
+# 【必须用 $$，不是 $】systemd 会对 ExecStart* 做自己的变量替换，单个 $ 会
+# 被它先吃掉，shell 拿到的是已展开后的空串。实测对照：
+#   '$d' / '${d##*/}'   → 打印 " ready" / " unavailable"（节点名丢失）
+#   '$$d' / '$${d##*/}' → 打印 "weaknet_cpu_stat ready"（正确）
+# 这个 bug 不会让单元失败（退出码仍是 0），只是日志里少了关键信息，
+# 属"看起来在工作"的静默降级，改这里时务必保留双写。
+ExecStartPost=-/bin/sh -c 'for d in /dev/weaknet_cpu_stat /dev/weaknet_softirq; do if test -c "$$d"; then echo "$${d##*/} ready"; else echo "$${d##*/} unavailable (module not loaded; host_pressure will report unavailable, business unaffected)"; fi; done'
 
 # 加载后立刻给一次采样基线：服务端首次读到的是累计值，需要两次才有差值。
 # 这一段纯粹是热身，失败无影响。

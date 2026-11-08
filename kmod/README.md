@@ -12,21 +12,29 @@
 > 历史实现见 `git show 289cad4:kmod/weaknet_lradc_keys.c`，根因定位与诊断方法学
 > 保留在第八节（结论仍在，代码不再入库）。
 
-> **定位（2026-11-07 更新）：`weaknet_cpu_stat` 已进入生产链路；其余仍是实验代码。**
+> **定位（2026-11-08 更新）：两个模块均已进入生产链路。**
 >
-> `weaknet_cpu_stat` 现在随 `tools/ci.sh` 打包进 `dist-arm64/kmod/`，经 OTA
-> 落到 `releases/<ver>/kmod/`，由 `tools/weaknet-kmod.service` 加载，服务端
-> `server/src/host_pressure_monitor.cpp` 经 `/dev/weaknet_cpu_stat` 消费它。
-> 它进主构建、进 OTA manifest、有独立的 systemd 加载单元。
+> 两者都随 `tools/ci.sh` 打包进 `dist-arm64/kmod/`，经 OTA 落到
+> `releases/<ver>/kmod/`，由 `tools/weaknet-kmod.service` 各自 insmod，
+> 服务端 `server/src/host_pressure_monitor.cpp` 经 `/dev/weaknet_cpu_stat`
+> 与 `/dev/weaknet_softirq` 消费它们。都进主构建、进 OTA manifest、
+> 有 systemd 加载单元。
+>
+> 两者是**互补的一对**，回答两个层次的问题：
+> - `weaknet_cpu_stat` → 采集端**忙不忙**（CPU 时间）→ `CPU_BUSY_RATIO`
+> - `weaknet_softirq`  → 忙**在哪**（软中断类型构成）→ `SOFTIRQ_NET_RX_SHARE`
+>
+> 归因时先看前者：没饱和就到此为止。饱和了才看后者，细分成「收包主导」
+> （过载与被观测链路的流量相关）还是「非网络负载主导」（真正的自伤）。
 >
 > 但**边界依然明确**：
-> - 它**不是** `IMonitorPlugin`，不新增 D-Bus 方法，不进 `config.yaml`；
+> - 它们**都不是** `IMonitorPlugin`，不新增 D-Bus 方法，不进 `config.yaml`；
 >   对外的唯一出口是 `weaknet-cli experience` 的 `observer_attribution` 字段。
 > - 加载失败**绝不阻塞** `weaknet-server`（`weaknet-kmod.service` 用 `Wants=`
 >   而非 `Requires=`，服务端也不反向依赖它）。缺失时 `host_pressure` 报
 >   `unavailable`，业务链路行为与引入之前完全一致。
-> - `weaknet_softirq` **仍然是实验代码**：虽被一起打包（同一套构建链，成本为零），
->   但**没有** systemd 单元加载它，也没有任何生产消费者。`.ko` 在包里不等于在用。
+> - 两个模块**互相独立**：两条 insmod 各自带 `-` 前缀，任一个失败都不影响
+>   另一个。设备节点缺失只让对应指标报 `unavailable`，不伪造 0。
 >
 > 下面这段原初边界声明保留，作为历史记录 —— 它描述的是 2026-11-06 之前的状态：
 >
@@ -107,13 +115,12 @@
 
 ## 一、两个模块
 
-| 模块 | 源文件 | 作用 | 用户态出口 |
-| --- | --- | --- | --- |
-| `weaknet_cpu_stat` | `weaknet_cpu_stat.c` | per-CPU 累计时间（user/nice/system/idle/iowait/irq/softirq/steal/guest/guest_nice） | `/dev/weaknet_cpu_stat` |
-| `weaknet_softirq` | `weaknet_softirq.c` | per-CPU 十类软中断累计触发次数 | `/dev/weaknet_softirq` |
+| 模块 | 源文件 | 作用 | 用户态出口 | 产出指标 |
+| --- | --- | --- | --- | --- |
+| `weaknet_cpu_stat` | `weaknet_cpu_stat.c` | per-CPU 累计时间（user/nice/system/idle/iowait/irq/softirq/steal/guest/guest_nice） | `/dev/weaknet_cpu_stat` | `CPU_BUSY_RATIO` |
+| `weaknet_softirq` | `weaknet_softirq.c` | per-CPU 十类软中断累计触发次数 | `/dev/weaknet_softirq` | `SOFTIRQ_NET_RX_SHARE` |
 
-两者同构，都是**数据采集**类模块；`weaknet_cpu_stat` 已进生产链路，
-`weaknet_softirq` 仍是实验代码（见上方边界声明）。
+两者同构，都是**数据采集**类模块，且都已进生产链路（见上方边界声明）。
 
 > 历史上还有第三个模块 `weaknet_lradc_keys`（LRADC 按键驱动），已于 2026-11-08
 > 移除源码，根因定位与诊断方法学保留在第八节。
@@ -124,6 +131,13 @@
 共享的 ABI 结构定义在 `weaknet_kmod_abi.h`，内核模块与用户态工具**包含同一份头文件**，
 避免两边结构体各写一遍导致布局漂移。
 
+> **一个已经踩过的坑（改用户态映射代码前必读）**：内核 `mmap` 侧用的是
+> `PAGE_ALIGN(sizeof(snapshot))`，用户态 `mmap` 必须用 `sizeof(snapshot)`
+> **且必须是自己的结构体类型**。曾把 `weaknet_softirq` 的映射长度错写成
+> `weaknet_cpu_stat` 的结构体大小（24600 > 实际 `g_map_size` 24576），
+> 结果 `mmap` 返回 `EINVAL`，表现为"设备存在但永远读不到数"。
+> 两个结构体大小不同，混用不会报编译错，只会静默失败。
+
 ## 二、构建与运行
 
 **生产路径已自动化**：`tools/ci.sh` 会交叉编译、打包进 OTA、部署、加载。
@@ -132,18 +146,18 @@
 ### 生产验证命令
 
 ```bash
-# 模块与设备节点
-lsmod | grep weaknet_cpu_stat
-ls -l /dev/weaknet_cpu_stat
+# 模块与设备节点（两个都要有）
+lsmod | grep weaknet
+ls -l /dev/weaknet_cpu_stat /dev/weaknet_softirq
 
 # 数据是否真的进了业务层（唯一出口）
 ssh board '/home/radxa/weaknet/client/bin/weaknet-cli experience' \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["observer_attribution"])'
 
 # 服务端读数（约 15 秒一个采样周期）
-ssh board 'sudo journalctl -u weaknet-server --since "-2 min" | grep cpu_busy_ratio'
+ssh board 'sudo journalctl -u weaknet-server --since "-2 min" | grep -E "cpu_busy_ratio|softirq"'
 
-# 加载单元状态
+# 加载单元状态（就绪探针会逐节点报告，缺哪个一眼可见）
 ssh board 'systemctl status weaknet-kmod'
 ssh board 'sudo journalctl -u weaknet-kmod -n 20'
 ```
@@ -500,10 +514,12 @@ per-CPU 的累计快照与基线，这是当前实现没有做的。
   （本板未开，`kcpustat_cpu_fetch` 走的是内联 `*dst = kcpustat_cpu(cpu)` 分支）。
 - **没有**做跨内核版本兼容性矩阵，只验证了 5.15.147 与编译期的 6.8。
   `CONFIG_MODVERSIONS` 未开启，换内核时只有 vermagic 风险。
-- **没有**让 `weaknet_softirq` 进生产（有 `.ko`、有构建链，但没有消费者、
-  没有 systemd 单元加载）。`.ko` 在包里不等于在用。
-- **没有**让 `weaknet_softirq` 进生产（有 `.ko`、有构建链，但没有消费者、
-  没有 systemd 单元加载）。`.ko` 在包里不等于在用。
+- **没有**给 `weaknet_softirq` 加 `valid` 字段（`weaknet_cpu_stat` 有）。
+  软中断计数是纯单调递增，不存在"CPU 热插拔后被内核重置"的情形，
+  所以内核侧没有置位需求；代价是用户态必须自己检测计数倒退
+  （见 `host_pressure_monitor.cpp` 的 per-CPU backwards 检查）。
+  两个模块的 ABI 因此不对称——若要统一，得升
+  `WEAKNET_KMOD_ABI_VERSION` 并同步改两侧。
 
 > `weaknet_lradc_keys` 相关的两条历史边界（"没验证到真实 ADC 转换"、
 > "没观察到 `input->close`"）随源码于 2026-11-08 一并移除，结论保留在第八节。
@@ -515,6 +531,14 @@ per-CPU 的累计快照与基线，这是当前实现没有做的。
   零失败、RSS 零增长、采样节拍 1.000 Hz），见第五节。
 - ~~板端手工 make~~ → 已有 `tools/kmod_cross_build.sh` 宿主交叉编译，
   进 `tools/ci.sh` 与 OTA manifest。
+
+**曾经列在这里、现已完成（2026-11-08）：**
+
+- ~~没有让 `weaknet_softirq` 进生产（有 `.ko`、有构建链，但没有消费者、
+  没有 systemd 单元加载）~~ → `weaknet-kmod.service` 已 insmod 它，
+  `HostSoftirqShareSampler` 消费它并发布 `SOFTIRQ_NET_RX_SHARE`，
+  `attributeObserverDegradation` 第 3a 步用它细分 SELF_INFLICTED。
+  也就是说：`.ko` 在包里，并且真的在用了。
 
 **一个未覆盖的验证缺口（诚实记录）：**
 
