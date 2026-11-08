@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0
 #
-# 在 x86_64 宿主上交叉编译 ARM64 内核模块（weaknet_cpu_stat / weaknet_softirq /
-# weaknet_lradc_keys），产物可直接在目标板上 insmod。
+# 在 x86_64 宿主上交叉编译 ARM64 内核模块（weaknet_cpu_stat / weaknet_softirq），
+# 产物可直接在目标板上 insmod。
 #
 # 为什么需要这个脚本：板端「linux-headers」包里的 scripts/ 目录自带
 # **aarch64 二进制**（fixdep、modpost），宿主机跑不了（Exec format error）。

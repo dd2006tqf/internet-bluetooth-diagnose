@@ -6,7 +6,7 @@
 # 仅供需要多点触控时在板端手工 make + insmod。
 #
 # 为什么单独一个目录而不是并入 kmod/Makefile：
-#   kmod/Makefile 里的三个模块会被 tools/ci.sh 整个交叉编译进发布包
+#   kmod/Makefile 里的两个模块会被 tools/ci.sh 整个交叉编译进发布包
 #   （releases/<ver>/kmod/），它们是无害的观测类模块。而 hid-multitouch
 #   会与内核内建的 hid-generic 争抢同一批 USB HID 设备，属于**改变系统
 #   输入行为**的模块——必须由人显式加载，绝不能默认随包落地。

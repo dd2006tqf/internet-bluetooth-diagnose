@@ -4,8 +4,13 @@
 目的是把项目的观测能力从用户态/eBPF 延伸到内核态，验证这条技术路线是否值得
 继续投入。
 
-目录里有三个模块，分两类：`weaknet_cpu_stat` 与 `weaknet_softirq` 是**数据采集**，
-`weaknet_lradc_keys` 是**驱动技术栈练习**（见第八节）。
+目录里有两个模块，同属**数据采集**类：`weaknet_cpu_stat` 与 `weaknet_softirq`。
+
+> **第三个模块 `weaknet_lradc_keys` 已于 2026-11-08 移除。** 它是驱动技术栈练习
+> （LRADC 按键驱动），在 A733 上 LRADC IP 未被 BSP 接通，且产品侧无业务消费者，
+> 随发布包分发却从不加载，还会让 `kmod_cross_build.sh` 多一个可能整批失败的入口。
+> 历史实现见 `git show 289cad4:kmod/weaknet_lradc_keys.c`，根因定位与诊断方法学
+> 保留在第八节（结论仍在，代码不再入库）。
 
 > **定位（2026-11-07 更新）：`weaknet_cpu_stat` 已进入生产链路；其余仍是实验代码。**
 >
@@ -20,9 +25,8 @@
 > - 加载失败**绝不阻塞** `weaknet-server`（`weaknet-kmod.service` 用 `Wants=`
 >   而非 `Requires=`，服务端也不反向依赖它）。缺失时 `host_pressure` 报
 >   `unavailable`，业务链路行为与引入之前完全一致。
-> - `weaknet_softirq` 与 `weaknet_lradc_keys` **仍然是实验代码**：虽被一起
->   打包（同一套构建链，成本为零），但**没有** systemd 单元加载它们，
->   也没有任何生产消费者。`.ko` 在包里不等于在用。
+> - `weaknet_softirq` **仍然是实验代码**：虽被一起打包（同一套构建链，成本为零），
+>   但**没有** systemd 单元加载它，也没有任何生产消费者。`.ko` 在包里不等于在用。
 >
 > 下面这段原初边界声明保留，作为历史记录 —— 它描述的是 2026-11-06 之前的状态：
 >
@@ -101,18 +105,20 @@
 
 ---
 
-## 一、三个模块
+## 一、两个模块
 
 | 模块 | 源文件 | 作用 | 用户态出口 |
 | --- | --- | --- | --- |
 | `weaknet_cpu_stat` | `weaknet_cpu_stat.c` | per-CPU 累计时间（user/nice/system/idle/iowait/irq/softirq/steal/guest/guest_nice） | `/dev/weaknet_cpu_stat` |
 | `weaknet_softirq` | `weaknet_softirq.c` | per-CPU 十类软中断累计触发次数 | `/dev/weaknet_softirq` |
-| `weaknet_lradc_keys` | `weaknet_lradc_keys.c` | Allwinner A733 LRADC 按键驱动（L1 骨架 / L2 中断 / L3 input / L4 debugfs） | `/dev/input/eventN` |
 
-前两个同构，是**数据采集**类模块；第三个性质不同，是**驱动技术栈练习**，见第八节。
-三者都不进生产链路。
+两者同构，都是**数据采集**类模块；`weaknet_cpu_stat` 已进生产链路，
+`weaknet_softirq` 仍是实验代码（见上方边界声明）。
 
-前两个模块同构：`hrtimer` 1 Hz 采样 → 写入内核私有缓冲区 → seqlock 保护下
+> 历史上还有第三个模块 `weaknet_lradc_keys`（LRADC 按键驱动），已于 2026-11-08
+> 移除源码，根因定位与诊断方法学保留在第八节。
+
+两个模块同构：`hrtimer` 1 Hz 采样 → 写入内核私有缓冲区 → seqlock 保护下
 `memcpy` 到 `vmalloc_user` 共享页 → 用户态 `mmap` 只读访问。
 
 共享的 ABI 结构定义在 `weaknet_kmod_abi.h`，内核模块与用户态工具**包含同一份头文件**，
@@ -496,10 +502,11 @@ per-CPU 的累计快照与基线，这是当前实现没有做的。
   `CONFIG_MODVERSIONS` 未开启，换内核时只有 vermagic 风险。
 - **没有**让 `weaknet_softirq` 进生产（有 `.ko`、有构建链，但没有消费者、
   没有 systemd 单元加载）。`.ko` 在包里不等于在用。
-- **没有**在 `weaknet_lradc_keys` 上验证到真实 ADC 转换（本板硬件行为，见第八节）。
-  它的 L3 链路是靠 debugfs 注入证明的，不是靠物理按键。
-- **没有**让 `weaknet_lradc_keys` 的 `input->close` 被观察到（X server 常驻占用
-  evdev 节点，open 计数不归零，见第八节）。
+- **没有**让 `weaknet_softirq` 进生产（有 `.ko`、有构建链，但没有消费者、
+  没有 systemd 单元加载）。`.ko` 在包里不等于在用。
+
+> `weaknet_lradc_keys` 相关的两条历史边界（"没验证到真实 ADC 转换"、
+> "没观察到 `input->close`"）随源码于 2026-11-08 一并移除，结论保留在第八节。
 
 **曾经列在这里、现已完成（2026-11-07）：**
 
@@ -523,9 +530,20 @@ per-CPU 的累计快照与基线，这是当前实现没有做的。
 这条留作现场观察项：真实过载发生时，`observer_attribution` 应当自己变成
 `SELF_INFLICTED`。
 
-## 八、`weaknet_lradc_keys`：LRADC 按键驱动
+## 八、已移除：`weaknet_lradc_keys`（LRADC 按键驱动）
 
-前两个模块是数据采集，这第三个性质不同：它是**驱动技术栈的完整练习**，覆盖
+> **2026-11-08：源码已删除。本节保留根因定位与诊断方法学，代码不再入库。**
+>
+> 删除原因：① LRADC 在 A733 上未被 BSP 接通，**永远不可能在目标板上工作**；
+> ② 产品侧无业务消费者（输入需求由 `qt_dashboard` 承接，未来若接实体键走
+> in-tree `gpio-keys` + Qt evdev 插件，不需要自研驱动）；
+> ③ 它随发布包分发却从不 `insmod`，还让 `kmod_cross_build.sh` 的 vermagic
+> 校验多一个可能整批失败的入口（`weaknet_lradc_keys.ko` 失败会
+> `rm -rf dist-arm64/kmod`，连带 `weaknet_cpu_stat` 一起丢失）。
+>
+> 历史实现：`git show 289cad4:kmod/weaknet_lradc_keys.c`（1362 行）。
+
+它曾是**驱动技术栈的完整练习**，覆盖
 `platform_driver` / OF 匹配 / MMIO / 时钟 / 复位 / 中断 / input 子系统 / debugfs
 七件事。目标板 `radxa cubie a7a`（Allwinner A733 / sun60iw2p1）。
 
@@ -543,8 +561,9 @@ Linux 主线有 `drivers/input/keyboard/sun4i-lradc-keys.c`，但在这个板上
 4. **时钟/复位没被主线驱动管**——主线完全不碰 clk 与 reset，本板不显式
    `clk_prepare_enable` + `reset_control_deassert` 就拿不到可用寄存器。
 
-因此这里选择重写而非移植，寄存器与位定义参照主线（GPL-2.0-or-later,
-Copyright (C) 2014 Hans de Goede），其余部分为本项目重写。
+因此当年选择重写而非移植，寄存器与位定义参照主线（GPL-2.0-or-later,
+Copyright (C) 2014 Hans de Goede），其余部分为本项目重写。源码见
+`git show 289cad4:kmod/weaknet_lradc_keys.c`。
 
 ### 硬件事实（实测）
 
@@ -558,7 +577,7 @@ Copyright (C) 2014 Hans de Goede），其余部分为本项目重写。
 | 参考电压 | 1350 mV（来自 compatible 后缀） |
 | 按键表 | key0 210mV→KEY_VOLUMEUP(115) / key1 410→VOLUMEDOWN(114) / key2 590→MENU(139) / key3 750→ENTER(28) / key4 880→HOMEPAGE(172) |
 
-寄存器布局集中在源文件 1.2 节的 `#define` 块：`CTRL 0x00` / `INTC 0x04` /
+寄存器布局（历史实现中的 `#define` 块）：`CTRL 0x00` / `INTC 0x04` /
 `INTS 0x08` / `DATA0 0x0c` / `DATA1 0x10`，`INTS` 为写 1 清零（W1C），
 采样值取 `DATA0 & 0x3f`（6 bit，满量程 63）。
 
@@ -615,9 +634,9 @@ vendor 复位值 `0x01000168` + `INTC=0x1f1f`，全部零响应；已排除 gpad
 持有 `event11`（实测 PID 546 持有 fd 34），open 计数永不为零，内核自然不调
 close。这是真实桌面环境的既定行为，不是驱动缺陷。
 
-**诚实结论：本驱动在 A733 上不能作为可用的按键输入设备。** 它的价值是完整的
-驱动链路实现与诊断设施（`raw` / `inject` / `selftest`），以及换到 mainline
-兼容 SoC 时的适配基座。
+**诚实结论：本驱动在 A733 上不能作为可用的按键输入设备。** 它当年提供的价值是
+完整的驱动链路实现与诊断设施（`raw` / `inject` / `selftest`），以及换到
+mainline 兼容 SoC 时的适配基座——这些能力已随源码移除，方法论保留在本节。
 
 ### 最终判定（2026-11-06 补充）
 
@@ -632,13 +651,14 @@ close。这是真实桌面环境的既定行为，不是驱动缺陷。
 同一块 A733 上，同属 ADC 类的两个 IP：一个驱动全对但硬件不响应，另一个
 驱动与硬件都正常。这排除了「我们驱动写错了」的可能性。
 
-结合本文件前面「根因定位」一节已有的三条证据（`# CONFIG_AW_LRADC is not set`、
+结合 `openspec/tasks/2026-11-06-lradc-keys-driver.md`「根因定位」一节的三条证据
+（`# CONFIG_AW_LRADC is not set`、
 `sunxi-gpadc ... warn: keyadc not select`、DT 属性对比显示模拟前端配置全在 gpadc 上），
 可以给出定论：**A733 上 LRADC 的按键功能已被 gpadc 取代**。`DATA0 = 0x3f`
 不是「转换失败」，而是「模拟输入未连接，通道浮到 VREF 满量程」。缺的是 BSP
 层面的模拟前端配置，不是驱动代码。
 
-**因此本模块的处置是：保留、不接生产、不改写成 GPADC 驱动。**
+**因此本模块的处置是：删除源码，不接生产，不改写成 GPADC 驱动。**
 
 不改写为 GPADC 的具体理由：
 
@@ -652,16 +672,23 @@ close。这是真实桌面环境的既定行为，不是驱动缺陷。
 ### 业务价值判定
 
 按键输入对本项目**零业务价值**。产品定位是工业无线诊断网关
-（`docs/产品定位-工业无线诊断网关.md:39`：「不控制、不管理，只做观测与诊断」），
-部署形态是无人值守的机柜侧设备：
+（`docs/产品定位-工业无线诊断网关.md`：「不控制、不管理，只做观测与诊断」）。
 
-- 没有用户会站在机柜前按设备上的键；
-- 现场误触会污染事件流；
-- 远程操作走 `weaknet-cli` → D-Bus，不需要本地按键。
+> **2026-11-08 复核（定位 v1.2 之后）**：原判定写的是「部署形态是无人值守的
+> 机柜侧设备，没有用户会站在机柜前按键」。定位 v1.2 承认了「现场交互终端」，
+> 这条前提已不成立——现场确实有人。但结论**仍然不变**，理由换了：
+>
+> - 现场终端的四类只读交互（指标切换 / 时间窗切换 / 截图导出 / 查看历史）
+>   全部由 `qt_dashboard` 的触摸/点击承接，`test_main_window` 8 条交互测试已绿；
+> - 未来若真要接实体按键，正确路径是 in-tree `gpio-keys` 或 `sun4i-lradc-keys`
+>   + Qt evdev 键盘插件 → `QShortcut`，**全链路零行自研驱动代码**；
+> - 白名单是**封闭**的，物理键能做的事触摸都能做，且触摸还能改文案、加确认、
+>   上下文化。物理键唯一的结构性优势是「不依赖显示通路」，而显示坏了看板就
+>   看不见，也就没人会去按那个键——这个优势在本产品里不成立。
 
-所以本模块**不应被「修好」**。它的价值是驱动技术栈纵深 + 一套可复用的
-硬件诊断方法学（`raw` 任意偏移读写 / `inject` 不依赖硬件验证上报链路 /
-`selftest` 自证 ISR 是否活着），以及这个诚实的负面结论本身。
+所以本模块**不应被「修好」**，也不应继续留在构建链里。它的价值是驱动技术栈
+纵深 + 一套可复用的硬件诊断方法学（`raw` 任意偏移读写 / `inject` 不依赖硬件
+验证上报链路 / `selftest` 自证 ISR 是否活着），以及这个诚实的负面结论本身。
 
 > 完整方案见仓库根目录 `驱动面能力引入与业务融合方案.md` 第 13 节。
 

@@ -20,7 +20,10 @@
 
 obj-m += weaknet_cpu_stat.o
 obj-m += weaknet_softirq.o
-obj-m += weaknet_lradc_keys.o
+
+# weaknet_lradc_keys.o 已于 2026-11-08 移除（LRADC 在 A733 上不可用，
+# 且无业务消费者）。历史实现见 git show 289cad4:kmod/weaknet_lradc_keys.c，
+# 根因定位与诊断方法学保留在 README.md 第八节。
 
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)

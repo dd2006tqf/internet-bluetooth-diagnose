@@ -194,7 +194,7 @@ cat /sys/class/input/eventX/device/capabilities/abs
 
 **本模块不并入 `kmod/Makefile`，不被 `tools/ci.sh` 收集，不进 OTA manifest，不随发布包分发。**
 
-原因：`kmod/Makefile` 里的三个模块是**无害的观测类模块**（只读内核数据）。
+原因：`kmod/Makefile` 里的两个模块是**无害的观测类模块**（只读内核数据）。
 而 `hid-multitouch` 会与内建 `hid-generic` 争抢同一批 USB HID 设备，
 **改变系统输入行为**——一旦默认加载，所有 HID 设备（键鼠、条码枪、工业手柄）
 的绑定关系都会变。这类模块必须由人显式加载。
