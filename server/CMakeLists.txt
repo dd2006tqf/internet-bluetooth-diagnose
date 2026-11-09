@@ -64,6 +64,7 @@ set(SERVER_SOURCES
     src/traffic_analyzer.cpp
     src/update_status.cpp
     src/using_iface.cpp
+    src/v4l2_frame_source.cpp
     src/utils/bpf_map_sizing.cpp
     src/utils/json_escape.cpp
     src/video_qoe_attribution.cpp

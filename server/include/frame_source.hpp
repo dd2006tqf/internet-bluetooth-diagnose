@@ -15,7 +15,7 @@
  *     L3  FrameStats            ← 本文件定义的数据契约
  *     L2  IFrameSource          ← 本文件定义的接口（唯一分界线）
  *         ├─ SyntheticFrameSource   合成源，无硬件即可测透 L3/L4
- *         └─ V4l2FrameSource        真机源，待摄像头到货
+ *         └─ V4l2FrameSource        真机源（见 v4l2_frame_source.hpp）
  *     L1  内核 vind / csi / isp / sensor
  *
  *   IFrameSource 是唯一的分界线。它的契约稳定之后，换实现（合成→真机）

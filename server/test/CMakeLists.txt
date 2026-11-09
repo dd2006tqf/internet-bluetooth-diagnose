@@ -178,6 +178,14 @@ add_executable(test_frame_source_gtest
     unit/test_frame_source_gtest.cpp)
 target_link_libraries(test_frame_source_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+# 视频 QoE L2 层的真机实现：V4L2 帧源。
+# 真机取帧路径需摄像头在位，但失败路径与接口纪律在 CI 上可测——
+# 而这恰是最容易出错的部分（缺数据伪装成健康）。构造函数不碰设备，
+# 所以无摄像头的机器也能构造并验证 start() 失败语义。
+add_executable(test_v4l2_frame_source_gtest
+    unit/test_v4l2_frame_source_gtest.cpp)
+target_link_libraries(test_v4l2_frame_source_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # 视频 QoE L4 归因：五行真值表 + 三条拒绝归因的前置检查。
 # 纯函数，无状态，无硬件依赖。
 add_executable(test_video_qoe_attribution_gtest
@@ -307,6 +315,7 @@ foreach(test_target
     test_assurance_policy_source_gtest
     test_observer_attribution_gtest
     test_frame_source_gtest
+    test_v4l2_frame_source_gtest
     test_video_qoe_attribution_gtest
     test_thermal_monitor_gtest
     test_active_connectivity_gtest
