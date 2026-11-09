@@ -51,6 +51,19 @@ std::vector<std::string> collectFrameIssues(const FrameStats& frames,
         issues.emplace_back("FRAME_GAP_P95");
     }
 
+    // 出队延迟与帧间隔必须分成两条，合并会丢掉唯一的归因方向：
+    //   帧间隔高 + 延迟低 → sensor / ISP 出帧慢（采集端）
+    //   帧间隔高 + 延迟高 → 我们的 DQBUF 循环被拖慢（用户态）
+    //   两者都高         → buffer_count 太小
+    // 只有把它们分开报，运维才知道该去查硬件还是查自己的进程。
+    //
+    // 注意判据是 `>` 而不是 `>=`：0 表示「没采到」（例如合成源从不设这个
+    // 字段），用 >= 会让阈值配成 0 时把「没有数据」误判成「有延迟」。
+    if (frames.p95_dequeue_latency_ms > 0 &&
+        frames.p95_dequeue_latency_ms >= thresholds.dequeue_latency_p95_bad_ms) {
+        issues.emplace_back("DEQUEUE_LATENCY");
+    }
+
     if (frames.frames_expected > 0) {
         const double corrupt_ratio =
             static_cast<double>(frames.frames_corrupt) /
@@ -161,6 +174,16 @@ VideoQoeAttributionResult attributeVideoQoe(
     result.evidence.push_back(
         EvidenceItem{"video_seq_gap_count", static_cast<double>(frames.seq_gap_count),
                      "gap events, not lost frames"});
+    // 出队延迟单独作为一条证据：它是唯一能把「画面卡顿」拆成
+    // 「采集端慢」与「我们自己慢」的原始事实。没有它，APP_LAYER_SUSPECT
+    // 只能把人指向「应用侧或采集侧」这个笼统范围。
+    //
+    // detail 里带上帧间隔 P95 作为对照：两个值要一起看才有归因意义，
+    // 单看出队延迟无法区分「积压」与「本来就慢」。
+    result.evidence.push_back(
+        EvidenceItem{"video_dequeue_latency_p95_ms",
+                     static_cast<double>(frames.p95_dequeue_latency_ms),
+                     "vs gap_p95=" + fmtMs(frames.p95_gap_ms)});
 
     // ---- 画面好 + 网络好 ----
     if (!frames_bad && !network_bad) {

@@ -38,6 +38,9 @@
  *   不一致直接返回 NONE 并说明原因——四象限在错位窗口下必然误判。
  * - 画面好 + 网络差 = 怀疑**我们自己**（NETWORK_UNVERIFIED），不是给网络开脱，
  *   而是指向我们自己观测方法的缺陷。这是本设计最锋利的地方。
+ * - `DEQUEUE_LATENCY` 也是「画面差」的构成项，但它指向的是**用户态取帧太慢**，
+ *   不是采集端出帧慢。两者必须分开报，否则 `APP_LAYER_SUSPECT` 只能给出
+ *   「应用侧或采集侧」这个笼统范围，现场无从下手。
  */
 
 #pragma once
@@ -132,6 +135,17 @@ struct VideoQoeThresholds {
     /// 坏帧率达到多少算「画面差」
     double frame_corrupt_ratio_bad{0.01};
 
+    /// 出队延迟 P95 超过多少毫秒算「我们取得太慢」
+    ///
+    /// 与 `frame_gap_p95_bad_ms` 是两个不同的判据，不能合并：
+    /// 帧间隔大而延迟低 = 采集端（sensor / ISP）出帧慢；
+    /// 延迟高 = 用户态 DQBUF 循环被拖慢，问题在我们自己身上。
+    /// 这条判据的价值就在于把后者从「画面卡」里单独拎出来。
+    ///
+    /// 默认 200ms：3 个帧周期（30fps 约 33ms/帧）。低于此值更像是
+    /// 调度抖动而非真实积压，报出来只会制造噪音。
+    uint32_t dequeue_latency_p95_bad_ms{200};
+
     /// 网络劣化持续多少个窗口才算「持续」（用于 CONFIRMED_LINK_FAULT）
     uint32_t confirm_windows{3};
 };
@@ -168,8 +182,17 @@ struct VideoQoeAttributionResult {
     ///   没有采到帧却说"有问题"，与把"不知道"说成"健康"同样有害。
     /// - 画面正常时为空。每轮刷一条会让告警变成噪音。
     ///
-    /// 当前取值：`FRAME_LOSS` / `FRAME_GAP_P95` / `CORRUPT_FRAMES`，
-    /// 与 `VideoQoeThresholds` 的三条画面阈值一一对应。
+    /// 当前取值：`FRAME_LOSS` / `FRAME_GAP_P95` / `CORRUPT_FRAMES` /
+    /// `DEQUEUE_LATENCY`，与 `VideoQoeThresholds` 的四条画面阈值一一对应。
+    ///
+    /// `FRAME_GAP_P95` 与 `DEQUEUE_LATENCY` 会同时出现，这不是重复，两者的
+    /// 组合才给出归因方向（与 `frame_source.hpp` 的三行对照表同源）：
+    ///
+    /// | 现象 | 帧间隔 | 出队延迟 | 结论 |
+    /// | --- | --- | --- | --- |
+    /// | 只报 `FRAME_GAP_P95` | 高 | 低 | 采集端出帧慢（sensor / ISP）|
+    /// | 只报 `DEQUEUE_LATENCY` | 正常 | 高 | 用户态 DQBUF 循环被拖慢 |
+    /// | 两者都报 | 高 | 高 | `buffer_count` 太小 |
     std::vector<std::string> issues;
 
     /// 机器可读证据条目，直接挂到 SleResult.evidence 上

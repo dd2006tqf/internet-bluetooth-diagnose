@@ -81,6 +81,34 @@ struct V4l2CaptureConfig {
     /// select() 超时（毫秒）。超时本身不是错误，但要计入 max_gap_ms
     uint32_t select_timeout_ms{2000};
 
+    /// 是否尝试把驱动帧率设成 `fps`（`VIDIOC_S_PARM`）
+    ///
+    /// 默认 true，且**必须**默认 true：`frames_expected` 是按 `fps` 推的，
+    /// 若驱动实际跑在别的帧率上，丢帧率会算成一个恒定的巨大假值。
+    ///
+    /// 实测证据（vivid 虚拟设备，另起进程把驱动设成 15fps，本进程配置 30fps
+    /// 且 `set_frame_rate=false`）：
+    ///   expected=30 received=15 lost=15 loss_ratio=0.5000  ← 纯属配置没生效
+    /// 注意驱动帧率状态**跨进程保留**，所以这个坑很容易在「上一步设过帧率」
+    /// 之后突然出现。真机同理：IMX219 的默认帧率不一定是 30。不设就是算错。
+    ///
+    /// 设为 false 只应在「驱动不支持 S_PARM 且已知实际帧率」时使用，
+    /// 此时须自己保证 `fps` 与驱动实际一致。
+    bool set_frame_rate{true};
+
+    /// 是否允许改用多平面 API（`V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE`）
+    ///
+    /// 默认 true：驱动声明 MPLANE 能力时优先用它。原因是嵌入式 ISP 的 DMA
+    /// 通道常按平面分离（Y 一个通道、UV 一个通道），单平面要靠驱动额外拼装，
+    /// 部分 sunxi-vin 配置只出 NV12M 而不出 NV12。
+    ///
+    /// 探测顺序：先看 `cap.capabilities` 与 `cap.device_caps` 是否含
+    /// `V4L2_CAP_VIDEO_CAPTURE_MPLANE`，有则用 MPLANE，否则回落到单平面。
+    /// 两条路径产出的 `FrameStats` 语义完全一致（见单测）。
+    ///
+    /// 设为 false 是「驱动声称支持 MPLANE 但实际有问题」时的兜底。
+    bool allow_multiplanar{true};
+
     /// 单次 snapshotAndReset() 的处理时间上限（毫秒）
     ///
     /// 不是「采集多久」，而是「最多花多久把队列里已到的帧全部取走」。

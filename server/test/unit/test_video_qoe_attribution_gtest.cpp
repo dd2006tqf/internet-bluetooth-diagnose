@@ -387,6 +387,89 @@ TEST(VideoQoeAttribution, IssuesDoNotDependOnNetworkSide) {
 }
 
 // ---------------------------------------------------------------------------
+// 6.6 出队延迟：把「采集端慢」与「我们自己慢」拆开
+//
+// `p95_dequeue_latency_ms` 如果没有消费者，它就只是一段自我声明的注释。
+// 这一节守的是：它真的会改变归因输出（issues 与 evidence），而不只是被赋值。
+// ---------------------------------------------------------------------------
+
+TEST(VideoQoeAttribution, HighDequeueLatencyBecomesItsOwnIssue) {
+    // 帧间隔正常但出队延迟很高 = 用户态 DQBUF 循环被拖慢。
+    // 这是唯一一种「画面卡但采集端没错」的形态，必须能单独报出来。
+    //
+    // 若没有这条判据，这类故障会被归到 APP_LAYER_SUSPECT，而该结论的解释
+    // 是「编码器 / 内存 / CPU / sensor / ISP」——把查自己进程的线索
+    // 混在了一堆硬件选项里。
+    FrameStats f = goodFrames();
+    f.p95_dequeue_latency_ms = 400;   // > 默认阈值 200ms
+    // p95_gap_ms 保持 33ms（正常）——正是这种组合才说明问题在用户态
+
+    auto r = attributeVideoQoe(f, netGood());
+
+    ASSERT_EQ(r.attribution, VideoQoeAttribution::APP_LAYER_SUSPECT);
+    const std::set<std::string> got(r.issues.begin(), r.issues.end());
+    EXPECT_TRUE(got.count("DEQUEUE_LATENCY"))
+        << "出队延迟超标必须单独报一条成因";
+    EXPECT_FALSE(got.count("FRAME_GAP_P95"))
+        << "帧间隔正常时不得顺带报卡顿，否则归因方向就错了";
+}
+
+TEST(VideoQoeAttribution, DequeueLatencyAndGapAreDistinctIssues) {
+    // 帧间隔高 + 延迟高 = 缓冲区不足。两条都要报，因为它们各自对应
+    // 不同的处置动作（加 buffer vs 加快消费）。
+    FrameStats f = goodFrames();
+    f.p95_gap_ms = 500;
+    f.p95_dequeue_latency_ms = 400;
+    f.frames_received = 15;   // 顺带丢帧
+
+    auto r = attributeVideoQoe(f, netGood());
+
+    const std::set<std::string> got(r.issues.begin(), r.issues.end());
+    EXPECT_TRUE(got.count("FRAME_GAP_P95"));
+    EXPECT_TRUE(got.count("DEQUEUE_LATENCY"));
+    EXPECT_TRUE(got.count("FRAME_LOSS"));
+}
+
+TEST(VideoQoeAttribution, ZeroDequeueLatencyIsNotReportedAsBad) {
+    // 0 表示「没采到」（合成源从不设这个字段），不是「延迟为零」。
+    // 阈值配成 0 时尤其危险：`>=` 会把每个不设该字段的源都判成有延迟，
+    // 于是所有合成源测试与无摄像头板子都会凭空多出一条成因。
+    FrameStats f = goodFrames();
+    f.p95_dequeue_latency_ms = 0;
+
+    VideoQoeThresholds t;
+    t.dequeue_latency_p95_bad_ms = 0;   // 极端配置
+
+    auto r = attributeVideoQoe(f, netGood(), t);
+
+    const std::set<std::string> got(r.issues.begin(), r.issues.end());
+    EXPECT_FALSE(got.count("DEQUEUE_LATENCY"))
+        << "0 是「未采样」的哨兵值，不得当作「延迟为零」参与比较";
+    EXPECT_EQ(r.attribution, VideoQoeAttribution::CONSISTENT_HEALTHY);
+}
+
+TEST(VideoQoeAttribution, DequeueLatencyAppearsInEvidence) {
+    // 原始值必须可追溯，否则运维只看到「有延迟」却不知道多大。
+    // detail 里带上帧间隔 P95 作对照——两个值一起看才有归因意义。
+    FrameStats f = goodFrames();
+    f.p95_gap_ms = 120;
+    f.p95_dequeue_latency_ms = 350;
+
+    auto r = attributeVideoQoe(f, netGood());
+
+    bool found = false;
+    for (const auto& e : r.evidence) {
+        if (e.metric == "video_dequeue_latency_p95_ms") {
+            found = true;
+            EXPECT_DOUBLE_EQ(e.value, 350.0) << "证据必须携带原始毫秒值";
+            EXPECT_NE(e.detail.find("120"), std::string::npos)
+                << "detail 应带上帧间隔 P95 作对照，单独一个延迟值无法归因";
+        }
+    }
+    EXPECT_TRUE(found) << "出队延迟必须进 evidence，否则无法事后复核";
+}
+
+// ---------------------------------------------------------------------------
 // 7. 枚举与字符串一致（证据/D-Bus 序列化的稳定契约）
 // ---------------------------------------------------------------------------
 
