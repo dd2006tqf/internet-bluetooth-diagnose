@@ -1,8 +1,10 @@
 # 阶段 2 overlay 演练手册（真正动手前的可执行清单）
 
-> 日期：2026-11-08
+> 日期：2026-11-08（2026-11-09 更新：Step 0 实测通过、五处判据订正、引脚争用判断修正）
 > 分类：工作流外实施（演练前置准备，尚未执行）
-> 结果：清单已完成，**演练本身未开始**——板子当前不在线
+> 结果：**Step 0 串口门槛已通过**；Step 1 基线部分抓取（缺 uart 状态，已补采集命令但未重跑）；
+> Step 2-6 未执行（板子已被用户关闭）。引脚争用**不再视为 Step 2 的前置阻塞**，
+> 但仍是 Step 6 的安全前提（见「关于引脚争用的判断修正」）
 
 ## 构思
 
@@ -45,14 +47,17 @@
 
 ### 关键取舍二：串口线必须先单独验证
 
-方案 §10 把 USB-UART 串口线称作「阶段 2 的变砖保险」。但这个保险**从未在真机上
-验证过能连上**——线买了、在手里，但没插到板子上读过一次启动日志。
+方案 §10 把 USB-UART 串口线称作「阶段 2 的变砖保险」。但这个保险在写下这些字的时候
+**从未在真机上验证过**——线买了、在手里，但没插到板子上读过一次启动日志。
 
 这是一处纸面保险。若跳过这步直接动 overlay，一旦板子起不来，而串口也没通，
-就退回到「拔 eMMC/SD 卡挂到另一台机器上改」的境地，风险等级完全不同。
+风险等级完全不同（本板存储是 UFS 焊死，连「拔卡改配置」的退路都没有）。
 
 所以本手册把「串口线验证」列为 **Step 0**，它是整个阶段 2 的前置门槛，
 不通过就不进入 Step 1。
+
+**2026-11-09 更新：这一步已实测通过**，纸面保险变成了已验证的保险。
+证据见 Step 0「实测记录」。
 
 ### 关键取舍三：为什么不用 `rsetup` 交互界面
 
@@ -64,7 +69,7 @@ TUI**，通过 SSH 驱动它需要终端多路复用，且其内部实际动作�
 
 ## 实现方式
 
-### 当前板端事实（2026-11-07 实测回读）
+### 当前板端事实（2026-11-07 实测回读；关键项 2026-11-09 复核）
 
 ```
 /boot/dtbo/ 下 20 份 dtbo，全部 .disabled 后缀
@@ -85,37 +90,80 @@ card0-HDMI-A-1 : disconnected
 
 ### Step 0：验证串口线能连（**前置门槛，不通过则停止**）
 
-物理接线（需人在板子旁操作）：
+> ✅ **2026-11-09 已通过**。证据见下方「实测记录」。以下保留原始步骤供复盘。
+
+**关键订正**：console 走的是 **uart0（`2500000.uart` → `/dev/ttyAS0`）**，
+不是 40pin 上的 uart2。二者是**不同的硬件口**：
+
+| | uart0 | uart2 |
+| --- | --- | --- |
+| 地址 | `2500000` | `2501000` |
+| 设备节点 | `/dev/ttyAS0` | 启用 overlay 后才有 |
+| 用途 | **console**（U-Boot + 内核日志 + 登录） | 普通串口外设 |
+| 引脚 | 板载调试口 | PB0/PB1 = 40pin 的 pin 7 / pin 11 |
+| 当前状态 | `okay` | `disabled` |
+
+**救砖必须接 uart0**，因为只有它会输出 U-Boot 阶段的信息、并能选择
+启动菜单里的 rescue 标签。接 uart2 只能验证 overlay 生效，救不了砖。
+
+物理接线（需人在板子旁操作）——接板载调试排针，**不要接 40pin**：
 
 ```
-USB-UART 线的 TX  → 板子 40pin 排针的 UART RX
-USB-UART 线的 RX  → 板子 40pin 排针的 UART TX
-USB-UART 线的 GND → 板子 GND
-USB-UART 线的 VCC → 不接（板子自己供电，不要双供电）
+USB-UART 线的 TX  →  板子调试口的 RX
+USB-UART 线的 RX  →  板子调试口的 TX
+USB-UART 线的 GND →  板子调试口的 GND
+USB-UART 线的 VCC →  不接（板子自己供电，不要双供电）
 ```
 
-注意板上 console 是 `console=ttyAS0,115200n8`，需要确认 `ttyAS0` 对应哪组排针引脚。
-**这一步若无法确定引脚定义，必须先查 Radxa Cubie A7A 官方 pinout 文档，
-不得靠猜。接错 TX/RX 只是不通，接错 VCC/GND 可能损伤板子。**
+TX/RX 必须交叉。接错 TX/RX 只是不通，**接错 VCC/GND 可能损伤板子**。
 
-在宿主机执行（端口名按实际调整，常见 `/dev/ttyUSB0`）：
+在**你自己的电脑**上（不是 Cloud 宿主）打开串口，波特率必须与 `console=` 一致：
 
-```bash
-# 确认线被识别
-ls -l /dev/ttyUSB*
-
-# 打开串口，波特率必须与 console= 参数一致
-sudo picocom -b 115200 /dev/ttyUSB0
-# 或： sudo minicom -D /dev/ttyUSB0 -b 115200
+```
+115200 8N1，无流控
 ```
 
-**判据**：串口终端里有输出。若板子正在运行，敲回车应能看到登录提示；
-若无输出，可 `sudo reboot`（通过 SSH）观察是否有 U-Boot 启动日志刷出。
+Windows 用 PuTTY（Connection type 选 **Serial**，不是 SSH）。
+Linux/Mac 用 `picocom -b 115200 /dev/ttyUSB0`。
 
-**通过条件**：能看到 U-Boot 或内核日志，且能敲入字符。
+**通过条件（三条全部满足）**：
+1. 能看到 **U-Boot 启动信息**（不只是内核日志）；
+2. 能看到 **U-Boot 启动菜单**（含 rescue 标签）；
+3. 能登录系统（说明双向通信正常）。
 
 **未通过时**：停止。不要进入 Step 1。排查项：TX/RX 是否接反、波特率、
-3.3V 电平（CH340 有的是 5V）、引脚定义是否正确。
+3.3V 电平（CH340 有的是 5V）、是否接错口（uart2 而非 uart0）。
+
+#### 实测记录（2026-11-09）
+
+用户接板载调试口，Windows + PuTTY 115200，`sudo reboot` 后捕获到完整链路：
+
+```
+U-Boot 2018.07-17-boot-aw2501-g4c7078cfdf7-dirty (Apr 29 2026 - 10:03:59 +0000)
+[01.501]Model: Radxa Cubie A7A
+[01.568]DRAM:  8 GiB
+...
+U-Boot menu
+1:      Debian GNU/Linux 11 (bullseye) 5.15.147-99btf1-a733
+2:      Debian GNU/Linux 11 (bullseye) 5.15.147-99btf1-a733 (rescue target)
+3:      Debian GNU/Linux 11 (bullseye) 5.15.147-21-a733
+4:      Debian GNU/Linux 11 (bullseye) 5.15.147-21-a733 (rescue target)
+Enter choice: 1:        Debian GNU/Linux 11 (bullseye) 5.15.147-99btf1-a733
+...
+[10.846]Starting kernel ...
+```
+
+**四条判据全部满足**：U-Boot 输出可见 ✅、启动菜单可见 ✅、
+`rescue target` 标签可选中 ✅、登录成功 ✅。
+
+板端核对：`who` 显示 `radxa ttyAS0 2026-11-09 04:35`，即当前登录会话走的是
+`/dev/ttyAS0`。结合内核参数 `console=ttyAS0,115200n8` +
+`earlyprintk=sunxi-uart,0x2500000`，可以确认用户接的是 console 口。
+
+> 待补：`readlink /sys/class/tty/ttyAS0/device` 应指向 `2500000.uart`，
+> 这条命令本轮未执行（`ssh` 当时已不通），执行 Step 2 前顺手确认一次。
+
+**结论：变砖保险从「纸面」变为「已验证」，可以进入 Step 1。**
 
 ### Step 1：基线快照（只读，可随时重做）
 
@@ -128,9 +176,29 @@ ssh board 'cat /boot/dtbo/managed.list' > ~/board-baseline-$(date +%Y%m%d)/manag
 # 记录当前设备树节点状态（用于对比 overlay 生效前后的差异）
 ssh board 'ls /proc/device-tree/ | sort' > ~/board-baseline-$(date +%Y%m%d)/dt-nodes-before.txt
 ssh board 'ls /dev/ttyS* /dev/ttyAS* 2>/dev/null' > ~/board-baseline-$(date +%Y%m%d)/tty-before.txt
+
+# 【必须补】uart2 的 status 快照——它才是 Step 3 判据 2 的比对对象。
+# 为什么单独一条：上面那个 ls 只列**顶层**节点，而 uart@2501000 埋在
+# soc@3000000 下面，顶层清单里根本看不到它（2026-11-09 实测确认：
+# 51 个顶层节点里与 uart 相关的只有 soc@3000000 这一行）。
+# 漏了这一条，Step 3 的判据 2 就没有基线可比，等于白做。
+ssh board 'for n in $(find /proc/device-tree -name "uart@2501*" 2>/dev/null); do
+  echo "$n = $(tr -d "\0" < "$n/status")"
+done' > ~/board-baseline-$(date +%Y%m%d)/uart2-status-before.txt
+
+# 顺手留一份 uart0（console）的 pinctrl 指纹，供日后查引脚争用时比对
+ssh board 'for n in $(find /proc/device-tree -name "uart@2500*" 2>/dev/null); do
+  echo "$n = $(tr -d "\0" < "$n/status")"
+done' >> ~/board-baseline-$(date +%Y%m%d)/uart2-status-before.txt
 ```
 
-**判据**：本地有 4 个文件，且 `extlinux.conf` 非空。
+**判据**：本地有 5 个文件，`extlinux.conf` 非空，且
+`uart2-status-before.txt` **非空并含 `uart@2501`**（若为空，说明
+`find` 没定位到节点，必须先查清节点真实路径再往下走）。
+
+> **这一条是 2026-11-09 补的**。原 Step 1 只抓了顶层节点清单，
+> 而 overlay 改的是 `soc@3000000/uart@2501000` 的 `status`，顶层清单
+> 看不到它。若不补这条基线，Step 3 的判据 2 无基线可比。
 
 ### Step 2：启用 uart2 overlay
 
@@ -166,15 +234,53 @@ for i in $(seq 1 6); do
 done
 ```
 
-**通过条件（三条全部满足）**：
+**通过条件（四条全部满足）**：
 1. SSH 能连上，`uptime` 显示刚启动；
-2. `/proc/device-tree/` 下出现 uart2 相关节点（用 Step 1 的 `dt-nodes-before.txt` 对比）；
-3. `/dev/ttyS*` 或 `/dev/ttyAS*` 数目比 Step 1 多。
+2. `uart@2501000` 的 `status` 由 `disabled` 变为 `okay`；
+3. `/dev/ttyAS*` 数目比 Step 1 多（预期新增 `ttyAS2` 之类）。
+4. **console 仍然可用**（判据 4，见下方「关于判据 4」）。
+
+**关于判据 4**：这条是 2026-11-09 补的，专门用来回答「uart2 是否抢走了
+console 的 PB0/PB1」。**它不阻塞 Step 2，但它决定 Step 6 能否安全执行。**
+
+判定方式（无需额外硬件，就在串口终端里看）：
+
+- 启动过程中串口终端**是否仍有 U-Boot 菜单 + 内核日志**刷出？
+- 启动完成后在串口终端敲回车，**是否还能拿到 `login:` 提示 / shell 提示符**？
+
+三种结果对应的处置：
+
+| 判据 4 结果 | 含义 | 处置 |
+| --- | --- | --- |
+| 串口全程正常 | uart2 未争用引脚（或争用但未生效） | ✅ 直接进 Step 4；救砖通道完好，Step 6 可安全做 |
+| 串口完全无输出，但 SSH 通 | **uart2 抢走了 console 引脚** | ⚠️ 记录该事实。**Step 4 回滚后必须再确认串口恢复**；在确认恢复前**不得执行 Step 6** |
+| 串口有输出但登录不进去 | 串口设备在，但 getty 起在别处 | 用 SSH 查 `systemctl status serial-getty@ttyAS0`，按实际情况记录 |
+
+**判据 4 失败不等于演练失败**——它恰恰是这个演练最有价值的产出：用一次
+低风险操作，把「uart2 与 console 的引脚关系」这个此前只能靠反编译推测的问题，
+变成了实测结论。
+
+**订正（2026-11-09 复盘）**：原先写的判据是「`/proc/device-tree/` 下出现
+uart2 相关节点」，这是**错的**。实测 `dtc` 反编译 dtbo 可见它并不创建新节点，
+而是对已存在的 `uart@2501000` 做 `status = "okay"` 覆盖——节点一直在，
+只是被禁用。所以拓扑 diff 会显示「无差异」而实际已生效，按原判据会误判失败。
 
 ```bash
-ssh board 'ls /proc/device-tree/ | sort' > /tmp/dt-after.txt
-diff ~/board-baseline-*/dt-nodes-before.txt /tmp/dt-after.txt
+# 判据 2：status 翻转——直接与 Step 1 新增的基线文件比对
+ssh board 'for n in $(find /proc/device-tree -name "uart@2501*" 2>/dev/null); do
+  echo "$n = $(tr -d "\0" < "$n/status")"
+done' > /tmp/uart2-status-after.txt
+
+diff ~/board-baseline-*/uart2-status-before.txt /tmp/uart2-status-after.txt
+# 期望只有一处差异：disabled → okay
+
+# 判据 3：串口设备节点
+ssh board 'ls /dev/ttyAS*'
 ```
+
+> 为什么不写死 `soc@3000000`：不同内核版本下 `soc` 节点名可能带不同 unit-address，
+> 写死会让执行者拿到 `No such file` 并误以为 overlay 没生效。`find -name 'uart@2501*'`
+> 对节点名变化免疫。
 
 ### Step 4：回滚演练（**必须做，不能跳过**）
 
@@ -189,11 +295,18 @@ ssh board 'sudo reboot'
 
 重启后确认：
 1. SSH 能连上；
-2. uart2 节点消失（`diff` 结果回到基线）；
-3. 系统其余一切正常。
+2. `uart@2501*` 的 `status` **回到 `disabled`**（与 Step 1 基线一致）——
+   注意**不是「节点消失」**，节点一直存在（理由同 Step 3 的订正）；
+3. 系统其余一切正常，**且串口 console 仍然可用**（若 Step 3 判据 4 曾失败，
+   这一步必须看到串口恢复才算回滚成功）。
 
 **通过条件**：三条全部满足。至此 overlay 的「启用 → 生效 → 撤回 → 恢复」闭环
 全部验证通过。
+
+> **回滚后必做**：在串口终端里敲一次回车，确认拿到 `login:` / shell 提示符。
+> 如果 Step 3 期间 console 曾失效、而回滚后**仍未恢复**，说明引脚已被 uart0
+> 之外的某个状态占住——此时不要重启，用 SSH 检查并把现场结果带回来分析。
+> 这是本演练唯一可能需要停下来问人的情形。
 
 ### Step 5：启动失败时的救援流程（希望用不到，但必须写下来）
 
@@ -208,11 +321,20 @@ ssh board 'sudo reboot'
    u-boot-update
    reboot
    ```
-4. 若 U-Boot 菜单都进不去（黑屏/无输出），用 Step 1 的备份在另一台机器上
-   修改 `extlinux.conf` 后写回启动介质。
+4. 若 U-Boot 菜单都进不去（黑屏/无输出），这就是最坏情况。**注意：本板存储是
+   UFS（焊死），没有 eMMC/SD 卡可拔**——串口日志里 `ufs has init` +
+   `No MMC device available` 已证实这一点。所以「拔卡挂到另一台机器改」这条
+   经典退路**在这里不存在**。
 
-**若串口也完全无输出**：说明 Step 0 的验证没做或没通过，此时只能拔卡。
-**这正是 Step 0 设为门槛的原因。**
+   真正的退路只有两条：
+   - U-Boot 命令行（串口停在菜单后按 `c` 进 console），用 `fatls mmc 0` /
+     `ext4ls` 之类命令定位并 `fatwrite`/`ext4write` 改回 `extlinux.conf`；
+   - 若 U-Boot 本身都挂了，只能走 USB 烧录（Allwinner FEL 模式）重刷整机镜像，
+     代价是丢系统盘数据。**这就是为什么一次只改一个 overlay、且必须先做
+     Step 4 回滚演练。**
+
+**若串口也完全无输出**：此时既无串口日志、也无 SD 卡可拔，唯一的物理入口只剩
+FEL/USB 烧录。**这正是 Step 0 设为硬门槛的原因——它没有备份方案。**
 
 ### Step 6：摄像头 overlay（Step 1-4 全部通过后才做）
 
@@ -254,25 +376,121 @@ ssh board 'v4l2-ctl -d /dev/video0 --list-formats-ext'
 - 六步执行清单（含 Step 0 串口门槛）已写成可直接照抄的命令
 - 回滚路径与救援流程已写明，且回滚演练被列为必做项
 - 同步完成 `V4l2FrameSource` 真机实现（10 项单测全绿，全量 ctest 60/60）
+- **Step 0 串口门槛已通过（2026-11-09）**，证据见 Step 0「实测记录」：
+  U-Boot 输出 / 启动菜单 / rescue 标签 / 登录，四项判据全部实测满足
+- Step 1 基线快照**部分**抓取（`~/board-baseline-20261109-1213/`）：
+  `extlinux.conf`、`managed.list`、`dt-nodes-before.txt`（51 个顶层节点）、
+  `tty-before.txt`（仅 `/dev/ttyAS0`）。
+  **缺 `uart2-status-before.txt`**——这是 2026-11-09 复查时才发现的设计缺陷：
+  顶层节点清单看不到埋在 `soc@3000000` 下的 `uart@2501000`，Step 1 已补上
+  这条采集，但**尚未在板上重跑**（板子已被用户关闭）。
+- 手册四处已知错误已订正（见下方「本轮订正」）
 
-### 未做（受阻塞）
+### 本轮订正（2026-11-09）
 
-- **演练本身未开始**。板子当前不在线（`ssh board` 超时，隧道端口仍在监听，
-  说明板端 sshd 未响应）。且 Step 0 需要人物理接线，无法远程完成。
-- **串口线仍未验证**。这是当前最值得警惕的一处纸面保险。
+| 位置 | 原文（错） | 改为（实测依据） |
+| --- | --- | --- |
+| Step 0 接线 | 接 40pin 排针的 UART RX/TX | 接**板载调试排针** → uart0 → `/dev/ttyAS0`。40pin 上那组是 uart2（pin 7/11），**不是 console，救不了砖** |
+| Step 0 执行位置 | 宿主机 `ls /dev/ttyUSB*` + `picocom` | 在**用户自己的 Windows 电脑**上用 PuTTY（Serial / COMx / 115200 8N1）。Cloud 宿主看不到串口设备 |
+| Step 1 基线 | 只抓 51 个**顶层** dt 节点 | 必须**额外**抓 `uart2-status-before.txt`。`uart@2501000` 埋在 `soc@3000000` 下，顶层清单看不到它，原基线无 uart 状态 |
+| Step 3 判据 2 | `/proc/device-tree/` 下「出现」uart2 节点 | `uart@2501*` 的 `status` 由 `disabled` 翻为 `okay`。**overlay 不创建新节点**，只改已有节点的 status，按原判据会误判失败 |
+| Step 3 通过条件 | 三条（无 console 检查） | **加到四条**，判据 4 显式检查串口 console 是否仍可用——这是回答引脚争用的实测手段 |
+| Step 4 判据 2 | 「uart2 节点消失」 | `status` **回到 `disabled`**。节点不会消失，同 Step 3 的道理 |
+| Step 5 救援 | 「拔 eMMC/SD 卡挂到另一台机器改」 | **本板是 UFS（焊死），没有卡可拔**。退路只剩 U-Boot 命令行改 `extlinux.conf`，或 FEL/USB 重刷整机镜像 |
+| 诚实边界 1 | 「Step 2 之前必须先解决引脚争用」 | **降级为不阻塞 Step 2**，见下方「关于引脚争用的判断修正」 |
+
+### 关于引脚争用的判断修正（2026-11-09）
+
+**原判断**：uart2 可能与 console 争用 PB0/PB1，若争用则 console 失效、救砖通道被毁，
+所以必须先反编译 dtbo 查明，才能执行 Step 2。我据此把 Step 2 挂起了。
+
+**用户判断**：「感觉好像没有必要解决这个问题」。**我复核后同意，原判断是过度保守。**
+
+错在哪里——我把两件事混成了一件：
+
+| 事件 | 会不会发生 |
+| --- | --- |
+| uart2 抢走 console 引脚（若有争用） | 可能 |
+| **板子起不来** | **不会**。一个 UART 节点的 `status` 翻转不构成启动失败的成因 |
+
+而**救砖通道（串口 + rescue 标签）只在「板子起不来」时才需要**。
+若只是 console 失效而板子正常启动，SSH 照样能连，用 SSH 回滚即可，几十秒的事。
+
+所以这个疑问不值得用 `dtc` 反编译去**提前取证**——Step 2 本身就是成本更低的
+实测手段：跑一次，看串口还活着没有，答案立刻就有了。这正是演练的价值：
+用一次低风险操作替代一轮纸上推演。
+
+**但原判断里有一条是对的，不能一并丢掉**：
+
+> 若 Step 2 真的让 console 失效，那么在 Step 6（摄像头 overlay，
+> 那个真正有变砖风险的动作）之前**必须先把救砖通道修回来**。
+
+风险本身没有消失，只是从 Step 2 转移到了 Step 6。因此 Step 3 增加了判据 4
+（显式检查 console 是否仍可用），Step 4 增加了「回滚后必须确认串口恢复」。
+
+**一句话总结**：争用问题不阻塞 Step 2，但它决定 Step 6 的安全前提。
+所以不提前取证，但必须在 Step 3/4 里实测并记录。
+
+- **Step 2-6 尚未执行**。用户在 2026-11-09 关闭了板子，本轮无法执行。
+  执行 Step 2 需要两个条件同时具备：板子开机、人在板边且串口终端开着并录制。
 
 ### 诚实边界
 
-1. 本文档里的板端事实全部来自 2026-11-07 的命令回读，**今天（2026-11-08）
-   未能重新核对**，因为板子不在线。执行前应重跑一次 Step 1 的基线快照。
-2. Step 0 的排针引脚定义我**没有核实**。文中明确写了「若无法确定必须先查官方
-   pinout，不得靠猜」——这不是推卸，而是接线错误可能损伤硬件。
-3. 「uart2 overlay 启用后只多一个串口节点」这一判断基于 dtbo 名称与实际
-   影响面的推断，**未在真机验证**。这正是 Step 3 要做的事。
+1. **uart2 与 uart0 可能争用同一组引脚，此问题仍未查清——但它不阻塞 Step 2**。
+   板端 dmesg 有：
+   ```
+   uart-ng 2500000.uart: there is not valid maps for state default/sleep
+   sunxi:pin-2000000.pinctrl:[ERR]: unknown pin   (×4)
+   ```
+   而 `sun60iw2p1-uart2.dtbo` 里写着 `exclusive = "PB0\0PB1\0uart2"`、
+   `pins = "PB0\0PB1"`，同时 `uart0_pins@0` 也带 `pins = [00 00]`
+   （sunxi 二进制编码，大致对应 PB0/PB1）。
 
-### 下一步
+   我**无法从现有证据判断** uart2 overlay 生效后是否会夺走 uart0 的引脚。
 
-1. 板子恢复在线 → 重做 Step 1 基线快照（确认事实未漂移）
-2. 人在板边 → 完成 Step 0 串口验证（这是硬门槛）
-3. Step 2-4 → 验证 overlay 机制的启用与回滚闭环
-4. Step 6 → 摄像头 overlay，之后即可接入 `V4l2FrameSource` 真机调通
+   **但这个问题不阻塞 Step 2**（2026-11-09 用户判断，我复核后同意）。理由是
+   区分「最坏结果」与「启动失败」两件事：
+
+   | 情形 | 板子启动 | SSH | console | 处理 |
+   | --- | --- | --- | --- | --- |
+   | uart2 拿不到引脚，probe 失败 | ✅ 正常 | ✅ | ✅ 正常 | 记日志，Step 3 判据 2 照看 status |
+   | uart2 抢走 PB0/PB1，console 死 | ✅ 正常 | ✅ | ❌ 失效 | **SSH 回滚**（Step 4），30 秒 |
+
+   两种情形板子都照常启动。而**救砖通道只在「板子不启动」时才需要**——
+   一个 UART 节点的 `status` 翻转不构成启动失败的成因。所以这个疑问用
+   Step 2 本身花几十秒就能实测回答，不必先做 `dtc` 反编译取证。
+
+   **真正的影响在 Step 6，不在 Step 2**：若 Step 2 之后 console 确实失效，
+   那么在 Step 6（摄像头 overlay，那个真正有变砖风险的动作）之前**必须先
+   把 console 修回来**，否则等于在没有救砖通道的情况下做高风险动作。
+   届时两条路：① 保持 uart2 禁用状态（回滚 Step 2）再动摄像头；
+   ② 换首测候选（见「关键取舍一」，次选 `sunxi-ac101-sound-card`）验证机制。
+
+   > 若日后仍想彻底查清争用，`dtc -I dtb -O dts` 反编译 dtbo 对比 `pinctrl-0`
+   > 的 phandle 即可判定。这属于取证，不属于执行前置条件。
+
+2. **`status` 的读取路径未在板端核实**。手册里用的是
+   `find /proc/device-tree -name 'uart@2501*'`，避免写死 `soc@3000000`；
+   但本轮 `ssh` 不通，我没能跑这条命令确认它真能定位到节点。
+   执行 Step 1 时应顺手跑一次确认。
+
+3. **「uart2 overlay 只多一个串口节点」仍是推断**。这正是 Step 3 要验证的事。
+
+4. **Step 4 回滚演练的价值现在更高了**：因为本板没有可拔的存储卡，
+   回滚路径一旦不可用，代价是重刷整机。所以 Step 4 不能因为「一切正常」而跳过。
+
+### 下一步（按依赖顺序，不可跳步）
+
+1. **板子开机后复核 Step 1 基线**（`~/board-baseline-20261109-1213/` 已存，
+   重跑一遍确认未漂移），顺手跑一次
+   `find /proc/device-tree -name 'uart@2501*'` 确认判据 2 的命令真能定位节点。
+2. **人在板边 + 串口终端开着并录制** → 执行 Step 2（启用 uart2 overlay + `u-boot-update`）。
+3. **Step 3** → 重启验证 `status` 翻为 `okay`、`/dev/ttyAS*` 增多，
+   并**顺手确认 console 是否还活着**（判据 4，见 Step 3）。
+4. **Step 4** → 主动回滚演练，验证可逆。**不可跳过。**
+5. **Step 6** → 摄像头 overlay，之后 `V4l2FrameSource` 才能真机调通。
+   **但先看 Step 3 的判据 4**：若 console 已失效，必须先恢复救砖通道再动摄像头。
+
+> uart2 与 console 的引脚争用**不需要提前解决**——Step 2 本身就是它的实测手段，
+> 最坏结果是 console 失效而板子仍正常启动，用 SSH 回滚即可（详见诚实边界 1）。
+> 它真正约束的是 Step 6：高风险动作之前必须确认救砖通道还在。

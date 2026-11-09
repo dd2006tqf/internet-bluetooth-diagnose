@@ -1,8 +1,10 @@
 # V4l2FrameSource 落地 + 阶段 2 演练手册 + 采购状态订正
 
-> 日期：2026-11-08
+> 日期：2026-11-08（2026-11-09 增补：串口门槛通过 + 六处订正 + 引脚争用判断修正）
 > 分类：工作流外实施 + 文档迭代
 > 结果：已完成（`V4l2FrameSource` 10 项单测全绿，全量 ctest 60/60；演练手册成文；文档六处采购状态订正）
+> 2026-11-09 增补：Step 0 串口门槛**实测通过**；Step 1 基线部分抓取（缺 uart 状态，
+> 已补采集命令但未重跑）；uart2 引脚争用经复核**不阻塞 Step 2**，但仍是 Step 6 的安全前提
 
 ## 构思
 
@@ -174,9 +176,8 @@ Total Test time (real) =   8.45 sec
 
 - **V4L2 真机路径未验证**。10 项测试只覆盖失败路径与配置语义。真实出帧、
   格式协商（NV12 是否被 ISP 接受）、时间戳来源，都需要摄像头在板子上跑。
-- **阶段 2 演练未执行**。板子当前不在线（`ssh board` 超时，隧道端口仍在监听，
-  说明板端 sshd 未响应）。且 Step 0 需要人物理接线，无法远程完成。
-- **串口线仍未验证**。这是当前最值得警惕的一处纸面保险。
+- **阶段 2 演练未执行**。Step 0/Step 1 已于 2026-11-09 完成，但 Step 2 之前
+  发现 uart2 可能与 console 争用 PB0/PB1 的前置风险，需先解掉（详见文末增补）。
 - **HDMI 阶段 1.5 仍 ⬜**。显示屏未到（用户 2026-11-08 确认）。
 - **USB 触控板不买**。用户 2026-11-08 明确「先不买了」。
 
@@ -189,8 +190,10 @@ Total Test time (real) =   8.45 sec
    与 `VIDIOC_DQBUF` 的 `EAGAIN` 竞态处理，在无摄像头环境下只能靠代码审查。
 3. **NV12 是假设不是事实**。代码里 `VIDIOC_S_FMT` 请求 NV12，若驱动改成别的
    格式会记录到 `lastError()` 并继续——但这一步的实际行为没验证过。
-4. **演练手册里的排针引脚定义我没有核实**。文中明确写了「若无法确定必须先查
-   官方 pinout，不得靠猜」——接线错误可能损伤硬件。
+4. **接线引脚已部分核实**：console 走 uart0（`2500000.uart` → `/dev/ttyAS0`），
+   接板载调试排针，2026-11-09 已实测连通并读到 U-Boot 菜单。
+   但 **uart2（PB0/PB1，40pin pin 7/11）与 uart0 是否同源仍未解**，
+   这个疑问直接阻塞 Step 2（详见文末增补）。
 5. **「uart2 overlay 只多一个串口节点」是推断**，基于 dtbo 名称与实际影响面。
    这正是 Step 3 要验证的事。
 
@@ -206,10 +209,89 @@ Total Test time (real) =   8.45 sec
 但按 thermal 的先例（`2026-11-06-thermal-monitor.md`），新字段默认 `NONE`、
 不参与 `OverallPolicy`、序列化只是送出已算出的结论，仍不建议开 change。
 
+## 2026-11-09 增补：Step 0 已通过 + 六处判据订正
+
+### 新增事实
+
+1. **Step 0 串口门槛实测通过**。用户接板载调试口（Windows + PuTTY 115200），
+   `sudo reboot` 后捕获到完整启动链路：BOOT0 → DRAM 8 GiB →
+   `U-Boot 2018.07-17-boot-aw2501-g4c7078cfdf7-dirty` → 四条目启动菜单
+   （两条带 `rescue target`）→ `Starting kernel ...` → `login:`。
+   四项判据（U-Boot 输出 / 菜单 / rescue 标签 / 登录）全部实测满足。
+
+2. **Step 1 基线快照已抓取**（`~/board-baseline-20261109-1213/`）：
+   `extlinux.conf`(2547 B)、`managed.list`(552 B)、
+   `dt-nodes-before.txt`(51 个顶层节点)、`tty-before.txt`(仅 `/dev/ttyAS0`)。
+
+3. **板端存储是 UFS，没有可拔的 SD/eMMC 卡**。串口日志里
+   `ufs has init` + `No MMC device available` 已证实。这直接废掉了原手册
+   Step 5「拔卡挂到另一台机器改配置」这条退路。
+
+### 六处手册订正（原内容有错）
+
+| 位置 | 原文（错） | 改为（依据） |
+| --- | --- | --- |
+| Step 0 接线 | 接 40pin 排针的 UART RX/TX | 接**板载调试排针** → uart0 → `/dev/ttyAS0` |
+| Step 0 位置 | 宿主机 `ls /dev/ttyUSB*` + `picocom` | 用户自己的 Windows 电脑 + PuTTY |
+| Step 3 判据 | `/proc/device-tree/` 下「出现」uart2 节点 | `uart@2501*` 的 `status` 由 `disabled` 翻为 `okay` |
+| Step 5 救援 | 拔卡改 `extlinux.conf` | U-Boot 命令行改，或 FEL/USB 重刷整机 |
+| Step 1 基线 | 只抓 51 个**顶层** dt 节点 | 必须额外抓 `uart2-status-before.txt`——`uart@2501000` 埋在 `soc@3000000` 下，顶层清单看不到 |
+| Step 4 判据 | 「uart2 节点消失」 | `status` 回到 `disabled`；节点不会消失 |
+
+**Step 3 判据这条错得最危险**：overlay 不创建新节点，只覆盖已有节点的
+`status`。按原判据做拓扑 diff 会得到「无差异」，进而把「已生效」误判成
+「启用失败」，然后执行不必要的回滚。
+
+### 引脚争用疑问（**不阻塞 Step 2**，但约束 Step 6）
+
+板端 dmesg 有 `uart-ng 2500000.uart: there is not valid maps for state default/sleep`
+与 `sunxi:pin-2000000.pinctrl:[ERR]: unknown pin`（×4）；同时
+`sun60iw2p1-uart2.dtbo` 声明 `exclusive = "PB0\0PB1\0uart2"`、`pins = "PB0\0PB1"`，
+而 `uart0_pins@0` 也带 `pins = [00 00]`（sunxi 二进制编码，大致对应 PB0/PB1）。
+
+**无法从现有证据判断 uart2 overlay 生效后是否会夺走 console 的引脚。**
+
+我最初据此把 Step 2 挂起了（「必须先反编译 dtbo 查明」）。**2026-11-09 用户判断
+「感觉好像没有必要解决这个问题」，我复核后同意——原判断过度保守。**
+
+错在把两件事混成一件：
+
+| 事件 | 会不会发生 |
+| --- | --- |
+| uart2 抢走 console 引脚（若有争用） | 可能 |
+| **板子起不来** | **不会**。一个 UART 节点的 `status` 翻转不构成启动失败的成因 |
+
+而救砖通道（串口 + rescue 标签）**只在「板子起不来」时才需要**。若只是 console
+失效而板子正常启动，SSH 照样能连，回滚即可。所以这个疑问不必提前 `dtc` 取证——
+Step 2 本身就是更便宜的实测手段。
+
+**但风险没有消失，只是从 Step 2 转移到 Step 6**：若 Step 2 真让 console 失效，
+那在做摄像头 overlay（真正有变砖风险的动作）之前**必须先把救砖通道修回来**。
+因此 Step 3 增设判据 4（显式检查 console 是否仍可用），Step 4 增设「回滚后必须
+确认串口恢复」。
+
+### Step 1 基线的设计缺陷（复查时发现）
+
+已抓的 `dt-nodes-before.txt` 只列 **51 个顶层节点**，而 `uart@2501000` 埋在
+`soc@3000000` 下面——**顶层清单里根本没有 uart 的状态**，Step 3 判据 2 无基线可比。
+
+已在 Step 1 补上 `uart2-status-before.txt` 的采集命令，但**尚未在板上重跑**
+（板子已被用户关闭）。板子再开机时必须先补这一步。
+
+### 本轮未做
+
+- **Step 2-6 未执行**。用户在 2026-11-09 关闭了板子；执行 Step 2 需要板子开机 +
+  人在板边 + 串口终端开着并录制，三个条件缺一不可。
+- **Step 1 的 uart 状态基线未补抓**（同上，板子已关）。
+- **本地无 dtbo 副本**（`find . -name "*.dtbo*"` 空，`board-assets/` 只有
+  `vmlinux.h`），引脚争用无法离线判定——不过按上面的判断修正，这已不是阻塞项。
+
 ### 下一步（按依赖顺序）
 
-1. **板子恢复在线** → 重跑演练手册 Step 1 基线快照（确认事实未漂移）
-2. **人在板边** → Step 0 串口验证（硬门槛，不通过则停止）
-3. **Step 2-5** → 验证 overlay 启用与回滚闭环
-4. **Step 6** → 摄像头 overlay，之后 `V4l2FrameSource` 真机调通
-5. **显示屏到货** → 阶段 1.5 HDMI 验证
+1. 板子开机 → **补抓 `uart2-status-before.txt`**（Step 1 新增采集）+ 重跑基线确认未漂移
+2. 人在板边 + 串口录制 → Step 2 启用 overlay
+3. Step 3 验证 `status` 翻转 + **判据 4：console 是否还活着**
+4. Step 4 回滚演练（不可跳过）+ 确认串口恢复
+5. Step 6 摄像头 overlay → `V4l2FrameSource` 真机调通
+   （若判据 4 失败，先修回救砖通道再动摄像头）
+6. 显示屏到货 → 阶段 1.5 HDMI 验证
