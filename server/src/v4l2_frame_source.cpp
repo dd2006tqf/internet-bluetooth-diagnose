@@ -45,6 +45,13 @@
 #include <sys/select.h>
 #include <unistd.h>
 
+#include <linux/media.h>
+#include <linux/dma-heap.h>   // DMA_HEAP_IOCTL_ALLOC：DMABUF 导入路径
+#include <sys/stat.h>
+#include <sys/sysmacros.h>   // major() / minor()：用于匹配 video 节点与 media 实体
+
+#include "media_topology.hpp"
+
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
@@ -74,6 +81,152 @@ std::string errnoText(const char* what, int err) {
     return std::string(what) + ": " + std::strerror(err);
 }
 
+// ---------------------------------------------------------------------------
+// dma-heap 分配（DMABUF 导入路径的唯一依赖）
+// ---------------------------------------------------------------------------
+
+/// 从 dma-heap 分配一块连续内存，返回 dma-buf fd；失败返回 -1
+///
+/// 为什么优先 `/dev/dma_heap/system` 而不是 `cma`：`system` 堆在所有带
+/// dma-buf 的内核上都存在（本机实测有），而 `cma` 需要板级预留 CMA 区域，
+/// 大小随设备差异极大，写死会在部分板上直接分配失败。需要连续物理内存的
+/// 驱动会自己做 bounce，不需要我们选堆。
+///
+/// 找不到 `/dev/dma_heap/system` 是**正常情况**（老内核只有 ION，
+/// 部分精简发行版干脆不编 dma-buf heaps）。此时返回 -1，由调用方回落到
+/// 导出路径，而不是让 start() 失败。
+int allocFromDmaHeap(size_t length) {
+    const int hfd = ::open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
+    if (hfd < 0) return -1;
+
+    dma_heap_allocation_data data{};
+    data.len = length;
+    data.fd_flags = O_RDWR | O_CLOEXEC;
+    data.heap_flags = 0;
+
+    const int rc = ::ioctl(hfd, DMA_HEAP_IOCTL_ALLOC, &data);
+    ::close(hfd);
+    if (rc < 0) return -1;
+    return static_cast<int>(data.fd);
+}
+
+// ---------------------------------------------------------------------------
+// media controller 拓扑枚举（ioctl 部分）
+//
+// 判定与格式化的**纯算法**已切到 media_topology.{hpp,cpp}：那里可以在
+// 合成拓扑上做单测，而这里只剩「把内核结构体搬进 MediaTopology」。
+// 这样切分的理由见 media_topology.hpp 的头注释——图算法错了不会报错，
+// 只会安静地输出一个看似合理的错误结论，只能靠单测抓。
+// ---------------------------------------------------------------------------
+
+/// 枚举一个 media 设备的所有实体
+///
+/// 迭代方式：每轮把**上一次返回的 id** 作为 `MEDIA_ENT_ID_FLAG_NEXT` 的基址。
+/// 用固定的 0..N 循环会重复枚举（实测会输出 29 条而非 11 条实体）。
+bool enumerateEntities(int fd, MediaTopology& topo) {
+    uint32_t next_id = 0;
+    for (;;) {
+        media_entity_desc ed{};
+        ed.id = next_id | MEDIA_ENT_ID_FLAG_NEXT;
+        if (::ioctl(fd, MEDIA_IOC_ENUM_ENTITIES, &ed) < 0) break;
+
+        MediaEntity ent;
+        ent.id = ed.id;
+        ent.name.assign(ed.name, ::strnlen(ed.name, sizeof ed.name));
+        ent.kind = classifyEntity(ed.type);
+        if (ent.kind == MediaEntityKind::V4lNode) {
+            // 旧式编码用 v4l.major/minor，新式用 dev.major/minor。
+            // 两者在 union 里位置相同，所以取 dev 即可（实测 vivid 与 vimc 一致）。
+            ent.major = ed.dev.major;
+            ent.minor = ed.dev.minor;
+        }
+        topo.entities.push_back(ent);
+
+        // id == 0 是内核约定的"最后一个"，必须 break 否则死循环
+        if (ed.id == 0) break;
+        next_id = ed.id;
+    }
+    return !topo.entities.empty();
+}
+
+/// 枚举链路
+///
+/// 注意只对 `links > 0 && pads > 0` 的实体调用：零链路的实体传空数组
+/// 会得到 EINVAL，而那不是错误。
+void enumerateLinks(int fd, MediaTopology& topo) {
+    for (const auto& ent : topo.entities) {
+        media_entity_desc probe{};
+        probe.id = ent.id;
+        if (::ioctl(fd, MEDIA_IOC_ENUM_ENTITIES, &probe) < 0) continue;
+        if (probe.links == 0 || probe.pads == 0) continue;
+
+        std::vector<media_pad_desc> pads(probe.pads);
+        std::vector<media_link_desc> links(probe.links);
+        media_links_enum le{};
+        le.entity = ent.id;
+        le.pads = pads.data();
+        le.links = links.data();
+
+        if (::ioctl(fd, MEDIA_IOC_ENUM_LINKS, &le) < 0) continue;
+
+        for (uint32_t i = 0; i < probe.links; ++i) {
+            MediaLink ml;
+            ml.source_id = ent.id;
+            ml.sink_id = links[i].sink.entity;
+            ml.sink_pad = links[i].sink.index;
+            ml.enabled = (links[i].flags & MEDIA_LNK_FL_ENABLED) != 0;
+            topo.links.push_back(ml);
+        }
+    }
+}
+
+/// 尝试解析某个 video 节点所属的 media 拓扑
+///
+/// 返回 false 表示「没找到 / 没权限 / 驱动不支持」，**不是错误**。
+/// 扫描 /dev/media0..15：板上同时存在多个 media 设备（vin / isp / csi 各一个
+/// 不罕见），必须按 video 节点的 major:minor 匹配，不能取第一个。
+bool probeMediaTopology(const std::string& video_device, MediaTopology& out) {
+    struct stat video_st {};
+    if (::stat(video_device.c_str(), &video_st) < 0) return false;
+
+    // **必须用 st_rdev 而不是 st_dev**：前者是设备节点自身的 major:minor
+    // （/dev/video3 → 81:3），后者是**该文件所在文件系统**的设备号
+    // （实测 /dev/video3 的 st_dev 是 0:5，与任何实体都对不上）。
+    const uint32_t want_major = static_cast<uint32_t>(major(video_st.st_rdev));
+    const uint32_t want_minor = static_cast<uint32_t>(minor(video_st.st_rdev));
+
+    for (int i = 0; i < 16; ++i) {
+        const std::string path = "/dev/media" + std::to_string(i);
+        const int mfd = ::open(path.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (mfd < 0) continue;
+
+        MediaTopology topo;
+        topo.device = path;
+
+        media_device_info info{};
+        if (::ioctl(mfd, MEDIA_IOC_DEVICE_INFO, &info) == 0) {
+            topo.driver.assign(info.driver,
+                               ::strnlen(info.driver, sizeof info.driver));
+        }
+
+        const bool got_entity = enumerateEntities(mfd, topo);
+
+        // 只有当本 media 设备里存在该 video 节点时才认领
+        const bool owns =
+            got_entity && claimNodeByDeviceNumber(topo, want_major, want_minor);
+
+        if (owns) {
+            enumerateLinks(mfd, topo);
+            topo.valid = true;
+            out = std::move(topo);
+            ::close(mfd);
+            return true;
+        }
+        ::close(mfd);
+    }
+    return false;
+}
+
 }  // namespace
 
 struct V4l2FrameSource::Impl {
@@ -99,12 +252,51 @@ struct V4l2FrameSource::Impl {
     /// 拿 length 当字节数会算出恒为 0 的坏帧率。
     uint32_t num_planes{1};
 
-    /// mmap 出来的 buffer（多平面时每个 Buffer 含多个 plane）
+    /// 实际使用的内存模型
+    ///
+    /// 为什么必须是成员：`VIDIOC_QBUF` / `VIDIOC_DQBUF` / `VIDIOC_REQBUFS`
+    /// 三处的 `memory` 字段必须完全一致，任一处写死 `V4L2_MEMORY_MMAP`
+    /// 都会在 DMABUF 模式下返回 EINVAL，而错误位置离根因很远（表现是
+    /// 「入队失败」而不是「memory 类型不匹配」）。
+    uint32_t memory{V4L2_MEMORY_MMAP};
+
+    /// 本次 start() 实际生效的缓冲来源（**不被 closeDevice 重置**）
+    ///
+    /// 为什么不能直接用 `memory` 回答「DMABUF 生效了吗」：closeDevice()
+    /// 会把 `memory` 复位成 MMAP（否则下次 start 会带着旧类型走 REQBUFS），
+    /// 于是 stop() 之后 describe() 会把「配置了 DMABUF 且成功了」误报成
+    /// 「回落到了 MMAP」。诊断字段最忌讳这种「停下来看就变了个说法」。
+    ///
+    /// 取值语义：
+    ///   kMemMmap            —— 配置没开 DMABUF，走默认 MMAP；
+    ///   kMemDmabufHeap      —— 导入路径（dma-heap 分配）；
+    ///   kMemDmabufExport    —— 导出路径（EXPBUF）；
+    ///   kMemDmabufMmapFallback —— 配置开了 DMABUF 但两级全失败，回落 MMAP。
+    enum BufferSource : uint32_t {
+        kMemMmap = 0,
+        kMemDmabufHeap = 1,
+        kMemDmabufExport = 2,
+        kMemDmabufMmapFallback = 3,
+    };
+    BufferSource buffer_source{kMemMmap};
+
+    /// 每个 buffer 的平面存储
+    ///
+    /// 同一个结构同时表达 MMAP 与 DMABUF 两种来源：
+    ///   - MMAP：`start` / `plane_starts` 持有映射地址，关闭时要 munmap；
+    ///   - DMABUF：`dma_fds` 持有 dma-buf fd，关闭时要 close。
+    ///
+    /// 刻意**不做成两个结构体**：下游的「帧容量」计算（坏帧率判定）在两种
+    /// 模型下完全一致，都要用到 `length` / `plane_lengths`。分成两个结构
+    /// 会让那段逻辑出现两份分支，而它已经是「拿长度算比例」这种容易写错的
+    /// 地方，不该再加一层分叉。
     struct Buffer {
-        void* start{nullptr};       ///< 单平面时的映射基址（多平面不用）
-        size_t length{0};           ///< 单平面时的字节长度
-        std::vector<void*> plane_starts;    ///< 多平面：每个 plane 的映射基址
+        void* start{nullptr};       ///< 单平面 MMAP 时的映射基址（多平面不用）
+        size_t length{0};           ///< 单平面时的字节长度（DMABUF 下也填 = 帧容量）
+        std::vector<void*> plane_starts;    ///< 多平面 MMAP：每个 plane 的映射基址
         std::vector<size_t> plane_lengths;  ///< 多平面：每个 plane 的字节长度
+        std::vector<int> dma_fds;           ///< DMABUF：每个 plane 一个 fd（未用为 -1）
+        std::vector<uint32_t> dma_lengths;  ///< DMABUF：每个 plane 的字节长度
     };
     std::vector<Buffer> buffers;
 
@@ -138,6 +330,12 @@ struct V4l2FrameSource::Impl {
     /// 本窗口起点（用于推导窗口终点 window_start + window_ms）
     std::chrono::steady_clock::time_point window_start;
 
+    /// start() 时解析出来的 media 拓扑（可为空 = 没解析到）
+    ///
+    /// 只读快照，采集期间不再刷新：拓扑在运行中被改动本身就是要排查的异常，
+    /// 而每帧去重新枚举会带来不必要的 ioctl 开销。运维改了链路应重启服务。
+    MediaTopology topology;
+
     ~Impl() { closeDevice(); }
 
     void closeDevice() {
@@ -156,15 +354,372 @@ struct V4l2FrameSource::Impl {
                     ::munmap(b.plane_starts[i], b.plane_lengths[i]);
                 }
             }
+            // dma-buf fd 必须逐个 close，否则每次 start 都泄漏 N 个 fd。
+            // 注意顺序：先 STREAMOFF（上面已做）再 close，反过来会让驱动
+            // 持有的引用与用户态 fd 计数错位。
+            for (int f : b.dma_fds) {
+                if (f >= 0) ::close(f);
+            }
         }
         buffers.clear();
         plane_bufs.clear();
         num_planes = 1;
         buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        // 必须一并复位：否则 stop() 后再 start() 会带着上一次的 memory 类型
+        // 去走 REQBUFS，与本次实际分配的缓冲来源不符。
+        memory = V4L2_MEMORY_MMAP;
+        // buffer_source **不**在这里复位：它是「上一次 start 实际生效的方案」，
+        // 停流后 describe() 仍应如实报告当时用的是哪条路。下一次 start()
+        // 成功时会覆盖它；start() 失败则保留旧值，比谎报 MMAP 更接近事实。
         if (fd >= 0) {
             ::close(fd);
             fd = -1;
         }
+    }
+
+    /// ---- 缓冲分配：三条路径，产出统一的 Buffer 表示 ----
+    ///
+    /// 三条路径的**唯一差别**是像素内存从哪来，帧统计完全不受影响
+    /// （只消费 v4l2_buffer 的元数据）。所以这里只关心「怎么拿到可入队的
+    /// 内存」，之后的 QBUF/DQBUF 全部共用同一套逻辑。
+
+    /// 释放当前队列（REQBUFS count=0）并清掉所有 fd / 映射
+    ///
+    /// 回落时必须调用：`VIDIOC_REQBUFS` 在队列非空时返回 EBUSY，
+    /// 直接换 memory 类型再申请会失败，而错误信息（"Device or resource busy"）
+    /// 完全指不出根因是「上一次申请没释放」。
+    void releaseQueue() {
+        if (fd >= 0) {
+            v4l2_requestbuffers req{};
+            req.count = 0;
+            req.type = buf_type;
+            req.memory = memory;
+            // 尽力而为：即使失败也继续清理本地状态，否则 fd 泄漏
+            ::ioctl(fd, VIDIOC_REQBUFS, &req);
+        }
+        for (auto& b : buffers) {
+            if (b.start != nullptr && b.start != MAP_FAILED) {
+                ::munmap(b.start, b.length);
+            }
+            for (size_t i = 0; i < b.plane_starts.size(); ++i) {
+                if (b.plane_starts[i] != nullptr && b.plane_starts[i] != MAP_FAILED) {
+                    ::munmap(b.plane_starts[i], b.plane_lengths[i]);
+                }
+            }
+            for (int f : b.dma_fds) {
+                if (f >= 0) ::close(f);
+            }
+        }
+        buffers.clear();
+        plane_bufs.clear();
+    }
+
+    /// 路径 A：MMAP（默认）
+    [[nodiscard]] bool allocBuffersMmap(uint32_t count, bool use_mplane,
+                                        std::string& err) {
+        memory = V4L2_MEMORY_MMAP;
+        v4l2_requestbuffers req{};
+        req.count = count;
+        req.type = buf_type;
+        req.memory = V4L2_MEMORY_MMAP;
+        if (::ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
+            err = errnoText("VIDIOC_REQBUFS(MMAP)", errno);
+            return false;
+        }
+        if (req.count < 2) {
+            err = "驱动返回的 buffer 数不足（" + std::to_string(req.count) + "）";
+            return false;
+        }
+
+        buffers.resize(req.count);
+        for (uint32_t i = 0; i < req.count; ++i) {
+            v4l2_buffer buf{};
+            buf.type = buf_type;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.index = i;
+            if (use_mplane) {
+                plane_bufs.assign(num_planes, v4l2_plane{});
+                buf.m.planes = plane_bufs.data();
+                buf.length = num_planes;
+            }
+            if (::ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) {
+                err = errnoText("VIDIOC_QUERYBUF", errno);
+                return false;
+            }
+
+            if (use_mplane) {
+                buffers[i].plane_starts.resize(num_planes, nullptr);
+                buffers[i].plane_lengths.resize(num_planes, 0);
+                for (uint32_t p = 0; p < num_planes; ++p) {
+                    const size_t len = buf.m.planes[p].length;
+                    void* mp = ::mmap(nullptr, len, PROT_READ | PROT_WRITE,
+                                      MAP_SHARED, fd,
+                                      buf.m.planes[p].m.mem_offset);
+                    if (mp == MAP_FAILED) {
+                        err = errnoText("mmap(plane)", errno);
+                        return false;
+                    }
+                    buffers[i].plane_starts[p] = mp;
+                    buffers[i].plane_lengths[p] = len;
+                }
+            } else {
+                void* p = ::mmap(nullptr, buf.length, PROT_READ | PROT_WRITE,
+                                 MAP_SHARED, fd, buf.m.offset);
+                if (p == MAP_FAILED) {
+                    err = errnoText("mmap", errno);
+                    return false;
+                }
+                buffers[i].start = p;
+                buffers[i].length = buf.length;
+            }
+        }
+        return true;
+    }
+
+    /// 路径 B：DMABUF 导入（从 dma-heap 自己分配）
+    ///
+    /// 失败时（无 /dev/dma_heap、驱动不接受外部 fd）返回 false，
+    /// 调用方回落到导出或 MMAP。**不把失败写进 error**：这三条路径对
+    /// 上层是等价的，回落成功就不该在 describe() 里留下一条误导性的偏差记录。
+    [[nodiscard]] bool allocBuffersDmaHeap(uint32_t count, bool use_mplane,
+                                          std::string& err) {
+        memory = V4L2_MEMORY_DMABUF;
+        v4l2_requestbuffers req{};
+        req.count = count;
+        req.type = buf_type;
+        req.memory = V4L2_MEMORY_DMABUF;
+        if (::ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
+            err = errnoText("VIDIOC_REQBUFS(DMABUF)", errno);
+            return false;
+        }
+        if (req.count < 2) {
+            err = "驱动返回的 DMABUF 数不足";
+            return false;
+        }
+
+        // 先拿一帧的容量。DMABUF 模式下 QUERYBUF 拿不到驱动预分配的长度，
+        // 只有单平面 v4l2_format.sizeimage 可靠；多平面用 planes[p].length
+        // 需要先 QUERYBUF，而 DMABUF 的 QUERYBUF 只回填 length 字段本身。
+        v4l2_format fmt{};
+        fmt.type = buf_type;
+        if (::ioctl(fd, VIDIOC_G_FMT, &fmt) < 0) {
+            err = errnoText("VIDIOC_G_FMT", errno);
+            return false;
+        }
+
+        buffers.resize(req.count);
+        for (uint32_t i = 0; i < req.count; ++i) {
+            buffers[i].dma_fds.assign(use_mplane ? num_planes : 1, -1);
+            buffers[i].dma_lengths.assign(use_mplane ? num_planes : 1, 0);
+
+            for (uint32_t p = 0; p < buffers[i].dma_fds.size(); ++p) {
+                const size_t len =
+                    use_mplane ? fmt.fmt.pix_mp.plane_fmt[p].sizeimage
+                               : fmt.fmt.pix.sizeimage;
+                if (len == 0) {
+                    err = "G_FMT 返回的 sizeimage 为 0，无法分配 dma-heap";
+                    return false;
+                }
+                const int dfd = allocFromDmaHeap(len);
+                if (dfd < 0) {
+                    err = "dma-heap 分配失败（/dev/dma_heap/system 不存在或无权限）";
+                    return false;
+                }
+                buffers[i].dma_fds[p] = dfd;
+                buffers[i].dma_lengths[p] = static_cast<uint32_t>(len);
+                if (!use_mplane) buffers[i].length = len;   // 供坏帧率判定用
+            }
+            if (use_mplane) {
+                buffers[i].plane_lengths.assign(buffers[i].dma_lengths.begin(),
+                                                buffers[i].dma_lengths.end());
+            }
+        }
+        return true;
+    }
+
+    /// 路径 C：DMABUF 导出（MMAP 申请 → EXPBUF 拿到 fd → 释放 MMAP 队列）
+    ///
+    /// 这条路径对本帧源收益为零（见头文件），保留它只作为导入不可用时的
+    /// 兜底，用于证明 DMABUF 通路本身是通的。
+    ///
+    /// **依赖一个非 ABI 保证的内核行为**：`REQBUFS(0)` 释放 MMAP 队列后，
+    /// 已导出的 dma-buf fd 仍然有效（vb2 把底层内存的释放推迟到 dma-buf
+    /// detach）。实测 6.8 内核成立，但换内核不保证。这也是它只做兜底、
+    /// 不做默认的原因。
+    [[nodiscard]] bool allocBuffersExport(uint32_t count, bool use_mplane,
+                                          std::string& err) {
+        // 第一步：按 MMAP 申请并导出 fd
+        std::string mmap_err;
+        if (!allocBuffersMmap(count, use_mplane, mmap_err)) {
+            err = "导出路径的 MMAP 准备阶段失败：" + mmap_err;
+            return false;
+        }
+
+        // 从 QUERYBUF 拿长度（EXPBUF 需要 index，长度用于后续校验）
+        std::vector<std::vector<unsigned int>> lengths(buffers.size());
+        for (size_t i = 0; i < buffers.size(); ++i) {
+            lengths[i].resize(use_mplane ? num_planes : 1, 0);
+            v4l2_buffer buf{};
+            buf.type = buf_type;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.index = static_cast<uint32_t>(i);
+            if (use_mplane) {
+                plane_bufs.assign(num_planes, v4l2_plane{});
+                buf.m.planes = plane_bufs.data();
+                buf.length = num_planes;
+            }
+            if (::ioctl(fd, VIDIOC_QUERYBUF, &buf) < 0) {
+                err = errnoText("VIDIOC_QUERYBUF(export)", errno);
+                return false;
+            }
+            if (use_mplane) {
+                for (uint32_t p = 0; p < num_planes; ++p) {
+                    lengths[i][p] = buf.m.planes[p].length;
+                }
+            } else {
+                lengths[i][0] = buf.length;
+            }
+        }
+
+        // 第二步：EXPBUF 导出（必须在释放 MMAP 队列之前）
+        for (size_t i = 0; i < buffers.size(); ++i) {
+            buffers[i].dma_fds.assign(use_mplane ? num_planes : 1, -1);
+            buffers[i].dma_lengths.assign(use_mplane ? num_planes : 1, 0);
+            for (uint32_t p = 0; p < buffers[i].dma_fds.size(); ++p) {
+                v4l2_exportbuffer exp{};
+                exp.type = buf_type;
+                exp.index = static_cast<uint32_t>(i);
+                // 多平面导出用 plane 字段指定平面
+                exp.plane = use_mplane ? p : 0;
+                exp.flags = O_RDWR | O_CLOEXEC;
+                if (::ioctl(fd, VIDIOC_EXPBUF, &exp) < 0) {
+                    err = errnoText("VIDIOC_EXPBUF", errno);
+                    return false;
+                }
+                buffers[i].dma_fds[p] = exp.fd;
+                buffers[i].dma_lengths[p] = lengths[i][p];
+            }
+        }
+
+        // 第三步：释放 MMAP 队列（保留已导出的 fd），再以 DMABUF 重新申请
+        //
+        // 注意这里**不能**调 releaseQueue()：它会连 dma_fds 一起 close 掉。
+        {
+            v4l2_requestbuffers req{};
+            req.count = 0;
+            req.type = buf_type;
+            req.memory = V4L2_MEMORY_MMAP;
+            ::ioctl(fd, VIDIOC_REQBUFS, &req);
+        }
+        // 只清映射，保留 fd
+        for (auto& b : buffers) {
+            if (b.start != nullptr && b.start != MAP_FAILED) {
+                ::munmap(b.start, b.length);
+                b.start = nullptr;
+            }
+            for (size_t p = 0; p < b.plane_starts.size(); ++p) {
+                if (b.plane_starts[p] != nullptr && b.plane_starts[p] != MAP_FAILED) {
+                    ::munmap(b.plane_starts[p], b.plane_lengths[p]);
+                }
+            }
+            b.plane_starts.clear();
+            b.plane_lengths.clear();
+        }
+        // 把长度拷进 dma_lengths 后，重新填 length 供坏帧率判定
+        for (auto& b : buffers) {
+            if (use_mplane) {
+                b.plane_lengths.assign(b.dma_lengths.begin(), b.dma_lengths.end());
+            } else {
+                b.length = b.dma_lengths[0];
+            }
+        }
+
+        memory = V4L2_MEMORY_DMABUF;
+        v4l2_requestbuffers req{};
+        req.count = static_cast<uint32_t>(buffers.size());
+        req.type = buf_type;
+        req.memory = V4L2_MEMORY_DMABUF;
+        if (::ioctl(fd, VIDIOC_REQBUFS, &req) < 0) {
+            err = errnoText("VIDIOC_REQBUFS(DMABUF after export)", errno);
+            return false;
+        }
+        if (req.count < buffers.size()) {
+            buffers.resize(req.count);
+        }
+        return true;
+    }
+
+    /// 把当前 buffers 全部入队（三条路径共用）
+    [[nodiscard]] bool queueAll(bool use_mplane, std::string& err) {
+        for (uint32_t i = 0; i < buffers.size(); ++i) {
+            v4l2_buffer buf{};
+            buf.type = buf_type;
+            buf.memory = memory;
+            buf.index = i;
+            if (memory == V4L2_MEMORY_DMABUF) {
+                if (use_mplane) {
+                    plane_bufs.assign(num_planes, v4l2_plane{});
+                    for (uint32_t p = 0; p < num_planes; ++p) {
+                        plane_bufs[p].m.fd = buffers[i].dma_fds[p];
+                    }
+                    buf.m.planes = plane_bufs.data();
+                    buf.length = num_planes;
+                } else {
+                    buf.m.fd = buffers[i].dma_fds[0];
+                }
+            } else if (use_mplane) {
+                plane_bufs.assign(num_planes, v4l2_plane{});
+                buf.m.planes = plane_bufs.data();
+                buf.length = num_planes;
+            }
+            if (::ioctl(fd, VIDIOC_QBUF, &buf) < 0) {
+                err = errnoText("VIDIOC_QBUF", errno);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// 按配置选择路径分配缓冲并入队
+    ///
+    /// 回落顺序：导入 → 导出 → MMAP。每一级失败都先 releaseQueue() 再试
+    /// 下一级，否则残留队列会让下一级 REQBUFS 返回 EBUSY。
+    [[nodiscard]] bool setupBuffers(bool use_mplane, std::string& err) {
+        const uint32_t want = cfg.buffer_count ? cfg.buffer_count : 4;
+
+        if (cfg.use_dmabuf) {
+            // 一级：导入
+            if (allocBuffersDmaHeap(want, use_mplane, err)) {
+                if (queueAll(use_mplane, err)) {
+                    buffer_source = kMemDmabufHeap;
+                    return true;
+                }
+                releaseQueue();
+            }
+            // 一级失败是预期内的（板上无 dma-heap），不写进 error
+            releaseQueue();
+
+            // 二级：导出
+            if (allocBuffersExport(want, use_mplane, err)) {
+                if (queueAll(use_mplane, err)) {
+                    buffer_source = kMemDmabufExport;
+                    return true;
+                }
+                releaseQueue();
+            }
+            releaseQueue();
+            // 导出也失败时，把两级的原因留下来供 describe() 溯源
+            err = "DMABUF 不可用，已回落 MMAP（" + err + "）";
+            buffer_source = kMemDmabufMmapFallback;
+        } else {
+            buffer_source = kMemMmap;
+        }
+
+        // 三级：MMAP（默认路径）
+        if (!allocBuffersMmap(want, use_mplane, err)) {
+            return false;
+        }
+        return queueAll(use_mplane, err);
     }
 
     /// 清空所有本窗口的累计量
@@ -338,9 +893,11 @@ bool V4l2FrameSource::start() {
     // 跑在别的帧率上，丢帧率会算成一个恒定的巨大假值 —— 而且这个假值非常
     // 有迷惑性，看起来像「链路丢了 70% 的帧」。
     //
-    // 实测证据（vivid，默认 5fps，配置 30fps，未调 S_PARM）：
-    //   expected=30 received=9 lost=21 loss_ratio=0.7000
-    // 调完 S_PARM 后同一设备 expected=30 received=30 loss_ratio=0。
+    // 实测证据（vivid，另起进程把驱动设成 15fps，本进程配置 30fps 且
+    // set_frame_rate=false）：
+    //   expected=30 received=15 lost=15 loss_ratio=0.5000
+    // 驱动帧率状态**跨进程保留**，所以这个坑会在「上一步设过帧率」之后突然出现。
+    // 开启 S_PARM 后同一设备 expected=30 received=30 loss_ratio=0。
     //
     // 驱动不支持 S_PARM 不算失败：很多 sensor 的帧率由链路固定。此时记录
     // 实际帧率并**用它回填 cfg.fps**，让期望值与实际一致，而不是继续用
@@ -349,9 +906,19 @@ bool V4l2FrameSource::start() {
         v4l2_streamparm parm{};
         parm.type = s.buf_type;
         if (::ioctl(s.fd, VIDIOC_G_PARM, &parm) < 0) {
-            s.error = errnoText("VIDIOC_G_PARM", errno);
-            s.closeDevice();
-            return false;
+            // **不能在这里 return false**：部分驱动（实测 vimc 的 capture 节点
+            // 报 ENOTTY）根本不实现 G_PARM，而帧率由链路硬件固定。此时正确
+            // 行为是沿用配置帧率继续采集，而不是拒绝启动。
+            //
+            // 这与本函数上方注释自己写的话一致（「驱动不支持 S_PARM 不算失败」），
+            // 但此前代码在 G_PARM 处提前返回，注释与实现互相矛盾——到了真机上，
+            // 这会让一个本来能出帧的节点完全无法使用。
+            //
+            // 记录原因但**不当作 error** 塞进 describe()：ENOTTY 在这里是
+            // 正常情况，写进偏差记录反而会让读者以为出了问题。
+            parm = v4l2_streamparm{};
+            parm.type = s.buf_type;
+            // timeperframe 保持 0/0，下面的判定会跳过回填，cfg.fps 维持配置值
         }
 
         if (parm.parm.capture.capability & V4L2_CAP_TIMEPERFRAME) {
@@ -380,84 +947,15 @@ bool V4l2FrameSource::start() {
         }
     }
 
-    // ---- 4. 申请 buffer ----
-    v4l2_requestbuffers req{};
-    req.count = s.cfg.buffer_count ? s.cfg.buffer_count : 4;
-    req.type = s.buf_type;
-    req.memory = V4L2_MEMORY_MMAP;
-
-    if (::ioctl(s.fd, VIDIOC_REQBUFS, &req) < 0) {
-        s.error = errnoText("VIDIOC_REQBUFS", errno);
-        s.closeDevice();
-        return false;
-    }
-    if (req.count < 2) {
-        s.error = "驱动返回的 buffer 数不足（" + std::to_string(req.count) + "）";
-        s.closeDevice();
-        return false;
-    }
-
-    // ---- 5. mmap + 入队 ----
+    // ---- 4/5. 申请缓冲并入队 ----
     //
-    // 单平面与多平面的差别集中在这里，其它地方共用同一套逻辑：
-    //   单平面：buf.m.offset → 一块映射，长度 buf.length
-    //   多平面：buf.m.planes[p].m.mem_offset → 每平面各一块，长度 planes[p].length
-    // 两条路径映射完成后 Buffer 的表示统一，DQBUF 侧再按同一规则取长度。
-    s.buffers.resize(req.count);
-    for (uint32_t i = 0; i < req.count; ++i) {
-        v4l2_buffer buf{};
-        buf.type = s.buf_type;
-        buf.memory = V4L2_MEMORY_MMAP;
-        buf.index = i;
-
-        // 多平面必须提供 planes 数组，否则 QUERYBUF 会返回 EINVAL
-        if (use_mplane) {
-            s.plane_bufs.assign(s.num_planes, v4l2_plane{});
-            buf.m.planes = s.plane_bufs.data();
-            buf.length = s.num_planes;
-        }
-
-        if (::ioctl(s.fd, VIDIOC_QUERYBUF, &buf) < 0) {
-            s.error = errnoText("VIDIOC_QUERYBUF", errno);
-            s.closeDevice();
-            return false;
-        }
-
-        if (use_mplane) {
-            s.buffers[i].plane_starts.resize(s.num_planes, nullptr);
-            s.buffers[i].plane_lengths.resize(s.num_planes, 0);
-            for (uint32_t p = 0; p < s.num_planes; ++p) {
-                const size_t len = buf.m.planes[p].length;
-                void* mp = ::mmap(nullptr, len, PROT_READ | PROT_WRITE,
-                                  MAP_SHARED, s.fd,
-                                  buf.m.planes[p].m.mem_offset);
-                if (mp == MAP_FAILED) {
-                    s.error = errnoText("mmap(plane)", errno);
-                    s.closeDevice();
-                    return false;
-                }
-                s.buffers[i].plane_starts[p] = mp;
-                s.buffers[i].plane_lengths[p] = len;
-            }
-        } else {
-            void* p = ::mmap(nullptr, buf.length, PROT_READ | PROT_WRITE,
-                             MAP_SHARED, s.fd, buf.m.offset);
-            if (p == MAP_FAILED) {
-                s.error = errnoText("mmap", errno);
-                s.closeDevice();
-                return false;
-            }
-            s.buffers[i] = Impl::Buffer{p, buf.length, {}, {}};
-        }
-
-        // 入队
-        if (use_mplane) {
-            s.plane_bufs.assign(s.num_planes, v4l2_plane{});
-            buf.m.planes = s.plane_bufs.data();
-            buf.length = s.num_planes;
-        }
-        if (::ioctl(s.fd, VIDIOC_QBUF, &buf) < 0) {
-            s.error = errnoText("VIDIOC_QBUF", errno);
+    // 三条路径（DMABUF 导入 / DMABUF 导出 / MMAP）的回落逻辑都在
+    // Impl::setupBuffers() 里，本函数不再区分。选择哪条路只影响像素内存
+    // 来自哪里，不影响 FrameStats 的语义——统计全部来自 v4l2_buffer 的元数据。
+    {
+        std::string buf_err;
+        if (!s.setupBuffers(use_mplane, buf_err)) {
+            s.error = buf_err;
             s.closeDevice();
             return false;
         }
@@ -471,6 +969,18 @@ bool V4l2FrameSource::start() {
         return false;
     }
     s.streaming = true;
+
+    // ---- 7. 解析 media 拓扑（只读、失败不影响采集）----
+    //
+    // 放在 STREAMON 之后：此刻设备已确认可用，拓扑信息才有意义。
+    // 失败一律忽略——拓扑是诊断增强，拿不到不该让采集失败。
+    // 真机上这正是判断「节点打开了但上游链路 DISABLED」的唯一依据。
+    if (s.cfg.probe_media_topology) {
+        MediaTopology topo;
+        if (probeMediaTopology(s.cfg.device, topo)) {
+            s.topology = std::move(topo);
+        }
+    }
 
     s.resetWindow();
     return true;
@@ -560,7 +1070,7 @@ FrameStats V4l2FrameSource::snapshotAndReset() {
 
         v4l2_buffer buf{};
         buf.type = s.buf_type;
-        buf.memory = V4L2_MEMORY_MMAP;
+        buf.memory = s.memory;
         if (use_mplane) {
             s.plane_bufs.assign(s.num_planes, v4l2_plane{});
             buf.m.planes = s.plane_bufs.data();
@@ -674,13 +1184,46 @@ FrameStats V4l2FrameSource::snapshotAndReset() {
         s.last_seq = buf.sequence;
         s.has_last_seq = true;
 
-        // 归还 buffer（多平面同样要带 planes 数组）
+        // 归还 buffer
+        //
+        // **刻意构造一个全新的 v4l2_buffer，而不是复用 DQBUF 写过的那个。**
+        // 这不是洁癖，是因为复用会依赖内核未承诺的行为：
+        //
+        // 实测（vivid 6.8 单平面 DMABUF，probe_fd_preserved）：DQBUF 返回后
+        // `buf.m.fd` 被原样保留，于是「忘了重新绑定 fd」也能 requeue 成功。
+        // 但 V4L2 从未保证 DQBUF 会回写 `m.fd`——驱动完全可以只填 index /
+        // bytesused / timestamp。依赖它就意味着：换个摄像头就从「一直能跑」
+        // 变成「第一帧之后全部 EINVAL」，而且错误点离根因很远。
+        //
+        // 构造新结构体后，fd 必须由我们自己填，这条路径才真正承重：
+        // 漏填就是 fd=0，内核在 QBUF 阶段校验并返回 EINVAL（已实测确认
+        // QBUF(fd=0) / QBUF(fd=-1) / QBUF(普通文件 fd) 均被拒）。
+        //
+        // MMAP 模式下 m 不需要任何输入（内核按 index 用自己的映射），
+        // 所以零初始化即可，不必分支区分。
+        v4l2_buffer requeue{};
+        requeue.type = s.buf_type;
+        requeue.memory = s.memory;
+        requeue.index = buf.index;
         if (use_mplane) {
             s.plane_bufs.assign(s.num_planes, v4l2_plane{});
-            buf.m.planes = s.plane_bufs.data();
-            buf.length = s.num_planes;
+            if (s.memory == V4L2_MEMORY_DMABUF &&
+                buf.index < s.buffers.size()) {
+                // 多平面 DMABUF：每个 plane 各绑一个 fd。这里若漏填，
+                // plane_bufs 全是 0，内核会以 EINVAL 拒绝——不是静默错误。
+                for (uint32_t p = 0; p < s.num_planes &&
+                                     p < s.buffers[buf.index].dma_fds.size();
+                     ++p) {
+                    s.plane_bufs[p].m.fd = s.buffers[buf.index].dma_fds[p];
+                }
+            }
+            requeue.m.planes = s.plane_bufs.data();
+            requeue.length = s.num_planes;
+        } else if (s.memory == V4L2_MEMORY_DMABUF &&
+                   buf.index < s.buffers.size()) {
+            requeue.m.fd = s.buffers[buf.index].dma_fds[0];
         }
-        if (::ioctl(s.fd, VIDIOC_QBUF, &buf) < 0) {
+        if (::ioctl(s.fd, VIDIOC_QBUF, &requeue) < 0) {
             s.error = errnoText("VIDIOC_QBUF(requeue)", errno);
             break;
         }
@@ -739,11 +1282,45 @@ std::string V4l2FrameSource::describe() const {
     // 采集方式完全不同，事后排查时需要知道当时走的是哪条路径。
     os << (s.buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ? " mplane"
                                                             : " splane");
+
+    // 缓冲来源必须写进描述，且**只在配置要求 DMABUF 时才写**。
+    //
+    // 理由：`use_dmabuf=true` 有三条可能的落点（导入 / 导出 / 回落 MMAP），
+    // 而三者在 FrameStats 上完全看不出区别。若不写出来，运维无法确认
+    // 「我配了 DMABUF 到底生效没有」——这正是配置项最典型的静默失效形态。
+    // MMAP 是默认值，写出来只会给每一行日志加噪音，所以不写。
+    //
+    // 用 buffer_source 而不是 memory：后者被 closeDevice() 复位成 MMAP，
+    // stop() 之后再看 describe() 会把成功过的 DMABUF 误报成「回落」。
+    if (s.cfg.use_dmabuf) {
+        switch (s.buffer_source) {
+            case Impl::kMemDmabufHeap:   os << " dmabuf(heap)"; break;
+            case Impl::kMemDmabufExport: os << " dmabuf(export)"; break;
+            case Impl::kMemDmabufMmapFallback:
+                os << " dmabuf->mmap-fallback";
+                break;
+            case Impl::kMemMmap:
+            default:                     os << " mmap"; break;
+        }
+    }
+
     if (!s.streaming) os << " (stopped)";
 
     // 驱动协商结果（帧率/分辨率被校正、格式被强制）也带上：
     // 这些是「配置 vs 事实」的偏差记录，不写下来就无法解释统计为何与预期不符。
     if (!s.error.empty()) os << " [" << s.error << "]";
+
+    // media 拓扑：只写「上游链路是否通」，不铺开整张图。
+    //
+    // 真机上这段能直接回答「为什么节点打开了却拿不到帧」——V4L2 层只会报
+    // EINVAL，而拓扑里能看出是哪一跳 DISABLED。没解析到就整段不写，
+    // 不要输出 "topology unavailable"：那句话会让读者以为出了问题，
+    // 实际只是这个驱动/环境没有 media controller（x86 上的 UVC 就没有）。
+    if (s.topology.valid) {
+        const std::string up = summarizeUpstream(s.topology);
+        if (!up.empty()) os << " {" << up << "}";
+    }
+
     return os.str();
 }
 

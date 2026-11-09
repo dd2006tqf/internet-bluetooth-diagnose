@@ -22,6 +22,11 @@
 
 #include <gtest/gtest.h>
 
+#include <fcntl.h>
+#include <linux/dma-heap.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+
 #include <chrono>
 #include <cstdlib>
 #include <string>
@@ -217,6 +222,27 @@ TEST(V4l2FrameSource, MultiplanarIsAllowedByDefault) {
         << "默认必须允许 MPLANE，否则只支持多平面的节点无法采集";
 }
 
+TEST(V4l2FrameSource, DmabufIsOffByDefaultAndTopologyProbeIsOn) {
+    // 两个新配置项的默认值各有一条明确理由，把它们变成可执行断言，
+    // 避免将来有人「顺手」改默认值而无人察觉。
+    V4l2CaptureConfig cfg;
+
+    // DMABUF 默认关：本帧源只消费 v4l2_buffer 的**元数据**（bytesused /
+    // sequence / timestamp），从不读像素。MMAP 那次映射本来就没被访问过，
+    // 换成 DMABUF 不会减少任何像素拷贝，只会多占 N 个 fd。
+    // 它不是性能优化开关，是「将来要把帧交给编码器」时的预留通路。
+    EXPECT_FALSE(cfg.use_dmabuf)
+        << "DMABUF 默认必须关闭：本项目当前没有第二个消费像素的进程，"
+           "开启它只增加 fd 占用而无任何收益";
+
+    // 拓扑探测默认开：它是**只读**诊断信息，失败不影响采集，
+    // 而真机上「节点打开了却拿不到帧」只有拓扑能解释（V4L2 只会报 EINVAL）。
+    // 关掉它等于放弃唯一的现场诊断线索。
+    EXPECT_TRUE(cfg.probe_media_topology)
+        << "拓扑探测必须默认开启：只读、无副作用，且是真机上唯一能区分"
+           "「设备不存在」与「链路没通」的依据";
+}
+
 TEST(V4l2FrameSource, DescribeStatesPlanarModeEvenWhenStopped) {
     // describe() 必须无条件写明 splane/mplane，即使从未 start()。
     //
@@ -301,6 +327,75 @@ namespace {
 std::string v4l2TestDevice() {
     const char* p = std::getenv("WEAKNET_V4L2_TEST_DEVICE");
     return (p != nullptr && *p != '\0') ? std::string(p) : std::string();
+}
+
+/// describe() 里可能出现的缓冲来源落点
+///
+/// 刻意做成枚举而不是字符串比较：`dmabuf->mmap-fallback` **包含**
+/// 子串 "dmabuf"，用 `find("dmabuf") != npos` 判断会把「静默回落」
+/// 认成「成功」。这是本项目已经踩过的假绿形态，必须用精确解析堵住。
+enum class BufferSourceKind {
+    kUnreported,       ///< describe() 压根没写（配置开了却沉默 = 缺陷）
+    kDmabufHeap,       ///< 导入路径：dma-heap 分配
+    kDmabufExport,     ///< 导出路径：VIDIOC_EXPBUF
+    kDmabufMmapFallback, ///< 配了 DMABUF 但两级全失败，回落 MMAP
+    kPlainMmap,        ///< 未配置 DMABUF 的默认路径
+};
+
+/// 从 describe() 的一行里解析出实际落点
+///
+/// 注意解析顺序：`dmabuf->mmap-fallback` 必须排在 `dmabuf(` 之前判断，
+/// 否则会在 fallback 字符串里先命中别的前缀。
+BufferSourceKind parseBufferSource(const std::string& desc) {
+    if (desc.find("dmabuf->mmap-fallback") != std::string::npos)
+        return BufferSourceKind::kDmabufMmapFallback;
+    if (desc.find("dmabuf(heap)") != std::string::npos)
+        return BufferSourceKind::kDmabufHeap;
+    if (desc.find("dmabuf(export)") != std::string::npos)
+        return BufferSourceKind::kDmabufExport;
+    if (desc.find(" mmap") != std::string::npos)
+        return BufferSourceKind::kPlainMmap;
+    return BufferSourceKind::kUnreported;
+}
+
+/// 本进程能否真的用 dma-heap 分配
+///
+/// **不能只看 /dev/dma_heap/system 是否存在**：实测该节点是
+/// `crw------- root root`，普通用户 open() 直接 EACCES。用存在性判断会让
+/// 测试在非 root 下得出「应该走 heap」的错误期望，然后误报失败。
+/// 这里真开一次、真分配一次，用结果说话。
+///
+/// 分配长度取一页即可：只验证权限与 ioctl 通路，不验证具体尺寸。
+bool canOpenDmaHeap() {
+    const int hfd = ::open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
+    if (hfd < 0) return false;
+#ifdef DMA_HEAP_IOCTL_ALLOC
+    dma_heap_allocation_data data{};
+    data.len = 4096;
+    data.fd_flags = O_RDWR | O_CLOEXEC;
+    const bool ok = ::ioctl(hfd, DMA_HEAP_IOCTL_ALLOC, &data) >= 0;
+    if (ok && data.fd > 0) ::close(static_cast<int>(data.fd));
+    ::close(hfd);
+    return ok;
+#else
+    // 内核头文件太旧、连 DMA_HEAP_IOCTL_ALLOC 都没有 → 实现侧也走不到导入
+    ::close(hfd);
+    return false;
+#endif
+}
+
+/// 是否要求「必须走通 EXPBUF 导出」这一更严的判据
+///
+/// 默认关闭。原因：导出可用性是**驱动能力**，不是本类的行为契约——
+/// 驱动不支持 EXPBUF 时回落 MMAP 完全正确。只有在已知驱动支持导出
+/// （例如 vivid）并刻意隐藏了 `/dev/dma_heap` 的演练里，才把它打开，
+/// 用来把「导出路径整段坏掉」与「正常回落」区分开。
+///
+/// 不加这层区分时，禁用导出 / 导出后 REQBUFS 用错类型这两类缺陷
+/// 都会静默落进 fallback 分支，测试仍然全绿——实测确认过。
+bool expectDmabufExport() {
+    const char* p = std::getenv("WEAKNET_V4L2_EXPECT_DMABUF_EXPORT");
+    return p != nullptr && *p == '1';
 }
 
 /// 真机用例的基类：门控不满足时整组不注册
@@ -530,5 +625,139 @@ TEST_F(V4l2LiveTest, RestartAfterStopWorksAndResetsCounters) {
     EXPECT_LE(s.frames_received, s.frames_expected + 4)
         << "重启后仍带着上一次运行的累计帧数，说明 resetWindow 未清干净";
 
+    src.stop();
+}
+
+// ---------------------------------------------------------------------------
+// 6.7 缓冲来源：DMABUF 与回落的**可观测性**
+//
+// 这几条守的不是「DMABUF 更快」（本项目压根不需要它，见配置项注释），
+// 而是三件更容易出错的事：
+//   1. 开启后必须真的走通，而不是静默退回 MMAP 让人以为生效了；
+//   2. 无论哪条路径，FrameStats 的语义必须与 MMAP 完全一致；
+//   3. describe() 必须如实报告**实际**落点。
+// ---------------------------------------------------------------------------
+
+TEST_F(V4l2LiveTest, DmabufPathProducesSameStatsSemanticsAsMmap) {
+    // 核心断言：缓冲来源不影响统计语义。
+    //
+    // 这不是废话——DMABUF 下 bytesused 是否被驱动正确填写、时间戳是否
+    // 仍然打戳、requeue 时 fd 是否被正确重新绑定，任何一项出问题都会让
+    // FrameStats 变形（典型表现：坏帧率 100% 或 seq_gap 暴涨）。
+    // 实测 vivid 上三条路径的 exp/recv/gap/corrupt 完全一致。
+    auto run_once = [this](bool use_dmabuf, FrameStats& out) {
+        auto cfg = makeConfig(640, 480, 30, 400);
+        cfg.use_dmabuf = use_dmabuf;
+        V4l2FrameSource src(cfg);
+        if (!src.start()) return false;
+        out = src.snapshotAndReset();
+        src.stop();
+        return out.valid();
+    };
+
+    FrameStats mmap_stats;
+    FrameStats dmabuf_stats;
+    ASSERT_TRUE(run_once(false, mmap_stats)) << "MMAP 路径未能出帧";
+    ASSERT_TRUE(run_once(true, dmabuf_stats)) << "DMABUF 路径未能出帧";
+
+    // 帧数只做宽松比对：两个窗口不同时刻采样，允许 ±4 帧抖动
+    EXPECT_NEAR(static_cast<double>(dmabuf_stats.frames_received),
+                static_cast<double>(mmap_stats.frames_received), 4.0)
+        << "DMABUF 与 MMAP 收到的帧数差异过大，说明其中一条路径在丢帧";
+
+    // 更关键的是**语义不变**：DMABUF 下不得凭空出现坏帧或序号跳变。
+    EXPECT_EQ(dmabuf_stats.frames_corrupt, 0u)
+        << "DMABUF 下出现坏帧，最可能是 bytesused 未被正确回读";
+    EXPECT_EQ(dmabuf_stats.seq_gap_count, 0u)
+        << "DMABUF 下出现序号跳变，最可能是 requeue 时 fd 绑定错误导致丢帧";
+    EXPECT_GT(dmabuf_stats.bytes_received, 0u)
+        << "DMABUF 下字节数为 0，说明统计链路断了";
+    EXPECT_EQ(dmabuf_stats.window_ms, 400u) << "窗口跨度语义不得因缓冲来源而变";
+}
+
+TEST_F(V4l2LiveTest, DescribeReportsActualBufferSourceWhenDmabufRequested) {
+    // **静默失效是配置项最危险的形态**：若 `use_dmabuf=true` 但实际回落
+    // 到了 MMAP，而 describe() 什么都不说，运维会一直以为自己跑在 DMABUF 上。
+    //
+    // 这里不断言「一定是 dmabuf(heap)」——那取决于**运行身份**：
+    // 实测 `/dev/dma_heap/system` 是 `0600 root:root`，非 root 进程连 open
+    // 都会 EACCES，于是自然落到二级的 EXPBUF 导出路径。断言绝对落点会让
+    // 同一份代码在 root/非 root 下结论相反，那不是测试，是环境快照。
+    //
+    // 但仍必须断言**具体落点**，不能只断言「包含 dmabuf」：
+    // `dmabuf->mmap-fallback` 同样包含 "dmabuf"，前者会把「静默回落」
+    // 认成「成功」。实测这一条正是 M3 变异（describe 漏报 heap）能存活的
+    // 原因——非 root 环境永远只在 export/fallback 上打转，根本碰不到
+    // heap 分支，漏报它也就无人发现。
+    auto cfg = makeConfig(640, 480, 30, 300);
+    cfg.use_dmabuf = true;
+
+    V4l2FrameSource src(cfg);
+    ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
+
+    const std::string d = src.describe();
+    const BufferSourceKind got = parseBufferSource(d);
+
+    // case 值：0=未报告 1=heap 2=export 3=mmap-fallback 4=mmap
+    ASSERT_NE(got, BufferSourceKind::kUnreported)
+        << "配置了 use_dmabuf=true 但 describe() 未报告实际落点：" << d
+        << "\n（若确实回落了 MMAP，应输出 dmabuf->mmap-fallback）";
+
+    // 环境能力决定**唯一合法的期望落点**，而不是「随便哪条都行」。
+    if (canOpenDmaHeap()) {
+        EXPECT_EQ(got, BufferSourceKind::kDmabufHeap)
+            << "本进程可访问 /dev/dma_heap/system，导入路径必须生效，"
+               "实际却落在别处：" << d;
+    } else {
+        // 无法分配 dma-heap 时导入必然失败。接下来该走 EXPBUF 导出——
+        // 但「导出是否可用」是**驱动能力**，不是本类的行为：
+        // 部分驱动（如一些 UVC）根本不支持 VIDIOC_EXPBUF，此时回落到
+        // MMAP 是正确行为，硬断言 export 会变成假失败。
+        //
+        // 所以默认只做宽松断言（排除说了谎的 heap），由显式开关
+        // WEAKNET_V4L2_EXPECT_DMABUF_EXPORT=1 收紧为「必须导出成功」。
+        // 该开关配合隐藏 /dev/dma_heap 使用（见变异演练）：
+        //   unshare -m bash -c 'mount -t tmpfs none /tmp/eh
+        //     ; mount --bind /tmp/eh /dev/dma_heap
+        //     ; WEAKNET_V4L2_EXPECT_DMABUF_EXPORT=1 ...'
+        //
+        // 为什么必须留这个开关：不加它时，「禁用 EXPBUF」「export 后
+        // REQBUFS 用错 memory」这类变异会落在 fallback 上而被放行——
+        // 实测确认这两条变异在宽松断言下 100% 存活。那是假绿。
+        EXPECT_NE(got, BufferSourceKind::kDmabufHeap)
+            << "本进程无法访问 dma-heap，却报告走通了导入路径：" << d;
+
+        if (expectDmabufExport()) {
+            EXPECT_EQ(got, BufferSourceKind::kDmabufExport)
+                << "已要求必须走通 EXPBUF 导出，实际却落在：「" << d
+                << "」\n导出路径整段失效，或 describe() 漏报了它。";
+        } else {
+            EXPECT_TRUE(got == BufferSourceKind::kDmabufExport ||
+                        got == BufferSourceKind::kDmabufMmapFallback)
+                << "非法落点（既不是 export 也不是 fallback）：" << d;
+        }
+    }
+
+    // 停止后仍必须如实报告**同一个**落点，不得变回「没配过」的样子。
+    // 这一条守 buffer_source 不被 closeDevice() 复位。
+    src.stop();
+    const std::string after = src.describe();
+    EXPECT_EQ(parseBufferSource(after), got)
+        << "stop() 之后 describe() 的缓冲来源变了或丢失：" << after
+        << "\n期望仍是与运行期一致的那条路径（buffer_source 被复位了？）";
+}
+
+TEST_F(V4l2LiveTest, DmabufDisabledLeavesDescribeClean) {
+    // 默认路径不应在 describe() 里加任何缓冲来源噪音：每行日志多一个
+    // "mmap" 会让真正的偏差记录（[帧率由…校正为…]）难以被发现。
+    auto cfg = makeConfig(640, 480, 30, 300);
+    ASSERT_FALSE(cfg.use_dmabuf) << "本用例前提是默认关闭";
+
+    V4l2FrameSource src(cfg);
+    ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
+
+    const std::string d = src.describe();
+    EXPECT_EQ(d.find("dmabuf"), std::string::npos)
+        << "未开启 DMABUF 时 describe() 不应提到它：" << d;
     src.stop();
 }

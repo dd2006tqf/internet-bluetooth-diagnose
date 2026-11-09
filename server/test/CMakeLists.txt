@@ -186,6 +186,13 @@ add_executable(test_v4l2_frame_source_gtest
     unit/test_v4l2_frame_source_gtest.cpp)
 target_link_libraries(test_v4l2_frame_source_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+# media controller 拓扑的纯算法测试（无设备依赖）。
+# 与 test_v4l2_frame_source_gtest 分开：那份需要 /dev/video*，
+# 这份在合成拓扑上跑，CI 无摄像头/无 media 设备也必须全绿。
+add_executable(test_media_topology_gtest
+    unit/test_media_topology_gtest.cpp)
+target_link_libraries(test_media_topology_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # 视频 QoE L4 归因：五行真值表 + 三条拒绝归因的前置检查。
 # 纯函数，无状态，无硬件依赖。
 add_executable(test_video_qoe_attribution_gtest
@@ -316,6 +323,7 @@ foreach(test_target
     test_observer_attribution_gtest
     test_frame_source_gtest
     test_v4l2_frame_source_gtest
+    test_media_topology_gtest
     test_video_qoe_attribution_gtest
     test_thermal_monitor_gtest
     test_active_connectivity_gtest
