@@ -25,7 +25,7 @@
 |      - 绑定挂载仓库 → /src                                                       |
 |                                                                                   |
 |   3. 反向隧道落点                                                                 |
-|      - 127.0.0.1:2222  ← 板端 weaknet-tunnel.service 主动拨入                       |
+|      - 127.0.0.1:22222 ← 板端 weaknet-tunnel.service 主动拨入                      |
 |      - ssh board 即可登板（~/.ssh/config 已配别名）                                |
 +-----------------------------------------------------------------------------------+
                                       ▲
@@ -44,7 +44,7 @@
 |      - 下行控制回执 (Pull-on-Upload 随路拉取 + 白名单热更新 + 签名回执)              |
 |                                                                                   |
 |   5. 反向隧道服务 (systemd: weaknet-tunnel.service)                             |
-|      - ssh -R 2222:localhost:22 → 云端，Restart=always 自动重连                    |
+|      - ssh -R 22222:127.0.0.1:22 → 云端，Restart=always 自动重连                   |
 +-----------------------------------------------------------------------------------+
 ```
 
@@ -59,8 +59,10 @@
 ### 拓扑背景
 - **开发板** 位于家庭局域网（NAT 后），无公网地址，云端无法主动连入。
 - **云端服务器** 是公网可达的轻量云主机（`81.71.76.133`），板子有正常出网能力。
-- **方案**：板端 `weaknet-tunnel.service` 主动建立 `ssh -R 2222:localhost:22` 反向隧道（同时 `-L 8000/8090` 把板端本地制品/排练服务反向暴露给云端），云端通过 `127.0.0.1:2222` 访问板端 SSH。隧道只绑定回环地址，不对公网暴露。
-- **只允许一个隧道服务**：旧的 `cloud-tunnel.service` 与新的 `weaknet-tunnel.service` 若同时存在，会互抢板端 `-L 8000` 端口（`bind: Address already in use`），后启动者反复重启，云端 2222 反向端口随之失效，表现为 `ssh board` 全面连不上。Phase 3 起以 `weaknet-tunnel.service` 为唯一单元，旧单元须 `systemctl disable --now cloud-tunnel.service`。
+- **方案**：板端 `weaknet-tunnel.service` 主动建立 `ssh -R 22222:127.0.0.1:22` 反向隧道，云端通过 `127.0.0.1:22222` 访问板端 SSH。隧道只绑定回环地址，不对公网暴露。
+- **只做 `-R`，不要加 `-L`**：曾配置的 `-L 8000:127.0.0.1:8000 -L 8090:127.0.0.1:8090` 与隧道本身无关，但配合 `ExitOnForwardFailure=yes` 后只要板端 8000 被占用就会让整条隧道 `exit 255` 进入重启循环，云端 22222 永远绑定不上。2026-11-10 实测事故即由此触发（云端侧 8000/8090 当时本就没有服务在听）。若真要把板端端口暴露给云端，**另开独立 unit**。
+- **只允许一个隧道服务**：旧的 `cloud-tunnel.service` 与新的 `weaknet-tunnel.service` 若同时存在会互抢端口，后启动者反复重启，云端反向端口随之失效，表现为 `ssh board` 全面连不上。以 `weaknet-tunnel.service` 为唯一单元，旧单元须 `systemctl disable --now cloud-tunnel.service`。
+- **`KillMode` 必须是 `control-group`**：`KillMode=process` 下 `systemctl restart` 只杀主进程，云端 sshd 侧的旧转发会话会继续 ESTAB 存活数小时，新隧道建立不起来。隧道是「要么整条可用、要么整条重建」的设施，重启语义必须彻底。
 
 ### 隧道服务（板端）
 
@@ -78,21 +80,116 @@ ExecStart=/usr/bin/ssh -i /home/radxa/.ssh/id_cloud_tunnel -N \
     -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
     -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
     -o TCPKeepAlive=yes \
-    -R 2222:localhost:22 -L 8000:127.0.0.1:8000 -L 8090:127.0.0.1:8090 \
+    -R 22222:127.0.0.1:22 \
     ubuntu@81.71.76.133
 Restart=always
 RestartSec=3
+KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target
 ```
 
+> 权威副本在仓库 `tools/weaknet-tunnel.service`（带完整事故注释），
+> 部署时由 `tools/ci.sh` 同步到板端，**不要手工改板端文件**。
+
 ### 云端访问板端
 
 ```bash
-ssh board                          # ~/.ssh/config 已配 Host board → 127.0.0.1:2222
+ssh board                          # ~/.ssh/config 已配 Host board → 127.0.0.1:22222
 ssh board 'systemctl status weaknet-tunnel.service'   # 检查隧道服务状态
 ssh board 'sudo systemctl restart weaknet-tunnel.service'  # 重启隧道
+```
+
+> **隧道健康判定**：不要用「端口在 listen」或「`ssh` 能登录」当判据。
+> 2026-11-10 出现过三次「端口在听、TCP 能建连、但等不到 SSH banner」的半死态，
+> 此时客户端侧一切探测都正常。正确判据是**读到板端 sshd 的 banner**，
+> 实现见 `tools/tunnel_guard.sh`（`--check` 只报告不自愈，`--watch` 周期自愈）。
+
+### 云端 sshd 必须回收僵死会话（否则隧道永久自锁）
+
+2026-11-11 排查「开发板掉热点后不自动重连」，结论与直觉相反：
+**板端 wifi 从未真正掉线**，真正卡死的是云端 22222 端口被僵死 sshd 会话长期占用。
+
+证据链：
+
+| 侧 | 观测 | 含义 |
+| --- | --- | --- |
+| 板端 | 跨 58 个 boot 只有 1 次 `CTRL-EVENT-DISCONNECTED`，且 `locally_generated=1 reason=3` | 本机主动断开（NM 重新激活），**不是 AP 消失** |
+| 板端 | `weaknet-tunnel` 累计 310 次 `Error: remote port forwarding failed for listen port 22222` | 该报错**发生在 SSH 认证成功之后**；wifi/公网/SSH 全通，只是云端端口被占 |
+| 云端 | `sshd -T \| grep clientalive` → `clientaliveinterval 0` | **永不主动探测客户端**，死会话不会自己退出 |
+
+自锁机制：板子断线 → 云端 sshd 子进程不知情、继续持有 `127.0.0.1:22222` →
+板端 `Restart=always` 每 3~5 秒重连、每次都被拒 → 死会话永不退出。
+
+**必须先确认云端 sshd 的会话回收参数**：
+
+```bash
+sudo sshd -T | grep -i clientalive     # 必须是 30 / 3，不能是 0
+sudo ss -ltnp 'sport = :22222'         # 谁在持有 22222
+```
+
+若 `clientaliveinterval` 为 `0`，在云端机器上创建
+`/etc/ssh/sshd_config.d/60-tunnel-keepalive.conf`：
+
+```
+ClientAliveInterval 30
+ClientAliveCountMax 3
+```
+
+然后 `sudo sshd -t && sudo systemctl reload ssh`（reload 不打断现有会话）。
+死会话会在 90s 内被回收，22222 自动释放，板端下一轮重连即成功。
+
+> 该文件在云端机器上，**不入库**（主机级配置）。主配置第 12 行的
+> `Include /etc/ssh/sshd_config.d/*.conf` 会引入它。
+
+### 云端隧道守护（常驻，与上面的 keepalive 互补）
+
+keepalive 只能验证 **SSH 层**存活，验证不了**转发层**。两者分工：
+
+| 层 | 覆盖的故障 | 手段 |
+| --- | --- | --- |
+| `60-tunnel-keepalive.conf` | SSH 会话整体僵死 | `ClientAlive` 90s 回收 |
+| `weaknet-tunnel-guard` | 会话活着但转发层死了 | 读 banner 判定 + TERM 承载会话 |
+
+部署（云端）：
+
+```bash
+sudo install -m 0755 tools/tunnel_guard.sh /usr/local/bin/weaknet-tunnel-guard
+sudo cp tools/weaknet-tunnel-guard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now weaknet-tunnel-guard
+
+systemctl status weaknet-tunnel-guard          # 应为 active (running)
+sudo journalctl -u weaknet-tunnel-guard -f     # 每 60s 一行判定
+```
+
+> unit 引用 `/usr/local/bin` 的副本而**不直接引用仓库路径**——仓库目录名含中文
+> 且位于用户家目录下，systemd 引用它既脆弱又会在仓库移动时直接打挂守护。
+
+**自愈验证手法**（可复用）：
+
+```bash
+sudo kill -TERM $(sudo ss -ltnpH 'sport = :22222' | grep -o 'pid=[0-9]*' | cut -d= -f2)
+# 板端应在 3~5s 内重连；t+10s 内 ssh board 应恢复
+```
+
+### 板端 wifi 自动重连（真实隐患，与上条独立）
+
+NetworkManager 的 `connection.autoconnect-retries` 默认值 `-1` 在 1.42 上表示
+**只重试 4 次**；超过即永久放弃自动连接，且**不写任何日志**，看起来就像
+「掉线后不会自己回来」。若确实需要热点断开后无限重连：
+
+```bash
+nmcli connection modify <SSID> connection.autoconnect-retries 0   # 0 = 无限重试
+nmcli connection modify <SSID> 802-11-wireless.powersave 2        # 关闭网卡省电
+nmcli connection modify <SSID> connection.autoconnect-priority 100
+```
+
+> 本板 `tan` 连接已于 2026-11-11 按上述设置修正。
+
+```bash
+nmcli connection show <SSID> | grep -E 'autoconnect-retries|powersave'
 ```
 
 ---
@@ -206,7 +303,7 @@ curl -X POST http://localhost:8000/api/v1/network/assets/radxa-cubie-a7a/actions
 
 ### 1. `ssh board` 连不上（Connection refused）
 
-**原因**：板端 `weaknet-tunnel.service` 反向隧道未建立或已断开；或旧 `cloud-tunnel.service` 未禁用导致互抢 8000 端口把隧道打挂。
+**原因**：板端 `weaknet-tunnel.service` 反向隧道未建立或已断开；或旧 `cloud-tunnel.service` 未禁用导致两单元互抢端口把隧道打挂。
 
 **排查**：
 ```bash
@@ -214,7 +311,7 @@ curl -X POST http://localhost:8000/api/v1/network/assets/radxa-cubie-a7a/actions
 systemctl status weaknet-tunnel.service
 journalctl -u weaknet-tunnel.service -n 30
 
-# 确认旧隧道单元没有并存（并存 = 互抢 8000 端口）
+# 确认旧隧道单元没有并存（并存 = 互抢端口）
 systemctl is-enabled cloud-tunnel.service   # 期望：disabled
 
 # 检查板子出网是否正常

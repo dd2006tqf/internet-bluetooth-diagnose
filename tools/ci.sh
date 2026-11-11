@@ -289,9 +289,9 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # 否则新 unit（current/server 路径）在布局未就位时会拉起失败。
 
     # 反向隧道单元：仓库里有唯一权威版本（tools/weaknet-tunnel.service），
-    # 部署时顺手清掉板端历史遗留的 cloud-tunnel.service —— 两个单元都占
-    # 板端 -L 8000 端口，后启动者必报 "Address already in use" 反复重启，
-    # 云端 2222 反向端口随之失效（表现为 ssh board 全面连不上）。
+    # 部署时顺手清掉板端历史遗留的 cloud-tunnel.service —— 两个单元会互抢
+    # 端口，后启动者必报 "Address already in use" 反复重启，
+    # 云端 22222 反向端口随之失效（表现为 ssh board 全面连不上）。
     #
     # 顺序要求：隧道单元的重启会短暂掐断 SSH 反向通道，本条命令的后半段
     # （adopt → 重启服务 → 健康窗口）都走同一条 SSH 通道，必须放在**隧道
@@ -520,7 +520,7 @@ if [ "$SKIP_DEPLOY" = false ]; then
     #
     # 上面落盘隧道单元时只 `enable`，注释写的"隧道重启交给 deploy 收尾"
     # 却从来没有实现——全仓 `systemctl restart weaknet-tunnel` 零处。
-    # 后果：首次装机的板子要等下次重启才有反向隧道（云端 2222 不可达），
+    # 后果：首次装机的板子要等下次重启才有反向隧道（云端 22222 不可达），
     # 改过 unit 之后改动也不生效。在"SSH 靠隧道"的拓扑下这是运维级隐患。
     #
     # 位置必须在这里（adopt 之后）：隧道重启会掐断 SSH 反向通道，
@@ -528,10 +528,10 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # 让所有"不能被掐断"的步骤先跑完。
     #
     # **重启后必须等通道真的回来**（2026-11-01 完整 ci.sh 实跑暴露）：
-    # 单元是 `Restart=always` + `RestartSec=3` + `-R 2222:localhost:22`，
-    # 重启后云端 sshd 要重新绑定 2222，实测约 **50 秒**才可用。原先重启完
+    # 单元是 `Restart=always` + `RestartSec=3` + `-R 22222:127.0.0.1:22`，
+    # 重启后云端 sshd 要重新绑定 22222，实测约 **50 秒**才可用。原先重启完
     # 立刻往下走，紧接着的 scp 与板端测试全部撞在断链窗口里：
-    #   ssh: connect to host 127.0.0.1 port 2222: Connection refused
+    #   ssh: connect to host 127.0.0.1 port 22222: Connection refused
     # 表现为"上传失败 / chmod 失败 / 测试失败（退出码 255）"，而板端其实完好
     # ——纯属自己把通道掐了还立刻要用。这里改成轮询等待，超时才告警。
     if [ -f "${ROOT}/tools/weaknet-tunnel.service" ]; then

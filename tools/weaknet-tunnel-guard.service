@@ -1,0 +1,51 @@
+# =============================================================================
+# weaknet-tunnel-guard.service —— 云端侧反向隧道存活守护（常驻）
+# =============================================================================
+#
+# 为什么必须是「常驻」而不是「出事了手工跑一次」
+# ------------------------------------------------
+# tools/tunnel_guard.sh 解决的是「端口在 listen、TCP 能建连、但等不到 SSH
+# banner」这种转发层半死状态：云端 ss -ltn 显示正常、板端 systemctl 显示
+# active，双方都以为健康，只有真正握手才暴露。
+#
+# 2026-11-10 一天内出现三次，全部靠人工发现和处理。而 2026-11-11 复核发现
+# 另一种更持久的形态：板端断线后云端 sshd 子进程继续持有 22222，板端
+# `ssh -R` 持续报
+#     Error: remote port forwarding failed for listen port 22222
+# 累计 310 次、跨十几个小时，期间 `ssh board` 全面不可达。
+# 云端 sshd 当时 `ClientAliveInterval 0`（永不探测），死会话不会自己退场。
+#
+# 两处修法是互补的：
+#   1. /etc/ssh/sshd_config.d/60-tunnel-keepalive.conf（ClientAliveInterval 30）
+#      —— 让死会话在 90s 内被内核回收，是**根因修法**；
+#   2. 本服务 —— 覆盖「会话还活着但转发通道已死」这种 keepalive 探测不到的
+#      形态，是**兜底**。keepalive 只能验证 SSH 层，验证不了转发层。
+#
+# 判据是「读到板端 sshd 的 banner」，不是端口监听、也不是能建立 TCP。
+# 详见 tools/tunnel_guard.sh 文件头。
+#
+# 部署
+# ----
+#   sudo install -m 0755 tools/tunnel_guard.sh /usr/local/bin/weaknet-tunnel-guard
+#   sudo cp tools/weaknet-tunnel-guard.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now weaknet-tunnel-guard
+#
+# 注意：unit 里用 /usr/local/bin 的副本，不直接引用仓库路径 ——
+# 仓库目录名含中文且在用户家目录下，systemd 引用它既脆弱又会让
+# 仓库移动/重命名直接打挂守护。
+[Unit]
+Description=WeakNet Reverse Tunnel Guard (cloud side, port 22222)
+Documentation=file:///usr/local/bin/weaknet-tunnel-guard
+After=network-online.target ssh.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/weaknet-tunnel-guard --watch
+# --watch 自身是无限循环，走到 Restart 说明脚本崩了（语法/环境问题），
+# 重启退避到 30s，避免刷日志。
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

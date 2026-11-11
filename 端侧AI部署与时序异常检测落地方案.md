@@ -24,7 +24,7 @@
 | I2C | `/dev/i2c-{0,13,14,15,20}` 五条总线；i2c-20 上 0x30 有设备，i2c-0 多路 `UU`（内核驱动占用，多为 PMIC 类） |
 | 引导 | U-Boot + extlinux（`/boot/extlinux/extlinux.conf`），`uEnv.txt`/`hw_intfc.conf` 已废弃，改用 `rsetup` 配 overlay、`/etc/kernel/cmdline` + `u-boot-update` 改 bootargs |
 | 存储 | 当前运行于 sda SSD（120GB），mtdblock0 8MB 为 SPI NOR（bootloader） |
-| 开发板连接 | 本机经 `ssh board`（127.0.0.1:2222 反向隧道）访问，`cloud-tunnel.service` 自动重连 |
+| 开发板连接 | 本机经 `ssh board`（127.0.0.1:22222 反向隧道）访问，`weaknet-tunnel.service` 自动重连 |
 
 **关键修正**：本项目端侧 AI 是"两条腿"——①**Qwen2.5-0.5B 解释层已部署、已运行、已接入 D-Bus `GetDiagnosis` 链路**（真实完成）；②**NPU 时序异常检测仅验证到官方 MobileNet demo，自有模型的 `.nb` 转换与 VIPLite 推理程序尚未实现**。简历上"3 TOPS NPU 毫秒级原生部署"目前只由官方 demo 支撑，不是已完成事实。
 

@@ -61,11 +61,23 @@ sysroot 的版本不一定一致）。若把它 include 进公共头：
 
 ### 关键取舍三：默认 720p，不是 sensor 满分辨率
 
+> **⚠️ 2026-11-11 订正：这条取舍已被真机推翻，默认值已改为 1640x1232。**
+>
+> 720p 在本板属于 `bin_factor=2` 模式，**一帧都出不来**（select 超时、
+> 0 字节、约 710 条 `tdm0 rx0 frame error! width is 1869`）。`bin_factor=1`
+> 的 3280x2464 与由它缩放而来的 1640x1232 才能稳定出帧。
+>
+> 下文保留当时的推理，作为「未上真机时的合理猜测为何会错」的记录；
+> 现行结论见 `server/include/v4l2_frame_source.hpp` 的默认值注释与
+> `docs/hardware/radxa-cubie-a7a/sunxi-vin-摄像头链路根因分析.md` §7.9。
+
 8M 219 是 3280×2464。用满分辨率会让 ISP / 内存带宽成为瓶颈，把「ISP 跟不上」
 与「网络丢了帧」混在一起，直接污染归因。720p@30 已是 240 Mbps 量级，足够在
 弱网下制造可观测丢帧，且留出充足余量。
 
 这条写进了单测（`DefaultConfigMatchesPlan`），防止有人"顺手"改回满分辨率。
+（订正后该测试仍然存在且更严格：除等值断言外，另有
+`DefaultResolutionAvoidsBinningModes` 逐条排除实测零帧的模式。）
 
 ### 关键取舍四：演练手册把「串口线」列为 Step 0 硬门槛
 
@@ -176,8 +188,10 @@ Total Test time (real) =   8.45 sec
 
 - **V4L2 真机路径未验证**。10 项测试只覆盖失败路径与配置语义。真实出帧、
   格式协商（NV12 是否被 ISP 接受）、时间戳来源，都需要摄像头在板子上跑。
-- **阶段 2 演练未执行**。Step 0/Step 1 已于 2026-11-09 完成，但 Step 2 之前
-  发现 uart2 可能与 console 争用 PB0/PB1 的前置风险，需先解掉（详见文末增补）。
+- **阶段 2 演练未按序执行**。Step 0/Step 1 已于 2026-11-09 完成；但 Step 2-6
+  在 2026-11-11 复查时发现**终点状态已经到达**（uart2 与 camera 两个 overlay
+  都已启用，imx219 已被识别），过程则由谁在何时执行不明。**Step 4 回滚演练
+  仍无证据表明做过。**
 - **HDMI 阶段 1.5 仍 ⬜**。显示屏未到（用户 2026-11-08 确认）。
 - **USB 触控板不买**。用户 2026-11-08 明确「先不买了」。
 
@@ -190,12 +204,14 @@ Total Test time (real) =   8.45 sec
    与 `VIDIOC_DQBUF` 的 `EAGAIN` 竞态处理，在无摄像头环境下只能靠代码审查。
 3. **NV12 是假设不是事实**。代码里 `VIDIOC_S_FMT` 请求 NV12，若驱动改成别的
    格式会记录到 `lastError()` 并继续——但这一步的实际行为没验证过。
-4. **接线引脚已部分核实**：console 走 uart0（`2500000.uart` → `/dev/ttyAS0`），
+4. **接线引脚已核实**：console 走 uart0（`2500000.uart` → `/dev/ttyAS0`），
    接板载调试排针，2026-11-09 已实测连通并读到 U-Boot 菜单。
-   但 **uart2（PB0/PB1，40pin pin 7/11）与 uart0 是否同源仍未解**，
-   这个疑问直接阻塞 Step 2（详见文末增补）。
-5. **「uart2 overlay 只多一个串口节点」是推断**，基于 dtbo 名称与实际影响面。
-   这正是 Step 3 要验证的事。
+   **uart2（`2502000.uart`，PB0/PB1，40pin pin 7/11）与 uart0 不争用引脚**——
+   2026-11-11 板端实测：`uart0_pins@0` 的 `pins` 属性是空字符串（2 字节），
+   console 从未在 pinctrl 里申请 PB0/PB1；overlay 启用状态下 `who` 仍显示
+   `radxa ttyAS0`。（原写「仍未解 / 阻塞 Step 2」，已被实测推翻。）
+5. **「uart2 overlay 只多一个串口节点」已证实**：实测多出 `/dev/ttyAS2`，
+   无其它可见副作用（`/dev/video*` 来自 camera overlay，与它无关）。
 
 ### 后续是否值得升格为 OpenSpec change
 
@@ -233,23 +249,27 @@ Total Test time (real) =   8.45 sec
 | --- | --- | --- |
 | Step 0 接线 | 接 40pin 排针的 UART RX/TX | 接**板载调试排针** → uart0 → `/dev/ttyAS0` |
 | Step 0 位置 | 宿主机 `ls /dev/ttyUSB*` + `picocom` | 用户自己的 Windows 电脑 + PuTTY |
-| Step 3 判据 | `/proc/device-tree/` 下「出现」uart2 节点 | `uart@2501*` 的 `status` 由 `disabled` 翻为 `okay` |
+| Step 3 判据 | `/proc/device-tree/` 下「出现」uart2 节点 | `status` 由 `disabled` 翻为 `okay`（**节点名后来又被订正为 `uart@2502000`，见 2026-11-11 补记**） |
 | Step 5 救援 | 拔卡改 `extlinux.conf` | U-Boot 命令行改，或 FEL/USB 重刷整机 |
-| Step 1 基线 | 只抓 51 个**顶层** dt 节点 | 必须额外抓 `uart2-status-before.txt`——`uart@2501000` 埋在 `soc@3000000` 下，顶层清单看不到 |
+| Step 1 基线 | 只抓 51 个**顶层** dt 节点 | 必须额外抓 uart 状态快照（**采集命令后来又被订正：需 `find -L`，见 2026-11-11 补记**） |
 | Step 4 判据 | 「uart2 节点消失」 | `status` 回到 `disabled`；节点不会消失 |
 
 **Step 3 判据这条错得最危险**：overlay 不创建新节点，只覆盖已有节点的
 `status`。按原判据做拓扑 diff 会得到「无差异」，进而把「已生效」误判成
 「启用失败」，然后执行不必要的回滚。
 
-### 引脚争用疑问（**不阻塞 Step 2**，但约束 Step 6）
+### 引脚争用疑问（**已由板端实测回答：不争用**，2026-11-11）
+
+> ~~本节原结论：「无法从现有证据判断 uart2 overlay 生效后是否会夺走 console 的引脚」~~
+> **已被实测推翻，保留原文供追溯。** 见本节末尾的「2026-11-11 实测结论」。
 
 板端 dmesg 有 `uart-ng 2500000.uart: there is not valid maps for state default/sleep`
 与 `sunxi:pin-2000000.pinctrl:[ERR]: unknown pin`（×4）；同时
 `sun60iw2p1-uart2.dtbo` 声明 `exclusive = "PB0\0PB1\0uart2"`、`pins = "PB0\0PB1"`，
 而 `uart0_pins@0` 也带 `pins = [00 00]`（sunxi 二进制编码，大致对应 PB0/PB1）。
 
-**无法从现有证据判断 uart2 overlay 生效后是否会夺走 console 的引脚。**
+~~**无法从现有证据判断 uart2 overlay 生效后是否会夺走 console 的引脚。**~~
+**→ 2026-11-11 实测回答：不争用。** 原因见本节末尾。
 
 我最初据此把 Step 2 挂起了（「必须先反编译 dtbo 查明」）。**2026-11-09 用户判断
 「感觉好像没有必要解决这个问题」，我复核后同意——原判断过度保守。**
@@ -270,15 +290,54 @@ Step 2 本身就是更便宜的实测手段。
 因此 Step 3 增设判据 4（显式检查 console 是否仍可用），Step 4 增设「回滚后必须
 确认串口恢复」。
 
-### Step 1 基线的设计缺陷（复查时发现）
+#### 2026-11-11 实测结论：不争用，且原因不是「运气好」
 
-已抓的 `dt-nodes-before.txt` 只列 **51 个顶层节点**，而 `uart@2501000` 埋在
+板端实测时 uart2 overlay 已处于启用状态，console 完好：
+
+```text
+uart@2500000 = okay      uart@2502000 = okay
+/dev/ttyAS0  /dev/ttyAS2
+who:  radxa  ttyAS0  2026-11-11 01:42
+systemctl is-active serial-getty@ttyAS0 → active
+```
+
+引脚组的原始字节给出了根因：
+
+| 节点 | pinctrl group | `pins` 实际字节 | 大小 |
+| --- | --- | --- | --- |
+| `uart@2500000`（console） | `uart0_pins@0` | `0000` | **2 字节 = 空** |
+| `uart@2502000`（uart2） | `uart2_pins@0` | `5042300050423100` = `PB0\0PB1\0` | 8 字节 |
+
+**console 的 pinctrl group 压根没写引脚。** 它的引脚在 U-Boot 阶段就配好了，
+内核这边不需要再配。dmesg 那条 `not valid maps for state default/sleep`
+说的正是「这份 map 里没有有效条目」，字面意思正确，**与引脚冲突无关**。
+
+另外 `exclusive = "PB0\0PB1\0uart2"` 是给 `rsetup` 用的元数据，**内核不读它**，
+`u-boot-update` 也不拿它做冲突检测。
+
+> **隐式前提**：uart0 不声明引脚是 BSP 的**遗留写法**，不是设计意图。若有人
+> 「顺手修好」`uart0_pins@0` 把 `PB0/PB1` 补进去，冲突会**真的**出现。
+> 当前和平依赖「一边不申请」，不是「两边都正确」。
+
+详见 `openspec/pitfalls/dmesg-error-vs-function.md`。
+
+### Step 1 基线的设计缺陷（复查时发现，2026-11-11 再订正）
+
+已抓的 `dt-nodes-before.txt` 只列 **51 个顶层节点**，而全部 uart 节点都埋在
 `soc@3000000` 下面——**顶层清单里根本没有 uart 的状态**，Step 3 判据 2 无基线可比。
 
-已在 Step 1 补上 `uart2-status-before.txt` 的采集命令，但**尚未在板上重跑**
-（板子已被用户关闭）。板子再开机时必须先补这一步。
+已在 Step 1 补上 uart 状态快照的采集命令。但 2026-11-11 板端实测发现**那条命令
+本身也是错的**（两处）：
 
-### 本轮未做
+1. **缺 `-L`**。`/proc/device-tree` 是指向 `/sys/firmware/devicetree/base` 的
+   符号链接，`find` 默认不跟随，实测输出恒为 0——它在 overlay 生效与未生效
+   两种状态下都是空，**根本不具备区分能力**；
+2. **节点名猜错**。实际被翻转的是 `uart@2502000`，不是 `uart@2501000`。
+
+正确写法见主手册 Step 1。教训见 `openspec/pitfalls/proc-device-tree-find-symlink.md`
+与 `openspec/pitfalls/dtbo-filename-node-identity.md`。
+
+### 本轮未做（2026-11-09）
 
 - **Step 2-6 未执行**。用户在 2026-11-09 关闭了板子；执行 Step 2 需要板子开机 +
   人在板边 + 串口终端开着并录制，三个条件缺一不可。
@@ -286,12 +345,31 @@ Step 2 本身就是更便宜的实测手段。
 - **本地无 dtbo 副本**（`find . -name "*.dtbo*"` 空，`board-assets/` 只有
   `vmlinux.h`），引脚争用无法离线判定——不过按上面的判断修正，这已不是阻塞项。
 
-### 下一步（按依赖顺序）
+### 2026-11-11 补记：实测已推进到终点状态
 
-1. 板子开机 → **补抓 `uart2-status-before.txt`**（Step 1 新增采集）+ 重跑基线确认未漂移
-2. 人在板边 + 串口录制 → Step 2 启用 overlay
-3. Step 3 验证 `status` 翻转 + **判据 4：console 是否还活着**
-4. Step 4 回滚演练（不可跳过）+ 确认串口恢复
-5. Step 6 摄像头 overlay → `V4l2FrameSource` 真机调通
-   （若判据 4 失败，先修回救砖通道再动摄像头）
+板端实测发现 **uart2 与 camera 两个 overlay 都已启用**（`extlinux.conf` 的
+`fdtoverlays` 同时列出两者，mtime `2026-11-10 06:04`），`/dev/video0/1/4/5` +
+`/dev/media0` 存在，`imx219` 已加载且 dmesg 里有 `sensor_s_stream on = 1,
+1920*1080 30f`。
+
+但必须说清边界：
+
+- **不知道是谁在何时做的**，我没查 git 记录或其它会话；
+- **Step 4 回滚演练仍无证据表明做过**——这仍是本阶段唯一的空白，而本板是 UFS
+  焊死、没有可拔的卡，回滚不可用的代价是重刷整机；
+- `sensor_s_stream on = 1` 是**某个时刻**的 dmesg 残留，不代表此刻能稳定取帧
+  （第五轮记录的「TDM 零帧」卡点仍在）。
+
+因此不能写「演练已完成」，只能说「终点状态已经到达，但过程未被按序执行」。
+
+### 下一步（按依赖顺序，2026-11-11 更新）
+
+1. ~~板子开机 → 补抓 `uart2-status-before.txt`~~ → **已核实，且原命令本身是错的**
+   （缺 `-L`，且节点猜成 `2501000`）。正确写法见主手册 Step 1。
+2. ~~Step 2 启用 overlay~~ → **已生效**。
+3. ~~Step 3 验证 `status` 翻转 + 判据 4~~ → **已实测通过**（console 存活，`who` 有
+   真实登录会话）。
+4. **Step 4 回滚演练 → 仍未做，这是当前最大空白。**
+5. ~~Step 6 摄像头 overlay~~ → **已生效**，imx219 已被识别。剩余工作是
+   `V4l2FrameSource` 端到端取帧调通（见「TDM 零帧」卡点）。
 6. 显示屏到货 → 阶段 1.5 HDMI 验证

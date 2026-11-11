@@ -6,12 +6,63 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=radxa
-ExecStart=/usr/bin/ssh -i /home/radxa/.ssh/id_cloud_tunnel -N -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -o TCPKeepAlive=yes -R 2222:localhost:22 -L 8000:127.0.0.1:8000 -L 8090:127.0.0.1:8090 ubuntu@81.71.76.133
+# ---------------------------------------------------------------------------
+# 只做反向隧道：-R 22222:127.0.0.1:22
+#
+# **不要再加 -L 8000 / -L 8090。**
+#
+# 曾经这里有 `-L 8000:127.0.0.1:8000 -L 8090:127.0.0.1:8090`，用途是把板端
+# 制品/排练服务暴露给云端。它们与隧道本身（-R 22222）毫无关系，却因为下面
+# 的 `ExitOnForwardFailure=yes` 具备了放倒整条隧道的能力 —— 只要板端 8000
+# 被任何东西占用，ssh 就 exit 255，systemd 每 3 秒重启一次，`-R 22222`
+# 永远轮不到绑定，云端 22222 长期不可达，表现为 `ssh board` 全面连不上。
+#
+# 2026-11-10 实测事故：板端 8000 被一条入站 SSH 会话（`sshd: radxa`）的转发
+# 占住，日志为
+#   bind [127.0.0.1]:8000: Address already in use
+#   Could not request local forwarding.
+# 隧道进入 4~5 秒一次的重启循环，云端 20 分钟内收到 84 次认证、每次认证后
+# 立即 session closed，而 2222 从未监听。云端 8000/8090 当时也没有任何服务
+# 在听（`ss -ltn` 为空、`curl /health/ready` 返回 000），这两个转发本就是
+# 没有对端的遗留物。
+#
+# 若将来确实需要把板端端口暴露给云端，**另开一个独立 unit**，让它的失败
+# 只影响它自己，不要和承载运维护城河的 -R 隧道共用一个 unit。
+#
+# 绑定目标写 127.0.0.1 而不是 localhost：localhost 在板端可能先解析到 ::1，
+# 而云端 sshd 默认 `GatewayPorts no` + IPv6 组合在某些情况下会先绑定失败。
+# 显式指定 IPv4 回环是与实测可用形态一致的写法。
+#
+# 端口是 22222 而不是默认的 2222：2026-11-10 事故中 2222 上堆积了 4 小时
+# 未清理的僵尸会话（见下方 KillMode 注释），换端口绕开了当时无法及时回收的
+# 那一批连接。云端 ~/.ssh/config 的 `Host board` 必须同步写成 Port 22222。
+ExecStart=/usr/bin/ssh -i /home/radxa/.ssh/id_cloud_tunnel -N -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -o TCPKeepAlive=yes -R 22222:127.0.0.1:22 ubuntu@81.71.76.133
 Restart=always
 RestartSec=3
-# KillMode=process：只杀主进程（ssh），不动它可能派生的子进程。
-# 隧道是"连着就能用"的常驻设施，被连上时不应被外部 stop 波及。
-KillMode=process
+
+# ---------------------------------------------------------------------------
+# KillMode=control-group（systemd 默认）而不是 process
+#
+# 原来写的是 KillMode=process，注释理由是"只杀主进程，不动它可能派生的子
+# 进程"。这条理由在实践中是错的，而且代价很大：
+#
+# 2026-11-10 事故里，板端执行 `systemctl restart weaknet-tunnel` 之后，
+# **旧的转发会话并没有消失** —— ssh 主进程被杀了，但它派生的会话进程仍在，
+# 云端 sshd 侧对应的 three 条连接继续 ESTAB（存活 4 小时 17 分），Recv-Q
+# 一度堆积到 6128 字节无人读取。新起的 ssh 因为云端仍持有旧会话状态，迟迟
+# 建立不了干净的转发。最后是在云端手工 `kill -9` 掉那些僵尸 sshd 子进程才
+# 恢复。
+#
+# 隧道是"要么整条可用、要么整条重建"的设施。restart 的语义必须是**彻底**
+# 清掉这一个 unit 拉起的全部进程，让下一次启动从零开始。
+KillMode=control-group
+
+# 转发层存活探测的边界（见 README / PLATFORM_OPERATION_GUIDE）：
+# `ServerAliveInterval` 只能发现"到云端的 SSH 连接断了"，**发现不了**
+# "SSH 连接还在、但 22222 转发通道卡死"这种半死状态。后者在 2026-11-10
+# 出现过三次：端口在 listen、TCP 能建连、但握手无响应，客户端探测一切正常。
+# 该场景无法在板端自行识别，需要云端侧对 22222 做可用性探测并在失败时主动
+# 断开对应会话，迫使本 unit 重连。云端侧脚本见 tools/tunnel_guard.sh。
 
 [Install]
 WantedBy=multi-user.target

@@ -97,11 +97,17 @@ card0-HDMI-A-1 : disconnected
 
 | | uart0 | uart2 |
 | --- | --- | --- |
-| 地址 | `2500000` | `2501000` |
-| 设备节点 | `/dev/ttyAS0` | 启用 overlay 后才有 |
+| 地址 | `2500000` | **`2502000`**（2026-11-11 板端实测确认，原写 `2501000` 是错的） |
+| alias | `serial0` | `serial2` |
+| 设备节点 | `/dev/ttyAS0` | `/dev/ttyAS2`（启用 overlay 后出现，实测已存在） |
 | 用途 | **console**（U-Boot + 内核日志 + 登录） | 普通串口外设 |
 | 引脚 | 板载调试口 | PB0/PB1 = 40pin 的 pin 7 / pin 11 |
-| 当前状态 | `okay` | `disabled` |
+| 当前状态 | `okay` | `okay`（overlay 已启用） |
+
+> 地址为什么不是 `2501000`：`uart2` 是 base DTB 里的 **label**，不是地址序号。
+> `aliases` 明写 `serial2 = /soc@3000000/uart@2502000`；且 `serial7` 的地址
+> 从 `2506000` 直接跳到 `7080000`——**按地址间隔心算序号从第 7 个起就全错**。
+> 详见 `openspec/pitfalls/dtbo-filename-node-identity.md`。
 
 **救砖必须接 uart0**，因为只有它会输出 U-Boot 阶段的信息、并能选择
 启动菜单里的 rescue 标签。接 uart2 只能验证 overlay 生效，救不了砖。
@@ -160,8 +166,9 @@ Enter choice: 1:        Debian GNU/Linux 11 (bullseye) 5.15.147-99btf1-a733
 `/dev/ttyAS0`。结合内核参数 `console=ttyAS0,115200n8` +
 `earlyprintk=sunxi-uart,0x2500000`，可以确认用户接的是 console 口。
 
-> 待补：`readlink /sys/class/tty/ttyAS0/device` 应指向 `2500000.uart`，
-> 这条命令本轮未执行（`ssh` 当时已不通），执行 Step 2 前顺手确认一次。
+> **已补验（2026-11-11，板端实跑）**：`readlink /sys/class/tty/ttyAS0/device`
+> → `../../../2500000.uart`，与内核参数 `earlyprintk=sunxi-uart,0x2500000`
+> 完全一致，确认用户接的就是 `2500000.uart` 这个 console 口。
 
 **结论：变砖保险从「纸面」变为「已验证」，可以进入 Step 1。**
 
@@ -177,28 +184,48 @@ ssh board 'cat /boot/dtbo/managed.list' > ~/board-baseline-$(date +%Y%m%d)/manag
 ssh board 'ls /proc/device-tree/ | sort' > ~/board-baseline-$(date +%Y%m%d)/dt-nodes-before.txt
 ssh board 'ls /dev/ttyS* /dev/ttyAS* 2>/dev/null' > ~/board-baseline-$(date +%Y%m%d)/tty-before.txt
 
-# 【必须补】uart2 的 status 快照——它才是 Step 3 判据 2 的比对对象。
-# 为什么单独一条：上面那个 ls 只列**顶层**节点，而 uart@2501000 埋在
-# soc@3000000 下面，顶层清单里根本看不到它（2026-11-09 实测确认：
+# 【必须补】全部 uart 节点的 status 快照——它才是 Step 3 判据 2 的比对对象。
+# 为什么单独一条：上面那个 ls 只列**顶层**节点，而 uart@* 全部埋在
+# soc@3000000 下面，顶层清单里根本看不到它们（2026-11-09 实测确认：
 # 51 个顶层节点里与 uart 相关的只有 soc@3000000 这一行）。
-# 漏了这一条，Step 3 的判据 2 就没有基线可比，等于白做。
-ssh board 'for n in $(find /proc/device-tree -name "uart@2501*" 2>/dev/null); do
-  echo "$n = $(tr -d "\0" < "$n/status")"
-done' > ~/board-baseline-$(date +%Y%m%d)/uart2-status-before.txt
-
-# 顺手留一份 uart0（console）的 pinctrl 指纹，供日后查引脚争用时比对
-ssh board 'for n in $(find /proc/device-tree -name "uart@2500*" 2>/dev/null); do
-  echo "$n = $(tr -d "\0" < "$n/status")"
-done' >> ~/board-baseline-$(date +%Y%m%d)/uart2-status-before.txt
+#
+# 两条必须注意（2026-11-11 板端实测）：
+#   1. **必须加 -L**。/proc/device-tree 是指向 /sys/firmware/devicetree/base
+#      的符号链接，`find` 默认不跟随，不加 -L 时输出恒为空——看起来就像
+#      「overlay 没生效」。等价写法：`find /proc/device-tree/ ...`（末尾斜杠）。
+#   2. **不要只抓 uart@2501***。实测 sun60iw2p1-uart2.dtbo 翻转的是
+#      **uart@2502000**（aliases 里叫 serial2），不是 uart@2501000。
+#      抓全量 uart@* 才是对的：判据比的是「哪一个变了」，不是「我猜的那个变了没」。
+ssh board 'for n in $(find -L /proc/device-tree -name "uart@*" 2>/dev/null); do
+  printf "%s = %s\n" "$(basename "$n")" "$(tr -d "\0" < "$n/status")"
+done | sort' > ~/board-baseline-$(date +%Y%m%d)/uart2-status-before.txt
 ```
 
-**判据**：本地有 5 个文件，`extlinux.conf` 非空，且
-`uart2-status-before.txt` **非空并含 `uart@2501`**（若为空，说明
-`find` 没定位到节点，必须先查清节点真实路径再往下走）。
+**判据**：本地有 4 个文件，`extlinux.conf` 非空，且
+`uart2-status-before.txt` **非空并含 9 行 `uart@`**（若为空，先检查是不是漏了 `-L`；
+若是 9 行但全为 `disabled`（除 uart0 外），属 expect，照常继续）。
 
-> **这一条是 2026-11-09 补的**。原 Step 1 只抓了顶层节点清单，
-> 而 overlay 改的是 `soc@3000000/uart@2501000` 的 `status`，顶层清单
+2026-11-11 板端实测的形态（供对照）：
+
+```text
+uart@2500000 = okay      ← console（uart0，救砖通道）
+uart@2501000 = disabled
+uart@2502000 = disabled  ← 这份 overlay 真正会翻转的是这一行
+uart@2503000 = disabled
+uart@2504000 = disabled
+uart@2505000 = disabled
+uart@2506000 = disabled
+uart@7080000 = disabled  ← 地址在这里跳了，按算术推序号从第 7 个起全错
+uart@7081000 = disabled
+```
+
+> **这一条是 2026-11-09 补的，2026-11-11 二次订正**。原 Step 1 只抓了顶层
+> 节点清单，而 overlay 改的是 `soc@3000000/uart@*` 的 `status`，顶层清单
 > 看不到它。若不补这条基线，Step 3 的判据 2 无基线可比。
+> 而 2026-11-11 板端实测又发现两处错：漏了 `-L`（导致命令恒为空）、
+> 以及节点猜成了 `2501000`（实际是 `2502000`）。两处都会让判据
+> **在成功时报告失败**，详见 `openspec/pitfalls/dtbo-filename-node-identity.md`
+> 与 `openspec/pitfalls/proc-device-tree-find-symlink.md`。
 
 ### Step 2：启用 uart2 overlay
 
@@ -236,7 +263,7 @@ done
 
 **通过条件（四条全部满足）**：
 1. SSH 能连上，`uptime` 显示刚启动；
-2. `uart@2501000` 的 `status` 由 `disabled` 变为 `okay`；
+2. `uart@2502000` 的 `status` 由 `disabled` 变为 `okay`（**不是 2501000**）；
 3. `/dev/ttyAS*` 数目比 Step 1 多（预期新增 `ttyAS2` 之类）。
 4. **console 仍然可用**（判据 4，见下方「关于判据 4」）。
 
@@ -260,27 +287,42 @@ console 的 PB0/PB1」。**它不阻塞 Step 2，但它决定 Step 6 能否安�
 低风险操作，把「uart2 与 console 的引脚关系」这个此前只能靠反编译推测的问题，
 变成了实测结论。
 
-**订正（2026-11-09 复盘）**：原先写的判据是「`/proc/device-tree/` 下出现
-uart2 相关节点」，这是**错的**。实测 `dtc` 反编译 dtbo 可见它并不创建新节点，
-而是对已存在的 `uart@2501000` 做 `status = "okay"` 覆盖——节点一直在，
-只是被禁用。所以拓扑 diff 会显示「无差异」而实际已生效，按原判据会误判失败。
+**订正（2026-11-09 复盘，2026-11-11 板端实测确认）**：原先写的判据是
+「`/proc/device-tree/` 下出现 uart2 相关节点」，这是**错的**。实测 `dtc` 反编译
+dtbo 可见它并不创建新节点，而是对已存在的 `uart@2502000` 做 `status = "okay"`
+覆盖——节点一直在，只是被禁用。所以拓扑 diff 会显示「无差异」而实际已生效，
+按原判据会误判失败。
+
+**第二处订正（2026-11-11）**：节点是 **`uart@2502000`**，不是 `uart@2501000`。
+两个依据：
+
+- `dtc -I dtb -O dts /boot/dtbo/sun60iw2p1-uart2.dtbo` 显示 `__fixups__` 里
+  `uart2 = "/fragment@1:target:0"`，即它的 target 是 base DTB 的 **label `uart2`**；
+- 板端 `/sys/firmware/devicetree/base/aliases` 明写
+  `serial2 = /soc@3000000/uart@2502000`，且 overlay 生效后 `ttyAS2` 的
+  `OF_FULLNAME` 正是 `/soc@3000000/uart@2502000`。
+
+**第三处订正（2026-11-11）**：判据命令里的 `find /proc/device-tree` **必须加 `-L`**。
+`/proc/device-tree` 是符号链接，`find` 默认不跟随，实测输出恒为 0——
+它在「已生效」和「未生效」两种状态下都一样空，**根本不具备区分能力**。
 
 ```bash
-# 判据 2：status 翻转——直接与 Step 1 新增的基线文件比对
-ssh board 'for n in $(find /proc/device-tree -name "uart@2501*" 2>/dev/null); do
-  echo "$n = $(tr -d "\0" < "$n/status")"
-done' > /tmp/uart2-status-after.txt
+# 判据 2：status 翻转——直接与 Step 1 基线文件比对
+# 注意 -L：不加则输出恒为空（/proc/device-tree 是符号链接）
+ssh board 'for n in $(find -L /proc/device-tree -name "uart@*" 2>/dev/null); do
+  printf "%s = %s\n" "$(basename "$n")" "$(tr -d "\0" < "$n/status")"
+done | sort' > /tmp/uart-status-after.txt
 
-diff ~/board-baseline-*/uart2-status-before.txt /tmp/uart2-status-after.txt
-# 期望只有一处差异：disabled → okay
+diff ~/board-baseline-*/uart2-status-before.txt /tmp/uart-status-after.txt
+# 期望只有一处差异：uart@2502000 = disabled → okay
 
-# 判据 3：串口设备节点
+# 判据 3：串口设备节点（实测应看到 ttyAS0 + ttyAS2）
 ssh board 'ls /dev/ttyAS*'
 ```
 
 > 为什么不写死 `soc@3000000`：不同内核版本下 `soc` 节点名可能带不同 unit-address，
-> 写死会让执行者拿到 `No such file` 并误以为 overlay 没生效。`find -name 'uart@2501*'`
-> 对节点名变化免疫。
+> 写死会让执行者拿到 `No such file` 并误以为 overlay 没生效。`find -L -name 'uart@*'`
+> 对节点名变化与符号链接都免疫。
 
 ### Step 4：回滚演练（**必须做，不能跳过**）
 
@@ -295,7 +337,7 @@ ssh board 'sudo reboot'
 
 重启后确认：
 1. SSH 能连上；
-2. `uart@2501*` 的 `status` **回到 `disabled`**（与 Step 1 基线一致）——
+2. `uart@2502000` 的 `status` **回到 `disabled`**（与 Step 1 基线一致）——
    注意**不是「节点消失」**，节点一直存在（理由同 Step 3 的订正）；
 3. 系统其余一切正常，**且串口 console 仍然可用**（若 Step 3 判据 4 曾失败，
    这一步必须看到串口恢复才算回滚成功）。
@@ -381,10 +423,10 @@ ssh board 'v4l2-ctl -d /dev/video0 --list-formats-ext'
 - Step 1 基线快照**部分**抓取（`~/board-baseline-20261109-1213/`）：
   `extlinux.conf`、`managed.list`、`dt-nodes-before.txt`（51 个顶层节点）、
   `tty-before.txt`（仅 `/dev/ttyAS0`）。
-  **缺 `uart2-status-before.txt`**——这是 2026-11-09 复查时才发现的设计缺陷：
-  顶层节点清单看不到埋在 `soc@3000000` 下的 `uart@2501000`，Step 1 已补上
-  这条采集，但**尚未在板上重跑**（板子已被用户关闭）。
-- 手册四处已知错误已订正（见下方「本轮订正」）
+  **缺 `uart2-status-before.txt`**——2026-11-09 复查时发现的设计缺陷，
+  Step 1 已补上这条采集；2026-11-11 又发现原命令本身也是错的（缺 `-L`、
+  节点名也写错），见下方「本轮订正（2026-11-11）」。
+- 手册已知错误已订正（2026-11-09 八处，2026-11-11 再订正六处）
 
 ### 本轮订正（2026-11-09）
 
@@ -392,12 +434,31 @@ ssh board 'v4l2-ctl -d /dev/video0 --list-formats-ext'
 | --- | --- | --- |
 | Step 0 接线 | 接 40pin 排针的 UART RX/TX | 接**板载调试排针** → uart0 → `/dev/ttyAS0`。40pin 上那组是 uart2（pin 7/11），**不是 console，救不了砖** |
 | Step 0 执行位置 | 宿主机 `ls /dev/ttyUSB*` + `picocom` | 在**用户自己的 Windows 电脑**上用 PuTTY（Serial / COMx / 115200 8N1）。Cloud 宿主看不到串口设备 |
-| Step 1 基线 | 只抓 51 个**顶层** dt 节点 | 必须**额外**抓 `uart2-status-before.txt`。`uart@2501000` 埋在 `soc@3000000` 下，顶层清单看不到它，原基线无 uart 状态 |
-| Step 3 判据 2 | `/proc/device-tree/` 下「出现」uart2 节点 | `uart@2501*` 的 `status` 由 `disabled` 翻为 `okay`。**overlay 不创建新节点**，只改已有节点的 status，按原判据会误判失败 |
+| Step 1 基线 | 只抓 51 个**顶层** dt 节点 | 必须**额外**抓 `uart2-status-before.txt`。`uart@*` 埋在 `soc@3000000` 下，顶层清单看不到它，原基线无 uart 状态 |
+| Step 3 判据 2 | `/proc/device-tree/` 下「出现」uart2 节点 | `status` 由 `disabled` 翻为 `okay`。**overlay 不创建新节点**，只改已有节点的 status，按原判据会误判失败 |
 | Step 3 通过条件 | 三条（无 console 检查） | **加到四条**，判据 4 显式检查串口 console 是否仍可用——这是回答引脚争用的实测手段 |
 | Step 4 判据 2 | 「uart2 节点消失」 | `status` **回到 `disabled`**。节点不会消失，同 Step 3 的道理 |
 | Step 5 救援 | 「拔 eMMC/SD 卡挂到另一台机器改」 | **本板是 UFS（焊死），没有卡可拔**。退路只剩 U-Boot 命令行改 `extlinux.conf`，或 FEL/USB 重刷整机镜像 |
 | 诚实边界 1 | 「Step 2 之前必须先解决引脚争用」 | **降级为不阻塞 Step 2**，见下方「关于引脚争用的判断修正」 |
+
+### 本轮订正（2026-11-11，板端实测）
+
+| 位置 | 原文（错） | 改为（实测依据） |
+| --- | --- | --- |
+| Step 0 对照表 | uart2 地址 `2501000` | **`2502000`**（alias `serial2`）。`dtc` 反编译 dtbo 显示 target 是 label `uart2`，而 `aliases` 明写 `serial2 = /soc@3000000/uart@2502000`。地址并非连续：`serial7` 从 `2506000` 跳到 `7080000` |
+| Step 1 采集命令 | `find /proc/device-tree -name "uart@2501*"` | `find -L /proc/device-tree -name "uart@*"`。**必须加 `-L`**：`/proc/device-tree` 是符号链接，`find` 默认不跟随，实测输出恒为 0；且不能只抓 `2501*`，要抓全量再 diff |
+| Step 1 判据 | 5 个文件、含 `uart@2501` | 4 个文件、含 **9 行 `uart@`**。原「5 个文件」是笔误（实际只有 4 条采集） |
+| Step 3 判据 2 | `uart@2501000` 翻转 | **`uart@2502000`** 翻转 |
+| Step 3 判据命令 | `find /proc/device-tree -name "uart@2501*"` | `find -L /proc/device-tree -name "uart@*"` + diff 全量 |
+| Step 4 判据 2 | `uart@2501*` 回到 `disabled` | **`uart@2502000`** 回到 `disabled` |
+| 诚实边界 1 | 「引脚争用仍未查清」 | **实测不争用**：`uart0_pins@0` 的 `pins` 属性是空字符串（2 字节），console 从未申请 PB0/PB1；overlay 已启用状态下 `who` 仍显示 `radxa ttyAS0` |
+
+两条最值得单独记的教训（已写成独立文档）：
+
+- `openspec/pitfalls/proc-device-tree-find-symlink.md` —— 判据命令在成功和失败
+  两种状态下输出都是空，**不具备区分能力**，却看起来完全正常。
+- `openspec/pitfalls/dtbo-filename-node-identity.md` —— 文件名里的 `uart2`
+  是 label，不是地址序号；按地址间隔心算序号从 `serial7` 起就全错。
 
 ### 关于引脚争用的判断修正（2026-11-09）
 
@@ -436,61 +497,109 @@ ssh board 'v4l2-ctl -d /dev/video0 --list-formats-ext'
 
 ### 诚实边界
 
-1. **uart2 与 uart0 可能争用同一组引脚，此问题仍未查清——但它不阻塞 Step 2**。
-   板端 dmesg 有：
+1. ~~**uart2 与 uart0 可能争用同一组引脚，此问题仍未查清——但它不阻塞 Step 2**。~~
+   **→ 2026-11-11 板端实测已回答：不争用。**
+
+   实测时 uart2 overlay 已处于启用状态，console 完好：
+
+   | 判据 | 实测值 |
+   | --- | --- |
+   | `uart@2500000`（console）status | `okay` |
+   | `uart@2502000`（uart2）status | `okay` |
+   | 设备节点 | `/dev/ttyAS0` + `/dev/ttyAS2` |
+   | **console 有真实登录会话** | `who` → `radxa ttyAS0 2026-11-11 01:42` |
+   | `serial-getty@ttyAS0` | `active` |
+
+   **为什么不争用**（引脚组实测，这是此前一直缺的证据）：
+
+   | 节点 | pinctrl group | `pins` 属性实际字节 | 大小 |
+   | --- | --- | --- | --- |
+   | `uart@2500000` | `uart0_pins@0` | `0000`（仅一个 NUL） | **2 字节 = 空** |
+   | `uart@2502000` | `uart2_pins@0` | `5042300050423100` = `PB0\0PB1\0` | 8 字节 |
+
+   **`uart0_pins@0` 的 `pins` 属性是空的**。也就是说 console 从来没把 PB0/PB1
+   写进 pinctrl——它的引脚在 U-Boot 阶段就配好了，内核这边不需要再配。
+   dmesg 那条 `not valid maps for state default/sleep` 说的正是这件事：
+   「这份 map 里没有有效条目」，字面意思完全正确，**不是引脚冲突**。
+
+   而 **`exclusive = "PB0\0PB1\0uart2"` 是给 `rsetup` 看的元数据**，
+   内核不读它、`u-boot-update` 也不用它做冲突检测。它不等于「内核会仲裁」。
+
+   > **这个共存有一个隐式前提，必须记下**：uart0 不声明引脚是 BSP 的**遗留写法**，
+   > 不是设计意图。若哪天有人「顺手修好」`uart0_pins@0` 把 PB0/PB1 补进去，
+   > 冲突会**真的**出现（内核 pinctrl 会拒绝第二个申请者）。当前的和平依赖
+   > 「一边不申请」，不是依赖「两边都正确」。
+
+   原始推断（保留供追溯）：曾据 dmesg 报错 + dtbo 的 `exclusive` 判定「可能争用」，
+   并把「先反编译取证」列为 Step 2 的前置。**该推断已被实测推翻**，
+   详见 `openspec/pitfalls/dmesg-error-vs-function.md`。
+
+2. ~~**`status` 的读取路径未在板端核实**。~~ **→ 2026-11-11 已核实，且原命令是错的。**
+
+   手册原来写的是 `find /proc/device-tree -name 'uart@2501*'`。板端实测：
+
+   ```text
+   find /proc/device-tree -name "uart@*"     → 0 个
+   find /proc/device-tree/ -name "uart@*"    → 9 个
+   find -L /proc/device-tree -name "uart@*"  → 9 个
    ```
-   uart-ng 2500000.uart: there is not valid maps for state default/sleep
-   sunxi:pin-2000000.pinctrl:[ERR]: unknown pin   (×4)
-   ```
-   而 `sun60iw2p1-uart2.dtbo` 里写着 `exclusive = "PB0\0PB1\0uart2"`、
-   `pins = "PB0\0PB1"`，同时 `uart0_pins@0` 也带 `pins = [00 00]`
-   （sunxi 二进制编码，大致对应 PB0/PB1）。
 
-   我**无法从现有证据判断** uart2 overlay 生效后是否会夺走 uart0 的引脚。
+   `/proc/device-tree` 是符号链接，`find` 默认不跟随。**原命令从写下那天起
+   就没工作过**——它在 overlay 生效与未生效两种状态下输出都是空。
+   详见 `openspec/pitfalls/proc-device-tree-find-symlink.md`。
 
-   **但这个问题不阻塞 Step 2**（2026-11-09 用户判断，我复核后同意）。理由是
-   区分「最坏结果」与「启动失败」两件事：
-
-   | 情形 | 板子启动 | SSH | console | 处理 |
-   | --- | --- | --- | --- | --- |
-   | uart2 拿不到引脚，probe 失败 | ✅ 正常 | ✅ | ✅ 正常 | 记日志，Step 3 判据 2 照看 status |
-   | uart2 抢走 PB0/PB1，console 死 | ✅ 正常 | ✅ | ❌ 失效 | **SSH 回滚**（Step 4），30 秒 |
-
-   两种情形板子都照常启动。而**救砖通道只在「板子不启动」时才需要**——
-   一个 UART 节点的 `status` 翻转不构成启动失败的成因。所以这个疑问用
-   Step 2 本身花几十秒就能实测回答，不必先做 `dtc` 反编译取证。
-
-   **真正的影响在 Step 6，不在 Step 2**：若 Step 2 之后 console 确实失效，
-   那么在 Step 6（摄像头 overlay，那个真正有变砖风险的动作）之前**必须先
-   把 console 修回来**，否则等于在没有救砖通道的情况下做高风险动作。
-   届时两条路：① 保持 uart2 禁用状态（回滚 Step 2）再动摄像头；
-   ② 换首测候选（见「关键取舍一」，次选 `sunxi-ac101-sound-card`）验证机制。
-
-   > 若日后仍想彻底查清争用，`dtc -I dtb -O dts` 反编译 dtbo 对比 `pinctrl-0`
-   > 的 phandle 即可判定。这属于取证，不属于执行前置条件。
-
-2. **`status` 的读取路径未在板端核实**。手册里用的是
-   `find /proc/device-tree -name 'uart@2501*'`，避免写死 `soc@3000000`；
-   但本轮 `ssh` 不通，我没能跑这条命令确认它真能定位到节点。
-   执行 Step 1 时应顺手跑一次确认。
-
-3. **「uart2 overlay 只多一个串口节点」仍是推断**。这正是 Step 3 要验证的事。
+3. **「uart2 overlay 只多一个串口节点」——已证实**。实测多看了一个 `ttyAS2`，
+   没有其它可见副作用；`/dev/video*` 的出现来自 camera overlay，与它无关。
 
 4. **Step 4 回滚演练的价值现在更高了**：因为本板没有可拔的存储卡，
    回滚路径一旦不可用，代价是重刷整机。所以 Step 4 不能因为「一切正常」而跳过。
 
+   > **本轮未能验证**：板端当前是「uart2 + camera 两个 overlay 同时启用」的状态，
+   > 我没有做回滚演练，也没有证据表明它被人做过。**回滚是否真的可用，仍未验证。**
+
+### 板端当前状态（2026-11-11 实测，与本手册原计划有出入）
+
+调查 pitfall 时顺手读了板端，发现实际状态**已经推进到本手册的终点之后**：
+
+```text
+/boot/dtbo/sun60iw2p1-uart2.dtbo            ← 已启用（无 .disabled）
+/boot/dtbo/cubie-a7a-radxa-camera-8m-219.dtbo ← 已启用（Step 6 的目标）
+/boot/extlinux/extlinux.conf   mtime = 2026-11-10 06:04
+
+fdtoverlays  /boot/dtbo/cubie-a7a-radxa-camera-8m-219.dtbo /boot/dtbo/sun60iw2p1-uart2.dtbo
+```
+
+即 **Step 2 与 Step 6 都已生效**。camera 侧的证据：
+
+```text
+/dev/video0 /dev/video1 /dev/video4 /dev/video5   （vin_video0/1/4/5）
+/dev/media0
+lsmod: vin_v4l2  vin_io  imx219  videobuf2_*
+dmesg: [imx219]find the sony IMX219
+dmesg: [imx219]sensor_s_stream on = 1, 1920*1080 30f
+```
+
+**但要诚实说明边界**：
+
+- 我**不知道**是谁在什么时候做的，也没查 git 记录或其它会话；
+- **Step 4 回滚演练没有证据表明做过**，不能假定它可用；
+- 上述 `sensor_s_stream on = 1` 出现在 dmesg 中，说明**曾成功出流过**，
+  但那是某个时刻的状态，不代表此刻 `V4l2FrameSource` 能稳定取到帧；
+- 本手册的六步流程因此**没有被按顺序执行过**，只是终点状态已经到达。
+  这不影响手册作为排演文档的价值，但不能说「演练已完成」。
+
 ### 下一步（按依赖顺序，不可跳步）
 
-1. **板子开机后复核 Step 1 基线**（`~/board-baseline-20261109-1213/` 已存，
-   重跑一遍确认未漂移），顺手跑一次
-   `find /proc/device-tree -name 'uart@2501*'` 确认判据 2 的命令真能定位节点。
-2. **人在板边 + 串口终端开着并录制** → 执行 Step 2（启用 uart2 overlay + `u-boot-update`）。
-3. **Step 3** → 重启验证 `status` 翻为 `okay`、`/dev/ttyAS*` 增多，
-   并**顺手确认 console 是否还活着**（判据 4，见 Step 3）。
-4. **Step 4** → 主动回滚演练，验证可逆。**不可跳过。**
-5. **Step 6** → 摄像头 overlay，之后 `V4l2FrameSource` 才能真机调通。
-   **但先看 Step 3 的判据 4**：若 console 已失效，必须先恢复救砖通道再动摄像头。
+1. ~~板子开机后复核 Step 1 基线~~ → **已做，且发现原判据命令失效**（见诚实边界 2）。
+2. ~~执行 Step 2（启用 uart2 overlay）~~ → **已生效**（非本会话所为人知）。
+3. ~~Step 3 验证 + 判据 4~~ → **已实测通过**：`status` 翻转、`ttyAS2` 出现、
+   console 存活（`who` 有真实会话）。
+4. **Step 4 回滚演练 → 仍未做，这是当前最大的空白**。
+   它是唯一尚未验证的东西，而本板没有可拔的存储卡，代价最高。
+5. ~~Step 6 摄像头 overlay~~ → **已生效**，imx219 已被识别且曾出流。
+   剩余工作是 `V4l2FrameSource` 的端到端取帧调通（见
+   `openspec/tasks/2026-11-10-v4l2-real-board-bringup-and-tunnel-incident.md`
+   第五轮的「TDM 零帧」卡点）。
 
-> uart2 与 console 的引脚争用**不需要提前解决**——Step 2 本身就是它的实测手段，
-> 最坏结果是 console 失效而板子仍正常启动，用 SSH 回滚即可（详见诚实边界 1）。
-> 它真正约束的是 Step 6：高风险动作之前必须确认救砖通道还在。
+> uart2 与 console 的引脚争用**已由实测回答：不争用**，且 console 全程存活。
+> 前提是 `uart0_pins@0` 保持空 `pins` 属性（BSP 遗留），别去「修」它。
