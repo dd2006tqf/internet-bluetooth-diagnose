@@ -236,6 +236,20 @@ struct V4l2FrameSource::Impl {
     bool streaming{false};
     std::string error;
 
+    /// `VIDIOC_S_INPUT` 的异常失败原因（ENOTTY/EINVAL 之外的 errno）
+    ///
+    /// 单独存而不塞进 `error`：`error` 的语义是「配置与事实的偏差」，
+    /// 会被 describe() 以 `[...]` 呈现；而 S_INPUT 失败在多数设备上是
+    /// **正常**的（无输入概念）。只有真出意外时才记，且不因此中断启动。
+    ///
+    /// 为什么值得留一个字段：真机上「S_FMT 报 EINVAL」的唯一现场线索就是
+    /// S_INPUT 有没有成功。若它因 `EPERM`/`EBUSY` 之类失败而没人记录，
+    /// 事后只能看到 S_FMT 的报错，根因又得重推一遍。
+    ///
+    /// **不被 closeDevice() 复位**，与 `buffer_source` 同一考虑：它是
+    /// 「上一次 start 发生了什么」的事实，停下来看仍应如实呈现。
+    std::string input_note;
+
     /// 实际使用的 buf type：单平面或多平面
     ///
     /// 为什么必须是成员而不是 start() 的局部量：`stop()` 里的 STREAMOFF、
@@ -317,6 +331,18 @@ struct V4l2FrameSource::Impl {
 
     /// 帧间隔记录（毫秒），每个窗口清空一次
     std::vector<uint32_t> gaps;
+
+    /// 本窗口帧间隔的**微秒**精度原始值，专供帧率基线校准
+    ///
+    /// 为什么不复用 `gaps`：本板真实帧间隔 53.87ms 在 `gaps` 里被截成 54ms，
+    /// 反推得到 `1e6/54000 = 18.52 → 18fps`（方向偶然正确）或按毫秒算
+    /// `1000/54 = 18.5`，误差都会被**一次性校准永久固化**。校准是建立基线
+    /// 而非持续测量，所以必须用原始精度。
+    ///
+    /// 与 `gaps` 同生命周期：由 `resetWindow()` 一起清空，由
+    /// `tryCalibrateFps()` 在清空**之前**消费。
+    std::vector<uint64_t> window_gaps_us;
+
     std::chrono::steady_clock::time_point last_frame_time;
     bool has_last_frame_time{false};
 
@@ -329,6 +355,135 @@ struct V4l2FrameSource::Impl {
 
     /// 本窗口起点（用于推导窗口终点 window_start + window_ms）
     std::chrono::steady_clock::time_point window_start;
+
+    /// ---- 帧率基线校准状态 ----
+    ///
+    /// 为什么需要它：`G_PARM` 在 sunxi-vin 上返回的是模式表常数
+    /// （`sensor_helper.c:892` 直接读 `current_wins->fps_fixed`），
+    /// 与硬件实际帧率无关。本板满分辨率模式表写 30fps/278MHz，
+    /// 而该模式 PLL 只配到 172.8MHz → 真实 18.56fps，造成恒定 38% 假丢帧。
+    ///
+    /// 校准**只做一次**，之后 fps 固定。绝不能每窗口都重算——那样真实丢帧
+    /// 会被分母吸收掉（丢帧→实测帧率降低→期望值同步降低→丢帧率恒 0）。
+    ///
+    /// **为什么校准样本用微秒而不是毫秒**：
+    /// `gaps` 存的是取整后的毫秒。本板真实帧间隔 53.87ms 会被截成 54ms，
+    /// 反推得到 `1000/54 = 18.5 → 19fps`，比真实值高 2.4%。
+    /// 校准是**一次性建立基线**，这个偏差会被永久固化下来——38% 的假丢帧
+    /// 会变成 36% 的假丢帧，问题没解决只是变小了。所以校准必须用
+    /// 原始时长的微秒精度，不能复用 `gaps`。
+    std::vector<uint64_t> calibration_gaps_us;   ///< 校准窗口内的高精度帧间隔
+    bool calibration_done{false};
+
+    /// 校准失败的原因（非空时写进 describe()，说明为何维持原 fps）
+    std::string calibration_note;
+
+    /// 在窗口末尾尝试完成一次基线校准
+    ///
+    /// 调用点：`snapshotAndReset()` 汇总完本窗口、`resetWindow()` 之前。
+    /// 返回 true 表示本次调用完成了校准（cfg.fps 已被改写）。
+    ///
+    /// 判据全部为「不够稳就不采纳」，因为**校准错误比不校准更危险**：
+    /// 不校准只是丢帧率偏高（假阳性，运维会去查）；校准错了会让基线本身
+    /// 偏移，真实劣化被永久掩盖（假阴性，没人会去查）。
+    bool tryCalibrateFps() {
+        if (calibration_done) return false;
+        if (cfg.fps_calibration_windows == 0) return false;
+
+        // 本窗口的帧间隔并入累积池（微秒精度）
+        calibration_gaps_us.insert(calibration_gaps_us.end(),
+                                   window_gaps_us.begin(), window_gaps_us.end());
+
+        // 还没攒够窗口数就继续等
+        if (++calibration_windows_seen < cfg.fps_calibration_windows) return false;
+
+        calibration_done = true;
+
+        // 样本太少时中位数不可信：至少要覆盖一个窗口的量级。
+        // 用 10 作为下限而不是 2——两帧的「中位数」只是均值，没有抗噪能力。
+        if (calibration_gaps_us.size() < 10) {
+            std::ostringstream os;
+            os << "帧率校准跳过：样本仅 " << calibration_gaps_us.size()
+               << " 帧，不足 10 帧";
+            calibration_note = os.str();
+            return false;
+        }
+
+        // 中位数：抗首帧/AE 收敛造成的偶发长间隔
+        std::vector<uint64_t> sorted = calibration_gaps_us;
+        std::sort(sorted.begin(), sorted.end());
+        const uint64_t median_us = sorted[sorted.size() / 2];
+        if (median_us == 0) {
+            calibration_note = "帧率校准跳过：中位帧间隔为 0";
+            return false;
+        }
+
+        // 离散度检查：p95 / p05 相对中位数的偏差超限就放弃。
+        // 不稳定的窗口说明采集本身有问题，拿它当基线会把异常固化成正常。
+        const uint64_t p05 = sorted[sorted.size() * 5 / 100];
+        const uint64_t p95 = sorted[sorted.size() * 95 / 100];
+        const uint64_t max_spread = cfg.fps_calibration_max_spread_percent;
+        // 用 128 位避免 us 量级乘 100 溢出（uint64_t 装得下，但显式说明意图）
+        const bool p05_ok = (median_us - p05) * 100u <= median_us * max_spread;
+        const bool p95_ok = (p95 - median_us) * 100u <= median_us * max_spread;
+        if (!p05_ok || !p95_ok) {
+            std::ostringstream os;
+            os << "帧率校准跳过：帧间隔离散度过大（p05=" << p05 / 1000.0
+               << "ms p95=" << p95 / 1000.0 << "ms 中位=" << median_us / 1000.0
+               << "ms，上限 " << max_spread << "%）";
+            calibration_note = os.str();
+            return false;
+        }
+
+        // 由中位间隔反推帧率，**微秒精度**。
+        //
+        // 为什么必须微秒：本板真实间隔 53.875ms。若先把间隔截成 54ms
+        // 再算 `1000/54`，得到 19fps（误差 +2.4%）——那是往上偏的方向，
+        // 会让假丢帧率变小，掩盖问题。用微秒算出 18.56，再**向下取整**
+        // 到 18。
+        //
+        // 为什么向下取整而不是四舍五入：18.56 四舍五入是 19，而 19
+        // 会让 `frames_expected` 偏大、丢帧率偏小——即**少报丢帧**。
+        // 本项目纪律是「少报比多报危险」（见 frame_source.hpp 里
+        // frames_expected 的注释），所以宁可取 18（丢帧率略偏高）。
+        const double measured_fps = 1e6 / static_cast<double>(median_us);
+
+        // 荒谬值一律拒绝：小于 1fps 或大于 1000fps 说明测量本身出了问题
+        if (measured_fps < 1.0 || measured_fps > 1000.0) {
+            std::ostringstream os;
+            os << "帧率校准跳过：推算值 " << measured_fps << "fps 超出合理范围";
+            calibration_note = os.str();
+            return false;
+        }
+
+        // 向下取整：18.56 → 18
+        const uint32_t measured = static_cast<uint32_t>(measured_fps);
+
+        // 与整数 fps 相同则不写 note（避免「30fps 校正为 30fps」的噪音）。
+        // 注意这里比较的是取整后的值：真实 29.94fps 会取整成 29，
+        // 与配置的 30 不同，此时会触发一次「30 → 29」的校正——这是
+        // 正确行为，因为驱动声称的 30 确实与实际不符。
+        if (measured == cfg.fps) {
+            calibration_gaps_us.clear();
+            calibration_gaps_us.shrink_to_fit();
+            return true;
+        }
+
+        std::ostringstream os;
+        os << "帧率基线由 " << cfg.fps << "fps 校准为实测 "
+           << (median_us / 1000.0) << "ms 对应 " << measured
+           << "fps（驱动 G_PARM 回报不可信）";
+        calibration_note = os.str();
+        cfg.fps = measured;
+
+        // 校准完成后释放样本，避免长期占内存
+        calibration_gaps_us.clear();
+        calibration_gaps_us.shrink_to_fit();
+        return true;
+    }
+
+    /// 已观测的窗口数（用于判断是否攒够校准窗口）
+    uint32_t calibration_windows_seen{0};
 
     /// start() 时解析出来的 media 拓扑（可为空 = 没解析到）
     ///
@@ -744,6 +899,9 @@ struct V4l2FrameSource::Impl {
         has_last_seq = false;
         gaps.clear();
         dequeue_latencies.clear();
+        // 微秒副本与 gaps 同生命周期。注意：tryCalibrateFps() 必须在本函数
+        // 之前调用（它消费本窗口的样本），调用点见 snapshotAndReset()。
+        window_gaps_us.clear();
         last_frame_time = std::chrono::steady_clock::now();
         has_last_frame_time = false;
         window_start = std::chrono::steady_clock::now();
@@ -764,6 +922,15 @@ bool V4l2FrameSource::start() {
     if (s.streaming) return true;
 
     s.error.clear();
+    // 与 error 一起清：两者都是「本次 start 的偏差记录」，
+    // 留着上一次的会让新一轮的 describe() 谎报。
+    s.input_note.clear();
+    // 校准状态必须随 start() 一起复位：重新启动可能换了分辨率、换了设备，
+    // 上一次的帧率基线不再适用。若保留，会把旧基线当成本次事实继续使用。
+    s.calibration_gaps_us.clear();
+    s.calibration_done = false;
+    s.calibration_note.clear();
+    s.calibration_windows_seen = 0;
     s.closeDevice();
 
     // ---- 1. 打开设备 ----
@@ -830,6 +997,67 @@ bool V4l2FrameSource::start() {
     s.buf_type = use_mplane ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
                             : V4L2_BUF_TYPE_VIDEO_CAPTURE;
     s.num_planes = use_mplane ? 2u : 1u;   // NV12 多平面是 Y + UV 两平面
+
+    // ---- 2.8 选择输入（必须在 S_FMT 之前）----
+    //
+    // ========================================================================
+    // 这一步不是可选的「锦上添花」，它是 sunxi-vin 上能否出帧的前提
+    // ========================================================================
+    //
+    // 真机现象：Radxa Cubie A7A（sun60iw2 / IMX219）上，`S_FMT` 必返回
+    // `EINVAL`，dmesg 里有
+    //   `WARNING ... at vin_video.c:820 vin_pipeline_try_format`
+    // `ENUM_FRAMESIZES` 还会返回 `EPERM`（root 下同样，所以不是权限问题）。
+    //
+    // 逐行读 BSP（分支 cubie-aiot-v1.4.6）后的因果链：
+    //
+    //   1. `vin_pipeline_try_format()` 取 `sd = pipe.sd[VIN_IND_SENSOR]`，
+    //      随后 `if (WARN_ON(!sd || !tfmt || !fmt_id)) return -EINVAL;`
+    //      —— 这是**空指针检查**，不是格式比较。WARN 命中说明 sd 为 NULL。
+    //   2. `pipe.sd[]` 唯一由 `vin_md_prepare_pipeline()` 填充（`vin.c:83`，
+    //      写入在 `:119`）。它靠 `media_pad_remote_pad_first()` 逐跳上溯，
+    //      **只走 ENABLED 链路**。
+    //   3. `vin.c:2035` 建 sensor→mipi 链路时传 `flags = 0`（disabled），
+    //      而同函数其它链路全带 `MEDIA_LNK_FL_ENABLED`。于是 probe 期那次
+    //      填充在 mipi 这一跳就 `break`，`pipe.sd[VIN_IND_SENSOR]` 保持 NULL。
+    //   4. 用户态唯一能补这次填充的入口就是 `VIDIOC_S_INPUT`：
+    //      `__vin_s_input()` → `__vin_sensor_setup_link(..., 1)` →
+    //      `vin_pipeline_call(open, ..., prepare = true)`，而 prepare=true
+    //      正是重跑 `vin_md_prepare_pipeline()` 的开关（`vin_video.c:2412`）。
+    //
+    // **为什么不能靠 STREAMON 代替**：`vidioc_streamon` 也调用了
+    // `__vin_sensor_setup_link`，但**不**带 `prepare=true`，`pipe.sd[]` 仍是
+    // NULL，随后的 `REQBUFS`/`QBUF` 一样会失败。实测顺序上也来不及——
+    // `S_FMT` 排在 `STREAMON` 前面，早就返回 EINVAL 了。
+    //
+    // **为什么不能靠手动 `MEDIA_IOC_SETUP_LINK` 代替**：那条路径只把链路
+    // 置 ENABLED，不触发 `vin_md_prepare_pipeline()`，`pipe.sd[]` 还是 NULL。
+    // 前一轮排查正是卡在这里（链路全绿了 S_FMT 依旧 EINVAL），因此
+    // 本实现坚持只读拓扑、绝不自己改链路标志。
+    //
+    // ========================================================================
+    // 但它是「可选 ioctl」，失败绝不能判死设备
+    // ========================================================================
+    //
+    // 标准 V4L2 里 `VIDIOC_S_INPUT` 是可选的：UVC 摄像头、vim2m 之类的
+    // mem2mem 节点都返回 `ENOTTY`，多数单输入设备返回 `0`，少数在无输入时
+    // 返回 `EINVAL`。把它们当成致命错误会让本来能用的设备完全无法采集——
+    // 这与本项目「缺数据不得伪装成健康」的纪律是两件事：这里是「能力不存在」，
+    // 正确反应是跳过，而不是报错。
+    //
+    // 因此：`ENOTTY` / `EINVAL` 静默跳过（这是设备没有输入概念的正常形态，
+    // 与上面 `G_PARM` 的处理同一原则，不写进 describe() 制造噪音）；
+    // 其它 errno 仍然不中断启动，但记进 `input_note`——它是真机上
+    // 「S_FMT 报 EINVAL 却看不出为什么」的唯一线索，必须留下来。
+    {
+        int input = 0;
+        if (::ioctl(s.fd, VIDIOC_S_INPUT, &input) < 0) {
+            const int err = errno;
+            if (err != ENOTTY && err != EINVAL) {
+                s.input_note = errnoText("VIDIOC_S_INPUT", err);
+            }
+        }
+    }
 
     // ---- 3. 设定格式 ----
     //
@@ -1130,12 +1358,19 @@ FrameStats V4l2FrameSource::snapshotAndReset() {
             std::chrono::microseconds(buf.timestamp.tv_usec));
 
         if (s.has_last_frame_time) {
+            const auto gap = frame_t - s.last_frame_time;
             const auto gap_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    frame_t - s.last_frame_time)
+                std::chrono::duration_cast<std::chrono::milliseconds>(gap)
                     .count();
             if (gap_ms >= 0) {
                 s.gaps.push_back(static_cast<uint32_t>(gap_ms));
+                // 同一间隔的微秒精度副本，只喂给帧率基线校准。
+                // 负间隔（时间戳回退）两边都不收：钳到 0 会把观测错误
+                // 伪装成「间隔极短」，是最坏的一种假数据。
+                s.window_gaps_us.push_back(
+                    static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(gap)
+                            .count()));
             }
         }
         s.last_frame_time = frame_t;
@@ -1266,6 +1501,20 @@ FrameStats V4l2FrameSource::snapshotAndReset() {
         out.p95_dequeue_latency_ms = percentile95(s.dequeue_latencies);
     }
 
+    // ---- 帧率基线校准（只在前 N 个窗口尝试，成功后永不重算）----
+    //
+    // 位置很关键：必须在**本窗口数据已汇总完、但 resetWindow() 还没清空
+    // gaps 之前**调用。校准吃的是本窗口的帧间隔分布。
+    //
+    // 为什么放在 snapshotAndReset 而不是 start()：start() 里还没有任何帧，
+    // 唯一能拿到的帧率就是驱动声明的那个值——而那个值正是本函数要修正的
+    // 对象。校准必须基于实测。
+    //
+    // 注意：校准会改写 cfg.fps，但它只影响**后续**窗口的 frames_expected。
+    // 本窗口的 expected 已按旧 fps 算完并写进 out 了，不做追溯修改——
+    // 回溯改历史数据比承认「第一个窗口的基线尚未建立」更危险。
+    s.tryCalibrateFps();
+
     // 推进窗口：下一窗口从此刻开始
     s.resetWindow();
     return out;
@@ -1306,9 +1555,24 @@ std::string V4l2FrameSource::describe() const {
 
     if (!s.streaming) os << " (stopped)";
 
+    // S_INPUT 的异常失败单独用 `input:` 标出，与 `[...]` 的偏差记录区分：
+    // 它不影响启动成败，但直接影响「S_FMT 为什么会 EINVAL」的归因。
+    if (!s.input_note.empty()) os << " [input: " << s.input_note << "]";
+
     // 驱动协商结果（帧率/分辨率被校正、格式被强制）也带上：
     // 这些是「配置 vs 事实」的偏差记录，不写下来就无法解释统计为何与预期不符。
     if (!s.error.empty()) os << " [" << s.error << "]";
+
+    // 帧率基线校准结果必须单独可见，不能用上面那条 `error` 通道。
+    //
+    // 理由是语义相反：`error` 记录的是「配置与驱动不一致」，而校准记录的是
+    // 「驱动说的与硬件实际不一致」——后者恰恰是本板丢帧率虚高的根源。
+    // 归因时若看不到这一条，就无法判断 `frames_expected` 用的到底是
+    // 配置值、G_PARM 值，还是实测校准值，38% 的丢帧率会被重复归因。
+    //
+    // 未校准时也要写：`calibration_note` 说明了为什么跳过（样本不足/
+    // 离散度过大），这比静默维持原值有用——否则运维会以为校准生效了。
+    if (!s.calibration_note.empty()) os << " [fps: " << s.calibration_note << "]";
 
     // media 拓扑：只写「上游链路是否通」，不铺开整张图。
     //

@@ -24,13 +24,17 @@
 
 #include <fcntl.h>
 #include <linux/dma-heap.h>
+#include <linux/videodev2.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "v4l2_frame_source.hpp"
 
@@ -140,6 +144,10 @@ TEST(V4l2FrameSource, DescribeCarriesV4l2Prefix) {
     // 与「注入了测试数据」。
     V4l2CaptureConfig cfg;
     cfg.device = "/dev/video-test-node";
+    // 故意设成**非默认**分辨率：这条测的是「describe() 如实反映当前配置」，
+    // 若用默认值，就分不清它是读了配置还是打印了硬编码常量。
+    // 1280x720 在本板是零帧的 bin_factor=2 模式，但这条测试根本不打开设备
+    // （device 是个不存在的路径），所以只验证字符串，不涉及可用性。
     cfg.width = 1280;
     cfg.height = 720;
     cfg.fps = 30;
@@ -171,18 +179,64 @@ TEST(V4l2FrameSource, DescribeReflectsRunningState) {
 // ---------------------------------------------------------------------------
 
 TEST(V4l2FrameSource, DefaultConfigMatchesPlan) {
-    // 这些默认值不是随手填的，每一条都有方案里的依据（零拷贝 / vb2 分配上限 /
-    // 720p 而非满分辨率以避免 ISP 成为归因噪声）。钉死它们，防止有人
-    // "顺手"改成 sensor 满分辨率而让归因失真。
+    // 这些默认值不是随手填的，每一条都有真机依据（零拷贝 / vb2 分配上限 /
+    // 1640x1232 而非 720p 或满分辨率）。钉死它们，防止有人"顺手"改。
+    //
+    // ========================================================================
+    // 为什么这条断言从 1280x720 改成了 1640x1232（不是放宽，是纠错）
+    // ========================================================================
+    // 原断言写的是「默认 720p 而非 3280x2464，避免 ISP 成为瓶颈」。真机实测
+    // 证明这个前提本身是错的：720p 在 IMX219 + sunxi-vin 上属于
+    // `bin_factor=2` 模式，**一帧都出不来**（select 超时、0 字节、约 710 条
+    // `tdm0 rx0 frame error! width is 1869`）。钉死一个零帧默认值，等于把
+    // 帧源钉死在"永远采不到"的状态。
+    //
+    // 新值的依据（板端产品同款 ioctl 序列实测 6s）：
+    //   3280x2464 → 18.33fps / ≈222 MB/s
+    //   1640x1232 → 18.33fps / ≈ 56 MB/s   ← 同帧率，1/4 带宽
+    // 且 dmesg 记录 `s_fmt set width = 3280, height = 2464`，说明 1640x1232
+    // 仍是驱动按 bin_factor=1 满分辨率采样后缩放交付，不落入坏模式。
+    //
+    // 断言强度没有降低：仍然是两条精确等值断言，仍然禁止改成满分辨率，
+    // 只是禁止的理由从"带宽"变成了"带宽 + 720p 零帧"。
     V4l2CaptureConfig cfg;
 
     EXPECT_EQ(cfg.device, "/dev/video0");
-    EXPECT_EQ(cfg.width, 1280u) << "默认 720p 而非 3280x2464，避免 ISP 成为瓶颈";
-    EXPECT_EQ(cfg.height, 720u);
+    EXPECT_EQ(cfg.width, 1640u)
+        << "默认必须落在 bin_factor=1 通路上：720p/1080p/SXGA 在本板零帧";
+    EXPECT_EQ(cfg.height, 1232u)
+        << "1640x1232 由驱动按 3280x2464 采样后缩放，同帧率下带宽仅为满分辨率 1/4";
     EXPECT_EQ(cfg.fps, 30u);
     EXPECT_EQ(cfg.buffer_count, 4u) << "方案 §6.2.2.2：4 个 buffer";
     EXPECT_GT(cfg.select_timeout_ms, 0u) << "必须有超时，否则卡死时无法返回";
     EXPECT_GT(cfg.window_ms, 0u) << "窗口时长决定能否与网络侧对齐";
+}
+
+TEST(V4l2FrameSource, DefaultResolutionAvoidsBinningModes) {
+    // 守的是「默认值不得落回 bin_factor=2 坏模式」这条真机约束。
+    //
+    // 这里不查表也不读驱动源码（单测跑在 CI，没有 sensor 也没有 BSP 源码），
+    // 而是把板端**实测过零帧**的坏模式逐个列出来，断言默认值不是其中任何一个。
+    //
+    // 只收实测过的：`sensor_win_sizes[]` 里还有一个 SXGA 模式同样是
+    // `bin_factor=2`，但它的尺寸宏不在本仓库、本轮也没有实测到它，因此
+    // **不写进名单**——按证据纪律，没测过的不当成结论。
+    // 加新模式时这条会继续生效；若将来驱动修好了 binning，改这里的名单即可，
+    // 但必须同时更新 §7.9 的证据，而不是悄悄删掉这条测试。
+    const std::vector<std::pair<uint32_t, uint32_t>> known_broken = {
+        {1280, 720},    // 实测 rc=124 / 0 字节 / 710 条 TDM frame error
+        {1920, 1080},   // 实测 rc=124 / 0 字节 / 711 条 TDM frame error
+        {640, 480},     // 实测 rc=124 / 0 字节 / 710 条 TDM frame error
+    };
+
+    V4l2CaptureConfig cfg;
+    for (const auto& m : known_broken) {
+        EXPECT_FALSE(cfg.width == m.first && cfg.height == m.second)
+            << "默认分辨率落在了本板实测零帧的 bin_factor=2 模式 "
+            << m.first << "x" << m.second
+            << " 上；见 docs/hardware/radxa-cubie-a7a/"
+               "sunxi-vin-摄像头链路根因分析.md §7.9";
+    }
 }
 
 TEST(V4l2FrameSource, ZeroBufferCountIsClamped) {
@@ -398,6 +452,31 @@ bool expectDmabufExport() {
     return p != nullptr && *p == '1';
 }
 
+/// 把某节点的输入选择读出来；设备不实现 G_INPUT 时返回 -1
+///
+/// 为什么要读输入而不是「看 start() 有没有调 S_INPUT」：后者需要 mock
+/// ioctl，而本项目拒绝为了可测性在生产代码里塞钩子。输入选择是
+/// **驱动侧可观测的真实副作用**——尤其 vivid 的输入索引跨 `open()`
+/// 保留，所以「先把设备切成 1 号输入，再 start()，结束后读回」就能
+/// 判断 start() 到底有没有下发 S_INPUT(0)。这是黑盒可证的唯一形态。
+int readInputIndex(const std::string& device) {
+    const int fd = ::open(device.c_str(), O_RDWR | O_NONBLOCK);
+    if (fd < 0) return -1;
+    int idx = -1;
+    if (::ioctl(fd, VIDIOC_G_INPUT, &idx) < 0) idx = -1;
+    ::close(fd);
+    return idx;
+}
+
+/// 把某节点的输入切到 index；成功返回 true
+bool selectInput(const std::string& device, int index) {
+    const int fd = ::open(device.c_str(), O_RDWR | O_NONBLOCK);
+    if (fd < 0) return false;
+    const bool ok = ::ioctl(fd, VIDIOC_S_INPUT, &index) >= 0;
+    ::close(fd);
+    return ok;
+}
+
 /// 真机用例的基类：门控不满足时整组不注册
 class V4l2LiveTest : public ::testing::Test {
 protected:
@@ -424,6 +503,52 @@ protected:
 };
 
 }  // namespace
+
+TEST_F(V4l2LiveTest, StartSelectsInputZeroBeforeFormatting) {
+    // ========================================================================
+    // 这条守的是 sunxi-vin 上「S_FMT 必 EINVAL」的根因
+    // ========================================================================
+    //
+    // 机制（BSP 源码逐行确认，见
+    // `docs/hardware/radxa-cubie-a7a/sunxi-vin-摄像头链路根因分析.md`）：
+    // `vid_cap.pipe.sd[VIN_IND_SENSOR]` 只由 `vin_md_prepare_pipeline()` 填充，
+    // 而该函数靠 `media_pad_remote_pad_first()` 上溯、**只走 ENABLED 链路**；
+    // `vin.c:2035` 建 sensor→mipi 链路时传 `flags=0`（disabled），所以
+    // probe 期那次填充填不出 sensor。此后 `vin_pipeline_try_format()` 里
+    // `WARN_ON(!sd || ...)` 命中并 `return -EINVAL`。
+    //
+    // 唯一能在用户态补上这个填充的入口是 `VIDIOC_S_INPUT`：
+    // `__vin_s_input()` → `__vin_sensor_setup_link(...,1)` →
+    // `vin_pipeline_call(open, ..., prepare=true)`。`STREAMON` 虽然也调用了
+    // setup_link，但**不**带 `prepare=true`，补不回来；手动
+    // `MEDIA_IOC_SETUP_LINK` 同理（之前的会话正是这样误判的）。
+    //
+    // 断言形式：把驱动切到非 0 输入，再让 start() 跑完，读回输入索引。
+    // 若实现下发了 S_INPUT(0)，索引必须是 0。这一步不依赖任何 sunxi 私有
+    // 接口——vivid 的输入索引跨 open() 保留，因此是黑盒可证的。
+    const std::string dev = v4l2TestDevice();
+    if (readInputIndex(dev) < 0) {
+        GTEST_SKIP() << "该设备无输入概念（G_INPUT 不可用），S_INPUT 契约不适用";
+    }
+    if (!selectInput(dev, 1)) {
+        GTEST_SKIP() << "该设备只有一个输入或不允许切换，无法构造前置条件";
+    }
+    ASSERT_EQ(readInputIndex(dev), 1) << "前置条件构造失败：未能切到输入 1";
+
+    auto cfg = makeConfig(640, 480, 30, 300);
+    V4l2FrameSource src(cfg);
+    ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
+
+    EXPECT_EQ(readInputIndex(dev), 0)
+        << "start() 未把输入切回 0：sunxi-vin 上这会让 S_FMT 直接返回 EINVAL。"
+           "修复方式是在 S_FMT **之前**下发 VIDIOC_S_INPUT(0)，"
+           "并容忍 ENOTTY/EINVAL（无输入的设备）。";
+
+    src.stop();
+
+    // 清理：把驱动恢复原状，避免污染同进程后续用例
+    selectInput(dev, 0);
+}
 
 TEST_F(V4l2LiveTest, StartSucceedsAndReportsPlanarModeInDescribe) {
     // 最重要的真机断言：**成功路径存在**。此前 10 项单测只覆盖失败路径，
@@ -557,6 +682,194 @@ TEST_F(V4l2LiveTest, FrameRateNegotiationKeepsExpectedInSyncWithReality) {
             << "（expected=" << s.frames_expected
             << " received=" << s.frames_received << "）";
     }
+
+    src.stop();
+}
+
+TEST_F(V4l2LiveTest, FpsCalibrationReplacesLyingDriverValue) {
+    // ========================================================================
+    // 守「驱动报的帧率可能是模式表常数，必须用实测校准」这条
+    // ========================================================================
+    //
+    // 背景（真机证据见 `openspec/pitfalls/sensor-mode-table-fps-lie.md`）：
+    // IMX219 + sunxi-vin 的满分辨率模式表声明 `.pclk=278MHz / .fps_fixed=30`，
+    // 但该模式 PLL 只配到 MPY=54，真实 pixel rate 172.8MHz → 18.56fps。
+    // 而 `sensor_s_parm()` 只把 tpf 存进结构体、`sensor_g_parm()` 直接返回
+    // 模式表常数，于是 `G_PARM` 永远报 30，下面的「用驱动实际值回填」永不触发，
+    // `frames_expected` 恒按 30 推 → 约 38% 的**纯计算**假丢帧。
+    //
+    // 构造手法：**关掉帧率协商**（`set_frame_rate=false`）并把 cfg.fps 配成
+    // 实测帧率的 2 倍。vivid 稳定出 30fps，配 60 就能让「校准是否生效」
+    // 变成可观测的强信号：
+    //   - 未校准时 expected 是实测的 2 倍，丢帧率稳定在 ~50%；
+    //   - 校准生效后 expected 回落到实测量级，丢帧率回到低位。
+    //
+    // **为什么必须关掉协商**（这条是本用例第一次写错的地方）：`start()` 里
+    // 有一段「以驱动回报为准回填 cfg.fps」的逻辑。vivid 的 G_PARM **是诚实的**
+    // （真的回报 30），所以只要开着协商，60 会在 start() 里就被改回 30，
+    // 校准再也没有可修正的内容——测出来的 before/after 都是 0 丢帧，
+    // 断言失败但代码其实没错。这恰好是「测试构造不成立」而非「实现有缺陷」。
+    //
+    // 关掉协商后 cfg.fps 一路保持 60，等价于真机上「G_PARM 撒谎」的情形
+    // （模式表写 30、硬件实际 18.56），这才是校准要解决的场景。
+    auto cfg = makeConfig(640, 480, 120, 500);
+    cfg.set_frame_rate = false;        // 模拟驱动回报不可信：不回填 cfg.fps
+    // 明确要求校准 3 个窗口：窗口数不够就永远等不到校准完成
+    cfg.fps_calibration_windows = 3;
+    V4l2FrameSource src(cfg);
+    ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
+
+    // 前 3 个窗口用于攒校准样本；第 3 个窗口结束时校准完成。
+    // 注意 snapshotAndReset() 自身阻塞一个 window_ms，必须连续调用，
+    // 中间 sleep 会让队列积压从而污染帧间隔（既有单测已钉死该语义）。
+    double loss_before = -1.0;
+    for (int w = 0; w < 3; ++w) {
+        const FrameStats s = src.snapshotAndReset();
+        ASSERT_TRUE(s.valid());
+        if (w == 0) loss_before = s.frameLossRatio();
+    }
+
+    const FrameStats after = src.snapshotAndReset();
+    ASSERT_TRUE(after.valid());
+    ASSERT_GT(after.frames_received, 0u) << "本窗口没收到帧，无法判断校准效果";
+
+    // 校准生效的直接证据：丢帧率从「约 50%（60 vs 30）」掉到与实测一致。
+    EXPECT_LT(after.frameLossRatio(), loss_before - 0.15)
+        << "帧率校准未生效：丢帧率没有下降。"
+        << " before=" << loss_before << " after=" << after.frameLossRatio()
+        << " expected=" << after.frames_expected
+        << " received=" << after.frames_received;
+
+    // describe() 必须留下校准痕迹，否则现场无法判断 expected 用的是哪个 fps
+    const std::string desc = src.describe();
+    EXPECT_NE(desc.find("[fps:"), std::string::npos)
+        << "校准（或跳过原因）必须写进 describe() 供证据溯源，实际为：" << desc;
+
+    src.stop();
+}
+
+TEST_F(V4l2LiveTest, FpsCalibrationIsSkippedWhenDisabled) {
+    // 守「fps_calibration_windows == 0 时校准必须完全不动作」。
+    //
+    // 这条不是形式主义：校准会改写 cfg.fps，而 cfg.fps 决定 frames_expected。
+    // 若关闭开关后仍在偷偷校准，调用方「我明确要求不校准」的意图就被违背，
+    // 且无法从任何输出看出来。判据是 describe() 里不得出现 [fps: 段。
+    auto cfg = makeConfig(640, 480, 120, 500);
+    cfg.set_frame_rate = false;        // 同 FpsCalibrationReplacesLyingDriverValue：
+                                       // 不回填 cfg.fps，校准才有可修正的内容
+    cfg.fps_calibration_windows = 0;   // 关闭
+    V4l2FrameSource src(cfg);
+    ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
+
+    for (int w = 0; w < 4; ++w) src.snapshotAndReset();
+
+    const std::string desc = src.describe();
+    EXPECT_EQ(desc.find("[fps:"), std::string::npos)
+        << "已关闭校准却仍写了校准记录，说明开关没生效：" << desc;
+
+    src.stop();
+}
+
+TEST_F(V4l2LiveTest, FpsCalibrationResultSurvivesUntilRestart) {
+    // 守「校准只做一次」这条，它是整个设计里最关键的约束。
+    //
+    // 若每窗口都重算，真实丢帧会被分母吸收（丢帧 → 实测帧率降低 →
+    // expected 同步降低 → 丢帧率恒为 0），把「全丢」显示成「完美」。
+    // 这是比假丢帧危险得多的失败模式，所以必须有一条测试钉住它。
+    //
+    // 观测手法：校准完成后 stop() 之前，describe() 里的 fps 段内容必须
+    // 保持稳定；且再跑 N 个窗口不会因重新校准而产生新的描述。
+    auto cfg = makeConfig(640, 480, 120, 400);
+    cfg.set_frame_rate = false;        // 必须：否则 start() 会把 60 回填成 30，
+                                       // 校准无事可做，describe() 前后都无变化
+    cfg.fps_calibration_windows = 2;
+    V4l2FrameSource src(cfg);
+    ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
+
+    for (int w = 0; w < 2; ++w) src.snapshotAndReset();   // 完成校准
+    const std::string desc_after_calibration = src.describe();
+
+    // 再跑若干个窗口：若存在持续重算，cfg.fps 会继续漂移
+    for (int w = 0; w < 5; ++w) src.snapshotAndReset();
+
+    EXPECT_EQ(src.describe(), desc_after_calibration)
+        << "校准后 describe() 仍在变化，说明校准没有「只做一次」，"
+           "持续重算会吸收真实丢帧";
+
+    src.stop();
+}
+
+TEST_F(V4l2LiveTest, FpsCalibrationDoesNotAbsorbRealFrameLoss) {
+    // ========================================================================
+    // 守「校准不得吸收真实丢帧」——整个设计里最危险的一条失败模式
+    // ========================================================================
+    //
+    // 若按「每窗口用实测帧间隔反推 fps」，会形成这个闭环：
+    //   丢帧 → 本窗口收到的帧少 → 实测帧率变低 → expected 同步变小 → 丢帧率归零
+    // 结果是「摄像头 93% 的帧没送到」被显示成「画面完美」。
+    // 假丢帧（38% 那个）只是让人多查一次；这个假绿灯会让人永远不查。
+    //
+    // 构造手法：`buffer_count=2` + 窗口之间故意 sleep 1.5s（窗口设计跨度
+    // 只有 500ms）。睡眠期间队列填满、驱动丢帧，于是每个窗口
+    // received≈2 / expected≈30，**真实丢帧率约 93%**。
+    //
+    // 断言：校准不得把这个高丢帧率洗掉。允许校准改变 expected
+    // （它本来就要修分母），但**不允许丢帧率掉到「看起来健康」的量级**。
+    // 这条正是变异测试抓出的缺口——最初的
+    // `FpsCalibrationResultSurvivesUntilRestart` 在恒定帧率的 vivid 上
+    // 对「每窗口重算」毫无分辨力（重算两次得到同样的值），必须靠真实丢帧
+    // 才能把两种实现区分开。
+    auto cfg = makeConfig(640, 480, 120, 500);
+    cfg.set_frame_rate = false;    // 让 cfg.fps 保持 120，校准有活干
+    cfg.buffer_count = 2;          // 小队列 + 睡眠 ⇒ 稳定丢帧
+    cfg.fps_calibration_windows = 2;
+    V4l2FrameSource src(cfg);
+    ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
+
+    double max_loss = 0.0;
+    for (int w = 0; w < 6; ++w) {
+        // 窗口跨度 500ms，睡 1.5s ⇒ 队列填满、丢帧
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        const FrameStats s = src.snapshotAndReset();
+        ASSERT_TRUE(s.valid());
+        max_loss = std::max(max_loss, s.frameLossRatio());
+    }
+
+    // 真实丢帧确实发生了（否则这条测试什么都没守住）
+    ASSERT_GT(max_loss, 0.3)
+        << "前置条件不成立：本场景没有制造出真实丢帧（max_loss=" << max_loss
+        << "），测试无法证明校准不会吸收丢帧";
+
+    // ========================================================================
+    // 关键断言：**分母必须反映硬件帧率，而不是收到的帧数**
+    // ========================================================================
+    //
+    // 这是「吸收」与「校准」的分界线，也是本条测试第一次写错的地方：
+    // 我最初断言「丢帧率必须 > 0.5」，结果正确实现被判失败——因为校准
+    // 把 fps 从 120 修到 60（vivid 真实值）后，30/60 = 0.5 恰好是**如实**的
+    // 结果，不是掩盖。
+    //
+    // 真正该守的是：**expected 由帧间隔反推，不能由收到多少帧反推**。
+    //   - 正确实现：帧间隔 16.7ms → fps≈60 → expected≈30/窗口 → loss≈0.5
+    //     （丢了约一半，如实报出来）
+    //   - 吸收型实现：看到只收到 2 帧 → fps≈4 → expected≈2 → loss≈0
+    //     （把丢掉的帧数当成了「本来就没有」）
+    //
+    // 所以判据是 expected 的量级：它必须对应**几百毫秒窗口 × 几十 fps**，
+    // 绝不能塌缩到与 received 同量级。
+    const FrameStats last = src.snapshotAndReset();
+    ASSERT_TRUE(last.valid());
+    ASSERT_GT(last.frames_received, 0u);
+
+    EXPECT_GE(last.frames_expected, 10u)
+        << "expected 塌缩到 " << last.frames_expected << "（received="
+        << last.frames_received << "），说明分母是按「收到的帧数」反推的，"
+        << "真实丢帧被吸收。expected 必须反映硬件帧率 × 窗口跨度。";
+
+    EXPECT_GT(last.frameLossRatio(), 0.3)
+        << "丢帧率被校准洗成健康值：expected=" << last.frames_expected
+        << " received=" << last.frames_received
+        << " loss=" << last.frameLossRatio();
 
     src.stop();
 }

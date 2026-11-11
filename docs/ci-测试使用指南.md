@@ -181,7 +181,7 @@ ci-reports/
 | test_looper_dispatch_gtest | D-Bus 派发层排空语义（单次只派发一条 / poll 不为内部积压唤醒 / 64 轮上限） |
 | test_observer_attribution_gtest | 观测者降级归因四分支真值表 + CPU 采样器缺失不得回落成 0 + `open` 失败分类（EPERM 不得误报成 `device_absent`） |
 | test_frame_source_gtest | 帧源契约：`FrameStats.valid()` 边界 + `SyntheticFrameSource` 四种模式（healthy/周期丢/突发丢/乱序）与窗口推进、确定性与零 fps/零窗口边界 |
-| test_v4l2_frame_source_gtest | V4L2 真机帧源失败路径与配置语义：构造不碰 `/dev/video*`、缺设备时 `start()` 优雅失败、停止后快照不得伪装健康、`describe()` 带 `v4l2:` 前缀、默认 720p 配置、零 buffer 数被钳制；26 项中 16 项无设备依赖，10 项 vivid 真机用例（`WEAKNET_V4L2_TEST_DEVICE` 门控）覆盖窗口语义、帧率协商、出队延迟、多平面、DMABUF 三级落点 |
+| test_v4l2_frame_source_gtest | V4L2 真机帧源失败路径与配置语义：构造不碰 `/dev/video*`、缺设备时 `start()` 优雅失败、停止后快照不得伪装健康、`describe()` 带 `v4l2:` 前缀、默认 1640x1232 且逐条排除本板实测零帧的 binning 模式、零 buffer 数被钳制、帧率基线一次性校准（含「不得吸收真实丢帧」）；32 项中 17 项无设备依赖，15 项真机用例（`WEAKNET_V4L2_TEST_DEVICE` 门控）覆盖窗口语义、帧率协商、出队延迟、多平面、DMABUF 三级落点、`S_INPUT` 契约与 fps 校准 |
 | test_media_topology_gtest | media controller 拓扑纯算法（纯函数、不打开任何设备）：`media_entity_desc.type` 位域分类真值表、按 `st_rdev` 而非 `st_dev` 认领节点、多上游优先 ENABLED、成环跳数有界、缺实体优雅停止 |
 | test_video_qoe_attribution_gtest | 视频 QoE 五行真值表 + 三条拒绝归因前置（帧缺失/窗口错位/网络不可用）+ `issues` 只报实际超阈项 |
 | test_thermal_monitor_gtest | 采集端热状态：sysfs 读取真值表（缺数据不得回落成 0℃/0%）+ 归因五分支真值表（节流/低温满载/高温停转/正常/不可用） |
