@@ -246,17 +246,88 @@ TEST(VideoQoeAttribution, EvidenceLossRatioMatchesFrames) {
 // 5. 画面侧判定：阈值语义
 // ---------------------------------------------------------------------------
 
-TEST(VideoQoeAttribution, FrameLossThresholdBoundary) {
+TEST(VideoQoeAttribution, FrameLossThresholdBoundaryIsAbsoluteFrameCount) {
     VideoQoeThresholds t;
-    t.frame_loss_ratio_bad = 0.10;
+    t.frame_loss_frames_bad = 3;   // 一个窗口内丢满 3 帧才算差
 
     FrameStats f = goodFrames();
-    f.frames_received = 27;   // 丢 3/30 = 0.10，正好等于阈值
+    f.frames_received = 27;   // 丢 3 帧，正好等于阈值
 
     EXPECT_TRUE(isFrameQualityBad(f, t)) << "达到阈值即算差（>= 语义）";
 
-    f.frames_received = 28;   // 丢 2/30 ≈ 0.067，低于阈值
+    f.frames_received = 28;   // 丢 2 帧，低于阈值
     EXPECT_FALSE(isFrameQualityBad(f, t));
+}
+
+TEST(VideoQoeAttribution, FrameLossThresholdIsFrameRateIndependent) {
+    // ========================================================================
+    // 这条是「改用绝对帧数」的核心理由，必须独立钉住
+    // ========================================================================
+    //
+    // 比例阈值会随分母变化：同样是丢 1 帧，18fps 是 5.6%、30fps 是 3.3%，
+    // 用 5% 比例阈值会让低帧率设备「丢 1 帧就报警」，而高帧率设备丢 1 帧
+    // 不报。本板实测只有 18.56fps（见 sensor-mode-table-fps-lie），
+    // 这个偏差是**必现**的，不是理论风险。
+    //
+    // 绝对帧数阈值没有这个问题：丢 1 帧就是丢 1 帧，与帧率无关。
+    VideoQoeThresholds t;
+    t.frame_loss_frames_bad = 3;
+
+    // 同为「丢 1 帧」，两种帧率必须给出**相同**结论
+    FrameStats slow;                       // 18fps 的板子
+    slow.frames_expected = 18;
+    slow.frames_received = 17;             // 丢 1 帧 = 5.6%
+    slow.window_ms = 1000;
+    slow.sampled_at = std::chrono::steady_clock::now();
+
+    FrameStats fast;                       // 30fps 的设备
+    fast.frames_expected = 30;
+    fast.frames_received = 29;             // 丢 1 帧 = 3.3%
+    fast.window_ms = 1000;
+    fast.sampled_at = std::chrono::steady_clock::now();
+
+    EXPECT_FALSE(isFrameQualityBad(slow, t))
+        << "18fps 丢 1 帧（5.6%）不应因比例高就判差";
+    EXPECT_FALSE(isFrameQualityBad(fast, t))
+        << "30fps 丢 1 帧（3.3%）同样不判差";
+    EXPECT_EQ(isFrameQualityBad(slow, t), isFrameQualityBad(fast, t))
+        << "同一「丢 1 帧」事实在不同帧率下必须得到相同结论——"
+           "这正是改用绝对帧数的目的";
+
+    // 反向确认：丢满 3 帧时两者都应判差（绝对数阈值不看分母）
+    slow.frames_received = 15;
+    fast.frames_received = 27;
+    EXPECT_TRUE(isFrameQualityBad(slow, t));
+    EXPECT_TRUE(isFrameQualityBad(fast, t));
+}
+
+TEST(VideoQoeAttribution, FrameLossFallsBackToRatioWhenWindowUnknown) {
+    // ========================================================================
+    // frames_expected == 0 时的退化路径
+    // ========================================================================
+    //
+    // 绝对帧数阈值的判据是 `loss >= frame_loss_frames_bad`。当
+    // frames_expected == 0（窗口异常 / 造数据不全）时 framesLost() 恒为 0，
+    // 于是永远不会判差。
+    //
+    // 这是**正确**的：没有分母就没有可信的丢帧事实，此时报「画面好」是
+    // 缺数据伪装健康，报「画面差」是编造事实。两者都错，所以只报**没有丢帧项**
+    // ——若其它判据（gap p95 等）也不满足，整体就是「未明确地差」。
+    // 换句话说：这条路径下 FRAME_LOSS 缺席，但结论仍由其它三条判据决定。
+    VideoQoeThresholds t;
+    t.frame_loss_frames_bad = 3;
+
+    FrameStats f = goodFrames();
+    f.frames_expected = 0;    // 无分母
+    f.frames_received = 0;
+
+    EXPECT_FALSE(isFrameQualityBad(f, t))
+        << "无 expected 时不得凭空判成丢帧；FRAME_LOSS 只是不参与判定";
+
+    // 但其它判据仍然生效：gap 抖动不能因为「没分母」就被吞掉
+    f.p95_gap_ms = 500;
+    EXPECT_TRUE(isFrameQualityBad(f, t))
+        << "丢帧项缺席不得连带吞掉帧间隔判据";
 }
 
 TEST(VideoQoeAttribution, P95GapAloneCanMakeFramesBad) {
@@ -340,7 +411,7 @@ TEST(VideoQoeAttribution, IssuesReportEachBadAspectSeparately) {
     // 丢帧 + 卡顿 + 坏帧三种劣化同时发生，三条都要如实列出。
     // 只报主结论会丢掉"画面为什么差"的具体线索。
     FrameStats f = goodFrames();
-    f.frames_received = 15;   // 丢 50% > 5%
+    f.frames_received = 15;   // 丢 15 帧 >= 阈值 3 帧
     f.p95_gap_ms = 500;       // > 100ms
     f.frames_corrupt = 3;     // 3/30 = 10% > 1%
 
@@ -350,7 +421,7 @@ TEST(VideoQoeAttribution, IssuesReportEachBadAspectSeparately) {
     ASSERT_EQ(r.issues.size(), 3u) << "三种劣化应各报一条";
 
     std::set<std::string> got(r.issues.begin(), r.issues.end());
-    EXPECT_TRUE(got.count("FRAME_LOSS")) << "丢帧率超阈值必须报";
+    EXPECT_TRUE(got.count("FRAME_LOSS")) << "丢帧数超阈值必须报";
     EXPECT_TRUE(got.count("FRAME_GAP_P95")) << "帧间隔 P95 超阈值必须报";
     EXPECT_TRUE(got.count("CORRUPT_FRAMES")) << "坏帧率超阈值必须报";
 }
@@ -420,7 +491,7 @@ TEST(VideoQoeAttribution, DequeueLatencyAndGapAreDistinctIssues) {
     FrameStats f = goodFrames();
     f.p95_gap_ms = 500;
     f.p95_dequeue_latency_ms = 400;
-    f.frames_received = 15;   // 顺带丢帧
+    f.frames_received = 15;   // 顺带丢 15 帧（>= 阈值 3）
 
     auto r = attributeVideoQoe(f, netGood());
 

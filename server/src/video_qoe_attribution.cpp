@@ -43,7 +43,16 @@ std::vector<std::string> collectFrameIssues(const FrameStats& frames,
     // 这里返回空表示「没有明确地差」，由调用方决定怎么呈现 unavailable。
     if (!frames.valid()) return issues;
 
-    if (frames.frameLossRatio() >= thresholds.frame_loss_ratio_bad) {
+    // 丢帧判据用**绝对帧数**，不用比例。
+    //
+    // 为什么：比例阈值会随分母漂移。本板真实帧率只有 18.56fps（模式表
+    // 谎报 30，见 openspec/pitfalls/sensor-mode-table-fps-lie.md），
+    // 同样「丢 1 帧」在 18fps 下是 5.6%、在 30fps 下是 3.3%。用 5% 比例阈值
+    // 会让低帧率设备**丢 1 帧就报警**，而高帧率设备丢 1 帧不报——
+    // 同一份物理事实在不同板子上得到相反结论，这是判据本身的缺陷。
+    //
+    // 帧数阈值与帧率解耦后，「丢 3 帧」在任何板子上都是「丢 3 帧」。
+    if (frames.framesLost() >= thresholds.frame_loss_frames_bad) {
         issues.emplace_back("FRAME_LOSS");
     }
 
