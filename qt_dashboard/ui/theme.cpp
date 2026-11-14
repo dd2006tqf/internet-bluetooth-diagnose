@@ -180,6 +180,55 @@ QStatusBar::item {
     border: none;
 }
 
+/* ---------- 整页滚动条 ---------- */
+/*
+ * ## 为什么单独给滚动条定宽
+ *
+ * 默认 Fusion 竖向滚动条宽 14px，手指按压时远小于推荐的 40px 触控目标。
+ * 现场主要靠划屏滚动，滚动条只作「还有更多内容」的视觉提示，因此不做成
+ * 40px 宽（那会吃掉本就不多的横向空间），而是 10px 细条 + 高对比滑块：
+ * 看得见位置，又不指望用它拖。
+ *
+ * ## 为什么背景透明
+ *
+ * 滚动区底色是页面底色（%2），滚动条槽若再画一层，右侧会多出一条
+ * 18px 的灰带，看起来像内容没铺满。
+ */
+QScrollArea {
+    background-color: %2;
+    border: none;
+}
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical {
+    background-color: %4;
+    min-height: 32px;
+    border-radius: 5px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: %6;
+}
+
+/* 上下箭头与两端空白全部去掉：Fusion 默认的两端箭头在触摸上
+ * 既难点又没用，留着只会让细条显得更碎 */
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0;
+    border: none;
+    background: none;
+}
+
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: none;
+}
+
 /* ---------- 提示气泡 ---------- */
 QToolTip {
     background-color: #37474F;

@@ -10,11 +10,14 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFont>
+#include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPixmap>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScroller>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QStorageInfo>
@@ -206,7 +209,6 @@ QWidget* make_status_row(const QString& name, QLabel** state_label,
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle(QStringLiteral("WeakNet 诊断看板"));
-    resize(1024, 700);
     build_ui();
 
     fetcher_ = new DataFetchThread(this);
@@ -442,10 +444,86 @@ void MainWindow::build_ui() {
     diagnosis_extra_label_->hide();
     root->addWidget(diagnosis_extra_label_);
 
-    setCentralWidget(central);
+    // --- 整页滚动（小屏 + 手指划动）---
+    //
+    // ## 为什么整页滚而不是压缩内容
+    //
+    // 这套布局的最小高度实测 661px（见 README「布局高度」一节），而现场
+    // 最便宜、最容易买到的 7 寸屏是 1024x600——差 61px。两条路可选：
+    // 删掉底栏内容去迁就屏幕，或让整页可滚、信息一条不少。选后者：
+    // 底栏那几行是产品定位里明确的「把数据变成结论」，删掉就只剩数字。
+    //
+    // ## setWidgetResizable(true) 的作用
+    //
+    // 让内容宽度恒等于视口宽度（不产生横向滚动），高度取内容自身的
+    // sizeHint：比视口高就滚，比视口矮就撑满。关掉它的话滚动区会按内容
+    // 原始尺寸显示，宽屏两侧各留一条空白，视觉上像没铺满。
+    //
+    // ## 横向永久关闭
+    //
+    // 看板是竖着排的一列，横向本就没有溢出。留着横向条只会在触摸时
+    // 误触发左右晃，还白占 14px 高度。
+    //
+    // ## 为什么是 TouchGesture，不是 LeftMouseButtonGesture
+    //
+    // 现场用手指划屏。MouseButton 手势会把「点按钮」和「拖页面」混成
+    // 同一件事：按下按钮后手指一动就变成拖页面，按钮永远点不动。
+    // TouchGesture 只吃触摸事件，鼠标点击与按钮行为完全不受影响。
+    //
+    // ## 手势必须抓在 viewport 上
+    //
+    // 内容 widget 盖在 QScrollArea 之上，触摸事件落不到 QScrollArea 本身。
+    // 抓 viewport 才能收到内容区上的触摸。
+    auto* scroll = new QScrollArea;
+    scroll->setWidget(central);
+    scroll->setWidgetResizable(true);
+    // 去掉默认的 StyledPanel 边框：内容自己已有卡片样式，外面再套一圈
+    // 灰线会显得像嵌在另一个容器里。
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    QScroller::grabGesture(scroll->viewport(), QScroller::TouchGesture);
+
+    setCentralWidget(scroll);
 
     status_bar_label_ = new QLabel(QStringLiteral("就绪"));
     statusBar()->addWidget(status_bar_label_);
+
+    // --- 默认尺寸：宽度写死，高度由内容推导 ---
+    //
+    // 宽度 1024 是产品语义（7 寸屏的原生宽度），不随内容变化。
+    //
+    // 高度**不能写死**。原先写 `resize(1024, 720)`，理由是「内容 + 状态栏
+    // 正好凑满 720」。那是一个只在某个主题/字体组合下成立的巧合：内容高度
+    // 取决于主题 QSS 字号、字体度量、以及那些「有数据才 show()」的行，任何
+    // 一项变化都会让这个数对不上，而失败表现只是「桌面上多一条滚动条」，
+    // 很容易被当成正常。改成按内容实测高度反推，关系对任何字体度量都成立。
+    //
+    // 三处必须注意的实现细节：
+    //
+    // 1. **取 `scroll->widget()` 的 sizeHint，不是 `scroll` 自己的。**
+    //    `QScrollArea::sizeHint()` 有独立的上限逻辑，与内容高度不是同一回事。
+    //    踩过一次：写成 `centralWidget()->sizeHint()`，窗口高度纹丝不动。
+    // 2. **必须在 `addWidget(status_bar_label_)` 之后算。** 状态栏没内容时
+    //    `sizeHint()` 偏小，chrome 会算少。
+    // 3. **测量前必须先应用主题**。主题的 QSS 会改字号，未应用主题时内容
+    //    高度与应用后差十几像素（实测 690 vs 674），用错基准会把「够不够放」
+    //    判反。`main.cpp` 是先 `apply_theme()` 再构造窗口，顺序不能倒。
+    //
+    // `chrome`（窗口高 − 视口高）恒等于状态栏高度，600/700/720/740/760/800
+    // 六个高度逐一验证过。不留安全余量——多留几像素会把「刚好放满」变成
+    // 「略有余量」，下次对齐时反而误以为差值是布局问题。
+    //
+    // 下限仍取 720：内容比 720 还矮时（比如将来精简了底栏），不该缩成
+    // 一个小窗口，720p 是这块屏的基准分辨率。
+    //
+    // 边界：这只保证**空态**放得下。真实数据到达后，警告行 / 人读摘要 /
+    // 次要问题等隐藏行会显示出来，内容比空态更高（板端实测 674 → 770），
+    // 默认窗口会出现滚动条。那是内容量决定的，不是这里的推导漏了——
+    // 消掉它只能砍信息或把窗口顶出 720p 屏。整页滚动的意义正在于此。
+    const int content_h = scroll->widget()->sizeHint().height();
+    const int chrome_h = statusBar()->sizeHint().height();
+    resize(1024, qMax(720, content_h + chrome_h));
 }
 
 // ---------------------------------------------------------------------------

@@ -103,7 +103,7 @@ qt_dashboard/
     ├── test_chart_geometry.cpp     12 个用例（坐标映射，无需 Qt）
     ├── test_line_chart_widget.cpp  12 个用例（图表像素级）
     ├── test_theme.cpp               9 个用例（主题与状态着色）
-    └── test_main_window.cpp         9 个用例（展示态交互）
+    └── test_main_window.cpp        12 个用例（展示态交互 + 整页滚动）
 ```
 
 > `chart_geometry` 单独成一个**不依赖 Qt 的 target** 是有意为之：坐标算得对不对
@@ -130,20 +130,62 @@ qt_dashboard/
 全局 QSS 与部件级 `color` 同时生效时笔画高度都是 22px
 （探针 `/tmp/qsstest/t4.cpp`，见 `theme.hpp` 头注释）。
 
-### 布局硬约束：最小高度必须小于 720p
+### 布局高度：整页滚动取消了「必须 ≥720p」的硬门槛
 
 `QGroupBox` 的 `margin-top`（给标题留位）、`padding`、以及大字号分数都会
-抬高窗口最小高度。这条有实测门槛：
+抬高窗口最小高度。历史测量（**2026-11-13 整页滚动之前的数字**）：
 
 | 版本 | `minimumSizeHint().height()` | `resize(1024,600)` 结果 |
 |------|------------------------------|--------------------------|
 | 改进前 | 679 px | 被弹回 679 |
 | 初版主题（26pt 分数 + 10px padding） | **728 px** | 被弹回 728 ❌ 720p 放不下 |
-| 当前（20pt 分数 + 6px padding） | **661 px** | 被弹回 661 ✅ |
+| 20pt 分数 + 6px padding（滚动区之前） | **661 px** | 被弹回 661 ✅ |
 
-改字号或间距时必须重跑这个测量，否则会在小屏上裁掉底栏。
+**这条硬约束已经不再成立。** 2026-11-13 起整页包进 `QScrollArea`
+（`build_ui()` 收尾，含 `QScroller::grabGesture(viewport(), TouchGesture)`），
+窗口最小高度降到 **93 px**（应用主题后实测；未应用主题是 97 px），
+`661 → 93` 的门槛消失，
+1024×600 的 7 寸屏从此完整可用：底栏不被裁，而是划一下就能看到。
 
-## 验证状态（2026-11-05 实测，2026-11-06 续验，2026-11-07 视觉改版，2026-11-08 多指标与交互）
+实测（**应用主题后**，x86 offscreen）：
+
+| 窗口高 | 视口高 | 内容高（空态） | 纵向可滚范围 |
+|--------|--------|----------------|--------------|
+| 768 | 740 | 674 | 0（放得下） |
+| 720（默认） | 693 | 674 | 0 |
+| 600 | 573 | 674 | **101 px** |
+| 480 | 453 | 674 | **221 px** |
+
+> **「内容高 674」是空态。** 构造后立刻测，后台线程还没取回数据，
+> 那几个「有数据才 show()」的行（警告行、人读摘要、次要问题计数）都是隐藏的。
+> 板端实测：空态 674 px，**真实数据到达后 770 px**，默认 720 窗口出现
+> **57 px** 的纵向可滚范围。
+>
+> 也就是说：**空态下默认窗口不滚，真实数据下会滚。** 这是内容量决定的，
+> 不是布局缺陷——底栏那几行恰恰是「把数据变成结论」的部分，删掉就只剩数字；
+> 而要把 770 px 塞进 720p 屏必须缩字号。整页滚动的意义正在于此：
+> 内容比屏高时可以划，而不是被裁掉。
+
+仍需要注意的三件事：
+
+1. **默认高度由内容推导，不写死**。2026-11-14 之前写死 `resize(1024, 720)`，
+   隐含前提是「内容 690 + 状态栏正好凑满 720」——只在一个平台成立的巧合。
+   现在 `build_ui()` 末尾按 `scroll->widget()->sizeHint().height() +
+   statusBar()->sizeHint().height()` 反推，下限仍取 720。`test_main_window.cpp`
+   的 `DefaultSizeFitsWithoutScrollBar` 断言**空态**下 `maximum() == 0`，
+   并额外断言「内容+状态栏超过 720 时窗口必须同步长高」。
+   内容长大后窗口会跟着长，所以这条测试守的**不是**某个内容高度，而是
+   「推导逻辑还在」：谁把它改回写死的数，它就先失败，不会等到现场发现
+   「桌面上常驻一条滚动条」。
+2. **滚动条不承担主要交互**。主题里给它 10 px 细条 + 高对比滑块
+   （`theme.cpp` 的 `QScrollBar:vertical`），只作「还有更多内容」的提示；
+   现场靠手指划屏滚动，不指望用 10 px 的条去拖。
+
+> 历史记录（滚动区之前）保留在上面，因为 679 / 728 / 661 这几个数字
+> 解释了为什么当初要把分数从 26pt 收到 20pt——那条优化仍然有效，
+> 只是不再是「能不能用小屏」的决定因素。
+
+## 验证状态（2026-11-05 实测，2026-11-06 续验，2026-11-07 视觉改版，2026-11-08 多指标与交互，2026-11-13 整页滚动，2026-11-14 板端复验）
 
 | 项 | 状态 | 证据 |
 |------|------|------|
@@ -151,14 +193,15 @@ qt_dashboard/
 | 图表几何单测 | ✅ **12/12 通过** | `chart_geometry.cpp` 的轴范围/刻度/坐标映射，纯函数无 Qt 依赖 |
 | UI 像素级测试 | ✅ **12/12 通过** | `QImage` 渲染断言，含对照组与变异验证 |
 | 主题单测 | ✅ **9/9 通过** | WCAG 对比度与 QSS 占位符替换 |
-| 交互测试 | ✅ **9/9 通过** | `test_main_window.cpp`，含选中态可见性与两条「互不重置」约束 |
-| 合计 | ✅ **97 用例 / 5 套件全绿** | `ctest --output-on-failure`，1.15s |
+| 交互测试 | ✅ **12/12 通过** | `test_main_window.cpp`，含选中态可见性、两条「互不重置」约束、整页滚动与默认尺寸对齐 |
+| 合计 | ✅ **100 用例 / 5 套件全绿** | `ctest --output-on-failure`，0.77s |
 | 取数层编译 | ✅ 通过 | 链接真实 `weaknet_client.h`，签名全对 |
 | UI 层 **moc** | ✅ **3/3 生成成功** | `Q_OBJECT`/信号槽声明语法正确 |
 | UI 层编译 | ✅ **零警告** | `-Wall -Wextra` 全部通过（13/13 编译单元） |
 | **完整链接** | ✅ **成功** | 可执行文件无 undefined reference |
 | **x86 实际运行** | ✅ **启动正常** | `--help` 正确输出；`offscreen` 下持续运行不崩溃 |
-| **ARM64 交叉编译** | ✅ **成功** | `tools/build-arm64.sh`，产物 518008 B，最高 glibc 需求 `2.17`（板端 `2.31`） |
+| **ARM64 交叉编译** | ✅ **成功** | `tools/build-arm64.sh`，2026-11-14 含整页滚动+默认高度推导后重编：产物 518800 B，最高 glibc 需求 `2.17`（板端 `2.31`） |
+| **板端整页滚动复验** | ✅ **真机实测** | 2026-11-14：空态 `content=674 / window=720 / scroll_max=0`；真实数据 9s 后 `content=770 / scroll_max=57`（已知形态，见下）；`resize(1024,600)` 得 `scroll_max=148` 且底栏「诊断：」行 `visibleRegion()` 非空 |
 | **初始失败不卡死线程** | ✅ **实测重试循环** | 指向不存在的 D-Bus socket → 每 2s 重试一次并 `weaknet_cleanup()`，线程不退出、界面仍可截图 |
 | **默认平台插件** | ✅ **三场景实测** | 无变量→eglfs；`--screenshot`→offscreen；已设变量不覆盖 |
 | **板端真实运行** | ✅ **成功** | arm64 二进制在 `radxa-cubie-a7a` 上启动，D-Bus 连接建立 |
@@ -169,7 +212,7 @@ qt_dashboard/
 | **VNC 图形栈** | ✅ **外部取帧验证** | `libqvnc.so` 跑通，RFB 客户端读到真实帧缓冲 1024x700/32bpp |
 | **15 分钟长稳** | ✅ **零泄漏零错误** | RSS 稳定 60300 kB 不变，fd/线程恒定，日志 0 错 |
 | **多指标 + 交互控件在 ARM64 真机渲染** | ✅ **板端截图实测** | 2026-11-08：`build-arm64.sh` 产物 518008 B / glibc 2.17，板端 `--screenshot` 得 1024x757 PNG；五个指标下拉框与三个时间窗按钮均真实渲染（连通域定位到 5 个控件块） |
-| **板端真机交互（点击 / 触摸）** | ⏳ **未验证** | 上面测的是**渲染**，不是**交互**：未在板端实际点按按钮或操作下拉框（无触摸屏、脚本也未向真机注入鼠标事件）。交互语义由 x86 `offscreen` 上的 `test_main_window.cpp`（9 例，`click()` / `setCurrentIndex()` 走真实槽）覆盖，真机待硬件到货补 |
+| **板端真机交互（点击 / 触摸）** | ⏳ **未验证** | 上面测的是**渲染**，不是**交互**：未在板端实际点按按钮或操作下拉框（无触摸屏、脚本也未向真机注入鼠标事件）。交互语义由 x86 `offscreen` 上的 `test_main_window.cpp`（12 例，`click()` / `setCurrentIndex()` 走真实槽）覆盖，真机待硬件到货补；**手指划屏手感（惯性曲线、跟手程度）只能真机验，单测只断言「手势抓在 viewport 上」，不假装覆盖手感** |
 | **时间窗选中态真机可见** | ✅ **修缺陷后复验** | 板端截图里选中按钮内部为 `rgb(33,33,33)`（`#212121`）深底、未选中为 `rgb(255,255,255)` 白底；修复前两者差异 **0 像素** |
 | HDMI 实机显示 | ⏳ 待做 | 显示器未在位（`HDMI disconnected`） |
 
@@ -337,6 +380,31 @@ cmake -S qt_dashboard -B build-qt-dashboard \
   -DWEAKNET_CLIENT_LIB=/path/to/libweaknet.so
 cmake --build build-qt-dashboard -j$(nproc)
 ```
+
+### 在「Qt 只解压未安装」的宿主机上跑 UI 测试
+
+本机没有 `qtbase5-dev`（装它会级联卸载 200+ KDE 包），Qt 是直接从 deb
+解压到 `/tmp/qtstage2/root` 用的。这种布局下 `ctest` 会连续撞两个坑，
+**两个都要给，少一个都跑不起来**：
+
+```bash
+STAGE=/tmp/qtstage2/root
+export LD_LIBRARY_PATH=$STAGE/usr/lib/x86_64-linux-gnu:$STAGE/lib/x86_64-linux-gnu
+export QT_PLUGIN_PATH=$STAGE/usr/lib/x86_64-linux-gnu/qt5/plugins
+export QT_QPA_PLATFORM_PLUGIN_PATH=$STAGE/usr/lib/x86_64-linux-gnu/qt5/plugins/platforms
+ctest --test-dir build-qt-dashboard --output-on-failure
+```
+
+两个坑的表现与含义：
+
+| 缺什么 | 报错 | 为什么 |
+|--------|------|--------|
+| `LD_LIBRARY_PATH` | `libmd4c.so.0: cannot open shared object file` | Qt5Gui 依赖 Markdown 渲染库 `libmd4c`，它也在 staging 目录里，不在系统默认搜索路径 |
+| `QT_PLUGIN_PATH` + `QT_QPA_PLATFORM_PLUGIN_PATH` | `Could not find the Qt platform plugin "offscreen"` | CMake 只写了 Qt 库的路径，QPA 插件是**运行时**按目录约定找的，编译期信息带不过去 |
+
+两个都是**环境问题，不是代码问题**——这正是 CMakeLists 给三个 UI 测试设
+`ENVIRONMENT "QT_QPA_PLATFORM=offscreen"` 时想避免的那类混淆，只是插件路径
+它管不到。
 
 `WEAKNET_CLIENT_LIB` 不硬编码路径，因为板端可能直接链接已安装的库。
 

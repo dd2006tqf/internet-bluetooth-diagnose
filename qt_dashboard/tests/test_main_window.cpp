@@ -42,6 +42,9 @@
 #include <QImage>
 #include <QList>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QScroller>
 #include <QStatusBar>
 #include <QString>
 #include <QStringList>
@@ -493,4 +496,151 @@ TEST(MainWindowTest, ExportScreenshotFallsBackWhenNoUsb) {
             QFile::remove(path);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// 整页滚动（小屏 + 手指划动）
+// ---------------------------------------------------------------------------
+
+TEST(MainWindowTest, WholePageIsInsideAScrollArea) {
+    // 现场最便宜、最容易买到的 7 寸屏是 1024x600，而本布局的最小高度
+    // 实测 661px（README「布局高度」一节）。取舍是「整页可滚、信息一条不少」，
+    // 不是「删掉底栏去迁就屏幕」——底栏那几行正是产品定位里
+    // 「把数据变成结论」的部分，删掉就只剩一堆数字。
+    //
+    // 这条测试守三件事，缺任何一件滚动区都形同虚设：
+    //   1. **整页**被包进 QScrollArea，而不是只有图表或某个子面板可滚；
+    //   2. 窗口最小高度不再被内容顶到 661——否则 `resize(1024,600)`
+    //      会被弹回去，屏幕上照样裁底栏；
+    //   3. 内容比视口高时，纵向滚动条真的有可滚范围。
+    MainWindow w;
+    w.setInterface(QString());
+    w.show();
+    QApplication::processEvents();
+
+    auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    ASSERT_NE(scroll, nullptr) << "整页必须包在 QScrollArea 里";
+
+    // 宽度跟随视口（不产生横向滚动），高度取内容自身 sizeHint
+    EXPECT_TRUE(scroll->widgetResizable())
+        << "关掉 widgetResizable 会让内容按原始尺寸显示，"
+        << "宽屏上两侧各留一条空白，视觉上像没铺满";
+    EXPECT_EQ(scroll->horizontalScrollBarPolicy(), Qt::ScrollBarAlwaysOff)
+        << "看板是竖排一列，横向本就没有溢出；"
+        << "留着横条只会在触摸时误触发左右晃，还白占高度";
+
+    const int min_h = w.minimumSizeHint().height();
+    EXPECT_LE(min_h, 600)
+        << "窗口最小高度 " << min_h << "px 仍大于 600："
+        << "1024x600 的屏幕上滚动区根本不会出现（resize 会被弹回）";
+
+    w.resize(1024, 600);
+    QApplication::processEvents();
+    EXPECT_LE(w.height(), 600)
+        << "resize(1024,600) 被弹回到 " << w.height() << "px";
+
+    QScrollBar* vbar = scroll->verticalScrollBar();
+    ASSERT_NE(vbar, nullptr);
+    EXPECT_GT(vbar->maximum(), 0)
+        << "600 高的视口下纵向没有可滚范围，说明内容没被滚动区接住";
+
+    // 滚到底时，最下面那行可见内容（诊断行）必须真的进到视口里。
+    // 只断言「有可滚范围」不够：范围存在但内容没被覆盖时同样滚不出东西。
+    vbar->setValue(vbar->maximum());
+    QApplication::processEvents();
+
+    QLabel* bottom = nullptr;
+    for (QLabel* l : w.findChildren<QLabel*>()) {
+        if (l->text().startsWith(QStringLiteral("诊断："))) {
+            bottom = l;
+            break;
+        }
+    }
+    ASSERT_NE(bottom, nullptr) << "找不到底栏的诊断行";
+    EXPECT_FALSE(bottom->visibleRegion().isEmpty())
+        << "滚到底之后诊断行仍不可见，说明它没被滚动区覆盖";
+}
+
+TEST(MainWindowTest, DefaultSizeFitsWithoutScrollBar) {
+    // 滚动是给小屏的兜底，不是常态。默认窗口（1024x720）必须**刚好放下**
+    // 全部内容：桌面上打开就常驻一条滚动条，用户会以为布局没排好。
+    //
+    // 这条测试守的是「**空态**下默认尺寸由内容推导，而不是写死一个数」。
+    //
+    // ## 为什么不能写死 720
+    //
+    // 曾经写死 `resize(1024, 720)`，x86 上通过。它的隐含前提是「内容 + 状态栏
+    // 正好凑满 720」——一个只在某个主题/字体组合下成立的巧合。
+    // 内容高度取决于 QSS 字号、字体度量、有没有显示隐藏行，任何一项变化
+    // 都会让这个数对不上，而失败表现只是「桌面上多一条滚动条」，很容易
+    // 被当成正常。
+    //
+    // 改成按内容推导后，这段关系对任何字体度量都成立。
+    //
+    // ## 这条测试**不能**覆盖什么
+    //
+    // 它只测**空态**：构造后立刻 `show()`，后台线程还没取回数据。真实运行
+    // 时那几个「有数据才 show()」的行（警告行、人读摘要、次要问题）会撑开
+    // 内容——板端实测空态 674px、真实数据到达后 770px，纵向可滚范围 57px。
+    // 也就是说**真实数据下默认窗口本来就会出现滚动条**，这是内容量决定的，
+    // 不是布局缺陷。整页滚动的意义正在于此：内容比屏高时能划，而不是被裁。
+    //
+    // 若要连数据态也不滚，只有两条路：砍掉底栏信息，或把默认高度提到 800。
+    // 前者违背「把数据变成结论」的产品定位，后者超出 720p 屏。所以接受滚动。
+    //
+    // 注意不能反过来写成「内容高度必须等于 674」——那会把字号彻底钉死，
+    // 连正当的排版调整都过不去。测的是关系，不是魔数。
+    MainWindow w;
+    w.setInterface(QString());
+    w.show();
+    QApplication::processEvents();
+
+    auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    ASSERT_NE(scroll, nullptr);
+    QScrollBar* vbar = scroll->verticalScrollBar();
+    ASSERT_NE(vbar, nullptr);
+
+    EXPECT_EQ(vbar->maximum(), 0)
+        << "空态下默认尺寸 " << w.width() << "x" << w.height() << " 仍有 "
+        << vbar->maximum() << "px 可滚范围：内容高度（"
+        << scroll->widget()->sizeHint().height() << "）已超过视口高度（"
+        << scroll->viewport()->height() << "），说明默认高度没有跟着内容长";
+
+    // 反向保证：默认高度确实是**跟着内容长的**，不是碰巧够。内容比 720
+    // 的下限矮时窗口可以停在 720；但内容一旦超过 720 − 状态栏，
+    // 窗口就必须同步长高，否则上面的断言会在某些平台上开始失败。
+    const int content = scroll->widget()->sizeHint().height();
+    const int chrome = w.statusBar()->sizeHint().height();
+    if (content + chrome > 720) {
+        EXPECT_GE(w.height(), content + chrome)
+            << "内容（" << content << "）+ 状态栏（" << chrome
+            << "）超过 720 下限，但默认窗口只有 " << w.height()
+            << "：默认高度没有跟着内容长高";
+    }
+}
+
+TEST(MainWindowTest, FingerSwipeGestureIsGrabbedOnViewport) {
+    // 手势必须抓在 **viewport** 上，不是 QScrollArea 自己：内容 widget 盖在
+    // 滚动区之上，触摸事件落不到 QScrollArea 本体。抓错对象的表现是
+    // 「滚动条能拖、手指划不动」——现场没有键盘鼠标时就是死界面。
+    //
+    // 注意断言的是「谁被抓了」，不是「划起来手感如何」。惯性曲线、
+    // 跟手程度只能在真机上验，这里不假装覆盖。
+    MainWindow w;
+    w.setInterface(QString());
+    w.show();
+    QApplication::processEvents();
+
+    auto* scroll = qobject_cast<QScrollArea*>(w.centralWidget());
+    ASSERT_NE(scroll, nullptr);
+
+    EXPECT_TRUE(QScroller::hasScroller(scroll->viewport()))
+        << "viewport 上没有 QScroller，手指划屏不会滚动";
+    EXPECT_NE(QScroller::grabbedGesture(scroll->viewport()), Qt::CustomGesture)
+        << "viewport 上没有抓到手势";
+
+    // 反向保证：手势不该抓在滚动区自身上。
+    // 抓在那里等于没抓——事件根本不会落到它头上。
+    EXPECT_FALSE(QScroller::hasScroller(scroll))
+        << "手势抓错了对象（应是 viewport，不是 QScrollArea 本身）";
 }
