@@ -144,6 +144,34 @@ info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(npr
     echo "--- 编译服务端 + eBPF + 客户端 (-j$(nproc)) ---"
     cmake --build build-arm64-native --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf test_crash_handler ebpf -j"$(nproc)" 2>&1
 
+    # ===== Qt 本地看板（可选产物）=====
+    #
+    # 独立 CMake project（见 qt_dashboard/CMakeLists.txt 头注释：不接入根构建，
+    # 因为看板是可选人机界面，不是所有部署都装显示器）。
+    #
+    # **失败不中断主构建**：看板不参与任何业务链路，服务端/客户端/eBPF 才是
+    # 发布主体。看板编不出来就跳过，发布照常（后面的 install 用 -f 判存在）。
+    #
+    # sysroot 里必须有 Qt5（实测 /opt/sysroot-bullseye-arm64/usr/lib/
+    # aarch64-linux-gnu/cmake/Qt5 存在，板端也有运行时库 5.15.2）。
+    DASHBOARD_BIN="build-qt-dashboard-arm64/weaknet_dashboard"
+    echo "--- 交叉编译 Qt 看板 ---"
+    if cmake -S qt_dashboard -B build-qt-dashboard-arm64 \
+             -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm64-cross.cmake \
+             -DCMAKE_BUILD_TYPE=Debug \
+             -DWEAKN_DASHBOARD_WITH_UI=ON \
+             -DWEAKNET_CLIENT_LIB="${ROOT}/build-arm64-native/client/lib/libweaknet.so" \
+             >/dev/null 2>&1 \
+       && cmake --build build-qt-dashboard-arm64 -j"$(nproc)" 2>&1; then
+        if [ -f "${DASHBOARD_BIN}" ]; then
+            echo "看板产物: $(file -b "${DASHBOARD_BIN}")"
+        else
+            echo "警告: 看板构建报告成功但找不到 ${DASHBOARD_BIN}——本次不含看板"
+        fi
+    else
+        echo "警告: Qt 看板编译失败——本次发布不含看板（业务链路不受影响）"
+    fi
+
     echo "--- 打包 dist-arm64 ---"
     rm -rf dist-arm64
     mkdir -p dist-arm64/server/bin dist-arm64/server/build dist-arm64/server/test \
@@ -158,6 +186,11 @@ info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(npr
     install -m 0755 build-arm64-native/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
     install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
     install -m 0644 build-arm64-native/client/lib/libweaknet.so dist-arm64/client/lib/
+    # 看板与 weaknet-cli 同目录（client/bin），库在 ../lib —— RUNPATH 是
+    # `$ORIGIN/../lib`，两者相对位置必须保持这个关系。
+    if [ -f "${DASHBOARD_BIN}" ]; then
+        install -m 0755 "${DASHBOARD_BIN}" dist-arm64/client/bin/weaknet-dashboard
+    fi
     install -m 0755 "AI-assisted analysis/edge_network_rag.py" dist-arm64/edge_network_rag.py
     install -m 0644 "AI-assisted analysis/network_knowledge_base.py" dist-arm64/network_knowledge_base.py
     cp -a "${SYSROOT_DIR}/usr/local/lib/libbpf.so"* dist-arm64/lib/ 2>/dev/null || true

@@ -109,4 +109,5 @@ ci-reports/
 secrets/
 build-arm64-native/
 build-qt-arm64/
+build-qt-dashboard-arm64/
 artifacts/

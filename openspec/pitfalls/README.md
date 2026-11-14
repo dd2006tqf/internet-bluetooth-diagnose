@@ -84,6 +84,7 @@
 | [ctrl-readback-vs-register.md](ctrl-readback-vs-register.md) | 控制框架回读 `exposure=4036`，实际快门寄存器是 `1000`，跨层对照才戳得穿 |
 | [gst-v4l2src-fps-artifact.md](gst-v4l2src-fps-artifact.md) | `gst v4l2src` 把同一台设备量成 6.86fps（实为 18.56），测帧率不能用它 |
 | [black-frame-is-lens-film.md](black-frame-is-lens-film.md) | 全黑帧的 `max=60` vs `max=252` 是镜头保护膜的判据，不是 sensor 故障 |
+| [v4l2-sizeimage-selfconsistent-wrong.md](v4l2-sizeimage-selfconsistent-wrong.md) | `S_FMT` 后读到的 `sizeimage` 是个**自洽的错值**（3030720 而非 3045504），能通过为它写的每一道 guard |
 
 ### 归因与数据可达性
 
@@ -98,6 +99,12 @@
 | [proc-device-tree-find-symlink.md](proc-device-tree-find-symlink.md) | `find /proc/device-tree` 永远是空的——它是个符号链接，而 find 默认不跟随 |
 | [dtbo-filename-node-identity.md](dtbo-filename-node-identity.md) | 从 dtbo 文件名推断设备树节点，会把「找错节点」当成「overlay 没生效」 |
 | [dmesg-error-vs-function.md](dmesg-error-vs-function.md) | 「dmesg 有报错」不等于「功能坏了」——pinctrl 报错与 console 存活可以同时成立 |
+
+### 构建与工具链
+
+| 文件 | 一句话 |
+| --- | --- |
+| [execute-process-foreign-binary-sh-fallback.md](execute-process-foreign-binary-sh-fallback.md) | `execute_process` 探测异构架构二进制，内核回退 `/bin/sh` 解析 ELF，在 cwd 里造出名字是乱码字节的垃圾文件 |
 
 ## 一条元教训（跨越多篇）
 
@@ -135,3 +142,18 @@
 所以往后凡是做跨层判断，先在最下层取一次真值，再和上层声明的对照。
 本次靠的就是一条 20 行的裸 I2C 读寄存器程序——它是整轮排查里
 唯一没有经过任何抽象层的数据来源，也是唯一戳穿全部假象的那一条。
+
+### 2026-11-14 补充：「校验通过」也可能毫无意义
+
+`v4l2-sizeimage-selfconsistent-wrong` 是同一族里更隐蔽的一档：
+
+前面的坑是「判据在成功和失败时输出相同」，这一篇是「**判据两边取自同一个
+错误来源，于是互相印证**」。`sizeimage` 与 `bytesperline` 都来自同一次不完整的
+`G_FMT`，guard 拿它俩互验，在数学上恒成立（而且恰好卡在等号上），
+于是「没校验」和「校验通过」完全不可区分。
+
+由此再加一问：**这条判据的两个操作数，是不是来自同一个我不完全信任的来源？**
+若是，它证明的只是来源内部自洽，不是与事实相符。
+
+这次戳穿它的仍然是最下层的事实——**帧内容的零字节游程**：
+真实数据的空洞位置不撒谎，而任何 `ioctl` 回报的字段都可能。

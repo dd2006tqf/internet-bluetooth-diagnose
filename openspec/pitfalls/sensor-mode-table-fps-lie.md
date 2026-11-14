@@ -154,7 +154,14 @@ pixel rate 往外推数据，下游接不住只能丢。但丢帧一定伴随：
 会形成闭环「丢帧 → 收到更少帧 → 实测帧率变低 → expected 同步变小 → 丢帧率归零」。
 实测在 `buffer_count=2` 的真实丢帧场景下，吸收型实现把 50% 丢帧洗成 3%
 （`expected=31 received=30`）。守这条的测试是
-`V4l2LiveTest.FpsCalibrationDoesNotAbsorbRealFrameLoss`。
+`V4l2LiveTest.FpsCalibrationDoesNotAbsorbRealDegradation`。
+
+> 2026-11-12 改名与改构造：原用例靠「`buffer_count=2` + 调用方不取数 → 队列灌满 → 驱动丢帧」
+> 制造真实丢帧。采集改为自驱线程后队列永远被排空，该构造**不再能制造丢帧**（实测
+> `max_loss` 恒为 0）。改为**驱动侧降速**（流运行中 `S_PARM` 30→10），让帧真的变少且
+> 帧间隔均匀。这比原构造更贴近「校准不得吸收真实劣化」的本意：原构造的丢帧其实是
+> 调用方偷懒的副产物，新构造是驱动自愿少出帧。**必须先校准、后降速**，顺序反了
+> 校准就会把降速后的值固化成基线——那正是要守的失败模式本身。
 
 ## 边界
 
