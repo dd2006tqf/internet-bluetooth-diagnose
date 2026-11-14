@@ -353,6 +353,7 @@ TEST(V4l2FrameSource, WindowZeroIsNotSilentlyRewrittenLikeSynthetic) {
     EXPECT_EQ(s.window_ms, 0u) << "未采样时窗口必须保持「未声明」，不得填默认值";
 }
 
+
 // ---------------------------------------------------------------------------
 // 6. 真机采集路径（**需要真实 V4L2 设备**，默认不跑）
 // ---------------------------------------------------------------------------
@@ -477,6 +478,78 @@ bool selectInput(const std::string& device, int index) {
     return ok;
 }
 
+/// 从 describe() 里反读**实际生效**的帧率；解析失败返回 0
+///
+/// ============================================================================
+/// 为什么必须从 describe() 读，而不是用传进去的 cfg.fps
+/// ============================================================================
+///
+/// `V4l2FrameSource` 会在两个地方改写内部 fps：
+///   1. `start()` 用驱动 `G_PARM` 的回报回填（`set_frame_rate` 默认 true）
+///   2. 帧率基线校准用实测帧间隔修正
+///
+/// 于是调用方手里那份 `V4l2CaptureConfig` 只是**入参**，不代表运行时真相。
+/// 2026-11-12 真机暴露的失败正是如此：板端 G_PARM 谎报 30、校准成 18，
+/// 测试拿入参的 30 算期望帧数，得到 17；实现按 18 算出 10 —— 实现是对的。
+///
+/// describe() 的格式是 `v4l2:<dev>@<W>x<H>/<FPS>fps/<WINDOW>ms ...`，
+/// 这里的解析与 `DescribeFormatIsParseableForEffectiveFps` 这条无设备单测
+/// 共同锁住该格式：格式若变，那条单测先红，而不是等到上板才发现。
+///
+/// 注意别用 `find('/', at)` 定位：那会命中 `<W>x<H>` 后面的 '/',
+/// 取到 "1640x1232" 这一段（strtoul 得 1640，或首字符是字母时得 0）。
+/// 必须从 "fps/" 往前找最近的 '/'。
+uint32_t parseEffectiveFps(const std::string& desc) {
+    const std::size_t fpspos = desc.find("fps/");
+    if (fpspos == std::string::npos) return 0;
+    const std::size_t prev = desc.rfind('/', fpspos);
+    if (prev == std::string::npos || prev + 1 >= fpspos) return 0;
+    return static_cast<uint32_t>(
+        std::strtoul(desc.substr(prev + 1, fpspos - prev - 1).c_str(), nullptr, 10));
+}
+
+TEST(V4l2FrameSource, DescribeFormatIsParseableForEffectiveFps) {
+    // 守 describe() 里 `@<W>x<H>/<FPS>fps/<WINDOW>ms` 这段格式可被稳定解析。
+    //
+    // 为什么要在无设备单测里钉死它：真机用例需要从 describe() 反读
+    // **实际生效**的 fps（校准会改写 cfg.fps，入参副本已不代表真相），
+    // 而 2026-11-12 那个解析实现正是靠这条格式工作的——第一次写时用
+    // `find('/', at)` 定位，命中了分辨率后面的 '/', 得到 0，
+    // 于是在板上报「无法解析实际帧率」，看起来像实现坏了。
+    //
+    // 把格式与解析规则绑在一起测，比在真机用例里散落一段手写解析可靠：
+    // 将来谁改了 describe() 的格式，这里立刻失败，而不是等到上板才发现。
+    V4l2CaptureConfig cfg;
+    cfg.device = "/dev/video-format-probe";
+    cfg.width = 1640;
+    cfg.height = 1232;
+    cfg.fps = 18;
+    cfg.window_ms = 500;
+
+    V4l2FrameSource src(cfg);
+    const std::string d = src.describe();
+
+    // 直接复用真机用例里的同一个解析函数：两边共用一份实现，
+    // 才不会出现「单测测的是另一段代码」这种假护栏。
+    const uint32_t parsed_fps = parseEffectiveFps(d);
+    ASSERT_GT(parsed_fps, 0u) << "describe() 无法解析出 fps，实际：" << d;
+
+    EXPECT_EQ(parsed_fps, cfg.fps)
+        << "解析出 " << parsed_fps << "fps，与配置的 " << cfg.fps
+        << "fps 不符。describe：" << d;
+
+    // 分辨率也必须能被同一段格式解析出来（防止有人把 WxH 挪走）
+    const std::size_t at = d.find('@');
+    ASSERT_NE(at, std::string::npos) << "describe() 缺少分辨率分隔符 '@'：" << d;
+    const std::size_t fpspos = d.find("fps/");
+    ASSERT_NE(fpspos, std::string::npos) << "describe() 缺少 'fps/'：" << d;
+    const std::size_t prev = d.rfind('/', fpspos);
+    ASSERT_NE(prev, std::string::npos) << "describe() 缺少 fps 前的 '/'：" << d;
+    const std::string between = d.substr(at + 1, prev - at - 1);
+    EXPECT_EQ(between, "1640x1232") << "分辨率段应为 '1640x1232'，实际：'"
+                                    << between << "'";
+}
+
 /// 真机用例的基类：门控不满足时整组不注册
 class V4l2LiveTest : public ::testing::Test {
 protected:
@@ -486,10 +559,30 @@ protected:
             GTEST_SKIP() << "未设置 WEAKNET_V4L2_TEST_DEVICE，跳过真机采集用例";
         }
         device_ = dev;
+
+        // ====================================================================
+        // 分辨率必须可配，不能硬编码 640x480
+        // ====================================================================
+        //
+        // 2026-11-12 在板上实测：IMX219 + sunxi-vin 在 640x480 下
+        // **恒定零帧**（`recv=0 bytes=0`，采集线程活着、describe() 正常），
+        // 而同一条链路上 1640x1232 稳定 18.56fps。这不是本类的缺陷——
+        // 同一个二进制在宿主机 vivid 的 640x480 上一切正常。
+        //
+        // 换句话说，640x480 这个**测试常量**实际上编码了「vivid 支持哪些模式」
+        // 这一宿主机事实。把它搬到板端就等于在断言「IMX219 也必须支持 640x480」，
+        // 那是设备能力问题，与被测代码无关。
+        //
+        // 所以改为由环境变量给出「本机确实能出帧的模式」：
+        //   宿主机（vivid）：不设即可，默认 640x480
+        //   板端（IMX219） ：WEAKNET_V4L2_TEST_WIDTH=1640 HEIGHT=1232
+        // 未显式指定时保持 640x480，宿主机行为完全不变。
+        width_ = envU32("WEAKNET_V4L2_TEST_WIDTH", 640);
+        height_ = envU32("WEAKNET_V4L2_TEST_HEIGHT", 480);
     }
 
-    static V4l2CaptureConfig makeConfig(uint32_t width, uint32_t height,
-                                        uint32_t fps, uint32_t window_ms) {
+    V4l2CaptureConfig makeConfig(uint32_t width, uint32_t height,
+                                 uint32_t fps, uint32_t window_ms) {
         V4l2CaptureConfig cfg;
         cfg.device = v4l2TestDevice();
         cfg.width = width;
@@ -499,8 +592,107 @@ protected:
         return cfg;
     }
 
+    /// 用本机可出帧的分辨率构造配置（绝大多数用例该用这个）
+    ///
+    /// 只有当用例**本身就在测分辨率**时才该用带参版本。
+    V4l2CaptureConfig makeConfig(uint32_t fps, uint32_t window_ms) {
+        return makeConfig(width_, height_, fps, window_ms);
+    }
+
+    /// 从环境变量读一个 uint32，未设置或非法则用默认值
+    static uint32_t envU32(const char* name, uint32_t fallback) {
+        const char* v = std::getenv(name);
+        if (v == nullptr || *v == '\0') return fallback;
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(v, &end, 10);
+        // 严格解析：`"640abc"` 这类半截输入不当成 640，避免静默误配
+        if (end == v || (end != nullptr && *end != '\0') || parsed == 0 ||
+            parsed > 65535ul) {
+            return fallback;
+        }
+        return static_cast<uint32_t>(parsed);
+    }
+
     std::string device_;
+    uint32_t width_{640};
+    uint32_t height_{480};
 };
+
+/// 按新契约取一份「覆盖跨度至少 span_ms」的统计
+///
+/// ============================================================================
+/// 为什么需要这个辅助（而不是像改造前那样直接调 snapshotAndReset）
+/// ============================================================================
+///
+/// 2026-11-12 起 `snapshotAndReset()` 是**立即返回**的：采集由内部线程连续
+/// 驱动，快照只是取走累计值。改造前它内部有一个排空循环、会阻塞满 window_ms，
+/// 于是「调用它就等于等了一个窗口」。
+///
+/// 新契约下若测试仍按「调一次 = 一个窗口」写，会在**刚 start 完的那一瞬间**
+/// 拿到一份跨度 1ms、帧数 0 的统计，然后断言 expected=15 全部失败——测的是
+/// 「调用方没等」，不是类本身的缺陷。
+///
+/// 所以测试侧显式表达真实使用方式：**睡够时长，只取一次**。
+///
+/// ---------------------------------------------------------------------------
+/// 为什么是「只取一次」而不是轮询到跨度为 span_ms 为止
+/// ---------------------------------------------------------------------------
+///
+/// 每次 `snapshotAndReset()` 都会把本窗口累计值清零。若在等待期间中途取过
+/// 几次，最后那份统计只覆盖「最后一次取数到现在」这一小段，`frames_received`
+/// 也跟着只剩这一小段——用它去断言「span 秒内应到 N 帧」必然失败，而且
+/// 失败原因是辅助函数自己制造的，不是被测对象的缺陷。
+///
+/// 想拿到「完整 span 的帧数」，就必须让整个 span 落在同一个窗口里。
+///
+/// `slack_ms` 补偿 sleep 的实际精度与调度延迟，使 `window_ms >= span_ms`
+/// 是一条稳定成立的不等式，而不是随负载抖动的运气。**不要**用返回值里的
+/// `window_ms` 之外的任何常量当分母——跨度是事实，由被测对象自己报。
+FrameStats snapshotAfter(V4l2FrameSource& src, uint32_t span_ms,
+                         uint32_t slack_ms = 60) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        static_cast<long long>(span_ms) + static_cast<long long>(slack_ms)));
+    return src.snapshotAndReset();
+}
+
+/// 用**第二个 fd** 改驱动的出帧速率（流运行中生效）
+///
+/// ============================================================================
+/// 为什么需要这个手法（而不是「让调用方不取数、把队列灌满」）
+/// ============================================================================
+///
+/// 老办法在新契约下彻底失效了：采集线程永远在排空，队列永远填不满，
+/// 于是再也制造不出真实丢帧。但「校准不得吸收真实劣化」这条契约必须继续守，
+/// 所以换成**驱动侧降速**——帧真的变少了，而且帧间隔是**均匀**的
+/// （不是丢帧造成的空洞）。
+///
+/// 这恰恰是最容易被吸收型实现洗掉的形态：按「received / window」反推 fps
+/// 会得到降低后的值，`expected` 同步缩小，`frameLossRatio()` 归零，
+/// 「摄像头出帧能力掉到三分之一」被显示成「画面完美」。
+///
+/// **只调 S_PARM，不碰 S_FMT / REQBUFS**：后两者会干扰正在跑的流
+/// （前者会重配格式、后者会重分配缓冲），S_PARM 只改时间基。
+/// 本机实测（vivid, 6.8）：流运行中把 30 降到 10 后，200 帧耗时由 6.7s
+/// 变为 15.84s，与理论值 16.0s 吻合。
+///
+/// 平面类型两种都试：设备可能是单平面也可能是多平面，`S_PARM` 的 `type`
+/// 必须与实际一致，先猜单平面（vivid / 多数 UVC 的默认），失败再试多平面。
+bool setDeviceFrameRate(const std::string& device, uint32_t fps) {
+    const int fd = ::open(device.c_str(), O_RDWR);
+    if (fd < 0) return false;
+
+    bool ok = false;
+    for (const v4l2_buf_type type :
+         {V4L2_BUF_TYPE_VIDEO_CAPTURE, V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE}) {
+        v4l2_streamparm parm{};
+        parm.type = type;
+        parm.parm.capture.timeperframe.numerator = 1;
+        parm.parm.capture.timeperframe.denominator = fps;
+        if (::ioctl(fd, VIDIOC_S_PARM, &parm) == 0) { ok = true; break; }
+    }
+    ::close(fd);
+    return ok;
+}
 
 }  // namespace
 
@@ -533,9 +725,22 @@ TEST_F(V4l2LiveTest, StartSelectsInputZeroBeforeFormatting) {
     if (!selectInput(dev, 1)) {
         GTEST_SKIP() << "该设备只有一个输入或不允许切换，无法构造前置条件";
     }
-    ASSERT_EQ(readInputIndex(dev), 1) << "前置条件构造失败：未能切到输入 1";
+    // **构造失败必须 skip 而不是 fail**（2026-11-12 真机修正）。
+    //
+    // 板端 sunxi-vin 只暴露 1 个输入：`selectInput(dev, 1)` 可能返回 true
+    // （S_INPUT 没报错）但读回仍是 0。此时「切到输入 1」这个**前置条件**
+    // 根本没成立——继续往下跑，`start()` 里下发的 S_INPUT(0) 与已经为 0
+    // 的初值无从区分，断言恒真，测不出任何东西；而写 ASSERT_EQ 又把它
+    // 报成失败，让人误以为 S_INPUT 实现坏了。
+    //
+    // 两种情况都该如实说「本环境构造不出这个场景」，而不是给出一个
+    // 既不能证明实现正确、也不指向实现缺陷的红灯。
+    if (readInputIndex(dev) != 1) {
+        GTEST_SKIP() << "设备回读输入仍为 0（可能只支持单一输入），"
+                        "无法构造「初始停在非 0 输入」的前置条件";
+    }
 
-    auto cfg = makeConfig(640, 480, 30, 300);
+    auto cfg = makeConfig(30, 300);
     V4l2FrameSource src(cfg);
     ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
 
@@ -554,7 +759,7 @@ TEST_F(V4l2LiveTest, StartSucceedsAndReportsPlanarModeInDescribe) {
     // 最重要的真机断言：**成功路径存在**。此前 10 项单测只覆盖失败路径，
     // 「start() 能不能真的成功」从未被任何自动化测试验证过 —— 代码交付了
     // 却没有一条证据说明它能跑。
-    auto cfg = makeConfig(640, 480, 30, 500);
+    auto cfg = makeConfig(30, 500);
     V4l2FrameSource src(cfg);
 
     ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
@@ -566,92 +771,279 @@ TEST_F(V4l2LiveTest, StartSucceedsAndReportsPlanarModeInDescribe) {
     const bool says_splane = d.find(" splane") != std::string::npos;
     EXPECT_TRUE(says_mplane || says_splane)
         << "describe() 未标注平面模式：" << d;
+    EXPECT_NE(says_mplane, says_splane)
+        << "describe() 同时/都未出现 mplane 与 splane 标记：" << d;
 
     src.stop();
     EXPECT_FALSE(src.isRunning());
+
+    // ========================================================================
+    // 守「诊断字段跨 stop 不变」：平面模式是**事实**，不是**当前状态**
+    // ========================================================================
+    //
+    // 这条不是锦上添花，它守的是一个**已经发生过的真实缺陷**：
+    // `closeDevice()` 把 `buf_type` 复位成单平面（这对下一次 start 是必要的），
+    // 而 `describe()` 直接读 `buf_type`，于是同一个进程对同一个设备给出：
+    //
+    //   started: ... mplane {vin_video0 <- ... <- imx219}
+    //   stopped: ... splane (stopped) {vin_video0 <- ... <- imx219}
+    //
+    // 板端 2026-11-14 实测日志就是这样。危害在于**事后取证**：拿停止时那行
+    // 日志归档，会得出「本板不需要 MPLANE」这个与事实相反的结论，进而把
+    // 唯一能出帧的路径判成无用。
+    //
+    // `buffer_source` 早已用「不被 closeDevice 复位」解决了同源问题，
+    // 当时只修了内存模型、漏了平面模型。这条断言把两者都钉住。
+    //
+    // ------------------------------------------------------------------------
+    // 鉴别力的边界（不要高估这条断言）
+    // ------------------------------------------------------------------------
+    // **单平面设备上它恒定通过，改动前后看不出差别**：closeDevice() 复位后的
+    // `buf_type` 与 start() 时的探测结果同为单平面，两边都打印 `splane`。
+    // 宿主机的 vivid/vimc **全部只有单平面**（`device_caps` 的
+    // `CAPTURE_MPLANE` 位为 0，2026-11-14 实测），所以本用例在 CI 上能跑通
+    // 但**没有鉴别力**；把它当成本修复的证明会是假绿灯。
+    //
+    // 真正的鉴别环境是板端（sunxi-vin 报 `0x05201000`，MPLANE 位为 1）。
+    // 本缺陷的**发生证据**就是板端日志：同一进程同一次运行，启动那行写
+    // `mplane`、停止那行写 `splane`。修复后的验收标准是那两行变成一致——
+    // 这是板上取证项，不是 CI 能替代的。
+    //
+    // 保留这条断言的理由：一旦有人把多平面设备接进 CI（或在不复位 buf_type
+    // 的重构后引入回归），它会立刻失败；而且它顺带钉住了「两个标记不得同时
+    // 缺失」这条与设备无关的格式契约。
+    const std::string after = src.describe();
+    EXPECT_EQ(after.find(" mplane") != std::string::npos, says_mplane)
+        << "stop() 之后平面模式变了：started=" << d << " / stopped=" << after
+        << "。describe() 读的是会被 closeDevice() 复位的 buf_type，"
+           "应改读 start() 时记下的事实字段。";
 }
 
-TEST_F(V4l2LiveTest, ContinuousCallsMeasureFullWindowWithoutPhantomLoss) {
-    // 守窗口语义的核心契约：**连续调用**（调用方不 sleep）时，
-    // 每个窗口都应测满 window_ms，且丢掉的是真丢帧而不是窗口边界假象。
+TEST_F(V4l2LiveTest, SnapshotSpanIsMeasuredFactNotConfiguredValue) {
+    // ========================================================================
+    // 守 A2 窗口语义：`window_ms` 报的是**事实**（本份统计实际覆盖多久），
+    // 不是**配置**（它本来打算覆盖多久）
+    // ========================================================================
     //
-    // 这条对应本轮修掉的三个同源缺陷。修之前即便连续调用也会出现
-    // 跨窗口假 seq_gap 与巨大 max_gap（把窗口间隔当帧间隔）。修好后：
-    //   - window_ms 恒等于配置值（不是「实际睡了多久」）
-    //   - seq_gap_count 为 0（本窗口首帧不参与跨窗口比较）
-    //   - max_gap 约等于 1000/fps，而不是接近整个窗口
-    auto cfg = makeConfig(640, 480, 30, 500);
+    // 为什么必须改（2026-11-12）：网络侧 `server.cpp` 用的是 120s 窗口，
+    // 而帧侧若是「配置 1s 就报 1s」，两边的 window 永远不等，
+    // `attributeVideoQoe()` 会恒定返回 `window_mismatch` 并拒绝归因。
+    // 让帧侧如实报出自己覆盖了多久，才可能让调用方按同一节奏取数、
+    // 使两侧窗口真正对齐。
+    //
+    // 报「事实」的代价是：跨度不再是常数，`frames_expected` 必须由
+    // **报出来的跨度**推导。这正是本用例的主要断言。
+    //
+    // ------------------------------------------------------------------------
+    // 必须先等校准完成，否则「丢帧率接近 0」这条在真机上恒假
+    // ------------------------------------------------------------------------
+    //
+    // 板端 IMX219 的 `G_PARM` 谎报 30fps 而真实 18.56fps（见
+    // `openspec/pitfalls/sensor-mode-table-fps-lie.md`）。校准需要
+    // `cfg.fps_calibration_windows`（默认 3）个窗口才完成，在那之前
+    // `expected` 按 30 推、`received` 按 18.56 到，丢帧率恒约 38%——**那是
+    // 已知且正确的中间状态**，不是缺陷。本用例关心的是跨度语义，
+    // 不该被这段过渡期绊倒。
+    //
+    // 宿主机 vivid 的 G_PARM 是诚实的，校准不改变任何值，所以多等一会儿
+    // 对宿主机完全无害。
+    auto cfg = makeConfig(30, 500);
     V4l2FrameSource src(cfg);
     ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
 
-    for (int w = 1; w <= 3; ++w) {
-        const FrameStats s = src.snapshotAndReset();
+    // 等满校准窗口（默认 3 个 × 500ms）+ 余量
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        static_cast<int>(cfg.window_ms) * static_cast<int>(cfg.fps_calibration_windows) +
+        400));
+    // 把过渡期的那份统计丢掉，不参与断言
+    src.snapshotAndReset();
 
-        ASSERT_TRUE(s.valid()) << "第 " << w << " 窗口应产出有效统计";
-        EXPECT_EQ(s.window_ms, 500u)
-            << "窗口跨度必须是配置值，不能是「实际耗时」——后者会把"
-               "调用方多睡的时间算进窗口，使丢帧率被系统性低估";
-        EXPECT_EQ(s.frames_expected, 15u) << "500ms @ 30fps = 15 帧";
+    // ---- 第一份：等够一个窗口再取 ----
+    const FrameStats first = snapshotAfter(src, 500);
+    ASSERT_TRUE(first.valid()) << "等够一个窗口后应产出有效统计";
 
-        // 帧间隔应接近帧周期（1000/30 ≈ 33ms），留出调度余量
-        EXPECT_LT(s.max_gap_ms, 200u)
-            << "最长帧间隔远小于窗口才算正常；接近窗口长度说明窗口边界被当成了帧间隔";
+    EXPECT_GE(first.window_ms, 500u)
+        << "本轮至少覆盖了 500ms（sleep 了 500+slack），报出 " << first.window_ms;
+    EXPECT_LT(first.window_ms, 2000u)
+        << "跨度是实际耗时，不该无界增长（实际 " << first.window_ms << "ms）";
+    EXPECT_EQ(first.snapshot_interval_ms, first.window_ms)
+        << "自驱线程下「距上次快照的间隔」就是本份统计的跨度，两者必须相等";
 
-        // 每帧字节数应等于 640x480 NV12 的几何大小（1.5 字节/像素）。
-        // 这条能抓出「拿 buf.length 当字节数」这类单位混淆（多平面下
-        // length 是平面数而不是字节数，混淆会得到恒为 0 的坏码率）。
-        if (s.frames_received > 0) {
-            const double bytes_per_frame =
-                static_cast<double>(s.bytes_received) /
-                static_cast<double>(s.frames_received);
-            EXPECT_NEAR(bytes_per_frame, 640.0 * 480.0 * 1.5, 1.0)
-                << "每帧字节数不等于 NV12 几何大小，说明字节统计取错了字段";
-        }
-    }
+    // 这一条是自驱线程改造的**直接目的**：线程持续排空，中间没有观测盲区。
+    // 若将来有人把线程改成「只在快照时才排空」，这里立刻变正数。
+    EXPECT_EQ(first.observationGapMs(), 0u)
+        << "自驱采集线程连续运行，不存在「没被任何窗口统计过」的时间段";
 
-    // **这里刻意不查 seq_gap_count**：连续调用时本窗口首帧与上一窗口末帧
-    // 往往恰好连号，跨窗口比较缺陷在此场景下不可观测。实测把
-    // `resetWindow()` 里的 `has_last_seq = false` 删掉，本用例 3/3 仍通过。
-    // 真正能稳定暴露该缺陷的是 `WindowBoundaryDoesNotFakeSequenceGap`。
-    // 在这里放一条「累计 gap 应为 0」看似无害，实则是会随运气漏判的假护栏。
+    // frames_expected 必须由**报出来的跨度**推导，而不是配置的 window_ms。
+    // 用配置值推：500ms @ 30fps = 15 帧；用真实跨度推：~560ms → ~17 帧。
+    //
+    // ------------------------------------------------------------------------
+    // 但 fps 不能用 cfg.fps —— 它可能已被校准改写
+    // ------------------------------------------------------------------------
+    //
+    // 这是个反直觉但正确的失败（2026-11-12 真机暴露）：
+    // 板端 IMX219 的 G_PARM 谎报 30fps，校准把它改写成 18fps；
+    // 于是 `expected = 560ms × 18 / 1000 = 10`，而测试拿**启动时的配置副本**
+    // `cfg.fps=30` 算出 17，被判不一致。
+    //
+    // 实现是对的，搞错的是测试：`cfg` 是传给构造函数的入参副本，
+    // 而校准改写的是类内部的 fps。测试要断言的是「expected 与跨度同源」，
+    // 就必须用**实际生效的** fps，而不是入参。
+    //
+    // 从 describe() 里解析实际 fps：格式 `...@1640x1232/18fps/500ms...`。
+    // 解析实现与无设备单测 `DescribeFormatIsParseableForEffectiveFps` 共用，
+    // 理由见 `parseEffectiveFps` 的注释。
+    const uint32_t effective_fps = parseEffectiveFps(src.describe());
+    ASSERT_GT(effective_fps, 0u)
+        << "无法从 describe() 解析出实际帧率：" << src.describe();
+
+    // 真正守的是「expected 与跨度同源」。两者都在 FrameStats 里，
+    // 判据用实现自己的 fps 反算一遍，若不一致说明它们各算各的。
+    const uint64_t want_expected =
+        (static_cast<uint64_t>(first.window_ms) * effective_fps + 500u) / 1000u;
+    // 允许 ±1 帧：跨度是毫秒取整，fps 是整数取整，边界处会差一帧。
+    EXPECT_LE(first.frames_expected > want_expected
+                  ? first.frames_expected - want_expected
+                  : want_expected - first.frames_expected,
+              1u)
+        << "expected 必须按真实跨度推导：span=" << first.window_ms
+        << "ms 实际fps=" << effective_fps << " → 应为 " << want_expected
+        << "，实际 " << first.frames_expected;
+
+    // 帧间隔应接近帧周期（1000/30 ≈ 33ms）。接近窗口长度说明把窗口边界
+    // 当成了帧间隔——那是采集被快照切断的signature，自驱线程下不该出现。
+    EXPECT_LT(first.max_gap_ms, 200u)
+        << "最长帧间隔远小于窗口才算正常，实际 " << first.max_gap_ms << "ms";
+
+    EXPECT_LT(first.frameLossRatio(), 0.2)
+        << "健康链路上丢帧率应接近 0（expected=" << first.frames_expected
+        << " received=" << first.frames_received << "）";
+
+    // 每帧字节数应等于本机分辨率的 NV12 几何大小（1.5 字节/像素）。
+    // 这条能抓出「拿 buf.length 当字节数」这类单位混淆（多平面下
+    // length 是平面数而不是字节数，混淆会得到恒为 0 的坏码率）。
+    //
+    // 期望值**必须由 width_/height_ 算**，不能写死 640x480：真机是
+    // 1640x1232，写死会让这条断言在板上恒假。单帧约 3.03MB，故容差取
+    // 几何值的 2%（约 60KB）而不是绝对值 1.0 —— 后者只对 640x480 这种
+    // 小尺寸有意义，在大分辨率下等于要求逐字节精确，会被对齐填充打掉。
+    //
+    // 多平面下 bytesused 按平面累加，合计仍等于同一几何大小。
+    ASSERT_GT(first.frames_received, 0u);
+    const double bytes_per_frame =
+        static_cast<double>(first.bytes_received) /
+        static_cast<double>(first.frames_received);
+    const double want_bytes_per_frame =
+        static_cast<double>(width_) * static_cast<double>(height_) * 1.5;
+    EXPECT_NEAR(bytes_per_frame, want_bytes_per_frame,
+                want_bytes_per_frame * 0.02)
+        << "每帧字节数 " << bytes_per_frame << " 与 NV12 几何大小 "
+        << want_bytes_per_frame << "（" << width_ << "x" << height_
+        << "）不符，说明字节统计取错了字段";
+
+    // ---- 第二份：立刻再取一次 ----
+    //
+    // 这是「window_ms 是事实」最锋利的证据：改造前这里必然还是 500
+    // （配置值），改造后必然远小于 500（真实只过了几毫秒）。
+    // 用「小于第一份」而不是「小于某个常数」，避免依赖调度抖动。
+    const FrameStats second = src.snapshotAndReset();
+    ASSERT_TRUE(second.valid()) << "刚取完统计立刻再取，仍应是有效统计";
+    EXPECT_LT(second.window_ms, first.window_ms)
+        << "立刻再取时跨度必须明显变短；若仍等于第一份，说明 window_ms "
+           "报的还是配置值";
+    EXPECT_LT(second.frames_expected, first.frames_expected)
+        << "跨度变短后 expected 必须跟着变小；否则它没有跟着真实跨度走";
 
     src.stop();
 }
 
-TEST_F(V4l2LiveTest, WindowBoundaryDoesNotFakeSequenceGap) {
-    // 守 `resetWindow()` 必须清 `has_last_seq`：本窗口首帧不得与上一窗口
-    // 末帧比较序号。
+TEST_F(V4l2LiveTest, SnapshotCostIsIndependentOfWindowMsAndDoesNotPerturbCapture) {
+    // ========================================================================
+    // 守自驱线程改造的**核心承诺**：取一份统计的代价与本窗口设计跨度无关，
+    // 且频繁取数不会打断采集
+    // ========================================================================
     //
-    // **场景必须让窗口真正过期**：窗口之间 sleep 满 window_ms，使
-    // `snapshotAndReset()` 走 overdue 分支（只做非阻塞排空）。此时上一窗口
-    // 结束后到本窗口开始之间的帧全被驱动丢弃，序号必然出现空洞。
-    // 若 `has_last_seq` 未清，这个空洞会被记成 seq_gap，报出一个并不存在的
-    // "链路丢包"。
+    // 改造前 `snapshotAndReset()` 内部有排空循环，会阻塞满 `window_ms`。
+    // 于是「调用方按 120s 的网络窗口取帧统计」要么阻塞 120s（卡死 15s 质量
+    // 环），要么按 1s 取数、两侧窗口永不相等，`attributeVideoQoe()` 恒定
+    // 返回 `window_mismatch`。这是决策 A 要解决的结构性阻塞。
     //
-    // 为什么不能用更短的 sleep：sleep < window_ms 时窗口尚未到期，睡眠期间
-    // 缓冲区填满、驱动真的丢帧，正常代码也会如实计数 gap（实测 sleep=200
-    // 时正常版与变异版都得 2）。只有 sleep >= window_ms 才把「真丢帧」与
-    // 「跨窗口假比较」区分开。
+    // 改造后采集由内部线程连续驱动，快照只是「取走累计值并清零」。
     //
-    // 断言强度（已用变异测试核对）：删掉 `has_last_seq = false` 后本用例
-    // 每次都在窗口 3 及以后冒出 gap；正常代码恒为 0。判定放在累计值上，
-    // 单窗口的偶发 0 不影响结论。
-    auto cfg = makeConfig(640, 480, 30, 1000);
+    // 本用例用**耗时**做判据，因为这是唯一能把新旧实现区分开的观测量：
+    //   - 新实现：40 次调用 ≈ 40 次加锁与拷贝，毫秒级
+    //   - 旧实现：40 次调用 ≈ 40 × 1000ms = 40s
+    // 阈值取 8s，比新实现宽松两个数量级、比旧实现严格 5 倍，
+    // 不受调度抖动影响。
+    //
+    // 顺带守两件事：频繁切断窗口不得凭空产生序号跳变，也不得把帧数漏算
+    // （累计收到的帧应覆盖整段真实耗时）。
+    auto cfg = makeConfig(30, 1000);
     V4l2FrameSource src(cfg);
     ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
 
-    uint32_t total_seq_gap = 0;
-    for (int w = 1; w <= 3; ++w) {
-        const FrameStats s = src.snapshotAndReset();
-        ASSERT_TRUE(s.valid()) << "第 " << w << " 窗口应产出有效统计";
-        total_seq_gap += s.seq_gap_count;
-        // 窗口满 1 秒后必定积压，下一轮走 overdue 非阻塞排空
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    }
+    // 等校准完成后再计时：板端 G_PARM 谎报 30fps（真实 18.56），
+    // 过渡期的 expected 按谎报值推，会污染下面的帧数判据。
+    // 本用例守的是「快照代价」与「不漏计」，与校准无关。
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        static_cast<int>(cfg.window_ms) *
+            static_cast<int>(cfg.fps_calibration_windows) + 400));
+    src.snapshotAndReset();   // 丢掉过渡期那份
 
+    const auto t0 = std::chrono::steady_clock::now();
+    uint64_t total_received = 0;
+    uint32_t total_seq_gap = 0;
+    constexpr int kSnapshots = 40;
+    for (int i = 0; i < kSnapshots; ++i) {
+        const FrameStats s = src.snapshotAndReset();
+        ASSERT_TRUE(s.valid()) << "第 " << i << " 次快照应有效";
+        total_received += s.frames_received;
+        total_seq_gap += s.seq_gap_count;
+        // 每次之间留 50ms：让跨度为 50ms 量级，旧实现下 40 次仍会阻塞 40s
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0);
+
+    EXPECT_LT(elapsed.count(), 8000)
+        << "40 次快照耗时 " << elapsed.count() << "ms。若接近 "
+        << kSnapshots * 1000 << "ms，说明快照仍按 window_ms 阻塞——"
+           "调用方将无法按网络侧的 120s 节奏取数";
+
+    // 频繁切断窗口不该制造假序号跳变：采集线程连续运行，边界两侧的帧
+    // 本来就是相邻的。
     EXPECT_EQ(total_seq_gap, 0u)
-        << "跨窗口出现了序号跳变计数，说明本窗口首帧仍在与上一窗口末帧比较"
-           "（resetWindow 未清 has_last_seq），会把窗口边界报成链路丢帧";
+        << "频繁取数时出现了序号跳变计数。采集连续、边界两侧帧相邻，"
+           "任何非零值都说明边界被误当成了丢帧";
+
+    // 帧数不得被切窗口漏算：累计 received 应覆盖整段真实耗时。
+    //
+    // ------------------------------------------------------------------------
+    // 判据不能按 cfg.fps 推（2026-11-12 真机修正）
+    // ------------------------------------------------------------------------
+    //
+    // 板端 IMX219 的 `G_PARM` 谎报 30fps 而真实 18.56fps。按 cfg.fps=30
+    // 算「应到 60 帧」，实际只会到 ~37 帧——那是**传感器的真实帧率**，
+    // 不是漏计。用配置值当分母，等于要求传感器必须跑在它谎称的帧率上。
+    //
+    // 所以改用**本机实测帧率**当基准：先从第一份统计的跨度与帧数反推
+    // 实际出帧速率，再用它去校验总量。这样宿主机（30fps）与板端（18.56fps）
+    // 用的是同一套逻辑，判据强度不变——漏计仍会被抓出来。
+    //
+    // 余量取 20%：起停首尾各一帧、取整、以及调度抖动。
+    const double seconds = std::max(0.001, elapsed.count() / 1000.0);
+    const double observed_fps =
+        static_cast<double>(total_received) / seconds;
+    EXPECT_GT(total_received, 0u)
+        << "整段采集一帧都没收到，" << seconds << "s 内 total_received=0";
+    // 自证式判据：上面算出的 observed_fps 就是结果，不能再拿它当期望值。
+    // 真正要守的是「反复切窗口没有把帧吃掉」，因此对照的是**驱动实际能力**：
+    // 该设备的真实帧率必然 ≤ cfg.fps（谎报只会偏高，不会偏低）。
+    // 若 observed_fps 明显低于 cfg.fps 的 40%，则说明切窗口把帧丢了。
+    EXPECT_GT(observed_fps, static_cast<double>(cfg.fps) * 0.4)
+        << "累计收到 " << total_received << " 帧 / " << seconds
+        << "s → 实测 " << observed_fps << "fps，远低于标称 " << cfg.fps
+        << "fps 的 40%。频繁切断窗口在丢帧或漏计";
 
     src.stop();
 }
@@ -664,14 +1056,16 @@ TEST_F(V4l2LiveTest, FrameRateNegotiationKeepsExpectedInSyncWithReality) {
     // 由链路固定。此时正确行为是「把 cfg.fps 校正为实际值」，而不是报假丢帧。
     // 所以可观测的判据是：连续窗口内 received 与 expected 同量级，丢帧率
     // 不出现恒定的巨大假值。
-    auto cfg = makeConfig(640, 480, 30, 1000);
+    auto cfg = makeConfig(30, 1000);
     V4l2FrameSource src(cfg);
     ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
 
-    // 第一个窗口可能包含启动抖动，取后两个窗口判断稳态
-    src.snapshotAndReset();
+    // 第一个窗口可能包含启动抖动，取后两个窗口判断稳态。
+    // 用 snapshotAfter 而不是裸调用：新契约下裸调用只覆盖几毫秒，
+    // expected 会是 0 或个位数，断言「丢帧率 < 0.5」就变成了一句废话。
+    snapshotAfter(src, 1000);
     for (int w = 1; w <= 2; ++w) {
-        const FrameStats s = src.snapshotAndReset();
+        const FrameStats s = snapshotAfter(src, 1000);
         ASSERT_TRUE(s.valid());
         ASSERT_GT(s.frames_expected, 0u) << "期望帧数为 0 说明帧率未被确定";
 
@@ -712,26 +1106,51 @@ TEST_F(V4l2LiveTest, FpsCalibrationReplacesLyingDriverValue) {
     //
     // 关掉协商后 cfg.fps 一路保持 60，等价于真机上「G_PARM 撒谎」的情形
     // （模式表写 30、硬件实际 18.56），这才是校准要解决的场景。
-    auto cfg = makeConfig(640, 480, 120, 500);
+    auto cfg = makeConfig(120, 500);
     cfg.set_frame_rate = false;        // 模拟驱动回报不可信：不回填 cfg.fps
     // 明确要求校准 3 个窗口：窗口数不够就永远等不到校准完成
     cfg.fps_calibration_windows = 3;
     V4l2FrameSource src(cfg);
     ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
 
-    // 前 3 个窗口用于攒校准样本；第 3 个窗口结束时校准完成。
-    // 注意 snapshotAndReset() 自身阻塞一个 window_ms，必须连续调用，
-    // 中间 sleep 会让队列积压从而污染帧间隔（既有单测已钉死该语义）。
-    double loss_before = -1.0;
-    for (int w = 0; w < 3; ++w) {
-        const FrameStats s = src.snapshotAndReset();
-        ASSERT_TRUE(s.valid());
-        if (w == 0) loss_before = s.frameLossRatio();
-    }
+    // ========================================================================
+    // 等待方式（2026-11-12 自驱线程改造后必须改）
+    // ========================================================================
+    //
+    // 校准子窗口的边界由**采集线程按 cfg.window_ms 推进**，与调用方取数
+    // 节奏完全解耦（见 calibrateTickLocked 的注释）。所以这里必须等**真实
+    // 时间**：500ms × 3 = 1.5s 之后校准才可能完成。
+    //
+    // 改造前是「数快照次数」——那时 snapshotAndReset() 自己阻塞一个窗口，
+    // 调 3 次恰好等于 3 个窗口。新契约下连续调 3 次只过了几毫秒，
+    // calibration_windows_seen 还是 0，校准永远等不到，测出来 after 与
+    // before 相同，看起来像「校准失效」——但那只是等待姿势错了。
+    //
+    // ---- before：校准完成前取一份 ----
+    const FrameStats before = snapshotAfter(src, 500);
+    ASSERT_TRUE(before.valid());
+    ASSERT_GT(before.frames_received, 0u) << "本窗口没收到帧，无法判断校准效果";
+    const double loss_before = before.frameLossRatio();
+    ASSERT_GT(loss_before, 0.15)
+        << "前置条件不成立：cfg.fps=120 而 vivid 实际 30fps，校准前应有约 "
+           "75% 的假丢帧，实际只有 " << loss_before
+        << "。若接近 0，说明 start() 已把 cfg.fps 回填成真实值"
+           "（set_frame_rate=false 没生效），本用例测不到校准";
 
-    const FrameStats after = src.snapshotAndReset();
+    // ---- 等满 3 个校准窗口 ----
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        static_cast<int>(cfg.window_ms) * 3 + 400));
+
+    // after 必须**也是一个真实窗口**（同样用 snapshotAfter）。
+    // 若这里裸调 snapshotAndReset()，跨度只有几毫秒、expected≈0，
+    // `frameLossRatio()` 必然是 0，断言会以「分母为 0」的方式假通过——
+    // 看起来校准生效了，其实只是没测到东西）。这类假绿灯正是本项目
+    // 反复强调要避免的形态。
+    const FrameStats after = snapshotAfter(src, 500);
     ASSERT_TRUE(after.valid());
     ASSERT_GT(after.frames_received, 0u) << "本窗口没收到帧，无法判断校准效果";
+    ASSERT_GT(after.frames_expected, 0u)
+        << "after 窗口的 expected 为 0，无法判断丢帧率（分母为零）";
 
     // 校准生效的直接证据：丢帧率从「约 50%（60 vs 30）」掉到与实测一致。
     EXPECT_LT(after.frameLossRatio(), loss_before - 0.15)
@@ -754,14 +1173,18 @@ TEST_F(V4l2LiveTest, FpsCalibrationIsSkippedWhenDisabled) {
     // 这条不是形式主义：校准会改写 cfg.fps，而 cfg.fps 决定 frames_expected。
     // 若关闭开关后仍在偷偷校准，调用方「我明确要求不校准」的意图就被违背，
     // 且无法从任何输出看出来。判据是 describe() 里不得出现 [fps: 段。
-    auto cfg = makeConfig(640, 480, 120, 500);
+    auto cfg = makeConfig(120, 500);
     cfg.set_frame_rate = false;        // 同 FpsCalibrationReplacesLyingDriverValue：
                                        // 不回填 cfg.fps，校准才有可修正的内容
     cfg.fps_calibration_windows = 0;   // 关闭
     V4l2FrameSource src(cfg);
     ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
 
-    for (int w = 0; w < 4; ++w) src.snapshotAndReset();
+    // 等满足够长的真实时间（远超 4 × window_ms），让「若开关失灵则校准一定
+    // 已经完成」成为前置条件。改造后校准由采集线程按 wall time 推进，
+    // 数快照次数不再等于推进校准窗口——必须等真实时间。
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        static_cast<int>(cfg.window_ms) * 4 + 400));
 
     const std::string desc = src.describe();
     EXPECT_EQ(desc.find("[fps:"), std::string::npos)
@@ -778,19 +1201,34 @@ TEST_F(V4l2LiveTest, FpsCalibrationResultSurvivesUntilRestart) {
     // 这是比假丢帧危险得多的失败模式，所以必须有一条测试钉住它。
     //
     // 观测手法：校准完成后 stop() 之前，describe() 里的 fps 段内容必须
-    // 保持稳定；且再跑 N 个窗口不会因重新校准而产生新的描述。
-    auto cfg = makeConfig(640, 480, 120, 400);
+    // 保持稳定；且再等若干个窗口不会因重新校准而产生新的描述。
+    //
+    // **等待方式必须改**（2026-11-12 自驱线程改造）：校准窗口由采集线程按
+    // cfg.window_ms 推进，与快照次数无关。改造前这里靠「数 2 次快照」推进
+    // （每次快照阻塞一个窗口）；改造后快照立即返回，数次数不再推进任何东西，
+    // 必须等真实时间：400ms × 2 = 800ms。
+    auto cfg = makeConfig(120, 400);
     cfg.set_frame_rate = false;        // 必须：否则 start() 会把 60 回填成 30，
                                        // 校准无事可做，describe() 前后都无变化
     cfg.fps_calibration_windows = 2;
     V4l2FrameSource src(cfg);
     ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
 
-    for (int w = 0; w < 2; ++w) src.snapshotAndReset();   // 完成校准
+    // 等满 2 个校准窗口（+余量），确保校准已完成
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        static_cast<int>(cfg.window_ms) * 2 + 400));
     const std::string desc_after_calibration = src.describe();
 
-    // 再跑若干个窗口：若存在持续重算，cfg.fps 会继续漂移
-    for (int w = 0; w < 5; ++w) src.snapshotAndReset();
+    // 前置条件：校准确实发生过（否则「不再变化」是废话——什么都没变过）
+    ASSERT_NE(desc_after_calibration.find("[fps:"), std::string::npos)
+        << "等待 2 个校准窗口后仍无 [fps: 记录，校准没有完成，"
+           "本用例无法证明「只做一次」。实际 describe：" << desc_after_calibration;
+
+    // 再等若干个窗口：若存在持续重算，cfg.fps 会继续漂移。
+    // 这里用「等真实时间」而不是「数快照」：后者在新契约下不推进任何东西，
+    // 会让本条断言退化成「同一瞬间读了两次 describe()」，毫无分辨力。
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        static_cast<int>(cfg.window_ms) * 5 + 400));
 
     EXPECT_EQ(src.describe(), desc_after_calibration)
         << "校准后 describe() 仍在变化，说明校准没有「只做一次」，"
@@ -799,107 +1237,185 @@ TEST_F(V4l2LiveTest, FpsCalibrationResultSurvivesUntilRestart) {
     src.stop();
 }
 
-TEST_F(V4l2LiveTest, FpsCalibrationDoesNotAbsorbRealFrameLoss) {
+TEST_F(V4l2LiveTest, FpsCalibrationDoesNotAbsorbRealDegradation) {
     // ========================================================================
-    // 守「校准不得吸收真实丢帧」——整个设计里最危险的一条失败模式
+    // 守「校准不得吸收真实劣化」——整个设计里最危险的一条失败模式
     // ========================================================================
     //
-    // 若按「每窗口用实测帧间隔反推 fps」，会形成这个闭环：
-    //   丢帧 → 本窗口收到的帧少 → 实测帧率变低 → expected 同步变小 → 丢帧率归零
-    // 结果是「摄像头 93% 的帧没送到」被显示成「画面完美」。
+    // 若 `expected` 由「本窗口收到了多少帧」反推，会形成这个闭环：
+    //   出帧变慢 → 收到更少的帧 → 反推 fps 变低 → expected 同步变小 → 丢帧率归零
+    // 结果是「摄像头出帧能力掉到三分之一」被显示成「画面完美」。
     // 假丢帧（38% 那个）只是让人多查一次；这个假绿灯会让人永远不查。
     //
-    // 构造手法：`buffer_count=2` + 窗口之间故意 sleep 1.5s（窗口设计跨度
-    // 只有 500ms）。睡眠期间队列填满、驱动丢帧，于是每个窗口
-    // received≈2 / expected≈30，**真实丢帧率约 93%**。
+    // ------------------------------------------------------------------------
+    // 制造真实劣化的手法（2026-11-12 自驱线程改造后必须换）
+    // ------------------------------------------------------------------------
     //
-    // 断言：校准不得把这个高丢帧率洗掉。允许校准改变 expected
-    // （它本来就要修分母），但**不允许丢帧率掉到「看起来健康」的量级**。
-    // 这条正是变异测试抓出的缺口——最初的
-    // `FpsCalibrationResultSurvivesUntilRestart` 在恒定帧率的 vivid 上
-    // 对「每窗口重算」毫无分辨力（重算两次得到同样的值），必须靠真实丢帧
-    // 才能把两种实现区分开。
-    auto cfg = makeConfig(640, 480, 120, 500);
-    cfg.set_frame_rate = false;    // 让 cfg.fps 保持 120，校准有活干
-    cfg.buffer_count = 2;          // 小队列 + 睡眠 ⇒ 稳定丢帧
+    // 老手法是 `buffer_count=2` + 调用方 sleep，让队列灌满后驱动丢帧。
+    // 新契约下采集线程永远在排空，队列填不满，**丢不出帧来了**
+    // （实测 6 个窗口 max_loss 恒为 0）。这不是代码退步，是观测量变了：
+    // 以前那个「丢帧」其实是调用方偷懒的副产物，现在必须让**驱动自愿少出帧**。
+    //
+    // 所以换成 S_PARM 降速：cfg.fps 声称 120，校准把基线修到实测值后，
+    // 再把驱动从 30fps 降到 10fps。此时真实帧间隔是**均匀的 100ms**
+    // （不是丢帧造成的空洞），而 expected 仍按校准好的基线推，
+    // 于是稳定报出约 67% 的缺口——**这个数不是错误，是如实**。
+    //
+    // **顺序不能反**：必须先校准、后降速。若先降速，校准会把 10fps
+    // 当成基线固化下来，那正是「吸收」本身。
+    //
+    // 本机实测（vivid 6.8）：流运行中 S_PARM 30→10 生效，
+    // 200 帧耗时由 6.7s 变为 15.84s，与理论值 16.0s 吻合。
+    auto cfg = makeConfig(120, 500);
+    cfg.set_frame_rate = false;    // 关键：否则 start() 会把 120 回填成驱动值
     cfg.fps_calibration_windows = 2;
     V4l2FrameSource src(cfg);
     ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
 
-    double max_loss = 0.0;
-    for (int w = 0; w < 6; ++w) {
-        // 窗口跨度 500ms，睡 1.5s ⇒ 队列填满、丢帧
-        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-        const FrameStats s = src.snapshotAndReset();
-        ASSERT_TRUE(s.valid());
-        max_loss = std::max(max_loss, s.frameLossRatio());
+    // ---- 阶段一：让校准在健康链路上完成 ----
+    // 校准窗口由采集线程按 cfg.window_ms 推进，与快照次数无关，
+    // 所以这里等真实时间：500ms × 2 = 1s。
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        static_cast<int>(cfg.window_ms) * 2 + 400));
+
+    const std::string desc_before = src.describe();
+    ASSERT_NE(desc_before.find("[fps:"), std::string::npos)
+        << "等待 2 个校准窗口后仍无 [fps: 记录，校准没有完成，"
+           "本用例无法证明「校准后仍如实报劣化」。实际 describe：" << desc_before;
+
+    // 记下校准后的基线：这份同时充当「降速前」的对照窗口
+    const FrameStats baseline = snapshotAfter(src, 500);
+    ASSERT_TRUE(baseline.valid()) << "基线窗口无效";
+    ASSERT_GT(baseline.frames_received, 0u) << "基线窗口没收到帧";
+
+    // 校准后的基线必须**如实**：链路上没问题，丢帧率应接近 0。
+    // 这一条同时证明「后面出现的高丢帧率是降速造成的」，而不是本来就在丢。
+    EXPECT_LT(baseline.frameLossRatio(), 0.2)
+        << "降速前基线窗口就有 " << baseline.frameLossRatio()
+        << " 的丢帧率（expected=" << baseline.frames_expected
+        << " received=" << baseline.frames_received
+        << "），说明高丢帧率另有原因，本用例的对照不成立";
+
+    const std::string desc_baseline = src.describe();
+
+    // ---- 阶段二：让驱动真的少出帧（不是丢帧，是出得慢）----
+    //
+    // **不支持运行中 S_PARM 时必须 skip，不能 fail**（2026-11-12 真机修正）。
+    //
+    // 本能力档位差距很大：
+    //   宿主机 vivid   ：支持，30→10 立刻生效（200 帧由 6.7s 变 15.84s）
+    //   板端 sunxi-vin ：`VIDIOC_S_PARM` 直接返回失败，改不了
+    //
+    // 那是**传感器的能力边界**，与本类实现无关。若写成 ASSERT_TRUE，
+    // 板端每次都会红灯，而它既不能证明实现正确、也不指向实现缺陷；
+    // 更糟的是，一条长期红着的用例会让人习惯性忽略整片测试。
+    // 正确姿势是如实说「本环境构造不出该场景」。
+    if (!setDeviceFrameRate(device_, 10u)) {
+        GTEST_SKIP() << "该设备不支持在流运行中修改出帧速率（S_PARM 不可用），"
+                        "无法构造「驱动自愿少出帧」的真实劣化场景。"
+                        "本用例的契约仍需在支持该能力的设备上验证（如 vivid）";
     }
 
-    // 真实丢帧确实发生了（否则这条测试什么都没守住）
-    ASSERT_GT(max_loss, 0.3)
-        << "前置条件不成立：本场景没有制造出真实丢帧（max_loss=" << max_loss
-        << "），测试无法证明校准不会吸收丢帧";
+    // 等一拍让新时间基生效（vivid 立刻生效，留余量更稳）
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+
+    // ---- 阶段三：劣化后取一份 ----
+    const FrameStats degraded = snapshotAfter(src, 500);
+    ASSERT_TRUE(degraded.valid()) << "降速后窗口无效";
+    ASSERT_GT(degraded.frames_received, 0u) << "降速后仍应有帧，只是更少";
 
     // ========================================================================
-    // 关键断言：**分母必须反映硬件帧率，而不是收到的帧数**
+    // 断言 1：校准**没有**被重新触发
     // ========================================================================
     //
-    // 这是「吸收」与「校准」的分界线，也是本条测试第一次写错的地方：
-    // 我最初断言「丢帧率必须 > 0.5」，结果正确实现被判失败——因为校准
-    // 把 fps 从 120 修到 60（vivid 真实值）后，30/60 = 0.5 恰好是**如实**的
-    // 结果，不是掩盖。
-    //
-    // 真正该守的是：**expected 由帧间隔反推，不能由收到多少帧反推**。
-    //   - 正确实现：帧间隔 16.7ms → fps≈60 → expected≈30/窗口 → loss≈0.5
-    //     （丢了约一半，如实报出来）
-    //   - 吸收型实现：看到只收到 2 帧 → fps≈4 → expected≈2 → loss≈0
-    //     （把丢掉的帧数当成了「本来就没有」）
-    //
-    // 所以判据是 expected 的量级：它必须对应**几百毫秒窗口 × 几十 fps**，
-    // 绝不能塌缩到与 received 同量级。
-    const FrameStats last = src.snapshotAndReset();
-    ASSERT_TRUE(last.valid());
-    ASSERT_GT(last.frames_received, 0u);
+    // 「每窗口重算」是最典型的吸收实现。它在恒定帧率下毫无痕迹，
+    // 只有真实劣化才能把它逼出来——所以这条断言只能在这里测。
+    EXPECT_EQ(src.describe(), desc_baseline)
+        << "降速后 describe() 变了，说明校准在劣化后重新计算了基线。"
+           "那正是「吸收」——把相机出帧能力下降固化成新的正常。\n"
+           "  before=" << desc_baseline << "\n  after=" << src.describe();
 
-    EXPECT_GE(last.frames_expected, 10u)
-        << "expected 塌缩到 " << last.frames_expected << "（received="
-        << last.frames_received << "），说明分母是按「收到的帧数」反推的，"
-        << "真实丢帧被吸收。expected 必须反映硬件帧率 × 窗口跨度。";
+    // ========================================================================
+    // 断言 2：**分母没有塌到 received 量级**
+    // ========================================================================
+    //
+    // 这是「吸收」与「如实」的分界线，数值上很好分辨：
+    //   - 如实：expected ≈ 基线fps × 跨度（~30 × 0.56s → ~16）
+    //   - 吸收：expected ≈ received（降速后 ~5）
+    //
+    // 用「两者明显分开」而不是钉死绝对数值：不受 fps 取整与时序抖动影响。
+    EXPECT_GT(static_cast<double>(degraded.frames_expected),
+              static_cast<double>(degraded.frames_received) * 1.5)
+        << "expected(" << degraded.frames_expected << ") 与 received("
+        << degraded.frames_received << ") 太接近，说明分母是按收到的帧数"
+           "反推的，相机出帧能力下降被吸收进了基线";
 
-    EXPECT_GT(last.frameLossRatio(), 0.3)
-        << "丢帧率被校准洗成健康值：expected=" << last.frames_expected
-        << " received=" << last.frames_received
-        << " loss=" << last.frameLossRatio();
+    // ========================================================================
+    // 断言 3：丢帧率必须报出真实缺口
+    // ========================================================================
+    //
+    // 驱动从 30 降到 10，真实缺口约 67%。判据用 0.3 而不是 0.6：留出取整、
+    // 时序、以及「calibration 后 cfg.fps 可能被取整成 29」的余量。
+    // 核心是「不能被洗成 0」。
+    EXPECT_GT(degraded.frameLossRatio(), 0.3)
+        << "丢帧率被洗成健康值：expected=" << degraded.frames_expected
+        << " received=" << degraded.frames_received
+        << " loss=" << degraded.frameLossRatio()
+        << "。相机出帧能力已降到 10fps，这个缺口必须被如实报出";
+
+    // 恢复正常速率，避免影响后续用例（同一 /dev/video0 共用）
+    setDeviceFrameRate(device_, 30u);
 
     src.stop();
 }
 
-TEST_F(V4l2LiveTest, DequeueLatencyRisesWhenConsumerFallsBehind) {
-    // 守 p95_dequeue_latency_ms 不是恒为 0 的死字段。
+TEST_F(V4l2LiveTest, DequeueLatencyIsIndependentOfSnapshotCadence) {
+    // ========================================================================
+    // 守「出队延迟反映采集线程的响应速度，不反映调用方的取数节奏」
+    // ========================================================================
     //
-    // 手法：窗口之间故意睡 300ms。窗口设计跨度只有 300ms，这会让缓冲区在
-    // 睡眠期间填满、帧在队列里积压，于是「取走时刻 − 帧完成时刻」必然变大。
+    // 改造前这个字段与调用方睡眠**成正比**：睡 1.5s 再取，队列里那几帧就在
+    // 里面等了 1.5s，p95 报到上千毫秒。那个数字会被归因层读成「用户态处理慢」
+    // 或「缓冲区不足」，而真相是「调用方没来取」——归因方向正好指反。
     //
-    // 为什么这条必须存在：一个恒为 0 的字段和生产代码里没有它完全等价。
-    // 若没有这条测试，「出队延迟」就只是一段自我声明的注释。
-    auto cfg = makeConfig(640, 480, 30, 300);
-    cfg.buffer_count = 2;   // 小队列让积压更容易发生（4 个缓冲足以吸收抖动）
+    // 改造后采集线程连续排空，队列几乎总是空的，延迟只剩线程被唤醒的开销
+    // （亚毫秒，取整后多为 0）。所以判据**不能**是「延迟 > 0」：亚毫秒被
+    // 取整成 0 是**真实**值，不是字段失效。若照旧断言 > 0，只会逼着实现
+    // 去伪造一个非零延迟——正是本项目最反对的「把不知道伪装成知道」。
+    //
+    // 真正的判据有两条，都很锋利：
+    //   1. 睡了 1.5s 之后本窗口仍应有 ~30fps × 1.5s 的帧数。旧实现下
+    //      2 个缓冲早就被灌满，能拿到的只有 2~4 帧。
+    //   2. 出队延迟必须**有界**。旧实现下它 ≈ 睡眠时长。
+    //
+    // buffer_count=2 是刻意的：队列越小，旧实现的积压越严重，新旧差异越大。
+    auto cfg = makeConfig(30, 300);
+    cfg.buffer_count = 2;   // 小队列：让旧实现的积压暴露无遗
     V4l2FrameSource src(cfg);
     ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
 
-    src.snapshotAndReset();   // 预热，首个窗口含启动抖动不计
+    snapshotAfter(src, 300);   // 预热，首个窗口含启动抖动不计
 
-    bool saw_latency = false;
     for (int w = 1; w <= 3; ++w) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        constexpr auto kSleep = std::chrono::milliseconds(1500);
+        std::this_thread::sleep_for(kSleep);
         const FrameStats s = src.snapshotAndReset();
         ASSERT_TRUE(s.valid());
-        if (s.p95_dequeue_latency_ms > 0) saw_latency = true;
-    }
+        ASSERT_GT(s.window_ms, 1400u)
+            << "本窗口应覆盖 1.5s 的真实睡眠，实际 " << s.window_ms << "ms";
 
-    EXPECT_TRUE(saw_latency)
-        << "故意让消费者落后却仍测不到出队延迟 —— 该字段要么没在测量，"
-           "要么取时刻的位置不对（必须在 DQBUF 返回后立刻取）";
+        // 1) 帧没被丢：2 个缓冲 + 1.5s 睡眠在旧实现下只能拿到个位数帧
+        EXPECT_GT(s.frames_received, 20u)
+            << "睡了 1.5s 后只收到 " << s.frames_received
+            << " 帧（应约 45）。说明采集没有在后台持续排空，队列被灌满后"
+               "驱动丢帧——那会把观测缺陷记成链路丢帧";
+
+        // 2) 延迟有界：旧实现下它 ≈ 睡眠时长（1500ms 量级）
+        EXPECT_LT(s.p95_dequeue_latency_ms, 100u)
+            << "出队延迟 " << s.p95_dequeue_latency_ms << "ms 随调用方的睡眠"
+            << "增长。该字段应只反映采集线程的唤醒开销（亚毫秒），"
+            << "不该把「调用方没取」记成「用户态处理慢」";
+    }
 
     src.stop();
 }
@@ -908,7 +1424,7 @@ TEST_F(V4l2LiveTest, StopThenSnapshotIsInvalidNotStale) {
     // 真机路径下同样守「停流后不得读到上一窗口残留值」。
     // 失败路径版本已在无设备用例中覆盖，但那条走的是「从未启动」，
     // 这里走的是「启动过又停止」——后者才可能留下残留计数。
-    auto cfg = makeConfig(640, 480, 30, 300);
+    auto cfg = makeConfig(30, 300);
     V4l2FrameSource src(cfg);
     ASSERT_TRUE(src.start()) << "start() 失败：" << src.lastError();
 
@@ -924,7 +1440,7 @@ TEST_F(V4l2LiveTest, StopThenSnapshotIsInvalidNotStale) {
 TEST_F(V4l2LiveTest, RestartAfterStopWorksAndResetsCounters) {
     // 停流 → 再启动 必须可用且计数从零开始。
     // 这条抓的是 closeDevice() 未清干净的类问题（fd / mmap / 平面状态残留）。
-    auto cfg = makeConfig(640, 480, 30, 300);
+    auto cfg = makeConfig(30, 300);
     V4l2FrameSource src(cfg);
 
     ASSERT_TRUE(src.start()) << "首次 start() 失败：" << src.lastError();
@@ -958,12 +1474,14 @@ TEST_F(V4l2LiveTest, DmabufPathProducesSameStatsSemanticsAsMmap) {
     // 仍然打戳、requeue 时 fd 是否被正确重新绑定，任何一项出问题都会让
     // FrameStats 变形（典型表现：坏帧率 100% 或 seq_gap 暴涨）。
     // 实测 vivid 上三条路径的 exp/recv/gap/corrupt 完全一致。
+    // 用 snapshotAfter 而不是裸调用：新契约下裸调用只覆盖几毫秒，
+    // 两条路径都会拿到「窗口 1ms、帧数 0」，比对就失去意义（0 == 0 恒成立）。
     auto run_once = [this](bool use_dmabuf, FrameStats& out) {
-        auto cfg = makeConfig(640, 480, 30, 400);
+        auto cfg = makeConfig(30, 400);
         cfg.use_dmabuf = use_dmabuf;
         V4l2FrameSource src(cfg);
         if (!src.start()) return false;
-        out = src.snapshotAndReset();
+        out = snapshotAfter(src, 400);
         src.stop();
         return out.valid();
     };
@@ -985,7 +1503,19 @@ TEST_F(V4l2LiveTest, DmabufPathProducesSameStatsSemanticsAsMmap) {
         << "DMABUF 下出现序号跳变，最可能是 requeue 时 fd 绑定错误导致丢帧";
     EXPECT_GT(dmabuf_stats.bytes_received, 0u)
         << "DMABUF 下字节数为 0，说明统计链路断了";
-    EXPECT_EQ(dmabuf_stats.window_ms, 400u) << "窗口跨度语义不得因缓冲来源而变";
+
+    // 窗口跨度语义不得因缓冲来源而变 —— 但**不能**断言等于配置的 400。
+    // 2026-11-12 起 window_ms 报的是**实际跨度**（sleep 400 + slack），
+    // 断言等于 400 会把「跨度如实上报」这个正确行为判成失败。
+    // 该守的是两条路径的跨度**彼此一致**（都落在同一数量级），
+    // 以及跨度确实覆盖了等待时长。
+    EXPECT_GE(dmabuf_stats.window_ms, 400u)
+        << "DMABUF 路径跨度 " << dmabuf_stats.window_ms << "ms 短于等待时长";
+    EXPECT_NEAR(static_cast<double>(dmabuf_stats.window_ms),
+                static_cast<double>(mmap_stats.window_ms), 200.0)
+        << "两条路径的窗口跨度差异过大（mmap=" << mmap_stats.window_ms
+        << "ms dmabuf=" << dmabuf_stats.window_ms
+        << "ms），说明其中一条路径的跨度测量方式不同";
 }
 
 TEST_F(V4l2LiveTest, DescribeReportsActualBufferSourceWhenDmabufRequested) {
@@ -1002,7 +1532,7 @@ TEST_F(V4l2LiveTest, DescribeReportsActualBufferSourceWhenDmabufRequested) {
     // 认成「成功」。实测这一条正是 M3 变异（describe 漏报 heap）能存活的
     // 原因——非 root 环境永远只在 export/fallback 上打转，根本碰不到
     // heap 分支，漏报它也就无人发现。
-    auto cfg = makeConfig(640, 480, 30, 300);
+    auto cfg = makeConfig(30, 300);
     cfg.use_dmabuf = true;
 
     V4l2FrameSource src(cfg);
@@ -1063,7 +1593,7 @@ TEST_F(V4l2LiveTest, DescribeReportsActualBufferSourceWhenDmabufRequested) {
 TEST_F(V4l2LiveTest, DmabufDisabledLeavesDescribeClean) {
     // 默认路径不应在 describe() 里加任何缓冲来源噪音：每行日志多一个
     // "mmap" 会让真正的偏差记录（[帧率由…校正为…]）难以被发现。
-    auto cfg = makeConfig(640, 480, 30, 300);
+    auto cfg = makeConfig(30, 300);
     ASSERT_FALSE(cfg.use_dmabuf) << "本用例前提是默认关闭";
 
     V4l2FrameSource src(cfg);

@@ -18,6 +18,9 @@
  */
 
 #include <dbus/dbus.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1065,6 +1068,165 @@ public:
     }
 
     /**
+     * @brief 取一帧当前画面（GetVideoFrame）
+     *
+     * 与其它方法最大的不同：回复里带 `DBUS_TYPE_UNIX_FD`，拿到的是**像素本身**，
+     * 不是字符串。因此这里不能用 `dbus_message_get_args`，必须逐个迭代取值
+     * ——`get_args` 不支持 UNIX_FD，会直接解析失败。
+     *
+     * 走 UNIX_FD 而不是把像素塞进消息体，是因为一帧 NV12 有 3MB（1640×1232），
+     * 塞进去既慢又撞 D-Bus 的消息长度上限；fd 传递在内核侧只复制一个整数。
+     *
+     * ## 字段顺序必须与 `(huuuuuttu)` 一致
+     *
+     * 服务端按位置 append 9 个字段，这里按位置读。任何一侧少一个字段都会让
+     * 后续字段整体错位一格，**而且不会报错**——就是我们把无帧分支从 `fd=-1`
+     * 改成空 memfd 的原因（libdbus 拒绝 -1 并静默丢掉该字段）。
+     *
+     * ## fd 所有权
+     *
+     * `dbus_message_iter_get_basic` 拿到的 fd 由 libdbus 自己持有，消息 unref
+     * 后就失效了。所以立刻 `dup()` 一份给调用方，让调用方独立管理生命周期。
+     */
+    bool getVideoFrame(weaknet_video_frame* out, std::string& errorMsg) {
+        if (!out) return fail("输出参数为空", errorMsg);
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+
+        std::memset(out, 0, sizeof(*out));
+        out->fd = -1;
+        out->slot = UINT32_MAX;
+
+        DBusMessage* msg = dbus_message_new_method_call(
+            kBusName, kObjectPath, kInterface, kMethodGetVideoFrame);
+        if (!msg) {
+            errorMsg = "创建取帧消息失败";
+            return false;
+        }
+
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 5000, &err);
+        dbus_message_unref(msg);
+
+        if (dbus_error_is_set(&err)) {
+            errorMsg = "GetVideoFrame 失败: " + std::string(err.message);
+            dbus_error_free(&err);
+            return false;
+        }
+        if (!reply) {
+            errorMsg = "未收到 GetVideoFrame 应答";
+            return false;
+        }
+
+        DBusMessageIter it;
+        if (!dbus_message_iter_init(reply, &it) ||
+            dbus_message_iter_get_arg_type(&it) != DBUS_TYPE_UNIX_FD) {
+            // 走到这里说明签名与约定不符（典型是服务端无帧分支又用了 fd=-1，
+            // 让 libdbus 丢掉该字段）。必须明确报错，不能猜。
+            errorMsg = "GetVideoFrame 回复签名不符：首个字段不是 UNIX_FD";
+            dbus_message_unref(reply);
+            return false;
+        }
+
+        // 这个 fd 归 libdbus 所有，消息 unref 后即失效 → 立刻 dup
+        int borrowed_fd = -1;
+        dbus_message_iter_get_basic(&it, &borrowed_fd);
+        const int owned_fd = ::fcntl(borrowed_fd, F_DUPFD_CLOEXEC, 3);
+        if (owned_fd < 0) {
+            errorMsg = "取帧后 dup fd 失败: " + std::string(std::strerror(errno));
+            dbus_message_unref(reply);
+            return false;
+        }
+
+        // 剩余 8 个字段：类型严格校验，任何一个不符都视为协议错，关闭 fd 后失败。
+        struct Field {
+            int type;
+            void* dst;
+        };
+        const Field fields[] = {
+            {DBUS_TYPE_UINT32, &out->width},
+            {DBUS_TYPE_UINT32, &out->height},
+            {DBUS_TYPE_UINT32, &out->stride},
+            {DBUS_TYPE_UINT32, &out->uv_offset},
+            {DBUS_TYPE_UINT32, &out->fourcc},
+            {DBUS_TYPE_UINT32, &out->size},
+            {DBUS_TYPE_UINT64, &out->sequence},
+            {DBUS_TYPE_UINT64, &out->timestamp_ns},
+            {DBUS_TYPE_UINT32, &out->slot},
+        };
+        for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
+            if (!dbus_message_iter_next(&it) ||
+                dbus_message_iter_get_arg_type(&it) != fields[i].type) {
+                errorMsg = "GetVideoFrame 回复字段 " + std::to_string(i + 1) + " 类型不符";
+                ::close(owned_fd);
+                dbus_message_unref(reply);
+                return false;
+            }
+            dbus_message_iter_get_basic(&it, fields[i].dst);
+        }
+
+        dbus_message_unref(reply);
+
+        out->fd = owned_fd;
+        // 无帧判据与服务端一致：size == 0 且 slot == UINT32_MAX。
+        // 注意此时 fd 仍然有效（空 memfd），调用方照样要 close。
+        out->valid = (out->size > 0 && out->slot != UINT32_MAX);
+        return true;
+    }
+
+    /** @brief 归还帧槽位（ReleaseVideoFrame） */
+    bool releaseVideoFrame(uint32_t slot, std::string& errorMsg) {
+        if (!isConnected()) return fail("客户端未连接", errorMsg);
+
+        DBusMessage* msg = dbus_message_new_method_call(
+            kBusName, kObjectPath, kInterface, kMethodReleaseVideoFrame);
+        if (!msg) {
+            errorMsg = "创建归帧消息失败";
+            return false;
+        }
+
+        DBusMessageIter args;
+        dbus_message_iter_init_append(msg, &args);
+        dbus_uint32_t s = slot;
+        if (!dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &s)) {
+            errorMsg = "构造归帧参数失败";
+            dbus_message_unref(msg);
+            return false;
+        }
+
+        DBusError err;
+        dbus_error_init(&err);
+        DBusMessage* reply = dbus_connection_send_with_reply_and_block(conn_, msg, 5000, &err);
+        dbus_message_unref(msg);
+
+        if (dbus_error_is_set(&err)) {
+            errorMsg = "ReleaseVideoFrame 失败: " + std::string(err.message);
+            dbus_error_free(&err);
+            return false;
+        }
+        if (!reply) {
+            errorMsg = "未收到 ReleaseVideoFrame 应答";
+            return false;
+        }
+
+        dbus_bool_t released = FALSE;
+        DBusMessageIter it;
+        if (dbus_message_iter_init(reply, &it) &&
+            dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_BOOLEAN) {
+            dbus_message_iter_get_basic(&it, &released);
+        }
+        dbus_message_unref(reply);
+
+        if (!released) {
+            // 服务端拒绝：槽位不属于本进程，或已被自动归还（再次取帧时旧的
+            // 会被自动释放）。这不是错误路径，但要让调用方知道没生效。
+            errorMsg = "服务端拒绝归还该槽位（不属于本进程或已被自动归还）";
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * @brief 查询规范化无线设备事件（只读）
      * 调用 QueryDeviceEvents；参数语义见 weaknet_client.h 的 C API 注释。
      */
@@ -1984,3 +2146,42 @@ extern "C" bool weaknet_query_bt_data_path(const char* device_address,
 }
 
 // 所有的API通过C接口函数提供，供其他应用程序调用
+
+// ============== 视频帧（零拷贝 fd 分发） ==============
+
+extern "C" bool weaknet_get_video_frame(weaknet_video_frame* out,
+                                        char* error_buffer, size_t error_size) {
+    // 失败时清零 out：调用方可能不看返回值就 close(out->fd)，
+    // 留一个未初始化的 fd 在那里会 close 掉随机句柄。
+    if (out) {
+        std::memset(out, 0, sizeof(*out));
+        out->fd = -1;
+        out->slot = UINT32_MAX;
+    }
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string errorMsg;
+    if (weaknet_dbus::g_client->getVideoFrame(out, errorMsg)) {
+        return true;
+    }
+    snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+    return false;
+}
+
+extern "C" bool weaknet_release_video_frame(uint32_t slot,
+                                            char* error_buffer, size_t error_size) {
+    std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
+    if (!weaknet_dbus::g_client || !weaknet_dbus::g_client->isConnected()) {
+        snprintf(error_buffer, error_size, "客户端未连接");
+        return false;
+    }
+    std::string errorMsg;
+    if (weaknet_dbus::g_client->releaseVideoFrame(slot, errorMsg)) {
+        return true;
+    }
+    snprintf(error_buffer, error_size, "%s", errorMsg.c_str());
+    return false;
+}

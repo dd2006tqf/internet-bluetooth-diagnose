@@ -705,6 +705,79 @@ bool weaknet_get_history(const char* interface, const char* start, const char* e
                          int32_t limit, char* buffer, size_t buffer_size,
                          char* error_buffer, size_t error_size);
 
+// ============== 视频帧（零拷贝 fd 分发） ==============
+
+/**
+ * 一帧视频的元数据 + 句柄。
+ *
+ * ## 为什么不是 JSON 字符串
+ *
+ * 其余所有 API 都返回 JSON——一帧 1640×1232 的 NV12 是 3MB，序列化成
+ * 字符串再解析回来会成为这条路径的瓶颈，而且 D-Bus 的最大消息长度
+ * 会直接卡死它。所以帧数据走 `DBUS_TYPE_UNIX_FD`：内核只复制 fd，
+ * 像素仍是同一块 dma-buf，接收方 mmap 即可读。
+ *
+ * ## 所有权（必须读）
+ *
+ * `weaknet_get_video_frame` 成功时 `fd` 是**调用方自己的**一份副本，
+ * 必须由调用方 `close(fd)`。不关就是 fd 泄漏，中枢的槽位也永远不释放。
+ *
+ * 用完帧后还应调用 `weaknet_release_video_frame(slot)`：
+ *   - 不调用也不会永久卡死——中枢按 `slot_count`（默认 3）轮转，
+ *     且同一进程再次取帧会自动归还上一次；
+ *   - 但会占着槽位不放，中枢少一个可写槽，极端情况下开始跳帧。
+ *
+ * ## `valid == false` 时
+ *
+ * 中枢还没出第一帧（摄像头刚启动、或摄像头不在位）是**正常形态**，
+ * 不是错误。此时 `fd` 仍是一个有效句柄（空的 memfd），`size == 0`，
+ * 调用方应直接 close 并稍后重试，不要 mmap 它。
+ */
+typedef struct weaknet_video_frame {
+    int      fd;            ///< 帧数据句柄，调用方负责 close；valid=false 时也要关
+    uint32_t width;         ///< 可见宽度（像素）
+    uint32_t height;        ///< 可见高度（像素）
+    uint32_t stride;        ///< **Y 平面一行的字节数**，可能不等于 width
+    uint32_t uv_offset;     ///< **UV 平面相对帧起始的字节偏移**；0 = 等于 stride*height
+    uint32_t fourcc;        ///< V4L2 四字符码，小端打包；NV12 = 0x3231564E
+    uint32_t size;          ///< fd 对应的映射长度（Y 平面 + UV 平面），0 表示无帧
+    uint64_t sequence;      ///< 采集序号，单调递增；用于判断是否拿到了新帧
+    uint64_t timestamp_ns;  ///< 采集时间戳（CLOCK_MONOTONIC，纳秒）
+    uint32_t slot;          ///< 中枢槽位号，归还时原样传回；无帧时为 UINT32_MAX
+    bool     valid;         ///< true = 有真实帧；false = 无帧（fd 仍须 close）
+} weaknet_video_frame;
+
+/**
+ * @brief 取一帧当前画面
+ *
+ * 成功返回 true 时，`out` 被完整填充。**注意**：`valid == false` 也是一种
+ * 成功——它表示"服务端正常工作，只是暂时没有帧"，与返回 false（调用本身
+ * 失败）是两件不同的事。调用方应先看返回值，再看 `out->valid`。
+ *
+ * @param out           [out] 帧描述，返回 true 时必须由调用方 close(out->fd)
+ * @param error_buffer  [out] 错误信息缓冲区（失败时填写）
+ * @param error_size    错误信息缓冲区大小
+ * @return true  - 调用成功，检查 out->valid 判断有没有帧
+ * @return false - 调用失败（未连接 / 服务端拒绝 / 无法分配句柄）
+ */
+bool weaknet_get_video_frame(weaknet_video_frame* out,
+                             char* error_buffer, size_t error_size);
+
+/**
+ * @brief 归还一帧，让中枢可以覆写该槽位
+ *
+ * 必须传 `weaknet_get_video_frame` 给出的 `slot`。传错槽位会被服务端拒绝
+ * （返回 false），不会误释放别人正在读的帧。
+ *
+ * @param slot          取帧时得到的槽位号
+ * @param error_buffer  [out] 错误信息缓冲区
+ * @param error_size    错误信息缓冲区大小
+ * @return true  - 归还成功
+ * @return false - 归还失败（槽位不属于本进程 / 已被自动归还 / 未连接）
+ */
+bool weaknet_release_video_frame(uint32_t slot,
+                                 char* error_buffer, size_t error_size);
+
 #ifdef __cplusplus
 }
 #endif

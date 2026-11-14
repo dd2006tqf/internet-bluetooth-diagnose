@@ -40,6 +40,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -298,10 +299,30 @@ struct V4l2CaptureConfig {
     /// 把「拿不到诊断信息」升级成「采集失败」是本末倒置。
     bool probe_media_topology{true};
 
-    /// 单次 snapshotAndReset() 的处理时间上限（毫秒）
+    /// 统计窗口的**设计跨度**（毫秒）
     ///
-    /// 不是「采集多久」，而是「最多花多久把队列里已到的帧全部取走」。
-    /// 取完后窗口时长按实际耗时记入 FrameStats.window_ms，与网络侧对齐。
+    /// ========================================================================
+    /// 语义（2026-11-12 自驱采集线程改造后）
+    /// ========================================================================
+    ///
+    /// 采集由内部线程连续驱动，本项**不**决定 `snapshotAndReset()` 阻塞多久
+    /// （改造前是，改造后它立即返回）。本项现在只有两个用途：
+    ///
+    ///   1. 帧率基线校准的**子窗口长度**：`fps_calibration_windows` 个
+    ///      等长窗口各取 `window_ms` 长，边界由采集节奏推进，与调用方
+    ///      取数节奏无关（否则调用方改成 120s 取一次，校准样本就变成
+    ///      120s × 3，起始阶段的假丢帧会持续几分钟）。
+    ///   2. `describe()` 里写出「设计跨度」，供证据溯源时对照实际跨度。
+    ///
+    /// **报出去的 `FrameStats.window_ms` 不是本项**，而是本份统计**实际**
+    /// 覆盖的时长（`now − 上一次快照`）。为什么必须报事实而不是配置：
+    /// 网络侧用 120s 窗口，若帧侧恒定报配置的 1000ms，两者的窗口永远不等，
+    /// `attributeVideoQoe()` 会一直返回 `window_mismatch` 并拒绝归因。
+    /// 让帧侧如实报出自己覆盖了多久，调用方才能按同一节奏取数、使两侧对齐。
+    ///
+    /// 派生量 `FrameStats.observationGapMs()` 在自驱线程下恒为 0——采集
+    /// 连续运行，不存在「没被任何窗口统计过」的时间段。若将来有人把采集
+    /// 改回「只在快照时才排空」，它会立刻变成正数，这正是它存在的意义。
     uint32_t window_ms{1000};
 };
 
@@ -313,8 +334,18 @@ struct V4l2CaptureConfig {
  *   V4l2FrameSource src;                 // 构造不碰设备
  *   if (!src.start()) {  // 报 unavailable，业务照常
  *   }
- *   auto stats = src.snapshotAndReset(); // 每秒一次
+ *   auto stats = src.snapshotAndReset(); // 立即返回，建议与网络侧同节奏取
  *   src.stop();
+ *
+ * 线程模型（2026-11-12 起）：`start()` 会拉起一个**内部采集线程**，连续
+ * 做 DQBUF/QBUF 直到 `stop()`。调用方不需要自己维持排空节奏，也就不会
+ * 因为「取数太慢让队列填满」而把观测缺陷记成链路丢帧。
+ *
+ * 因此 `snapshotAndReset()` **不阻塞**：它只是加锁拷贝累计值、清零、返回。
+ * 其中的 `window_ms` 是本份统计**实际**覆盖的时长（事实），不是配置值。
+ *
+ * 线程安全：`snapshotAndReset()` 与 `describe()` 可以在同一线程或不同线程
+ * 调用（内部有锁），但 `start()`/`stop()` 仍应由单一控制线程调用。
  */
 class V4l2FrameSource : public IFrameSource {
 public:
@@ -341,6 +372,90 @@ public:
 
     /// 是否已成功 start()（stop() 之后回到 false）
     bool isRunning() const;
+
+    /**
+     * @brief 一帧像素的交付描述（供外部消费者取用）
+     *
+     * 只在 `pixel_sink` 回调里出现，调用期间那块内存在**本次回调内**有效。
+     * 回调返回后帧源立刻把 buffer 还给驱动，回调**不得**保留指针。
+     */
+    struct PixelFrame {
+        const void* data{nullptr};   ///< 首平面起始地址（NV12 的 Y 平面）
+        size_t size{0};              ///< 该平面实际字节数（bytesused）
+        uint32_t width{0};
+        uint32_t height{0};
+
+        /// Y 平面每行字节数（**真实** pitch）。
+        ///
+        /// 首选 `v4l2_format` 的 `bytesperline`，但它**必须过自洽性检查**：
+        /// 若 `bytesperline * height * 3 / 2 > sizeimage`，这个值不可能是本
+        /// buffer 的行跨度（NV12 整帧装不下它），此时改用 width。
+        ///
+        /// 板端实测（2026-11-14，1640x1232 NV12，sunxi-vin）：
+        /// `bytesperline=2460`，`2460*1232*1.5=4546080 > sizeimage=3045504`
+        /// → 被否决，真实 stride 是 **1640**（= width，无填充）。
+        /// 2460 的来源是驱动 `vin_video.c:505` 的
+        /// `o_width * depth / 8`（depth=12 位/像素 → 整帧语义），对 planar
+        /// NV12 毫无意义。行间距微扫实测：pitch=1640 处「相邻行同列绝对差」
+        /// 取尖锐极小值 1.18，其它偶数 pitch 均在 1.54~1.59。
+        uint32_t stride{0};
+
+        /// **UV 平面起始偏移**（字节，相对 `data`）；0 表示「等于
+        /// `stride * height`」。
+        ///
+        /// 这个字段存在的原因是：`stride * height` **不足以**表达真实布局。
+        /// 板端实测同一帧的完整布局（三组独立证据：零字节游程、数值自洽、
+        /// 行间距微扫）：
+        ///
+        /// ```
+        /// [0,        2020480)  Y 平面  stride=1640 × 1232，紧凑
+        /// [2020480,  2030336)  平面间对齐空洞 9856 字节，实测全零
+        /// [2030336,  3040576)  UV 平面 stride=1640 × 616，紧凑
+        /// [3040576,  3045504)  尾部空洞 4928 字节，实测全零
+        /// ```
+        ///
+        /// 即 Y 用 1640 的真实 pitch 写，但 UV 的起始位置由驱动按
+        /// `align16(width) * align16(height)` 计算（`vin_video.c:216,512` 的
+        /// `pix_size`）——两者差 9856 字节。消费方若按 `stride * height`
+        /// 定位 UV，会读到这块空洞（全零 = U=V=0），画面顶部若干行明显偏色。
+        uint32_t uv_offset{0};
+
+        /// V4L2 fourcc（如 0x3231564E = 'NV12'）
+        uint32_t fourcc{0};
+
+        uint64_t sequence{0};
+        uint64_t timestamp_ns{0};
+
+        /// 本次是单平面还是多平面采集。多平面下 `data` 只覆盖首平面。
+        ///
+        /// 注意本板 `sunxi-vin` 只支持 CAPTURE_MPLANE，但 NV12 时
+        /// `num_planes == 1`（单平面 mplane = 连续 NV12），此时 `data`
+        /// 覆盖整帧、`uv_offset` 有效。真正的多平面（`num_planes > 1`）
+        /// 下 `uv_offset` 为 0 且 UV 在另一个 plane 里——本源的 `pixel_sink`
+        /// 不交付那种帧（没有 CPU 可读且连续的单块内存可拷）。
+        bool multiplanar{false};
+    };
+
+    /// 像素回调类型。**在采集线程里同步调用**，必须快速返回。
+    ///
+    /// 为什么用回调而不是让消费者主动来取：`/dev/video0` 在 `open()` 层面独占
+    /// （板端实测：A 仅 open 成功，B 紧随其后 open 得到 EBUSY），所以摄像头
+    /// 只能有一个所有者。消费者（Qt 面板、编码器）若自己开设备会直接失败。
+    /// 由所有者把帧分发出去是唯一可行的形态。
+    ///
+    /// 为什么回调里**不能**做重活：它跑在采集线程上，阻塞它就是让队列填满，
+    /// 驱动随即丢帧，而那会被 `FrameStats` 记成链路丢帧——把观测缺陷栽给
+    /// 被观测对象。中枢（VideoFrameHub）的做法是「限速 + 一次拷贝」，
+    /// 单帧耗时在毫秒量级，可以接受。
+    using PixelSink = std::function<void(const PixelFrame&)>;
+
+    /**
+     * @brief 注册像素消费者（必须在 start() 之前调用）
+     *
+     * 传空函数对象即取消。`start()` 之后注册**不生效**（避免运行期改动
+     * 采集线程的调用目标）；返回 false 表示已启动，注册被拒绝。
+     */
+    bool setPixelSink(PixelSink sink);
 
 private:
     struct Impl;

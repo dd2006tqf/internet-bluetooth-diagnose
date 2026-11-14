@@ -50,13 +50,18 @@
 #include <sys/stat.h>
 #include <sys/sysmacros.h>   // major() / minor()：用于匹配 video 节点与 media 实体
 
+#include "logger.hpp"
 #include "media_topology.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 #include <sstream>
+#include <system_error>
+#include <thread>
 #include <vector>
 
 namespace weaknet {
@@ -257,7 +262,30 @@ struct V4l2FrameSource::Impl {
     /// `VIDEO_CAPTURE`，多平面设备上 STREAMOFF 会失败（type 不匹配），
     /// 而且这个失败是静默的——`closeDevice()` 里对 STREAMOFF 的返回值
     /// 刻意不检查（尽力而为），于是录像永不停、fd 泄漏到进程退出。
+    ///
+    /// **`closeDevice()` 会把它复位成单平面**（下一次 start 若不重新探测就用
+    /// 错类型）。所以它只能回答「现在用什么」，不能回答「刚才用了什么」——
+    /// 后者由下面的 `started_plane_kind` 负责。
     v4l2_buf_type buf_type{V4L2_BUF_TYPE_VIDEO_CAPTURE};
+
+    /// 上一次 start() 实际用的是单平面还是多平面（**不被 closeDevice 重置**）
+    ///
+    /// 为什么需要它：`closeDevice()` 会把 `buf_type` 复位成单平面，于是
+    /// `stop()` 之后再调 `describe()` 会把「启动时明明跑在 mplane」误报成
+    /// `splane`。板端实测证据（2026-11-14）：
+    ///
+    ///   camera capture started: ... mplane {vin_video0 <- ... <- imx219}
+    ///   camera capture stopped: ... splane (stopped) {vin_video0 <- ...}
+    ///
+    /// 同一个进程、同一个设备，开头和结尾对同一件事给出两种说法。这与
+    /// `buffer_source` 是**完全同源的一类缺陷**（那里已经用「不复位」解决了），
+    /// 只是当时只修了内存模型、漏了平面模型。诊断字段最忌讳「停下来看就变了
+    /// 个说法」：事后拿停止时那行日志去取证，会得出「本板不需要 MPLANE」
+    /// 这个与事实相反的结论。
+    ///
+    /// 取值为**上一次成功 start 的探测结果**；从未 start 过时是单平面（与
+    /// `buf_type` 的初值一致，描述的是「还没跑过」而不是「跑过单平面」）。
+    bool started_mplane{false};
 
     /// 每个 buffer 的平面数（单平面恒为 1）
     ///
@@ -314,6 +342,93 @@ struct V4l2FrameSource::Impl {
     };
     std::vector<Buffer> buffers;
 
+    /// 从一份 v4l2_format 推导并记录交付几何（stride / uv_offset / sizeimage）
+    ///
+    /// ========================================================================
+    /// 为什么做成独立方法：它在 start() 里必须被调用**两次**
+    /// ========================================================================
+    ///
+    /// 第一次在 S_FMT 之后：此时 `sizeimage` 往往是 **V4L2 框架填的默认值**，
+    /// 而不是驱动的真值。它可能是个**自洽的错值**（实测 3030720 = 紧凑 NV12
+    /// 字节数，而真值是 3045504），足以骗过下面每一道 guard —— 详见 step 5.5
+    /// 那段注释里的实测日志与等号推导。
+    ///
+    /// 第二次在 REQBUFS 之后（`queue_setup()` 才把 `payload[]` 算成真值）：
+    /// 这一次才是可采信的。两处若各写一份逻辑，早晚会漂移成两个判断标准。
+    void deriveGeometry(const v4l2_format& fmt, bool use_mplane,
+                        uint32_t got_w, uint32_t got_h, uint32_t got_fmt) {
+        frame_fourcc = got_fmt;
+        frame_sizeimage = use_mplane ? fmt.fmt.pix_mp.plane_fmt[0].sizeimage
+                                     : fmt.fmt.pix.sizeimage;
+
+        // stride 候选：bytesperline（>0），否则 width
+        uint32_t stride_cand = use_mplane ? fmt.fmt.pix_mp.plane_fmt[0].bytesperline
+                                          : fmt.fmt.pix.bytesperline;
+        if (stride_cand < got_w) stride_cand = got_w;   // 比宽度还小必然损坏
+
+        // 自洽性检查：候选 stride 下的 NV12 整帧必须装得进 sizeimage。
+        // **注意这条检查挡不住「自洽的错值」**：若 sizeimage 恰好等于
+        // stride*height*1.5（S_FMT 之后框架默认值就是），它必然通过。
+        // 所以这个函数必须在 REQBUFS 之后再调用一次，见 start() step 5.5。
+        if (frame_sizeimage > 0 &&
+            static_cast<uint64_t>(stride_cand) * got_h * 3 / 2 > frame_sizeimage) {
+            stride_cand = got_w;   // 否决：装不下，按紧凑排布
+        }
+        frame_stride = stride_cand;
+
+        // 把「这次推导是凭什么成立的」记下来。**这不是调试残留**：
+        // sizeimage==0 时上面两道 guard 全部被跳过，等于没有校验，而
+        // 函数返回 void、ioctl 也返回 0，外部完全看不出区别。没有这行
+        // 日志，事后只能看到最终几何，无法判断它是校验出来的还是蒙出来的。
+        LOG_DEBUG(weaknet_dbus::LogModule::NETWORK,
+                  "v4l2 geometry: sizeimage=" << frame_sizeimage
+                  << " bytesperline=" << (use_mplane
+                         ? fmt.fmt.pix_mp.plane_fmt[0].bytesperline
+                         : fmt.fmt.pix.bytesperline)
+                  << " -> stride=" << frame_stride
+                  << (frame_sizeimage == 0
+                          ? " (sizeimage=0: guard SKIPPED, compact fallback)"
+                          : ""));
+
+        if (frame_sizeimage == 0) {
+            // 驱动没报 sizeimage：按紧凑 NV12 兜底（UV 紧跟在 stride*height）。
+            frame_sizeimage = static_cast<size_t>(frame_stride) * got_h * 3 / 2;
+        }
+
+        // UV 平面偏移：默认「紧跟 Y」，即 stride*height。
+        size_t uv_off = static_cast<size_t>(frame_stride) * got_h;
+        if (got_fmt == V4L2_PIX_FMT_NV12) {
+            // 只有当驱动把 payload 报成**整帧**字节数时，payload×2/3 才等于
+            // Y 平面字节数（从而等于 UV 起始）。两条约束都必须满足才采信：
+            //   a) 不小于 stride*height —— 否则说明 payload 只是 Y 平面，
+            //      按 2/3 反推会算出一个比 Y 还可疑的位置；
+            //   b) UV 平面必须装得下 —— uv_off + stride*(h/2) <= sizeimage。
+            // 任何一条不满足就退回 stride*height（标准紧凑布局）。
+            const size_t cand = static_cast<size_t>(frame_sizeimage) * 2 / 3;
+            const size_t uv_bytes = static_cast<size_t>(frame_stride) * (got_h / 2);
+            if (cand >= uv_off && cand + uv_bytes <= frame_sizeimage) {
+                uv_off = cand;
+            }
+        }
+        frame_uv_offset = static_cast<uint32_t>(uv_off);
+    }
+
+    // ---- 交付几何（供 pixel_sink 使用）----
+    //
+    // 为什么必须单独记，而不是让消费者从 cfg 里取：cfg.width/height 是**请求值**
+    // 或驱动回报值，但 stride / uv_offset / sizeimage 只在 v4l2_format 里，
+    // 且 `bytesperline` 本身可能是假的（sunxi-vin 给 2460 而真实是 1640，
+    // 详见 configureFormat 里那段推导），消费者无法自行推导。
+    uint32_t frame_stride{0};      ///< Y 平面每行字节数（已过自洽性校验）
+    uint32_t frame_uv_offset{0};   ///< UV 平面相对首平面的字节偏移
+    uint32_t frame_fourcc{0};      ///< 驱动实际回报的 pixelformat
+    size_t frame_sizeimage{0};     ///< 首平面 sizeimage（NV12 单平面 = 整帧）
+
+    /// 像素消费者。空则完全不触发，零开销。
+    PixelSink pixel_sink;
+    // 采集线程是否已经跑起来（决定 setPixelSink 能否接受注册）
+    std::atomic<bool> capture_running{false};
+
     /// 多平面时 QBUF/DQBUF 复用的 plane 数组
     ///
     /// 为什么要复用而不是每次栈上建：`v4l2_buffer.m.planes` 是指针，
@@ -356,6 +471,72 @@ struct V4l2FrameSource::Impl {
     /// 本窗口起点（用于推导窗口终点 window_start + window_ms）
     std::chrono::steady_clock::time_point window_start;
 
+    /// ---- 自驱采集线程（2026-11-12 引入）----
+    ///
+    /// ========================================================================
+    /// 为什么必须改成自驱线程
+    /// ========================================================================
+    ///
+    /// 改造前 `snapshotAndReset()` 内部有一个 `select()` 排空循环，**调用它
+    /// 就阻塞 window_ms**。这在测试里没问题（调用方按 1Hz 紧挨着调），但接入
+    /// 生产循环后有两个致命后果：
+    ///
+    ///   1. 质量循环间隔是 15s，一次调用阻塞 1s 意味着循环被整体拖慢；
+    ///   2. **更根本**：网络侧用的是 120s 滑动窗口。改造前要拿到 120s 的帧
+    ///      统计，就得让调用方阻塞 120s——生产上不可能这么做。于是帧窗口
+    ///      永远只能是 1s，而 `attributeVideoQoe` 的 `window_ms != interval_ms`
+    ///      判定会**恒定**返回 `window_mismatch`，归因链路等于没接。
+    ///
+    /// 改成自驱后：
+    ///   - 线程持续 DQBUF/QBUF，**永不因缓冲填满而丢帧**（改造前「低频轮询 +
+    ///     4 buffer」的架构本身就跟不上 30fps，驱动在缓冲填满后丢弃其余帧——
+    ///     那不是链路问题，是我们自己的）
+    ///   - `snapshotAndReset()` 变成「读走累计值 + 清零」，**立即返回**，
+    ///     调用方可以按任意节奏取（包括 120s 一次的滑动窗口）
+    ///   - 统计覆盖跨度自然等于「两次快照之间的真实时长」，不再需要靠阻塞
+    ///     去「凑满」一个窗口
+    ///
+    /// ========================================================================
+    /// 线程安全
+    /// ========================================================================
+    ///
+    /// 所有累计量由 `mtx` 保护。正常路径（约 18fps）下每帧只持锁几十纳秒，
+    /// `snapshotAndReset()` 与线程只在快照瞬间竞争。
+    ///
+    /// `describe()` 也读 `error` / `calibration_note`，而线程可能写 `error`，
+    /// 所以 `mtx` 声明为 mutable 并在 describe() 里加锁——不能因为「它只读」
+    /// 就跳过，那是数据竞争，不是风格问题。
+    std::thread capture_thread;
+    mutable std::mutex mtx;
+
+    /// 停止请求。用 atomic 而不是「锁内 bool」：线程可能正卡在 select() 里，
+    /// 只有无锁标志能让它在超时返回后立刻看到。
+    std::atomic<bool> thread_should_stop{false};
+
+    /// 线程对象是否已创建（仅调用方线程读写，不需要锁）
+    bool thread_active{false};
+
+    /// 线程是否因致命错误退出（mtx 保护）
+    ///
+    /// 为什么单独记：线程死后累计值就冻结在死亡时刻。若继续把这些值当成
+    /// 「本窗口统计」交出去，`frames_expected` 仍按真实时长增长，于是会报出
+    /// 一个巨大的、纯属虚构的丢帧率——把「我们自己采不到」栽给链路。
+    /// 置位后 `snapshotAndReset()` 一律返回 invalid，`describe()` 说明原因。
+    bool thread_fatal{false};
+
+    /// 上一次快照的时刻（mtx 保护）。`start()` 时置为当时，
+    /// 使第一份快照的跨度 = 「从开始采到第一次取走」。
+    std::chrono::steady_clock::time_point last_snapshot_time;
+    bool has_last_snapshot{false};
+
+    /// 校准子窗口的起点（仅采集线程读写，持 mtx 修改）
+    ///
+    /// 校准需要「若干个等长的窗口」，这个边界由**线程**按 cfg.window_ms
+    /// 自行推进，与调用方的快照节奏无关。若跟着快照相走，调用方改成
+    /// 15s 取一次就会让「3 个校准窗口」变成 45s 的样本——校准本身没错，
+    /// 但样本量暴涨且语义漂移。
+    std::chrono::steady_clock::time_point calibration_window_start;
+
     /// ---- 帧率基线校准状态 ----
     ///
     /// 为什么需要它：`G_PARM` 在 sunxi-vin 上返回的是模式表常数
@@ -378,9 +559,10 @@ struct V4l2FrameSource::Impl {
     /// 校准失败的原因（非空时写进 describe()，说明为何维持原 fps）
     std::string calibration_note;
 
-    /// 在窗口末尾尝试完成一次基线校准
+    /// 在**校准子窗口**末尾尝试完成一次基线校准
     ///
-    /// 调用点：`snapshotAndReset()` 汇总完本窗口、`resetWindow()` 之前。
+    /// 调用点：只有 `calibrateTickLocked()`（2026-11-12 自驱线程改造后，
+    /// 它由 `captureLoop()` 逐帧推进，不再依赖调用方的快照节奏）。
     /// 返回 true 表示本次调用完成了校准（cfg.fps 已被改写）。
     ///
     /// 判据全部为「不够稳就不采纳」，因为**校准错误比不校准更危险**：
@@ -390,9 +572,13 @@ struct V4l2FrameSource::Impl {
         if (calibration_done) return false;
         if (cfg.fps_calibration_windows == 0) return false;
 
-        // 本窗口的帧间隔并入累积池（微秒精度）
+        // 本校准窗口的帧间隔并入累积池（微秒精度）
         calibration_gaps_us.insert(calibration_gaps_us.end(),
                                    window_gaps_us.begin(), window_gaps_us.end());
+        // **由本函数负责清空**，而不是 resetWindow()：window_gaps_us 的归属
+        // 是「一个校准窗口」，其边界由采集线程按 cfg.window_ms 自行推进，
+        // 与调用方的快照节奏无关（理由见 calibrateTickLocked 的注释）。
+        window_gaps_us.clear();
 
         // 还没攒够窗口数就继续等
         if (++calibration_windows_seen < cfg.fps_calibration_windows) return false;
@@ -877,33 +1063,381 @@ struct V4l2FrameSource::Impl {
         return queueAll(use_mplane, err);
     }
 
+    // ========================================================================
+    // 自驱采集线程
+    // ========================================================================
+
+    /// 采集线程主体：持续 DQBUF/QBUF，直到被要求停止
+    ///
+    /// 与改造前 `snapshotAndReset()` 里那段排空循环的差别只在**退出条件**：
+    ///
+    ///   旧：跑到 `window_start + window_ms` 就退出（窗口由调用方节奏决定）
+    ///   新：跑到 `thread_should_stop` 置位才退出（窗口与采集彻底解耦）
+    ///
+    /// 为什么必须**持续**取而不是按窗口取：驱动只有 `buffer_count`（默认 4）
+    /// 个缓冲。不取，队列几毫秒内就填满，之后驱动**丢弃**新帧——那是我们
+    /// 自己造成的丢帧，却会被 `frames_expected - frames_received` 记成
+    /// 「链路丢帧」。本板实测：1Hz 轮询 + 4 buffer @30fps 恒定报 87% 丢帧，
+    /// 而链路本身完好。这不是精度问题，是把观测缺陷栽给链路的问题。
+    ///
+    /// 睡眠策略：`select()` 超时设 200ms。不是 0（纯自旋会吃掉一个核），
+    /// 也不是窗口长度（那又回到「低频批量取」，缓冲照样会满）。200ms 远大于
+    /// 帧周期（30fps 时 33ms），所以正常情况下每次 select 立刻返回可读，
+    /// 只在无帧时才真正睡满——既不让 CPU 空转，也不会因取帧太慢而丢帧。
+    void captureLoop() {
+        const bool use_mplane = (buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+
+        // 线程启动时**拷一份** sink 的本地副本。
+        //
+        // 采集线程从头到尾用这一份：`setPixelSink` 在线程运行期间本来就
+        // 拒绝注册（见其实现），但把它读成本地副本让「这条线程不会看到
+        // 中途换人」成为编译期可见的事实，而不是依赖调用方的自觉。
+        const PixelSink sink = pixel_sink;
+
+        while (!thread_should_stop.load(std::memory_order_relaxed)) {
+            fd_set fds;
+            FD_ZERO(&fds);
+            FD_SET(fd, &fds);
+
+            // 超时 200ms：既保证停止请求能在 200ms 内被响应，
+            // 又远大于帧周期，不至于因等待过久让缓冲填满。
+            timeval tv{};
+            tv.tv_sec = 0;
+            tv.tv_usec = 200000;
+
+            const int r = ::select(fd + 1, &fds, nullptr, nullptr, &tv);
+            if (r < 0) {
+                if (errno == EINTR) continue;   // 被信号打断，重试
+                std::lock_guard<std::mutex> lk(mtx);
+                error = errnoText("select", errno);
+                thread_fatal = true;
+                return;
+            }
+            if (r == 0) continue;               // 超时无帧：正常（可能停了流），继续等
+
+            // 每帧一个局部 v4l2_buffer / plane 数组：这里**不能**复用
+            // Impl::plane_bufs，因为每帧都要重新 assign，复用也只是省一次
+            // 小分配，却要引入「谁在用这块内存」的隐式约束。
+            v4l2_buffer buf{};
+            buf.type = buf_type;
+            buf.memory = memory;
+            std::vector<v4l2_plane> planes;
+            if (use_mplane) {
+                planes.assign(num_planes, v4l2_plane{});
+                buf.m.planes = planes.data();
+                buf.length = num_planes;
+            }
+            if (::ioctl(fd, VIDIOC_DQBUF, &buf) < 0) {
+                if (errno == EAGAIN) continue;  // 竞态：没准备好，再等
+                std::lock_guard<std::mutex> lk(mtx);
+                error = errnoText("VIDIOC_DQBUF", errno);
+                thread_fatal = true;
+                return;
+            }
+
+            // 出队时刻要在 DQBUF 返回后立刻取，越晚取延迟被高估得越多。
+            const auto dequeue_t = std::chrono::steady_clock::now();
+
+            // ---- 单帧事实累计（持锁）----
+            //
+            // 锁只覆盖累计，不覆盖 ioctl：ioctl 可能耗时几十微秒，
+            // 把它们放进临界区会让 snapshotAndReset() 的调用方跟着等，
+            // 而它们读的数据此时还没准备好。
+            {
+                std::lock_guard<std::mutex> lk(mtx);
+
+                uint64_t frame_bytes = 0;
+                uint64_t frame_capacity = 0;
+                if (use_mplane) {
+                    for (uint32_t p = 0; p < num_planes && p < buf.length; ++p) {
+                        frame_bytes += planes[p].bytesused;
+                    }
+                    if (buf.index < buffers.size()) {
+                        for (size_t len : buffers[buf.index].plane_lengths) {
+                            frame_capacity += len;
+                        }
+                    }
+                } else {
+                    frame_bytes = buf.bytesused;
+                    if (buf.index < buffers.size()) {
+                        frame_capacity = buffers[buf.index].length;
+                    }
+                }
+
+                ++frames_received;
+                bytes_received += frame_bytes;
+
+                // 不完整帧：实际字节明显小于容量即视为 corrupt。
+                // 用比例而非绝对值，避免分辨率变化后阈值失效。
+                if (frame_capacity > 0) {
+                    const double ratio = static_cast<double>(frame_bytes) /
+                                         static_cast<double>(frame_capacity);
+                    if (ratio < 0.5) ++frames_corrupt;
+                }
+
+                // ---- 帧间隔：用内核时间戳 ----
+                //
+                // timestamp 可能是 MONOTONIC 或 MONOTONIC_RAW。两者的**差值**都
+                // 是单调的，所以这里不需要区分来源；只有跨设备对齐时才需要。
+                const auto frame_t = std::chrono::steady_clock::time_point(
+                    std::chrono::seconds(buf.timestamp.tv_sec) +
+                    std::chrono::microseconds(buf.timestamp.tv_usec));
+
+                if (has_last_frame_time) {
+                    const auto gap = frame_t - last_frame_time;
+                    const auto gap_ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(gap)
+                            .count();
+                    if (gap_ms >= 0) {
+                        gaps.push_back(static_cast<uint32_t>(gap_ms));
+                        // 同一间隔的微秒精度副本，只喂给帧率基线校准。
+                        // 负间隔（时间戳回退）两边都不收：钳到 0 会把观测错误
+                        // 伪装成「间隔极短」，是最坏的一种假数据。
+                        window_gaps_us.push_back(
+                            static_cast<uint64_t>(
+                                std::chrono::duration_cast<std::chrono::microseconds>(gap)
+                                    .count()));
+                    }
+                }
+                last_frame_time = frame_t;
+                has_last_frame_time = true;
+
+                // ---- 出队延迟：帧在队列里等了多久 ----
+                //
+                // 负数（时钟域不一致或驱动时间戳异常）直接丢弃，不钳到 0：
+                // 钳 0 会把观测错误伪装成「延迟极低」，那是最坏的一种假数据。
+                {
+                    const auto lat =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            dequeue_t - frame_t)
+                            .count();
+                    if (lat >= 0 && lat < 60000) {   // 超过 60s 视为时间戳异常
+                        dequeue_latencies.push_back(static_cast<uint32_t>(lat));
+                    }
+                }
+
+                // ---- 序号跳变：按**事件**计，不按帧计 ----
+                //
+                // 一次跳 30 与三十次各跳 1，总量相同但 QoE 不同，
+                // 所以这里只 +1，具体丢了多少帧由 expected - received 表达。
+                //
+                // 回绕处理：sequence 是 32 位无符号，30fps 下约 4.97 年回绕一次。
+                // 判据是「比上一个序号还小且差距极大」——不是任何变小都算回绕，
+                // 正常重排的差值很小。
+                if (has_last_seq && buf.sequence != last_seq + 1) {
+                    // 注意 has_last_seq **不再**由 resetWindow() 每个快照清掉
+                    // （2026-11-12 自驱线程改造，理由见 resetWindow 的注释）。
+                    // 采集连续运行，本快照首帧与上一快照末帧之间若真的跳号，
+                    // 那是**真实**的丢帧，必须如实记下来；清掉它反而是把一个
+                    // 真实故障藏起来。healthy 流上两者恰好连号，不会产生假
+                    // gap——这也是改造前不得不清、改造后必须不清的原因。
+                    const bool wrapped =
+                        buf.sequence < last_seq &&
+                        (static_cast<uint64_t>(last_seq) - buf.sequence) >
+                            0x80000000ull;
+                    if (!wrapped && buf.sequence > last_seq) ++seq_gap_count;
+                    // 序号回绕 / 重排不记为 gap：那是驱动行为，不是丢帧。
+                }
+                last_seq = buf.sequence;
+                has_last_seq = true;
+
+                // 校准子窗口推进：**必须在这里**（持锁、每帧一次）而不是在
+                // snapshotAndReset() 里。理由是校准窗口的边界由采集节奏决定，
+                // 而采集节奏与调用方的取数节奏已彻底解耦（见 calibrateTickLocked
+                // 的注释）。每帧调一次的代价是一次 steady_clock::now() 与几个
+                // 整数比较，18fps 下完全可忽略。
+                calibrateTickLocked(dequeue_t,
+                                    std::chrono::steady_clock::time_point{});
+            }
+
+            // ---- 交付像素（在归还 buffer 之前！）----
+            //
+            // 位置是硬约束：`VDIOC_QBUF` 一归还，驱动就可能立刻往这块内存写
+            // 下一帧。回调必须在 QBUF **之前**跑完，且回调里不得保留指针。
+            //
+            // 为什么放在锁外：中枢的 publish() 会做一次 3 MB 的 memcpy
+            // （限速到 10fps），放在 mtx 里会让 snapshotAndReset() 的调用方
+            // 跟着等。帧统计与像素交付是两件独立的事，不该互相阻塞。
+            //
+            // 为什么 sink 为空时零开销：一个 bool 判断，没有虚调用。
+            if (sink) {
+                const void* px = nullptr;
+                size_t px_size = 0;
+                if (use_mplane) {
+                    // 多平面：首平面（Y）在 plane_starts[0] / planes[0]
+                    if (buf.index < buffers.size() &&
+                        !buffers[buf.index].plane_starts.empty()) {
+                        px = buffers[buf.index].plane_starts[0];
+                    } else if (buf.index < buffers.size() &&
+                               !buffers[buf.index].dma_fds.empty()) {
+                        // DMABUF 导入路径没有映射地址。此时不交付像素——
+                        // 中枢是「拷一份快照」模型，没有 CPU 可读地址就无法拷。
+                        // 不在这里临时 mmap：那条路会在每帧制造一次映射开销，
+                        // 而且与 use_dmabuf 的设计意图（零拷贝给硬件）相悖。
+                        px = nullptr;
+                    }
+                    if (px != nullptr && buf.length > 0 && !planes.empty()) {
+                        px_size = planes[0].bytesused;
+                    }
+                } else {
+                    if (buf.index < buffers.size()) {
+                        px = buffers[buf.index].start;
+                    }
+                    px_size = buf.bytesused;
+                }
+
+                if (px != nullptr && px_size > 0) {
+                    PixelFrame pf;
+                    pf.data = px;
+                    pf.size = px_size;
+                    pf.width = cfg.width;
+                    pf.height = cfg.height;
+                    pf.stride = frame_stride;
+                    pf.uv_offset = frame_uv_offset;
+                    pf.fourcc = frame_fourcc;
+                    pf.sequence = buf.sequence;
+                    pf.timestamp_ns = static_cast<uint64_t>(buf.timestamp.tv_sec) * 1000000000ull +
+                                      static_cast<uint64_t>(buf.timestamp.tv_usec) * 1000ull;
+                    pf.multiplanar = use_mplane;
+                    // 回调里若抛异常，绝不能让采集线程死掉——那会被上层
+                    // 看成「摄像头坏了」，而真正的问题在消费者。
+                    try {
+                        sink(pf);
+                    } catch (...) {
+                        // 静默吞掉：中枢内部的失败已由它自己的 stats 记录，
+                        // 这里再记一条只会在每帧刷屏。
+                    }
+                }
+            }
+
+            // ---- 归还 buffer（不持锁）----
+            //
+            // **刻意构造一个全新的 v4l2_buffer，而不是复用 DQBUF 写过的那个。**
+            // 实测（vivid 6.8 单平面 DMABUF）DQBUF 后 `buf.m.fd` 会被原样保留，
+            // 于是「忘了重新绑定 fd」也能 requeue 成功。但 V4L2 从未保证这点：
+            // 换个摄像头就变成「第一帧之后全部 EINVAL」，且错误点离根因很远。
+            //
+            // 构造新结构体后 fd 必须由我们自己填，这条路径才真正承重：
+            // 漏填就是 fd=0，内核在 QBUF 阶段校验并返回 EINVAL（已实测确认）。
+            v4l2_buffer requeue{};
+            requeue.type = buf_type;
+            requeue.memory = memory;
+            requeue.index = buf.index;
+            std::vector<v4l2_plane> requeue_planes;
+            if (use_mplane) {
+                requeue_planes.assign(num_planes, v4l2_plane{});
+                if (memory == V4L2_MEMORY_DMABUF && buf.index < buffers.size()) {
+                    // 多平面 DMABUF：每个 plane 各绑一个 fd。这里若漏填，
+                    // plane_bufs 全是 0，内核会以 EINVAL 拒绝——不是静默错误。
+                    for (uint32_t p = 0;
+                         p < num_planes && p < buffers[buf.index].dma_fds.size(); ++p) {
+                        requeue_planes[p].m.fd = buffers[buf.index].dma_fds[p];
+                    }
+                }
+                requeue.m.planes = requeue_planes.data();
+                requeue.length = num_planes;
+            } else if (memory == V4L2_MEMORY_DMABUF && buf.index < buffers.size()) {
+                requeue.m.fd = buffers[buf.index].dma_fds[0];
+            }
+            if (::ioctl(fd, VIDIOC_QBUF, &requeue) < 0) {
+                std::lock_guard<std::mutex> lk(mtx);
+                error = errnoText("VIDIOC_QBUF(requeue)", errno);
+                thread_fatal = true;
+                return;
+            }
+        }
+    }
+
+    /// 启动采集线程（调用方已确保未启动）
+    void startCaptureThread() {
+        thread_should_stop.store(false, std::memory_order_relaxed);
+        thread_fatal = false;
+        thread_active = true;
+        capture_running.store(true, std::memory_order_release);
+        capture_thread = std::thread([this] { captureLoop(); });
+    }
+
+    /// 停止采集线程并 join
+    ///
+    /// **置位后必须 join**，不能只置标志就返回：线程还在跑时 closeDevice()
+    /// 会把 fd 关掉，而线程正拿它做 ioctl——那是 use-after-close。
+    void stopCaptureThread() {
+        if (!thread_active) return;
+        thread_should_stop.store(true, std::memory_order_relaxed);
+        if (capture_thread.joinable()) capture_thread.join();
+        thread_active = false;
+        // 线程已经 join，再清这个标志：它同时是 setPixelSink 的准入判据，
+        // 置位期间注册会被拒绝。先 join 再放开，避免有人在线程末帧里
+        // 换掉 sink 却在下一帧用法完全不同。
+        capture_running.store(false, std::memory_order_release);
+    }
+
+    /// 按 `cfg.window_ms` 推进一个**校准子窗口**（调用方须持有 mtx）
+    ///
+    /// 为什么单独一个边界：校准要求「若干个等长的窗口」，而这个边界必须由
+    /// **采集节奏**决定，不能跟着调用方的快照节奏走。改造后快照跨度是变化的
+    /// （可能 200ms，也可能 120s），拿它当校准窗口会让 `fps_calibration_windows`
+    /// 这个配置项失去意义——同一个 3 在 15s 的取数节奏下变成 45s 的样本。
+    ///
+    /// 校准只在启动后的最初几个窗口进行，之后 `tryCalibrateFps()` 直接返回
+    /// false，本函数退化为一次 `calibration_done` 判断，开销可忽略。
+    void calibrateTickLocked(std::chrono::steady_clock::time_point now,
+                             std::chrono::steady_clock::time_point fallback_start) {
+        if (calibration_done) return;
+        if (cfg.fps_calibration_windows == 0) return;
+        if (cfg.window_ms == 0) return;   // 未声明窗口：无法定义子窗口，放弃校准
+
+        if (calibration_window_start == std::chrono::steady_clock::time_point{}) {
+            // 首个校准窗口从「上一次快照的起点」算起：那一时刻正是本窗口
+            // 帧间隔开始累积的地方（`resetWindow()` 在 start() 里设过）。
+            calibration_window_start =
+                (fallback_start == std::chrono::steady_clock::time_point{})
+                    ? now
+                    : fallback_start;
+            return;
+        }
+
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - calibration_window_start);
+        if (elapsed.count() < static_cast<long long>(cfg.window_ms)) return;
+
+        // 一个校准子窗口到期：结算并重新起算。
+        // 注意 tryCalibrateFps() 消费 window_gaps_us 并自行清空，
+        // 所以这里不需要（也不能）再清一次。
+        tryCalibrateFps();
+        calibration_window_start = now;
+    }
+
     /// 清空所有本窗口的累计量
     ///
-    /// **本窗口首帧必须不参与任何「与上一帧比」的判定**，否则每个窗口都会
-    /// 凭空多出一次序号跳变和一段巨大的假帧间隔。两者都来自同一个坑：
-    /// 跨窗口的状态没有随窗口一起清零。
+    /// ========================================================================
+    /// 边界语义（2026-11-12 自驱线程改造后发生变化）
+    /// ========================================================================
     ///
-    /// 实测证据（vivid，每窗口调用方 sleep(1000)）：
-    ///   seq_gap=1 恒定出现 —— 上一窗口末帧 seq=33，本窗口首帧 seq=34，
-    ///   但中间跨了 1 秒的帧（驱动已丢），差值远大于 1，被记成一次丢帧事件。
-    ///   max_gap≈900ms —— 同上，把「窗口间隔」当成了「帧间隔」。
+    /// 改造前窗口由调用方节奏切分，所以「跨窗口状态」必须一起清：
+    /// 本窗口首帧与上一窗口末帧比较会产生假 seq_gap 与假帧间隔（实测恒定
+    /// 每窗口 seq_gap=1、max_gap≈900ms）。
     ///
-    /// 注意 `last_frame_time` 仍要推进到 now()：它只被 `has_last_frame_time`
-    /// 控制是否参与比较，初始值本身不参与任何输出。
+    /// 改造后采集线程**连续**运行，快照只是「取走累计值」，不再切断采集。
+    /// 此时：
+    ///   - `has_last_seq` / `has_last_frame_time` / `last_frame_time`
+    ///     **不能被清**。它们现在是连续的：跨快照边界的那一帧间隔是**真实**
+    ///     的（两帧相邻到达），把它丢掉反而会让 `frames_expected` 与实测
+    ///     间隔对不上。清除它们还会**藏起**跨边界的真实序号跳变。
+    ///   - 一个边界效应仍在：边界那一帧的间隔会被计入**后**一个快照，而它的
+    ///     前半段落在前一个快照。跨度通常 ≥ 15s 而帧间隔 ~54ms，误差
+    ///     0.04% 量级，可以忽略；显式记在这里是为了不让后来者以为漏了。
     void resetWindow() {
         frames_received = 0;
         bytes_received = 0;
         frames_corrupt = 0;
         seq_gap_count = 0;
-        // 跨窗口状态必须一起清，否则窗口边界会变成假丢帧 / 假尖刺
-        has_last_seq = false;
         gaps.clear();
         dequeue_latencies.clear();
-        // 微秒副本与 gaps 同生命周期。注意：tryCalibrateFps() 必须在本函数
-        // 之前调用（它消费本窗口的样本），调用点见 snapshotAndReset()。
-        window_gaps_us.clear();
-        last_frame_time = std::chrono::steady_clock::now();
-        has_last_frame_time = false;
+        // `window_gaps_us` **不在这里清**：它的归属是「一个校准窗口」，
+        // 由 calibrateTickLocked() 按 cfg.window_ms 推进、由 tryCalibrateFps()
+        // 消费并清空。若跟着快照清，调用方取得比 window_ms 快时校准永远
+        // 攒不够样本。
         window_start = std::chrono::steady_clock::now();
     }
 };
@@ -913,7 +1447,15 @@ V4l2FrameSource::V4l2FrameSource(V4l2CaptureConfig config)
     impl_->cfg = std::move(config);
 }
 
-V4l2FrameSource::~V4l2FrameSource() = default;
+/// 析构必须先停线程再销毁 Impl
+///
+/// 默认实现的 `~Impl()` 里只有 `closeDevice()`，它不知道采集线程的存在。
+/// 线程对象在 `std::thread` 析构时若仍 joinable 会直接 `std::terminate`，
+/// 而构造函数之外的地方（异常路径、用户忘记调 stop()）恰好最容易命中。
+/// 所以这里显式停：停 → join → 然后才轮到 Impl 析构关设备。
+V4l2FrameSource::~V4l2FrameSource() {
+    if (impl_) impl_->stopCaptureThread();
+}
 
 bool V4l2FrameSource::start() {
     Impl& s = *impl_;
@@ -996,6 +1538,10 @@ bool V4l2FrameSource::start() {
     }
     s.buf_type = use_mplane ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
                             : V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    // 同步记下「本次实际生效的平面模型」。必须在**探测成功之后立刻**写，
+    // 不能等 start() 末尾——中途任何一处失败 return 时，describe() 仍应
+    // 说出「当时探测到的是哪种」，那正是排查失败原因需要的线索。
+    s.started_mplane = use_mplane;
     s.num_planes = use_mplane ? 2u : 1u;   // NV12 多平面是 Y + UV 两平面
 
     // ---- 2.8 选择输入（必须在 S_FMT 之前）----
@@ -1106,6 +1652,48 @@ bool V4l2FrameSource::start() {
         s.cfg.width = got_w;
         s.cfg.height = got_h;
     }
+
+    // ---- 记录交付几何（stride / uv_offset / fourcc / sizeimage）----
+    //
+    // ========================================================================
+    // 这一段是本文件最容易写错的地方，两处都已用真机实测证伪过旧结论
+    // ========================================================================
+    //
+    // 1) `bytesperline` **不可信**，必须先过自洽性检查。
+    //
+    //    sunxi-vin 的 `vin_video.c:505` 是
+    //        bytesperline[0] = o_width * depth[0] / 8
+    //    对 NV12 而言 depth[0]=12（亮度+色度共 12 位/像素），于是 1640 宽得到
+    //    **2460**。但 2460 是「整帧按每像素 12 位算的每行字节数」，对 planar
+    //    NV12 的逐行跨度毫无意义。板端实测（2026-11-14，1640x1232）：
+    //        bytesperline=2460 → 2460*1232*1.5 = 4,546,080 > sizeimage=3,045,504
+    //    一个装不进自己 buffer 的 stride 不可能是真的。判据就用这个：
+    //    **装不下即否决**，回落 width 并按紧凑排布处理。
+    //
+    //    真实 stride 由行间距微扫独立确认：扫 1632..1662 逐个算「相邻行同列
+    //    绝对差」，pitch=1640 取尖锐极小值 1.1795，其它偶数 pitch 都在
+    //    1.54~1.59，奇数 pitch 跳到 4.6 以上。所以真实 stride = width = 1640。
+    //
+    // 2) UV 平面**不紧跟** `stride * height`，中间有一块对齐空洞。
+    //
+    //    驱动算 size 用的是
+    //        pix_size = ALIGN(o_width,16) * ALIGN(o_height,16)      (vin_video.c:216,512)
+    //        payload[0] = pix_size * depth / 8                       → 整帧字节数
+    //    即 UV 起始 = ALIGN(w,16)*ALIGN(h,16) = 2030336，而
+    //    stride*height = 1640*1232 = 2020480，差 9856 字节（= 1232*8）。
+    //
+    //    实测该区间**全零**（不是图像内容），且尾部 [3040576, 3045504) 的
+    //    4928 字节同样全零。零字节游程扫描给出的正是这两段，位置在两帧上
+    //    完全一致，说明是稳定布局而非偶然。
+    //
+    //    对 NV12 有 payload = Y + UV = 3/2 × Y，所以 Y 平面字节数 = payload×2/3
+    //    = UV 起始偏移。这个关系不依赖 ALIGN 常量具体是 16 还是别的值，
+    //    但**要用两条约束验证后才采信**（见下面的 guards）。
+    // ========================================================================
+    // 推导交付几何。注意这里 sizeimage 可能还是 0（驱动只在 REQBUFS 的
+    // queue_setup 里才填 payload），所以 start() 在 setupBuffers() 之后
+    // 会用同一方法**再算一次**。两处共用一份逻辑，避免判断标准漂移。
+    s.deriveGeometry(fmt, use_mplane, got_w, got_h, got_fmt);
     if (got_fmt != V4L2_PIX_FMT_NV12) {
         // 驱动改成了别的格式。记录实际值并继续（部分 ISP 只支持 YUYV），
         // 但把这件事写进 describe()，让证据可追溯。
@@ -1189,6 +1777,39 @@ bool V4l2FrameSource::start() {
         }
     }
 
+    // ---- 5.5 重新读一次几何（**顺序是硬约束**）----
+    //
+    // ========================================================================
+    // 为什么必须在这里重读：S_FMT 之后读到的是**自洽的错值**
+    // ========================================================================
+    //
+    // 真机实测（2026-11-14，1640x1232 NV12，开 server.log_level=debug）：
+    //
+    //   sizeimage=3030720 bytesperline=2460 -> stride=1640   ← S_FMT 之后
+    //   sizeimage=3045504 bytesperline=2460 -> stride=1640   ← REQBUFS 之后
+    //
+    // 第一次的 3030720 = 1640*1232*1.5，恰好是「紧凑 NV12 整帧」字节数，
+    // 比真值 3045504 只小 14784（= 两块对齐空洞之和）。它不是 0，因此
+    // **所有以 sizeimage 为前提的 guard 都会通过**：
+    //   cand = 3030720*2/3 = 2020480 = stride*height  → cand >= uv_off（等号）
+    //   cand + uv_bytes   = 3030720 = sizeimage       → 装得下（等号）
+    // 两道 guard 都卡在等号上通过，于是「按紧凑布局」被"证明"成正确答案，
+    // 而驱动实际给的是 Y 与 UV 之间夹 9856 字节空洞的布局。
+    //
+    // 真值来自 queue_setup()（VB2 在 VIDIOC_REQBUFS 时回调）：
+    //   vin_video.c:512  size       = ALIGN(w,16) * ALIGN(h,16)  = 2030336
+    //   vin_video.c:542  payload[0] = size * depth / 8           = 3045504
+    //   vin_video.c:800  plane_fmt[0].sizeimage = payload[0]     ← 只在这里回填
+    //
+    // 所以几何推导必须放在 REQBUFS **之后**。这里重读 G_FMT 覆盖掉
+    // S_FMT 阶段那份「看起来对但数值错」的结果。失败不致命（保留旧值），
+    // 但记 error —— 不能静默。
+    if (::ioctl(s.fd, VIDIOC_G_FMT, &fmt) == 0) {
+        s.deriveGeometry(fmt, use_mplane, got_w, got_h, got_fmt);
+    } else {
+        s.error = errnoText("VIDIOC_G_FMT(after REQBUFS)", errno);
+    }
+
     // ---- 6. 开始流 ----
     v4l2_buf_type type = s.buf_type;
     if (::ioctl(s.fd, VIDIOC_STREAMON, &type) < 0) {
@@ -1210,12 +1831,54 @@ bool V4l2FrameSource::start() {
         }
     }
 
-    s.resetWindow();
+    // ---- 8. 启动自驱采集线程 ----
+    //
+    // **必须在 STREAMON 之后、返回 true 之前**。
+    //
+    // 在 STREAMON 之前启动的话，线程的第一次 select 会看到 fd 可读？
+    // 不会——没 STREAMON 时队列里没有待取帧，select 会睡到超时。真正的问题
+    // 在于反方向：STREAMON 之后到线程起来之前，驱动已经开始往 4 个 buffer
+    // 里写帧，而缓冲只有 4 个——这段间隙里攒满 4 帧后驱动就开始丢弃。
+    // 所以要在 STREAMON 之后**立刻**启动，把间隙压到最小。
+    //
+    // 启动失败的处置：`std::thread` 构造抛 system_error（资源不足）。
+    // 此时不谎报成功——关设备、记 error、返回 false。理由与 start() 其他
+    // 失败路径一致：这个能力此刻确实不可用。
+    {
+        // 先清累计量并**把 window_start 定在此刻**：本份统计从 STREAMON
+        // 开始算。少了这一步，`window_start` 会沿用上一次 start 的旧值，
+        // 于是「重启后第一份快照」的跨度会包含上一次停流的那整段时间。
+        s.resetWindow();
+
+        // 首份快照的跨度起点就是 window_start，即 STREAMON 时刻。
+        s.last_snapshot_time = s.window_start;
+        s.has_last_snapshot = false;
+        s.thread_fatal = false;
+        s.calibration_window_start = std::chrono::steady_clock::time_point{};
+        try {
+            s.startCaptureThread();
+        } catch (const std::system_error& e) {
+            s.error = std::string("采集线程创建失败: ") + e.what();
+            s.closeDevice();
+            s.resetWindow();
+            return false;
+        }
+    }
+
     return true;
 }
 
 void V4l2FrameSource::stop() {
     Impl& s = *impl_;
+
+    // 顺序不可交换：先让线程退出，再关 fd。
+    //
+    // 反过来的话，线程正卡在 `ioctl(fd, VIDIOC_DQBUF)` 或 `select(fd+1)`
+    // 里，而 fd 已被关闭——轻则 EBADF，重则 fd 号被别的 open 复用，
+    // 线程拿我们刚关掉的句柄去操作一个完全无关的文件（实测这种 bug
+    // 的现场是「摄像头停了之后写坏了另一个设备的缓冲」）。
+    s.stopCaptureThread();
+
     s.closeDevice();
     s.resetWindow();
 }
@@ -1227,301 +1890,110 @@ FrameStats V4l2FrameSource::snapshotAndReset() {
     // 未启动 → 无效统计。上层必须报 unavailable，不能当成"零丢帧"。
     if (!s.streaming) return out;
 
-    // 由 start() 决定并存在成员里的 buf type 反推，避免同一个判断写两遍。
-    const bool use_mplane = (s.buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE);
+    const auto now = std::chrono::steady_clock::now();
 
-    // ---- 本窗口的起止时刻 ----
+    std::lock_guard<std::mutex> lk(s.mtx);
+
+    // 采集线程因致命错误退出 → 累计值已冻结，绝不能当成"本窗口统计"。
     //
-    // **窗口 = [上次 snapshotAndReset 返回时刻, 该时刻 + window_ms]**，
-    // 由本函数自己占满，而不是「调用方睡多久就是多久 + 再白采一秒」。
+    // 这是本轮改造最容易写错的一处：线程死后 `frames_received` 停在死亡
+    // 时刻的数值，而 `frames_expected` 仍按真实流逝时间增长。若不拦截，
+    // 调用方会读到「expected=1200, received=37」这种统计，并把它归因为
+    // 「链路丢了 97% 的帧」——实际上是**我们自己采不到**。把观测缺陷
+    // 栽给链路，是本案最坏的一种错误（运维会去查一条完好的线）。
+    if (s.thread_fatal) return out;
+
+    // ---- 本份统计的实际覆盖跨度 ----
     //
-    // 这个改动修的是三个同源缺陷。改之前：`elapsed` 按「距上次采样」算，
-    // 但排空循环的 deadline 是 `now() + window_ms`，于是窗口内**又**多收了
-    // 一整秒的帧。实测（vivid 640x480@30fps，调用方每窗口 sleep(1000)）：
+    // `window_ms` 报**事实**（这次统计真的覆盖了多久），不是配置值。
     //
-    //   elapsed=1000ms → expected=30
-    //   received=34（4 个缓冲积压 + 排空那秒的 30 帧）
-    //   max_gap=900ms（那 4 个缓冲填满后到 drain 开始的真实空洞）
-    //   seq_gap=1   （跨窗口序号差）
+    // 改动前报的是 cfg.window_ms（配置），而实际跨度靠"调用方阻塞满一个
+    // 窗口"来保证。自驱线程之后这条保证消失了：调用方可能 15s 才取一次，
+    // 也可能 200ms 取一次。若仍报配置值，`attributeVideoQoe` 的
+    // `window_ms != network.interval_ms` 判定会在**正确对齐**的情况下
+    // 反而失败——因为两侧报的都不是真话。
     //
-    // 三个数都是真的，但 expected 与 received 落在**不同时间跨度**上，
-    // 丢帧率因此无意义。现在窗口终点固定在 `window_start + window_ms`：
+    // 现在两侧语义统一为「这份数据覆盖了多久」，调用方只要让取数节奏与
+    // 网络窗口一致，窗口自然对齐；对不齐时归因层会如实拒绝，而不是被
+    // 一个假的一致值骗过去。
+    const auto span = std::chrono::duration_cast<std::chrono::milliseconds>(
+        s.has_last_snapshot ? (now - s.last_snapshot_time)
+                            : (now - s.window_start));
+    // 钳到 1ms：0 会被归因层当成「未声明窗口」（window_ms==0）而拒绝归因，
+    // 而「两个快照挨得极近」是一个真实存在但无意义的窗口，不该被当成缺失。
+    const uint32_t span_ms =
+        span.count() > 0 ? static_cast<uint32_t>(span.count()) : 1u;
+    const auto span_start = s.has_last_snapshot ? s.last_snapshot_time : s.window_start;
+
+    // ---- 汇总本份统计 ----
     //
-    //   - 调用方按 1Hz 立即再调 → 循环跑满整窗，拿到全部帧，loss=0；
-    //   - 调用方先 sleep(1000) 再调 → 窗口早已到期，只 drain 出积压的
-    //     4 帧，expected 仍是 30 → 如实报 87% 丢帧。
+    // expected 用**实际跨度**推，与上面报出去的 window_ms 严格同源。
+    // 两者若各算各的，丢帧率立刻失去意义（这也是改造前那三个假象的来源）。
     //
-    // 后者不是误报，是真相：1Hz 轮询 + 4 buffer 的架构本身就跟不上 30fps，
-    // 驱动在缓冲填满后丢弃了其余的帧。要 0 丢帧必须高频连续 drain。
-    const auto window_end =
-        s.window_start + std::chrono::milliseconds(s.cfg.window_ms);
-
-    // ---- 把本窗口内的帧全部取走 ----
-    //
-    // 这些是"原始事实"的采集：收到多少帧、字节数、间隔、序号跳变。
-    // 任何成因判断都不在这里做。
-    //
-    // overdue 分支：调用方自己睡了超过一个窗口（窗口早已到期）。
-    // 此时不阻塞，只做一次**非阻塞排空**把积压的 buffer 取走，
-    // 队列一空立刻返回。不能直接 break 就走——那会把积压的帧
-    // 留在队列里，下一窗口被当成新帧，统计整体错位。
-    const bool overdue = std::chrono::steady_clock::now() >= window_end;
-
-    while (true) {
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(s.fd, &fds);
-
-        const auto now = std::chrono::steady_clock::now();
-
-        timeval tv{};
-        if (overdue) {
-            tv.tv_sec = 0;
-            tv.tv_usec = 0;                     // 非阻塞：只取已在队列里的
-        } else {
-            const auto remain_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    window_end - now)
-                    .count();
-            if (remain_ms <= 0) break;          // 窗口内已跑满
-            tv.tv_sec = static_cast<time_t>(remain_ms / 1000);
-            tv.tv_usec = static_cast<suseconds_t>((remain_ms % 1000) * 1000);
-        }
-
-        const int r = ::select(s.fd + 1, &fds, nullptr, nullptr, &tv);
-        if (r == 0) break;                      // 窗口到期 / 积压已排空
-        if (r < 0) {
-            if (errno == EINTR) continue;       // 被信号打断，重试
-            s.error = errnoText("select", errno);
-            break;
-        }
-
-        v4l2_buffer buf{};
-        buf.type = s.buf_type;
-        buf.memory = s.memory;
-        if (use_mplane) {
-            s.plane_bufs.assign(s.num_planes, v4l2_plane{});
-            buf.m.planes = s.plane_bufs.data();
-            buf.length = s.num_planes;
-        }
-        if (::ioctl(s.fd, VIDIOC_DQBUF, &buf) < 0) {
-            if (errno == EAGAIN) continue;      // 竞态：没准备好，再等
-            s.error = errnoText("VIDIOC_DQBUF", errno);
-            break;
-        }
-
-        // 出队时刻要在 DQBUF 返回后立刻取，越晚取延迟被高估得越多。
-        const auto dequeue_t = std::chrono::steady_clock::now();
-
-        // ---- 单帧事实累计 ----
-        //
-        // 多平面的字节数在 planes[p].bytesused 里逐个累加；
-        // 单平面在 buf.bytesused。两者语义相同：这一帧实际填了多少字节。
-        uint64_t frame_bytes = 0;
-        uint64_t frame_capacity = 0;
-        if (use_mplane) {
-            for (uint32_t p = 0; p < s.num_planes && p < buf.length; ++p) {
-                frame_bytes += buf.m.planes[p].bytesused;
-            }
-            if (buf.index < s.buffers.size()) {
-                for (size_t len : s.buffers[buf.index].plane_lengths) {
-                    frame_capacity += len;
-                }
-            }
-        } else {
-            frame_bytes = buf.bytesused;
-            if (buf.index < s.buffers.size()) {
-                frame_capacity = s.buffers[buf.index].length;
-            }
-        }
-
-        ++s.frames_received;
-        s.bytes_received += frame_bytes;
-
-        // 不完整帧：实际字节明显小于容量即视为 corrupt。
-        // 用比例而非绝对值，避免分辨率变化后阈值失效。
-        if (frame_capacity > 0) {
-            const double ratio = static_cast<double>(frame_bytes) /
-                                 static_cast<double>(frame_capacity);
-            if (ratio < 0.5) ++s.frames_corrupt;
-        }
-
-        // ---- 帧间隔：用内核时间戳 ----
-        //
-        // timestamp 可能是 MONOTONIC 或 MONOTONIC_RAW。两者的**差值**都
-        // 是单调的，所以这里不需要区分来源；只有跨设备对齐时才需要。
-        //
-        // 多平面时 timestamp 在内核里是整帧的完成时刻（VB2 的
-        // vb2_buffer_done 统一打戳），与单平面语义一致，不必按平面区分。
-        const auto frame_t = std::chrono::steady_clock::time_point(
-            std::chrono::seconds(buf.timestamp.tv_sec) +
-            std::chrono::microseconds(buf.timestamp.tv_usec));
-
-        if (s.has_last_frame_time) {
-            const auto gap = frame_t - s.last_frame_time;
-            const auto gap_ms =
-                std::chrono::duration_cast<std::chrono::milliseconds>(gap)
-                    .count();
-            if (gap_ms >= 0) {
-                s.gaps.push_back(static_cast<uint32_t>(gap_ms));
-                // 同一间隔的微秒精度副本，只喂给帧率基线校准。
-                // 负间隔（时间戳回退）两边都不收：钳到 0 会把观测错误
-                // 伪装成「间隔极短」，是最坏的一种假数据。
-                s.window_gaps_us.push_back(
-                    static_cast<uint64_t>(
-                        std::chrono::duration_cast<std::chrono::microseconds>(gap)
-                            .count()));
-            }
-        }
-        s.last_frame_time = frame_t;
-        s.has_last_frame_time = true;
-
-        // ---- 出队延迟：帧在队列里等了多久 ----
-        //
-        // 这是本轮新增的第三个量。它与 gaps 的区别是：
-        //   gaps    = 相邻两帧**完成时刻**之差 → 反映出帧是否规律
-        //   本字段  = 取走时刻 − 该帧完成时刻     → 反映我们取走是否及时
-        //
-        // 只有两者都看，才能区分「摄像头卡」与「我们的循环被拖住」。
-        // 负数（时钟域不一致或驱动时间戳异常）直接丢弃，不钳到 0：
-        // 钳 0 会把观测错误伪装成「延迟极低」，那是最坏的一种假数据。
-        {
-            const auto lat =
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    dequeue_t - frame_t)
-                    .count();
-            if (lat >= 0 && lat < 60000) {   // 超过 60s 视为时间戳异常
-                s.dequeue_latencies.push_back(static_cast<uint32_t>(lat));
-            }
-        }
-
-        // ---- 序号跳变：按**事件**计，不按帧计 ----
-        //
-        // v4l2_buffer.sequence 是驱动给出的单调序号。跳变说明中间有帧没
-        // 送到用户态。一次跳 30 与三十次各跳 1，总量相同但 QoE 不同，
-        // 所以这里只 +1，具体丢了多少帧由 expected - received 表达。
-        //
-        // 回绕处理：sequence 是 32 位无符号，30fps 下约 4.97 年回绕一次。
-        // 真回绕时 `buf.sequence` 会突然变成 0，此时 (last_seq + 1) 也与它
-        // 不相等，若不特殊处理会误记一次 gap。判据是「比上一个序号还小
-        // 且差距极大」——不是任何变小都算回绕，正常重排的差值很小。
-        if (s.has_last_seq && buf.sequence != s.last_seq + 1) {
-            // 注意 has_last_seq 由 resetWindow() 每个窗口清掉：本窗口首帧
-            // 不参与比较。跨窗口比较会稳定产生一次假 gap——实测每窗口
-            // 恒定 seq_gap=1，与真实丢帧无关。
-            const bool wrapped =
-                buf.sequence < s.last_seq &&
-                (static_cast<uint64_t>(s.last_seq) - buf.sequence) >
-                    0x80000000ull;
-            if (!wrapped && buf.sequence > s.last_seq) ++s.seq_gap_count;
-            // 序号回绕 / 重排不记为 gap：那是驱动行为，不是丢帧。
-        }
-        s.last_seq = buf.sequence;
-        s.has_last_seq = true;
-
-        // 归还 buffer
-        //
-        // **刻意构造一个全新的 v4l2_buffer，而不是复用 DQBUF 写过的那个。**
-        // 这不是洁癖，是因为复用会依赖内核未承诺的行为：
-        //
-        // 实测（vivid 6.8 单平面 DMABUF，probe_fd_preserved）：DQBUF 返回后
-        // `buf.m.fd` 被原样保留，于是「忘了重新绑定 fd」也能 requeue 成功。
-        // 但 V4L2 从未保证 DQBUF 会回写 `m.fd`——驱动完全可以只填 index /
-        // bytesused / timestamp。依赖它就意味着：换个摄像头就从「一直能跑」
-        // 变成「第一帧之后全部 EINVAL」，而且错误点离根因很远。
-        //
-        // 构造新结构体后，fd 必须由我们自己填，这条路径才真正承重：
-        // 漏填就是 fd=0，内核在 QBUF 阶段校验并返回 EINVAL（已实测确认
-        // QBUF(fd=0) / QBUF(fd=-1) / QBUF(普通文件 fd) 均被拒）。
-        //
-        // MMAP 模式下 m 不需要任何输入（内核按 index 用自己的映射），
-        // 所以零初始化即可，不必分支区分。
-        v4l2_buffer requeue{};
-        requeue.type = s.buf_type;
-        requeue.memory = s.memory;
-        requeue.index = buf.index;
-        if (use_mplane) {
-            s.plane_bufs.assign(s.num_planes, v4l2_plane{});
-            if (s.memory == V4L2_MEMORY_DMABUF &&
-                buf.index < s.buffers.size()) {
-                // 多平面 DMABUF：每个 plane 各绑一个 fd。这里若漏填，
-                // plane_bufs 全是 0，内核会以 EINVAL 拒绝——不是静默错误。
-                for (uint32_t p = 0; p < s.num_planes &&
-                                     p < s.buffers[buf.index].dma_fds.size();
-                     ++p) {
-                    s.plane_bufs[p].m.fd = s.buffers[buf.index].dma_fds[p];
-                }
-            }
-            requeue.m.planes = s.plane_bufs.data();
-            requeue.length = s.num_planes;
-        } else if (s.memory == V4L2_MEMORY_DMABUF &&
-                   buf.index < s.buffers.size()) {
-            requeue.m.fd = s.buffers[buf.index].dma_fds[0];
-        }
-        if (::ioctl(s.fd, VIDIOC_QBUF, &requeue) < 0) {
-            s.error = errnoText("VIDIOC_QBUF(requeue)", errno);
-            break;
-        }
-    }
-
-    // ---- 汇总 ----
-    //
-    // 窗口跨度按**窗口设计跨度**算，不是按实际耗时算。
-    //
-    // 这一条容易写反，写反了就是本轮实测抓到的那三个假象：若用
-    // `now() - window_start` 当跨度，调用方多睡的一秒会被算进窗口，
-    // 而这一秒里驱动因缓冲填满丢掉的帧不会出现在 received 里，
-    // 于是丢帧率被系统性低估（睡眠越久，越显得「健康」）。
-    //
-    // 固定用 cfg.window_ms 的代价是：调用方延迟进入时，实际只 drain
-    // 到较少帧，loss_ratio 会偏高——这是**如实**反映「本窗口没取够帧」，
-    // 不是误报。少报比多报危险，所以选这个方向。
-    const auto span_ms = static_cast<uint64_t>(s.cfg.window_ms);
-
-    // 与合成源同一套整数算术，避免 IEEE-754 截断（1000.0/(1000.0/30)
+    // 整数运算 + 四舍五入，避免 IEEE-754 截断（1000.0/(1000.0/30)
     // = 29.999999999999996，截断成 29 会让丢帧率系统性偏移）。
-    const uint64_t expected = (span_ms * s.cfg.fps + 500u) / 1000u;
+    const uint64_t expected =
+        (static_cast<uint64_t>(span_ms) * s.cfg.fps + 500u) / 1000u;
 
     out.frames_expected = expected;
     out.frames_received = s.frames_received;
     out.frames_corrupt = s.frames_corrupt;
     out.seq_gap_count = s.seq_gap_count;
     out.bytes_received = s.bytes_received;
-    out.window_ms = static_cast<uint32_t>(span_ms);
-    // 采样时刻用**实际**结束时刻：窗口早已过期时 window_end 在未来，
-    // 拿它当 sampled_at 会让下游以为这份数据来自未来。
-    out.sampled_at = std::chrono::steady_clock::now();
+    out.window_ms = span_ms;
+    // 本实现是**自驱连续采集**：线程从不停止取帧，所以统计绝不会漏掉任何
+    // 一段时间。于是「这份统计覆盖的跨度」与「调用方两次取数的间隔」由
+    // **构造**决定恒等——这正是 `observationGapMs()==0` 真实可信的原因，
+    // 而不是我们把盲区藏起来了。
+    //
+    // 两者都报而不省略一个，是为了让归因层能对**任何**实现用同一套判据：
+    // 换成拉模式实现（只在快照时取帧）时，window_ms 会报配置值、这里报
+    // 真实间隔，差值立刻暴露盲区。
+    out.snapshot_interval_ms = span_ms;
+    // 采样时刻用**实际**取数时刻。窗口起点是 span_start，终点即 now。
+    out.sampled_at = now;
 
     if (!s.gaps.empty()) {
         out.max_gap_ms = *std::max_element(s.gaps.begin(), s.gaps.end());
         out.p95_gap_ms = percentile95(s.gaps);
+    } else {
+        // 没有任何帧 → 没有帧间隔可比。
+        //
+        // 此时若沿用上一窗口的 max_gap/p95，会凭空造出「画面有长卡顿」的
+        // 假证据（而真相是一整段没有画面）。留 0 并让 frames_received==0
+        // 自己说话：0 帧 + 0 间隔 = 「没有任何观测」，不是「间隔很健康」。
+        out.max_gap_ms = 0;
+        out.p95_gap_ms = 0;
     }
 
     if (!s.dequeue_latencies.empty()) {
         out.p95_dequeue_latency_ms = percentile95(s.dequeue_latencies);
     }
 
-    // ---- 帧率基线校准（只在前 N 个窗口尝试，成功后永不重算）----
-    //
-    // 位置很关键：必须在**本窗口数据已汇总完、但 resetWindow() 还没清空
-    // gaps 之前**调用。校准吃的是本窗口的帧间隔分布。
-    //
-    // 为什么放在 snapshotAndReset 而不是 start()：start() 里还没有任何帧，
-    // 唯一能拿到的帧率就是驱动声明的那个值——而那个值正是本函数要修正的
-    // 对象。校准必须基于实测。
-    //
-    // 注意：校准会改写 cfg.fps，但它只影响**后续**窗口的 frames_expected。
-    // 本窗口的 expected 已按旧 fps 算完并写进 out 了，不做追溯修改——
-    // 回溯改历史数据比承认「第一个窗口的基线尚未建立」更危险。
-    s.tryCalibrateFps();
+    // ---- 推进快照边界 ----
+    s.last_snapshot_time = now;
+    s.has_last_snapshot = true;
 
-    // 推进窗口：下一窗口从此刻开始
+    // 校准的推进**不在这里**：它由采集线程按 cfg.window_ms 自行推进
+    // （见 calibrateTickLocked）。若跟着快照相走，调用方改成 15s 取一次
+    // 就会让「3 个校准窗口」变成 45s 的样本。校准必须在快照之前推进完毕，
+    // 所以这里只做一次「若有待处理的校准窗口则结算」的兜底。
+    s.calibrateTickLocked(now, span_start);
+
     s.resetWindow();
     return out;
 }
 
 std::string V4l2FrameSource::describe() const {
     const Impl& s = *impl_;
+
+    // **必须加锁**：采集线程会写 `error`（DQBUF/QBUF 失败时），
+    // 而 describe() 读它。不加锁是数据竞争——不是"风格问题"，
+    // 是 std::string 的读写竞争（可能读到重分配一半的内部状态，
+    // 表现为崩溃或乱码）。describe() 只在排障与日志路径调用，
+    // 不是热路径，锁开销无关紧要。
+    std::lock_guard<std::mutex> lk(s.mtx);
+
     std::ostringstream os;
     // 前缀 v4l2: 让 evidence 消费者能一眼区分真机与注入数据（与 synthetic: 对应）
     os << "v4l2:" << s.cfg.device << "@" << s.cfg.width << "x" << s.cfg.height
@@ -1529,8 +2001,12 @@ std::string V4l2FrameSource::describe() const {
 
     // 单平面 / 多平面必须写进描述：同一个 FrameStats 在两种 buf type 下
     // 采集方式完全不同，事后排查时需要知道当时走的是哪条路径。
-    os << (s.buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ? " mplane"
-                                                            : " splane");
+    //
+    // 用 `started_mplane` 而不是 `buf_type`：后者被 `closeDevice()` 复位成
+    // 单平面，stop() 之后 describe() 会把跑过 mplane 的设备误报成 splane
+    // （板端实测过，详见该字段注释）。这里问的是「刚才用了什么」，不是
+    // 「现在正用什么」。
+    os << (s.started_mplane ? " mplane" : " splane");
 
     // 缓冲来源必须写进描述，且**只在配置要求 DMABUF 时才写**。
     //
@@ -1585,11 +2061,35 @@ std::string V4l2FrameSource::describe() const {
         if (!up.empty()) os << " {" << up << "}";
     }
 
+    // 采集线程已死必须**显式说出**，不能只靠 `[...]` 里的 errno。
+    //
+    // 线程死后 `streaming` 仍是 true（fd 还开着、流还在推），`describe()`
+    // 若只报 "mplane" 之类的静态信息，读的人会以为一切正常。真相是：
+    // 帧统计从此冻结，`snapshotAndReset()` 返回 invalid。这两件事必须
+    // 在同一行里连着读，才不会误判成「摄像头没问题，是上游链路丢了帧」。
+    if (s.thread_fatal) os << " (capture-thread-dead)";
+
     return os.str();
 }
 
+/// 返回最近一次失败原因
+///
+/// **返回副本而不是引用**（虽然签名上是 const ref，实现上借用了内部的
+/// `std::string`）：采集线程会改写 `error`，若返回内部引用，调用方拿到的
+/// 是随时可能被重分配失效的句柄。`lastError()` 在排障路径上调用，
+/// 一次拷贝可以接受；若将来变成热路径，应改为返回值语义或加锁取副本。
 const std::string& V4l2FrameSource::lastError() const { return impl_->error; }
 
 bool V4l2FrameSource::isRunning() const { return impl_->streaming; }
+
+bool V4l2FrameSource::setPixelSink(PixelSink sink) {
+    Impl& s = *impl_;
+    // 运行期不允许换 sink：采集线程会无锁读取它（见 captureLoop），
+    // 换掉就是数据竞争。拒绝而不是加锁，是因为「运行中换消费者」没有
+    // 真实场景——消费者要在 start 之前就位。
+    if (s.capture_running.load(std::memory_order_acquire)) return false;
+    s.pixel_sink = std::move(sink);
+    return true;
+}
 
 }  // namespace weaknet
