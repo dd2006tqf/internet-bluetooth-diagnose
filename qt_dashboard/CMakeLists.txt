@@ -69,6 +69,28 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # ---------------------------------------------------------------------------
+# 视频层（不依赖 Qt）
+#
+# NV12→RGB 转换与缩放是纯内存变换，**和 Qt 无关**——只是碰巧被 Qt 面板用。
+# 单独成 target 的三个理由：
+#   1. 本机没有 qtbase5-dev（只有 moc），塞进 UI target 就等于这里永远编不了；
+#   2. 「转换公式写错」与「D-Bus 取帧链路错」必须能分开定位，纯函数才好断言；
+#   3. 第三步推流要从同一条像素路径取数据，届时它在这里被两个消费者共用。
+# ---------------------------------------------------------------------------
+
+add_library(weaknet_dashboard_video STATIC
+    ui/nv12_to_rgb.cpp
+)
+
+target_include_directories(weaknet_dashboard_video PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(weaknet_dashboard_video PRIVATE -Wall -Wextra)
+endif()
+
+# ---------------------------------------------------------------------------
 # 取数层（依赖 libweaknet 的 C API，但不依赖 Qt）
 #
 # 单独一个 target：数据层可以完全没有 D-Bus 依赖地单测，
@@ -128,41 +150,51 @@ if(WEAKN_DASHBOARD_WITH_UI)
     # 命令行传进去的值被覆盖。只能在这里、find_package 之后重设
     # IMPORTED_LOCATION。
     #
-    # 判据用「能不能在本机执行」而不是「路径里有没有 sysroot」：
-    # 原生构建（宿主机自己就是目标架构）时这两条路径本来就可执行，不该干预。
+    # =======================================================================
+    # 为什么**不先探测**而是直接替换（2026-11-14 踩过的坑）
+    # =======================================================================
+    #
+    # 原实现在替换前先跑一次 `execute_process(COMMAND "${__qt_tool_location}"
+    # -v RESULT_VARIABLE rc)`，用「能不能执行」当判据。看起来最严谨——原生
+    # 构建时不该干预。但它在交叉编译下有一个**静默副作用**：
+    #
+    #   内核 execve 一个架构不匹配的可执行文件会返回 ENOEXEC，而 CMake
+    #   （以及 POSIX 约定）此时会**回退到 `/bin/sh` 去解释这个文件**。
+    #   sh 把 aarch64 ELF 当脚本逐行执行，其中的随机字节被当成命令与
+    #   重定向目标，于是在**当前工作目录**里创建出名字是 ELF 内部字符串
+    #   片段、内容为空的垃圾文件：
+    #       s5\242\271\352\203\222\315ay\270P\4\20\1GNU\3\7\1\1\1\3\v...
+    #   实测 strace 证据：
+    #       execve(".../qt5/bin/rcc", [..., "-v"]) = -1 ENOEXEC
+    #       execve("/bin/sh", ["/bin/sh", ".../qt5/bin/rcc", "-v"]) = 0
+    #       openat(AT_FDCWD, "s5\242\271...", O_WRONLY|O_CREAT|O_TRUNC) = 4
+    #   每次 configure 都会重新生成一个，且名字含非法 UTF-8，`rm s5*`
+    #   之类的 glob 匹配不到，只能按字节删除。
+    #
+    # 结论：**交叉编译时目标架构的 moc/rcc/uic 永远不可能执行**，
+    # 「探测」这个动作本身没有信息量，只有副作用。所以直接替换。
+    # 判据用 `CMAKE_CROSSCOMPILING`（构建期已知事实），不靠运行期试探。
     # -----------------------------------------------------------------------
     if(CMAKE_CROSSCOMPILING)
         foreach(__tool moc rcc uic)
             if(TARGET Qt${QT_VERSION_MAJOR}::${__tool})
-                get_target_property(__qt_tool_location
-                    Qt${QT_VERSION_MAJOR}::${__tool} IMPORTED_LOCATION)
-                if(__qt_tool_location)
-                    execute_process(
-                        COMMAND "${__qt_tool_location}" -v
-                        RESULT_VARIABLE __qt_tool_rc
-                        OUTPUT_QUIET ERROR_QUIET)
-                    if(NOT __qt_tool_rc EQUAL 0)
-                        # 目标架构的二进制跑不了，换成宿主机上的同名工具
-                        find_program(__qt_host_${__tool}
-                            NAMES ${__tool}
-                            PATHS /usr/lib/qt5/bin /usr/lib/qt6/libexec
-                                  /usr/lib/x86_64-linux-gnu/qt5/bin
-                            NO_DEFAULT_PATH)
-                        if(__qt_host_${__tool})
-                            message(STATUS
-                                "交叉编译：${__tool} 使用宿主机版本 "
-                                "${__qt_host_${__tool}}（sysroot 里的是目标架构）")
-                            set_target_properties(Qt${QT_VERSION_MAJOR}::${__tool}
-                                PROPERTIES IMPORTED_LOCATION
-                                "${__qt_host_${__tool}}")
-                        else()
-                            message(WARNING
-                                "交叉编译但找不到宿主机版 ${__tool}。"
-                                "Automoc 会在构建时因无法执行 sysroot 里的 "
-                                "目标架构二进制而失败。"
-                                "请安装：apt install qtbase5-dev-tools")
-                        endif()
-                    endif()
+                find_program(__qt_host_${__tool}
+                    NAMES ${__tool}
+                    PATHS /usr/lib/qt5/bin /usr/lib/qt6/libexec
+                          /usr/lib/x86_64-linux-gnu/qt5/bin
+                    NO_DEFAULT_PATH)
+                if(__qt_host_${__tool})
+                    message(STATUS
+                        "交叉编译：${__tool} 使用宿主机版本 "
+                        "${__qt_host_${__tool}}（sysroot 里的是目标架构）")
+                    set_target_properties(Qt${QT_VERSION_MAJOR}::${__tool}
+                        PROPERTIES IMPORTED_LOCATION "${__qt_host_${__tool}}")
+                else()
+                    message(WARNING
+                        "交叉编译但找不到宿主机版 ${__tool}。"
+                        "Automoc 会在构建时因无法执行 sysroot 里的 "
+                        "目标架构二进制而失败。"
+                        "请安装：apt install qtbase5-dev-tools")
                 endif()
             endif()
         endforeach()
@@ -175,6 +207,8 @@ if(WEAKN_DASHBOARD_WITH_UI)
         ui/line_chart_widget.cpp
         ui/data_fetch_thread.cpp
         ui/main_window.cpp
+        ui/video_frame_widget.cpp
+        ui/video_fetch_thread.cpp
     )
 
     target_include_directories(weaknet_dashboard_ui PUBLIC
@@ -184,6 +218,7 @@ if(WEAKN_DASHBOARD_WITH_UI)
     target_link_libraries(weaknet_dashboard_ui PUBLIC
         weaknet_dashboard_source
         weaknet_dashboard_geometry
+        weaknet_dashboard_video
         Qt${QT_VERSION_MAJOR}::Widgets
     )
 
@@ -193,6 +228,24 @@ if(WEAKN_DASHBOARD_WITH_UI)
         weaknet_dashboard_ui
         Qt${QT_VERSION_MAJOR}::Widgets
     )
+
+    # RPATH 必须是 `$ORIGIN` 相对路径，不能留构建期绝对路径。
+    #
+    # 交叉编译时 CMake 会把 `-DWEAKNET_CLIENT_LIB=/宿主机/绝对/path/libweaknet.so`
+    # 那条路径写进 RUNPATH（实测：`/home/ubuntu/个人学习/.../build-arm64-native/
+    # client/lib`）。它在本机让二进制可跑，但拷到板端就是一条不存在的路径
+    # ——而 libweaknet.so 在板端装在 `/usr/local/lib`，ldconfig 已覆盖，
+    # 所以正常情况不报错；一旦换成装在 release 目录里（`client/lib/`）就
+    # 立刻 `error while loading shared libraries`。
+    #
+    # 用 `$ORIGIN/../lib`（CI 里面板装在 `client/bin/`，库在 `client/lib/`）
+    # 让查找相对自身位置，与本机路径彻底解耦。
+    if(CMAKE_CROSSCOMPILING)
+        set_target_properties(weaknet_dashboard PROPERTIES
+            BUILD_RPATH ""
+            INSTALL_RPATH "$ORIGIN/../lib"
+            BUILD_WITH_INSTALL_RPATH ON)
+    endif()
 
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(weaknet_dashboard_ui PRIVATE -Wall -Wextra)
@@ -230,6 +283,20 @@ if(WEAKN_DASHBOARD_BUILD_TESTS)
             target_compile_options(test_chart_geometry PRIVATE -Wall -Wextra)
         endif()
         add_test(NAME chart_geometry COMMAND test_chart_geometry)
+
+        # 视频层：同样不需要 Qt，因此也不受 WEAKN_DASHBOARD_WITH_UI 约束。
+        # 这是本机唯一能验证「NV12 转出来的颜色对不对」的地方——
+        # 真机上颜色不对有一万种非代码原因，靠看画面根本分不清。
+        add_executable(test_nv12_to_rgb tests/test_nv12_to_rgb.cpp)
+        target_link_libraries(test_nv12_to_rgb PRIVATE
+            weaknet_dashboard_video
+            GTest::gtest
+            GTest::gtest_main
+        )
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(test_nv12_to_rgb PRIVATE -Wall -Wextra)
+        endif()
+        add_test(NAME nv12_to_rgb COMMAND test_nv12_to_rgb)
 
         # UI 层像素测试：必须有 Qt，否则 LineChartWidget 根本不存在。
         # 这里不要求 libweaknet —— paint() 只依赖数据结构与 Qt，不碰 D-Bus。
@@ -278,6 +345,24 @@ if(WEAKN_DASHBOARD_BUILD_TESTS)
                 target_compile_options(test_main_window PRIVATE -Wall -Wextra)
             endif()
             add_test(NAME main_window COMMAND test_main_window)
+
+            # 画面框的显示语义：有帧要画对、无帧不能留旧图、坏帧不能硬画。
+            # 与 test_line_chart_widget 同样走 offscreen 平台。
+            add_executable(test_video_frame_widget tests/test_video_frame_widget.cpp)
+            target_link_libraries(test_video_frame_widget PRIVATE
+                weaknet_dashboard_ui
+                weaknet_dashboard_data
+                Qt${QT_VERSION_MAJOR}::Widgets
+                GTest::gtest
+                GTest::gtest_main
+            )
+            if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+                target_compile_options(test_video_frame_widget PRIVATE -Wall -Wextra)
+            endif()
+            add_test(NAME video_frame_widget COMMAND test_video_frame_widget)
+            set_tests_properties(video_frame_widget PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            )
 
             # 像素测试用 offscreen 平台，不需要显示器。
             # 不设 QT_QPA_PLATFORM 时，无 X11/Wayland 的机器上 Qt 会直接

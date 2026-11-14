@@ -37,6 +37,10 @@
 #include <QString>
 
 #include "data/dashboard_data.hpp"
+// 槽函数签名里出现 FetchedFrame，moc 生成的分发代码需要**完整类型**
+// （前置声明不够：它会写 reinterpret_cast<const FetchedFrame*> 并解引用）。
+// 因此这里必须真 include，不能只前置声明。
+#include "video_fetch_thread.hpp"
 
 class QComboBox;
 class QHBoxLayout;
@@ -48,6 +52,8 @@ namespace dashboard {
 
 class DataFetchThread;
 class LineChartWidget;
+class VideoFetchThread;
+class VideoFrameWidget;
 
 /**
  * @brief 看板主窗口
@@ -114,6 +120,15 @@ private slots:
     /// 导出当前画面为 PNG（白名单第 3 项）
     void onExportClicked();
 
+    /// 摄像头画面就绪（后台取帧线程 → 主线程）
+    void onVideoFrame(const weaknet::dashboard::FetchedFrame& frame);
+
+    /// 服务端正常但暂无画面（摄像头未启动 / 刚启动还没出第一帧）
+    void onVideoUnavailable();
+
+    /// 取帧调用失败（未连接 / 服务端拒绝 / 协议不符）
+    void onVideoFetchFailed(const QString& error);
+
 private:
     void build_ui();
     /// 顶栏右侧的展示态控制区（指标选择器 + 时间窗按钮 + 导出）
@@ -132,6 +147,13 @@ private:
 
     DataFetchThread* fetcher_ = nullptr;
     LineChartWidget* chart_ = nullptr;
+
+    /// 摄像头画面框与它的取帧线程。
+    ///
+    /// 与 `fetcher_` 分成两个线程是刻意的：趋势取数几秒一次、可能阻塞数秒，
+    /// 视频要 10fps 连续刷新。混在一起会让画面一顿一顿。
+    VideoFrameWidget* video_view_ = nullptr;
+    VideoFetchThread* video_fetcher_ = nullptr;
 
     /// 历史查询使用的网卡（空表示全部）。
     ///

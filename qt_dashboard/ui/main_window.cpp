@@ -31,6 +31,8 @@
 #include "data_fetch_thread.hpp"
 #include "line_chart_widget.hpp"
 #include "theme.hpp"
+#include "video_fetch_thread.hpp"
+#include "video_frame_widget.hpp"
 
 namespace weaknet {
 namespace dashboard {
@@ -232,14 +234,46 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         }
     });
     timer->start(kAutoRefreshMs);
+
+    // ---- 摄像头取帧 ----
+    //
+    // 与上面的趋势取数**完全独立**的一个线程。理由见 video_fetch_thread.hpp：
+    // 趋势几秒一次、视频 10fps，混在一个线程里画面会一顿一顿。
+    //
+    // 这里在构造时就建线程但不 start()——与 fetcher_ 一致，start() 时才真正跑。
+    // 元类型注册必须在任何 connect 之前：queued connection 需要它。
+    qRegisterMetaType<FetchedFrame>("weaknet::dashboard::FetchedFrame");
+    video_fetcher_ = new VideoFetchThread(this);
+    connect(video_fetcher_, &VideoFetchThread::frameReady,
+            this, &MainWindow::onVideoFrame);
+    connect(video_fetcher_, &VideoFetchThread::frameUnavailable,
+            this, &MainWindow::onVideoUnavailable);
+    connect(video_fetcher_, &VideoFetchThread::fetchFailed,
+            this, &MainWindow::onVideoFetchFailed);
 }
 
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow() {
+    // 先停取帧线程再让 QObject 析构：QThread 在运行中被销毁会 abort
+    // （"QThread: Destroyed while thread is still running"）。
+    //
+    // 这里显式 stop() 而不是写在 VideoFetchThread 的析构里：析构顺序由
+    // Qt 父子关系决定，而 stop() 需要等当前这轮 D-Bus 调用返回（最长 5s），
+    // 在窗口析构里做这件事语义最清楚。
+    if (video_fetcher_) {
+        video_fetcher_->stop();
+    }
+}
 
 void MainWindow::start() {
     fetcher_->start();
     fetcher_->requestRefresh();
     refresh_in_flight_ = true;
+
+    // 视频取帧独立启动。摄像头不在位是正常形态：不动声色地显示
+    // 「暂无画面」，不要在这条路径上弹错误。
+    if (video_fetcher_) {
+        video_fetcher_->start();
+    }
 }
 
 void MainWindow::setInterface(const QString& interface_name) {
@@ -337,12 +371,24 @@ void MainWindow::build_ui() {
     controls->addStretch();
     root->addLayout(controls);
 
-    // --- 主区：左维度列表 / 右趋势图 ---
+    // --- 主区：左（画面 + 维度列表）/ 右趋势图 ---
     auto* splitter = new QSplitter(Qt::Horizontal);
 
-    // 左侧：两个分组
+    // 左侧：摄像头画面框在上，两个状态分组在下
+    //
+    // 画面放最左上是刻意的：这块屏最终要挂在现场设备旁边，使用者先看
+    // 「摄像头拍到什么」，再看「网络好不好」。反过来（先看十几行状态）
+    // 会让人每天多扫十几行才能确认画面还活着。
     auto* left = new QWidget;
     auto* left_layout = new QVBoxLayout(left);
+    left_layout->setContentsMargins(0, 0, 0, 0);
+    left_layout->setSpacing(6);
+
+    // 画面框：不设固定高度，让 splitter 的拉伸因子决定。
+    // 但给它一个最小高度，否则小屏上会被状态列表挤成一条线。
+    video_view_ = new VideoFrameWidget;
+    video_view_->setMinimumHeight(150);
+    left_layout->addWidget(video_view_, 0);
 
     auto* net_group = new QGroupBox(QStringLiteral("网络健康"));
     auto* net_layout = new QVBoxLayout(net_group);
@@ -902,6 +948,50 @@ void MainWindow::onRefreshFinished() {
         status_bar_label_->setText(QStringLiteral("就绪"));
     }
     round_had_failure_ = false;
+}
+
+// ---------------------------------------------------------------------------
+// 摄像头画面
+//
+// 三个槽对应三种**语义完全不同**的情形，必须分开处理：
+//
+//   onVideoFrame       拿到真实画面          → 画出来
+//   onVideoUnavailable 服务端正常、只是没帧  → 「暂无画面」，不是错误
+//   onVideoFetchFailed 调用本身失败          → 说明原因（但也不弹窗）
+//
+// 把后两者混成「显示错误」会让「摄像头还没启动」看起来像故障——
+// 而摄像头不在位在本项目里是**正常形态**（见 server.cpp 的接线注释）。
+// ---------------------------------------------------------------------------
+
+void MainWindow::onVideoFrame(const weaknet::dashboard::FetchedFrame& frame) {
+    if (!video_view_) return;
+
+    // 跨线程传过来的是取帧线程的副本，这里再拷一次进 VideoFrame。
+    // QByteArray 是隐式共享的，这一步是 O(1)（引用计数 +1），不是 3MB 拷贝。
+    VideoFrame vf;
+    vf.nv12 = frame.nv12;
+    vf.width = frame.width;
+    vf.height = frame.height;
+    vf.stride = frame.stride;
+    vf.uv_offset = frame.uv_offset;
+    vf.fourcc = frame.fourcc;
+    vf.sequence = frame.sequence;
+    vf.timestamp_ns = frame.timestamp_ns;
+    video_view_->setFrame(vf);
+}
+
+void MainWindow::onVideoUnavailable() {
+    if (video_view_) {
+        video_view_->clearFrame(QStringLiteral("暂无画面"));
+    }
+}
+
+void MainWindow::onVideoFetchFailed(const QString& error) {
+    if (video_view_) {
+        // 把原因画在框里而不是状态栏：画面框自己说明为什么没画面，
+        // 比让人去别处找线索直接得多。
+        video_view_->clearFrame(QStringLiteral("取帧失败：%1").arg(error));
+    }
 }
 
 // ---------------------------------------------------------------------------
