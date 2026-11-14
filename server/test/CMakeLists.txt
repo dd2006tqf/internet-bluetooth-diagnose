@@ -193,6 +193,21 @@ add_executable(test_media_topology_gtest
     unit/test_media_topology_gtest.cpp)
 target_link_libraries(test_media_topology_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+# 帧中枢的租约协议（无摄像头依赖）。
+# 这是「把像素交给面板/编码器」这条路的地基：覆写保护、超时回收、
+# 稳定句柄、configure 与 publish 交叠时的内存安全。全部用假数据跑，
+# 因为这些东西错了不会报错，只会让面板显示旧画面或撕裂画面。
+add_executable(test_video_frame_hub_gtest
+    unit/test_video_frame_hub_gtest.cpp)
+target_link_libraries(test_video_frame_hub_gtest PRIVATE ${TEST_COMMON_LIBS})
+
+# 帧分发的 D-Bus 线协议：签名必须恒为 (huuuuuttu)，无帧时 arg0 仍须是 UNIX_FD。
+# 必须走真实 dbus-daemon：签名错位只在序列化层暴露，直接调 handleXxx 看不见。
+add_executable(test_video_frame_dbus_gtest
+    unit/test_video_frame_dbus_gtest.cpp
+    unit/mock_dbus_service.cpp)
+target_link_libraries(test_video_frame_dbus_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # 视频 QoE L4 归因：五行真值表 + 三条拒绝归因的前置检查。
 # 纯函数，无状态，无硬件依赖。
 add_executable(test_video_qoe_attribution_gtest
@@ -324,6 +339,8 @@ foreach(test_target
     test_frame_source_gtest
     test_v4l2_frame_source_gtest
     test_media_topology_gtest
+    test_video_frame_hub_gtest
+    test_video_frame_dbus_gtest
     test_video_qoe_attribution_gtest
     test_thermal_monitor_gtest
     test_active_connectivity_gtest

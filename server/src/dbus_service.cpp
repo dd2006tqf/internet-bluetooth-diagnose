@@ -34,6 +34,14 @@
 #include <mutex>
 #include <shared_mutex>
 #include <arpa/inet.h>
+// GetVideoFrame 成功后要自己 close(fd)：libdbus 不接管 UNIX_FD 的所有权
+// （实测结论，详见 handleGetVideoFrame 里的说明）。
+#include <unistd.h>
+// 「本次无帧」时返回一个有效但空的 memfd，而不是 fd = -1。
+// 为什么不能用 -1：libdbus 会**拒绝** `DBUS_TYPE_UNIX_FD` 的 -1 值并让消息
+// 静默少掉该字段，见 handleGetVideoFrame 里的对照实验记录。
+#include <sys/mman.h>
+#include <cerrno>
 
 #include "wireless_event_store.hpp"
 #include "logger.hpp"
@@ -151,6 +159,14 @@ static DBusHandlerResult MessageHandlerStatic(DBusConnection* conn, DBusMessage*
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetNetworkExperience)) {
         self->handleGetNetworkExperience(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodGetVideoFrame)) {
+        self->handleGetVideoFrame(conn, msg);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    if (dbus_message_is_method_call(msg, kInterface, kMethodReleaseVideoFrame)) {
+        self->handleReleaseVideoFrame(conn, msg);
         return DBUS_HANDLER_RESULT_HANDLED;
     }
     if (dbus_message_is_method_call(msg, kInterface, kMethodGetDnsStats)) {
@@ -932,6 +948,350 @@ bool DbusService::handleGetNetworkExperience(DBusConnection* conn, DBusMessage* 
         dbus_message_unref(reply);
         return false;
     }
+    dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+    return true;
+}
+
+
+// ====================================================================
+// 视频帧分发（Plan B：单一所有者 + 句柄分发）
+// ====================================================================
+//
+// 这两个方法把 `VideoFrameHub` 的租约协议搬到 D-Bus 上。协议本身在
+// `video_frame_hub.hpp` 里有完整说明，这里只记**跨进程带来的额外责任**。
+//
+// ========================================================================
+// 为什么返回 UNIX_FD 而不是把像素塞进 D-Bus 消息
+// ========================================================================
+//
+// 一帧 NV12 1640x1232 是 3,045,504 字节。D-Bus 默认单消息上限是 128MB，
+// 塞得进去，但每次取帧都要在系统总线上搬 3MB：10fps 就是 30MB/s 的总线
+// 流量 + 两次内存拷贝（序列化 + 反序列化）。而 fd 方案是 O(1) 的内核句柄
+// 传递，对端自己 mmap —— 零拷贝，且天然共享同一块物理内存。
+//
+// 板端能力已实测确认：`can_send UNIX_FD = 1`、libdbus 1.12.28、
+// `max_message_unix_fds` 默认 16（我们每次只传 1 个）。
+//
+// ========================================================================
+// 为什么必须配一个 ReleaseVideoFrame，而不是只靠超时回收
+// ========================================================================
+//
+// `VideoFrameHub::release()` 是**必须显式调用**的：只要槽位没归还，中枢
+// 就不会往里写新帧（宁可跳过，也不让消费者读到撕裂画面）。这条设计在
+// 同进程里很容易满足，但跨进程时服务端无法预知对端何时读完。
+//
+// 若只依赖 `lease_timeout_ms`（2s）：面板忘记归还 → 2s 内占满全部 3 个槽
+// → `skipped_busy` 增长 → **发布停摆**。于是「消费者写错了」变成了
+// 「采集侧故障」，正是本项目反复强调要避免的归因倒挂。
+//
+// 所以本层有两道保护：
+//   1. **每个 sender 最多持 1 个槽**（再次调用时自动归还上一次的）；
+//   2. 显式 `ReleaseVideoFrame`，让正常路径不依赖超时。
+// 第 1 条是关键：即使面板完全忘记 release，它也只浪费 1 个槽，
+// 另 2 个仍可服务编码器，中枢不会停摆。
+
+/**
+ * @brief 内部辅助：自动归还某个 sender 上一次持有的租约
+ *
+ * 调用方必须已持有 `video_lease_mutex_`。幂等：无租约时什么都不做。
+ */
+void DbusService::releaseClientLeaseLocked(const std::string& sender) {
+    auto it = video_leases_.find(sender);
+    if (it == video_leases_.end()) return;
+    if (it->second.slot != UINT32_MAX && ctx_ && ctx_->video_hub) {
+        ctx_->video_hub->release(it->second.slot);
+    }
+    video_leases_.erase(it);
+}
+
+/**
+ * @brief DBus 方法实现：GetVideoFrame —— 取最新帧的 dma-buf 句柄
+ *
+ * 返回签名：`(huuuuuttu)` 即
+ *   (fd, width, height, stride, fourcc, size, sequence, timestamp_ns, slot)
+ *
+ * 共 9 个字段。签名必须**固定不变**：调用方按位置解析，少一个字段就会让
+ * 后续字段整体错位一格，而且不会报错（见下面 `fd = -1` 那个教训）。
+ *
+ * 几何与 sequence 必须**随 fd 一起返回**：fd 只是一个句柄，对端拿到后要知道
+ * 怎么解释这块内存（尤其 stride——本板 1640 宽实测 stride=2460，若对端按
+ * width 当 stride 逐行读，画面会斜切），以及这一帧属于哪个时间点。
+ *
+ * @note 调用方负责 `close(fd)`；slot 必须原样传给 `ReleaseVideoFrame`。
+ *       再次调用本方法会自动归还上一次的槽（见上面说明）。
+ */
+bool DbusService::handleGetVideoFrame(DBusConnection* conn, DBusMessage* msg) {
+    const char* sender_c = dbus_message_get_sender(msg);
+    const std::string sender = sender_c ? sender_c : "";
+
+    // 先归还该 sender 上一次的租约。放在最前面：即使本次取帧失败（例如
+    // 摄像头还没出第一帧），也不应该让它继续占着上一帧的槽。
+    uint32_t prev_slot = UINT32_MAX;
+    {
+        std::lock_guard<std::mutex> lk(video_lease_mutex_);
+        auto it = video_leases_.find(sender);
+        if (it != video_leases_.end()) prev_slot = it->second.slot;
+        releaseClientLeaseLocked(sender);
+    }
+
+    if (!ctx_ || !ctx_->video_hub) {
+        DBusMessage* reply = dbus_message_new_error(msg, DBUS_ERROR_FAILED,
+            "video frame hub not available");
+        if (reply) { dbus_connection_send(conn, reply, nullptr); dbus_message_unref(reply); }
+        return false;
+    }
+
+    weaknet::VideoFrameLease lease;
+    if (!ctx_->video_hub->acquire(lease)) {
+        // ====================================================================
+        // 没有可交付帧：**不能**用 `fd = -1` 表示
+        // ====================================================================
+        //
+        // 正常情况有两种，都不是错误（用 error reply 会让面板以为接线错了）：
+        //   - 摄像头未启动 / 还没出第一帧（首帧惰性 configure）
+        //   - 有帧但全部被租用（对端太慢）
+        //
+        // 但「无帧」的表示方式有一个硬约束：**签名必须与有帧时完全一致**。
+        // 调用方是按位置读的，少一个字段会让后续字段整体错位一格。
+        //
+        // 曾经想用 `fd = -1` 表示无帧，那是错的。实测（libdbus 1.14.10，
+        // 真实 dbus-daemon 上对照实验）：
+        //
+        //   append(DBUS_TYPE_UNIX_FD, -1) → **返回 0（拒绝）**
+        //
+        // 这个返回 0 若被忽略，消息会**静默**少掉 fd 字段，签名从
+        // `huuuuuttu` 变成 `uuuuuttu`。客户端按 `h` 去读会读到后面的
+        // `u`，且不报错——我实测到的正是 `arg0 type = 'u'`（期望 `'h'`）。
+        // 也就是说面板会拿到一个「宽度当成了 fd」的回复，行为不可预测。
+        //
+        // 正确做法：给一个**有效但为空**的 memfd。于是：
+        //   - `arg0` 仍是 `h`，签名仍是 9 字段；
+        //   - `size == 0` 且 `slot == UINT32_MAX` 是「本次无帧」的判据
+        //     （调用方不得 mmap 长度为 0 的内存，也不得 Release 该 slot）；
+        //   - 调用方仍按统一规则 `close(fd)`，不需要区分两条路径。
+        const int empty_fd = memfd_create("weaknet-noframe", MFD_CLOEXEC);
+        if (empty_fd < 0) {
+            // memfd 都建不出来（极端资源耗尽）：此时只能回错误消息。
+            // 宁可让调用方看到一个明确的错误，也不要发一条签名不对的回复。
+            LOG_ERROR(LogModule::DBUS, "GetVideoFrame: memfd_create failed: "
+                                       << std::strerror(errno));
+            DBusMessage* err = dbus_message_new_error(msg, DBUS_ERROR_FAILED,
+                "no frame available and cannot allocate placeholder fd");
+            if (err) {
+                dbus_connection_send(conn, err, nullptr);
+                dbus_connection_flush(conn);
+                dbus_message_unref(err);
+            }
+            return false;
+        }
+
+        DBusMessage* reply = dbus_message_new_method_return(msg);
+        if (!reply) {
+            ::close(empty_fd);
+            return false;
+        }
+        DBusMessageIter args;
+        dbus_message_iter_init_append(reply, &args);
+        dbus_int32_t no_fd = empty_fd;
+        dbus_uint32_t zero = 0;
+        dbus_uint64_t zero64 = 0;
+        dbus_uint32_t no_slot = UINT32_MAX;
+        const bool ok =
+            dbus_message_iter_append_basic(&args, DBUS_TYPE_UNIX_FD, &no_fd) &&
+            dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &zero)   // width
+            && dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &zero)   // height
+            && dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &zero)   // stride
+            && dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &zero)   // uv_offset
+            && dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &zero)   // fourcc
+            && dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &zero)   // size
+            && dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT64, &zero64) // sequence
+            && dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT64, &zero64) // timestamp_ns
+            && dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &no_slot);
+        if (!ok) {
+            LOG_ERROR(LogModule::DBUS, "GetVideoFrame: failed to build no-frame reply");
+            dbus_message_unref(reply);
+            ::close(empty_fd);
+            return false;
+        }
+        dbus_connection_send(conn, reply, nullptr);
+        dbus_connection_flush(conn);
+        dbus_message_unref(reply);
+        // 与有帧路径同一条所有权规则：libdbus 只 dup，原 fd 归我们关。
+        ::close(empty_fd);
+        return true;
+    }
+
+    // 记账必须在**发送成功之后**才算数——但这里有个无法回避的次序问题：
+    // 若先发送再记账，两次调用并发时会双记。而 D-Bus 派发在本服务里是
+    // 单线程串行的（见文件头「线程安全」），所以不存在并发——直接记账。
+    {
+        std::lock_guard<std::mutex> lk(video_lease_mutex_);
+        VideoFrameClientLease& cl = video_leases_[sender];
+        cl.slot = lease.slot;
+        cl.sequence = lease.sequence;
+    }
+
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) {
+        // 连回复都建不出来：必须立刻归还，否则这个槽要等 2s 超时
+        ctx_->video_hub->release(lease.slot);
+        std::lock_guard<std::mutex> lk(video_lease_mutex_);
+        video_leases_.erase(sender);
+        ::close(lease.fd);
+        return false;
+    }
+
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    dbus_int32_t fd = lease.fd;
+    dbus_uint32_t w = lease.width, h = lease.height, stride = lease.stride;
+    // uv_offset 必须是**事实值**，由生产者（V4l2FrameSource）算好、经中枢
+    // 原样搬来。服务端自己按 stride*height 推导是错的：本板 sunxi-vin 的
+    // UV 起始 = align16(w)*align16(h) = 2030336，比 stride*height 大 9856，
+    // 那段是驱动预留的对齐空洞（实测全零）。推导出来的位置会把空洞当色度。
+    dbus_uint32_t uv_offset = lease.uv_offset;
+    dbus_uint32_t fourcc = lease.fourcc;
+    // size 必须显式给出：客户端 mmap 需要长度，而它**不能**从几何反推——
+    // NV12 反推得 stride*height*3/2，换成别的 fourcc 就不成立。让对端去猜
+    // 布局是给自己埋一个"换格式时才炸"的雷。
+    dbus_uint32_t size32 = static_cast<dbus_uint32_t>(lease.size);
+    dbus_uint64_t seq = lease.sequence, ts = lease.timestamp_ns;
+    dbus_uint32_t slot = lease.slot;
+
+    // 任何一个 append 失败都必须回滚：把 fd 关掉、槽位归还。
+    // libdbus 在 append 失败时**不会**接管 fd 的所有权（它只在消息成功
+    // 发送并关闭时关闭 fd 的副本），所以失败路径上我们仍拥有它。
+    //
+    // 签名固定为 `(huuuuuuttu)`：**任何一侧加/删字段都必须同时改另一端**，
+    // 按位置解析时错一个字段不会报错，只会整体错位。
+    bool ok = dbus_message_iter_append_basic(&args, DBUS_TYPE_UNIX_FD, &fd) &&
+              dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &w) &&
+              dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &h) &&
+              dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &stride) &&
+              dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &uv_offset) &&
+              dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &fourcc) &&
+              dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &size32) &&
+              dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT64, &seq) &&
+              dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT64, &ts) &&
+              dbus_message_iter_append_basic(&args, DBUS_TYPE_UINT32, &slot);
+
+    if (!ok) {
+        LOG_ERROR(LogModule::DBUS, "GetVideoFrame: failed to append reply fields");
+        dbus_message_unref(reply);
+        ctx_->video_hub->release(lease.slot);
+        {
+            std::lock_guard<std::mutex> lk(video_lease_mutex_);
+            video_leases_.erase(sender);
+        }
+        ::close(lease.fd);
+        return false;
+    }
+
+    LOG_DEBUG(LogModule::DBUS, "GetVideoFrame: sender=" << sender
+              << " slot=" << slot << " seq=" << seq
+              << " " << w << "x" << h << " stride=" << stride
+              << (prev_slot != UINT32_MAX ? " (auto-released previous)" : ""));
+
+    const dbus_bool_t send_ok = dbus_connection_send(conn, reply, nullptr);
+    dbus_connection_flush(conn);
+    dbus_message_unref(reply);
+
+    // ========================================================================
+    // 发送后必须自己 close：libdbus **不**接管这个 fd 的所有权
+    // ========================================================================
+    //
+    // 这不能靠推断，已实测（`DBUS_TYPE_UNIX_FD` + `dbus_message_unref` 后
+    // 原 fd 的 `fcntl(F_GETFD)` 仍成功 → `CALLER_MUST_CLOSE`）。
+    // libdbus 在发送时会把 fd **dup** 一份塞进消息，消息销毁时关的是那份
+    // 副本，与我们的 `lease.fd` 无关。
+    //
+    // 不 close 的后果很具体：`acquire()` 每次都 `dup`，10fps 下每分钟 600
+    // 个 fd，几分钟就撞上 `RLIMIT_NOFILE` —— 然后 `dup` 失败，中枢静默
+    // 停止交付，而 `FrameStats` 与网卡指标全都正常，看起来像是「面板坏了」。
+    //
+    // 必须**在 send + flush 之后**才关：`dbus_connection_send` 只是把消息
+    // 排进队列，flush 前 fd 仍要被用到。上面的顺序因此是硬约束。
+    ::close(lease.fd);
+
+    if (!send_ok) {
+        // 消息没发出去：对端拿不到 fd，槽位必须立刻归还，不能等 2s 超时。
+        LOG_ERROR(LogModule::DBUS, "GetVideoFrame: dbus_connection_send failed, "
+                                   "releasing slot " << slot);
+        ctx_->video_hub->release(lease.slot);
+        {
+            std::lock_guard<std::mutex> lk(video_lease_mutex_);
+            video_leases_.erase(sender);
+        }
+        return false;
+    }
+    return true;
+}
+
+/**
+ * @brief DBus 方法实现：ReleaseVideoFrame —— 归还槽位
+ *
+ * 入参：`u slot`。归还后中枢才可以重用这块内存写新帧。
+ *
+ * 幂等：重复归还、归还未知 slot、归还别人的 slot 都不会出错。
+ * 「归还别人的 slot」这一点是刻意的：本层只按 sender 自己的记账释放，
+ * 传入的 slot 若与记账不符则忽略计数，避免恶意/错误的 slot 号干扰他人。
+ */
+bool DbusService::handleReleaseVideoFrame(DBusConnection* conn, DBusMessage* msg) {
+    dbus_uint32_t slot = UINT32_MAX;
+    DBusMessageIter it;
+    if (dbus_message_iter_init(msg, &it)) {
+        if (dbus_message_iter_get_arg_type(&it) == DBUS_TYPE_UINT32) {
+            dbus_message_iter_get_basic(&it, &slot);
+        }
+    }
+
+    const char* sender_c = dbus_message_get_sender(msg);
+    const std::string sender = sender_c ? sender_c : "";
+
+    bool released = false;
+    {
+        std::lock_guard<std::mutex> lk(video_lease_mutex_);
+        auto found = video_leases_.find(sender);
+        if (found != video_leases_.end()) {
+            // =================================================================
+            // **只认该 sender 自己记账里的那个槽**，绝不直接释放传入的 slot
+            // =================================================================
+            // 理由：D-Bus 上 slot 号是调用方自己报的数。若原样透传给中枢，
+            // 一个客户端只要传别人的 slot 号，就能释放**别人正在读**的槽，
+            // 中枢随即认为那块内存空闲并覆写它 —— 对方读到撕裂画面。
+            // 这种攻击不需要任何特权（策略文件允许任意本地用户调用本接口）。
+            //
+            // 所以释放对象永远是「该 sender 记账中的槽」，传入的 slot 只用于
+            // **校验调用方是否知道自己还了什么**：
+            //   - 一致      → 正常归还
+            //   - 不一致/缺省 → 不释放，返回 false
+            //
+            // 为什么校验不一致就拒绝、而不是干脆忽略这个参数：忽略会让调用方
+            // 以为「我传的 slot 有意义」，于是写出 `Release(别人的slot)` 这类
+            // 代码还自测通过。显式拒绝才能让这种误用在第一次调用就暴露。
+            if (slot == found->second.slot) {
+                if (ctx_ && ctx_->video_hub) {
+                    ctx_->video_hub->release(found->second.slot);
+                    released = true;
+                }
+                video_leases_.erase(found);
+            } else {
+                LOG_WARNING(LogModule::DBUS, "ReleaseVideoFrame: sender=" << sender
+                            << " reported slot=" << slot
+                            << " but owns slot=" << found->second.slot
+                            << " (ignored)");
+            }
+        }
+    }
+
+    DBusMessage* reply = dbus_message_new_method_return(msg);
+    if (!reply) return false;
+    DBusMessageIter args;
+    dbus_message_iter_init_append(reply, &args);
+    dbus_bool_t ok = released ? TRUE : FALSE;
+    dbus_message_iter_append_basic(&args, DBUS_TYPE_BOOLEAN, &ok);
     dbus_connection_send(conn, reply, nullptr);
     dbus_connection_flush(conn);
     dbus_message_unref(reply);

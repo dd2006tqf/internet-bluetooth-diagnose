@@ -55,6 +55,8 @@
 #include "assurance/observer_attribution.hpp"
 #include "thermal_monitor.hpp"
 #include "video_qoe_attribution.hpp"
+#include "v4l2_frame_source.hpp"
+#include "video_frame_hub.hpp"
 #include "assurance/state_stabilizer.hpp"
 #include "assurance/ip_reachability_evaluator.hpp"
 #include "assurance/responsiveness_evaluator.hpp"
@@ -713,9 +715,25 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     // overlay 启用后再接（方案 §6.2.1 的 L2→L4 路径）。
                     // ------------------------------------------------------------
                     {
-                        // 帧源为空 → 本轮没有帧统计 → 归因函数会走
-                        // frames_unavailable 分支并返回 NONE，这是当前预期形态。
+                        // 帧统计：直接向真机帧源取一份快照。
+                        //
+                        // **取数节奏就是归因节奏**。帧源内部有自驱采集线程，
+                        // `snapshotAndReset()` 立即返回「上次快照至今」的累计值，
+                        // 其 `window_ms` 是这段时长的**事实值**。
+                        //
+                        // 为什么让网络侧去迁就帧侧，而不是反过来：网络侧没有
+                        // 「自己覆盖了多久」这个事实——它用的是各监控器的采样点
+                        // 集合，跨度取决于采样密度。而帧侧在自驱线程下覆盖时长
+                        // 精确可知。让**已知的一方**当基准，两侧才可能真的同窗。
+                        //
+                        // 若强行让帧侧对齐某个固定值（如 120s），就得让帧源攒
+                        // 120s 才吐一次数据——那会把「面板此刻卡不卡」的反馈
+                        // 延迟两分钟，运维根本无法据此排障。
                         weaknet::FrameStats frames;   // 默认构造 = valid()==false
+                        if (ctx->frame_source &&
+                            ctx->frame_source_running.load(std::memory_order_acquire)) {
+                            frames = ctx->frame_source->snapshotAndReset();
+                        }
                         weaknet::VideoNetworkObservation net_obs;
                         // 网络侧观测：直接取本轮已算出的 SLE 结论，不重复采集。
                         // available 取"至少有一个核心 SLE 有结论"，避免在
@@ -735,7 +753,18 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                         if (net_obs.degraded) ++consecutive_degraded;
                         else consecutive_degraded = 0;
                         net_obs.consecutive_degraded_windows = consecutive_degraded;
-                        net_obs.interval_ms = 0;  // 帧源未接入，窗口时长未知
+                        // 网络窗口 = 帧快照实际覆盖的时长。
+                        //
+                        // 这不是「凑数字让校验通过」，而是唯一诚实的做法：本轮
+                        // 归因所据的网络证据（上面的 SLE 结论）是**本轮**算出来
+                        // 的，而帧证据覆盖的正是「上一轮到现在」这段。两者说的
+                        // 都是同一个当下，所以用帧侧的事实跨度作为两边共同的
+                        // 窗口声明。
+                        //
+                        // 帧源未接入时 frames.window_ms 为 0，归因函数会走
+                        // window_length_undeclared 并拒绝——这是正确形态：
+                        // 没有帧就没有「同窗」这回事。
+                        net_obs.interval_ms = frames.window_ms;
 
                         auto video = weaknet::attributeVideoQoe(frames, net_obs);
                         if (video.evaluated) {
@@ -760,6 +789,29 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                                 << " net_degraded=" << (net_obs.degraded ? "yes" : "no")
                                 << " consecutive=" << consecutive_degraded
                                 << " issues=" << video.issues.size());
+                        } else {
+                            // 拒绝归因（frames_unavailable / window_mismatch /
+                            // window_length_undeclared / network_unavailable /
+                            // request_mismatch）**不是**故障，但必须留下原因。
+                            //
+                            // 此前这段完全没有 else：attribution 恒为 NONE 而
+                            // detail 恒为空字符串，快照里只剩一个光秃秃的
+                            // "NONE"。运维无法区分「没装摄像头」（正常）与
+                            // 「窗口没对齐」（配置/接线错了，要改），
+                            // 只能去翻进程日志。字段存在却恒为空，等于没有。
+                            //
+                            // 只写 detail，不写 issues：后者契约明确要求
+                            // 拒绝归因时为空（"没有采到帧却说有问题"与
+                            // "把不知道说成健康"同样有害）。
+                            // 也不进 warnings：没有摄像头是预期形态，
+                            // 每轮刷一条会把 warnings 变成噪音。
+                            exp.video_qoe_attribution_detail = video.explanation;
+                            LOG_INFO(LogModule::NETWORK,
+                                "video qoe not attributed: reason=" << video.reason
+                                << " frames_valid=" << (frames.valid() ? "yes" : "no")
+                                << " frames_window_ms=" << frames.window_ms
+                                << " net_interval_ms=" << net_obs.interval_ms
+                                << " net_available=" << (net_obs.available ? "yes" : "no"));
                         }
                     }
 
@@ -1595,9 +1647,65 @@ int start_server(int argc, char** argv) {
         start_active_probe_thread(&ctx, &ctx.active_probe_thread);
     }
 
+    // ================================================================
+    // 摄像头采集与帧分发（Plan B：单一所有者 + 句柄分发）
+    //
+    // 顺序有硬约束：中枢必须先 configure，帧源才开始 publish。
+    // 反过来的话，前若干帧会全部落进 skipped_unconfigured——
+    // 那不是故障，但会让「刚启动时面板黑一下」变成无法解释的现象。
+    //
+    // 摄像头不在位是**正常形态**，不是错误：start() 失败只记一条日志，
+    // 视频归因继续走 frames_unavailable 分支，其它监控完全不受影响。
+    // ================================================================
+    {
+        ctx.video_hub = std::make_unique<weaknet::VideoFrameHub>();
+
+        weaknet::V4l2CaptureConfig vcfg;   // 默认 1640x1232（本板唯一能出帧的可行档位）
+        ctx.frame_source = std::make_unique<weaknet::V4l2FrameSource>(vcfg);
+
+        // 中枢的几何要在第一帧到达之前就位，而几何只有 S_FMT 之后才知道
+        // （驱动可能校正分辨率）。所以这里用「首帧惰性 configure」：
+        // 回调第一次进来时拿 PixelFrame 里的真实几何去 configure。
+        auto hub = ctx.video_hub.get();
+        auto* hub_configured = &ctx.video_hub_configured;
+        ctx.frame_source->setPixelSink(
+            [hub, hub_configured](const weaknet::V4l2FrameSource::PixelFrame& pf) {
+                if (!hub_configured->load(std::memory_order_acquire)) {
+                    // 用驱动**回报**的几何，不用请求值：分辨率、stride 与
+                    // UV 平面偏移都可能被驱动按自己的对齐规则改写。
+                    //
+                    // uv_offset 必须原样传进来（不能省成默认 0）：本板实测
+                    // UV 起始 = 2030336，而 stride*height = 2020480，中间的
+                    // 9856 字节是对齐空洞且全零。省掉它下游就会把空洞当色度，
+                    // 画面偏色——而且不报任何错。
+                    if (!hub->configure(pf.width, pf.height, pf.stride,
+                                        pf.fourcc, pf.size, pf.uv_offset)) {
+                        return;   // 分配失败：下一帧再试
+                    }
+                    hub_configured->store(true, std::memory_order_release);
+                    LOG_INFO(LogModule::NETWORK,
+                             "video frame hub configured: " << pf.width << "x" << pf.height
+                             << " stride=" << pf.stride
+                             << " uv_offset=" << pf.uv_offset
+                             << " size=" << pf.size
+                             << " backend=" << hub->backend());
+                }
+                hub->publish(pf.data, pf.size, pf.sequence, pf.timestamp_ns);
+            });
+
+        if (ctx.frame_source->start()) {
+            ctx.frame_source_running.store(true, std::memory_order_release);
+            LOG_INFO(LogModule::NETWORK,
+                     "camera capture started: " << ctx.frame_source->describe());
+        } else {
+            LOG_INFO(LogModule::NETWORK,
+                     "camera capture unavailable (business continues): "
+                     << ctx.frame_source->lastError());
+        }
+    }
+
     // 初始化接口列表到WeakNetMgr中
-    LOG_INFO(LogModule::WEAK_MGR, "initializing interface list...");
-    auto initial_interfaces = ctx.weak_mgr->collectCurrentInterfaces();
+    LOG_INFO(LogModule::WEAK_MGR, "initializing interface list...");    auto initial_interfaces = ctx.weak_mgr->collectCurrentInterfaces();
     ctx.weak_mgr->updateInterfaces(initial_interfaces);
     LOG_INFO(LogModule::WEAK_MGR, "interface list initialized with " << initial_interfaces.size() << " interfaces");
 
@@ -1751,6 +1859,38 @@ int start_server(int argc, char** argv) {
     // 历史持久化线程：只读 weak_mgr 快照 + 写 DB，不依赖其他线程资源，最后 join 最安全。
     // 此前缺失该 join，导致 ~ServerContext 析构时该线程可能仍持 ctx* 访问 → 悬垂/terminate。
     if (ctx.history_thread.joinable())                  ctx.history_thread.join();
+
+    // 停止摄像头采集。
+    //
+    // 必须显式 stop()：帧源内部有自驱采集线程，占用 /dev/video0 且每帧回调
+    // 中枢。若只等 ~ServerContext 析构，那时 Ctrl-C 之后的各种收尾已经在跑，
+    // 采集线程仍可能在回调里访问即将销毁的 video_hub。
+    //
+    // 顺序：先停帧源（不再有新的 publish），再销毁中枢（消费者已无从 acquire）。
+    // 反过来的话，中枢析构后采集线程仍持有它的裸指针，那是 UAF。
+    if (ctx.frame_source) {
+        ctx.frame_source->stop();
+        ctx.frame_source_running.store(false, std::memory_order_release);
+        LOG_INFO(LogModule::NETWORK,
+                 "camera capture stopped: " << ctx.frame_source->describe());
+    }
+    // 中枢的累计计数必须**在析构前**取出，这是它唯一的存活窗口。
+    //
+    // 为什么这条日志不是可有可无的装饰：`describe()` 在启动时打印过一次，
+    // 那一刻 `pub=0`（还没开始采）。若只留那一行，事后**无法从生产运行中
+    // 证明中枢到底发布过没有**——只能看到「配置成功」，看不到「真的在动」。
+    // 停止时这一行给出整段运行的累计值，配合运行秒数就能算出实际发布速率，
+    // 并与采集侧的 ~18.5fps 对照，验证「限速 10fps」确实生效、
+    // `skip(rate=...)` 的增长与预期同阶。
+    //
+    // 同理 `acq/rel/reclaim` 三项在这里才有意义：面板/编码器接入后，
+    // 这一行是判断租约协议有没有真的被走通的第一现场。
+    if (ctx.video_hub) {
+        LOG_INFO(LogModule::NETWORK,
+                 "video frame hub stopped: " << ctx.video_hub->describe());
+    }
+    ctx.video_hub.reset();
+    ctx.frame_source.reset();
 
     // 停止端侧 AI 调度器：先于 edge_exporter 停止，避免回调访问已析构的 exporter
     if (ctx.edge_ai_scheduler) {

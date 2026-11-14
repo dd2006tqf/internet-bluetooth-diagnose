@@ -33,6 +33,15 @@
 #include "edge_telemetry_exporter.hpp"
 #include "edge_wireless_uplink_exporter.hpp"
 #include "assurance/edge_ai_scheduler.hpp"
+#include "video_frame_hub.hpp"
+// 为什么是完整 include 而不是前向声明：
+//   ServerContext 用 `unique_ptr<V4l2FrameSource>` 持有帧源。unique_ptr 的
+//   析构需要完整类型——只用前向声明时，任何包含 server.hpp 却不包含本头的
+//   编译单元（例如测试里的 mock_dbus_service.cpp）都会在生成删除器时报
+//   "invalid application of sizeof to incomplete type"。
+//   而 v4l2_frame_source.hpp 本身已经是 pimpl（内核头全部藏在 .cpp），
+//   include 它不会把 linux/videodev2.h 扩散给任何人。
+#include "v4l2_frame_source.hpp"
 
 // 前置声明，避免强依赖 dbus 头
 struct DBusConnection;
@@ -162,6 +171,31 @@ struct ServerContext {
     std::unique_ptr<weaknet::EdgeWirelessUplinkExporter> wireless_uplink;
     /// T3：端侧 AI 异步初筛调度器（容量=1，并发=1，300s 冷却，15s SIGKILL 硬超时）
     std::unique_ptr<weaknet::EdgeAiScheduler> edge_ai_scheduler;
+
+    // ---------- 视频采集与帧交付（Plan B：单一所有者 + 句柄分发）----------
+    //
+    // 为什么摄像头必须只有一个所有者：板端实测 `/dev/video0` 在 `open()`
+    // 层面独占（A 仅 open 成功，B 紧随其后 open 得到 EBUSY，只读 open 也独占；
+    // video1/4/5 可同时打开说明是按节点独占）。所以控制台面板**不能**自己
+    // 打开设备，必须由服务端把画面分发出去。
+    //
+    // 帧源（采集）与中枢（分发）的职责边界：
+    //   - frame_source：独占设备、驱动 DQBUF/QBUF、产出 FrameStats 与像素回调；
+    //   - video_hub：把像素拷进自己的 dma-buf/memfd 槽位，按租约交给消费者。
+    // 中枢**不**直接把采集 buffer 的 fd 交出去——那会让消费者持有时间直接
+    // 变成采集卡顿，最终被 FrameStats 记成链路丢帧（观测缺陷栽给被观测对象）。
+    std::unique_ptr<weaknet::V4l2FrameSource> frame_source;
+    std::unique_ptr<weaknet::VideoFrameHub> video_hub;
+
+    /// 帧源是否已成功启动（摄像头可能在也可能不在，这不是错误状态）
+    std::atomic<bool> frame_source_running{false};
+
+    /// 中枢是否已按首帧的真实几何配置过。
+    ///
+    /// 为什么需要这个标志：几何只有 S_FMT 之后才知道（驱动会校正分辨率），
+    /// 而中枢的 configure 必须在第一帧 publish 之前完成。做成「首帧惰性
+    /// 配置」，就需要一个跨帧记住「已经配过了」的地方。
+    std::atomic<bool> video_hub_configured{false};
 
     // ---------- 端侧确定性诊断引擎与证据生成服务 ----------
     std::shared_ptr<weaknet::ActionRegistry> action_registry;

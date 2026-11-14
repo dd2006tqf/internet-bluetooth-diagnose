@@ -20,8 +20,13 @@
 
 #pragma once
 
+#include <cstdint>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+#include <cstddef>
 
 struct DBusConnection;
 struct DBusMessage;
@@ -85,6 +90,10 @@ public:
     bool handleGetCoexistenceConflict(DBusConnection* conn, DBusMessage* msg);
     bool handleGetNetworkExperience(DBusConnection* conn, DBusMessage* msg);          ///< GetNetworkExperience: 返回 schema v2 权威评估快照（只读，不重新 evaluate）   ///< GetCoexistenceConflict: 返回 Wi-Fi 与蓝牙 2.4GHz 冲突诊断 JSON
 
+    // 视频帧分发（Plan B：单一所有者 + 句柄分发）
+    bool handleGetVideoFrame(DBusConnection* conn, DBusMessage* msg);        ///< GetVideoFrame: 返回最新帧的 dma-buf fd + 几何 + sequence
+    bool handleReleaseVideoFrame(DBusConnection* conn, DBusMessage* msg);    ///< ReleaseVideoFrame: 归还槽位（不归还会阻塞中枢发布）
+
     // eBPF 监控数据方法
     bool handleGetDnsStats(DBusConnection* conn, DBusMessage* msg);           ///< GetDnsStats: DNS 监控最近统计
     bool handleGetWifiLossStats(DBusConnection* conn, DBusMessage* msg);      ///< GetWifiLossStats: Wi-Fi 丢包归因
@@ -138,6 +147,46 @@ private:
 
 private:
     ServerContext* ctx_;     ///< 全局上下文非 owning 指针
+
+    // ---------- 视频帧租约的跨进程记账 ----------
+    //
+    // ========================================================================
+    // 为什么需要按 sender 记账，而不是「调用方自己管好自己的租约」
+    // ========================================================================
+    //
+    // `VideoFrameHub` 的租约协议要求消费者 `release(slot)`。同一进程内这
+    // 很容易做到（RAII），但 **D-Bus 是跨进程的**：服务端只知道「谁调了
+    // GetVideoFrame」，完全不知道对端什么时候读完、什么时候崩。
+    //
+    // 如果只依赖中枢的 `lease_timeout_ms`（默认 2s）兜底，会有两个后果：
+    //
+    //   1. 面板以 10fps 取帧、每帧都忘记 release，2s 内会占满 3 个槽 →
+    //      中枢 `skipped_busy` 开始增长 → **发布停摆**。也就是「消费者不会
+    //      用」这种现象直接变成了「采集侧故障」，与项目反复强调的
+    //      「观测缺陷不得栽给被观测对象」背道而驰。
+    //   2. `reclaimed` 计数会把「忘记归还」和真正的「消费者崩溃」混在一起，
+    //      失去诊断价值。
+    //
+    // 解决办法：**服务端替每个 sender 记住它当前持有的那一个槽**，同一个
+    // sender 再次取帧时先自动归还上一次的。于是：
+    //
+    //   - 单个消费者最多同时持 1 个槽，无论它多健忘；
+    //   - N 个消费者 → 最多 N 个槽（本板 3 个槽，足够面板 + 编码器）；
+    //   - 消费者崩溃时它只浪费 1 个槽，且超时回收仍会把它清掉，
+    //     `reclaimed` 也因此只反映真正的异常。
+    //
+    // 键用 D-Bus 唯一名（`:1.42`）。连接断开后名字会被总线回收，理论上
+    // 之后另一个客户端可能复用同名——但此时那条旧租约早已被超时回收，
+    // 自动归还也是幂等的（`release()` 对未知 slot 直接返回），不会误伤。
+    struct VideoFrameClientLease {
+        uint32_t slot{UINT32_MAX};   ///< 该 sender 当前持有的槽（UINT32_MAX = 无）
+        uint64_t sequence{0};        ///< 该租约对应的帧序号（用于诊断日志）
+    };
+    std::mutex video_lease_mutex_;
+    std::unordered_map<std::string, VideoFrameClientLease> video_leases_;
+
+    /// 内部辅助：自动归还该 sender 上一次的租约（幂等；无租约时什么都不做）
+    void releaseClientLeaseLocked(const std::string& sender);
 };
 
 }  // namespace weaknet_dbus
