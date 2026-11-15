@@ -215,8 +215,21 @@ struct VideoQoeAttributionResult {
     ///   没有采到帧却说"有问题"，与把"不知道"说成"健康"同样有害。
     /// - 画面正常时为空。每轮刷一条会让告警变成噪音。
     ///
-    /// 当前取值：`FRAME_LOSS` / `FRAME_GAP_P95` / `CORRUPT_FRAMES` /
-    /// `DEQUEUE_LATENCY`，与 `VideoQoeThresholds` 的四条画面阈值一一对应。
+    /// 当前取值：`FRAME_LOSS` / `ZERO_FRAME` / `FRAME_GAP_P95` /
+    /// `CORRUPT_FRAMES` / `DEQUEUE_LATENCY`。前两条同源于
+    /// `frame_loss_frames_bad` 一条阈值，是同一判据的两种形状，**互斥**：
+    ///
+    /// | 形态 | 标签 | 指向 |
+    /// | --- | --- | --- |
+    /// | 期望 N、收到 0（N ≥ 阈值）| `ZERO_FRAME` | 采集端一个字节都没出来：sensor / CSI-2 / 供电 / 接线 |
+    /// | 期望 N、收到 M（0 < M < N）| `FRAME_LOSS` | 帧在路上丢了：链路 / 编码器占用 / 缓冲区不足 |
+    ///
+    /// 这两者被拆开是**排障方向**的要求，不是措辞偏好：一个指向「采集端
+    /// 有没有出数据」，一个指向「帧在哪一段丢的」。此时若只报 `FRAME_LOSS`，
+    /// 现场会去查一条毫无问题的链路。
+    ///
+    /// 收到 0 帧时 `FRAME_LOSS` 必然也成立且不携带额外信息，所以二者只报一条：
+    /// 下游把 `issues.size()` 读作「劣化项个数」，并存会让它虚高。
     ///
     /// `FRAME_GAP_P95` 与 `DEQUEUE_LATENCY` 会同时出现，这不是重复，两者的
     /// 组合才给出归因方向（与 `frame_source.hpp` 的三行对照表同源）：

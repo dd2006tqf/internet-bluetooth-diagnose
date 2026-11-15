@@ -754,6 +754,29 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                             ctx->frame_source_running.load(std::memory_order_acquire)) {
                             frames = ctx->frame_source->snapshotAndReset();
                         }
+                        // 帧统计的**原始数值**。
+                        //
+                        // 这行不是为了调试某个特定 bug，而是补上一个长期缺失的
+                        // 观测面：下面的归因日志只打 frames_bad=yes/no 这个派生结论，
+                        // 而「坏」既可能是真收到坏帧、也可能是「期望 N 帧收到 0 帧」。
+                        // 两者处置方向相反（查编码器 vs 查 CSI-2 接线），
+                        // 只读派生结论必然误导排障方向。
+                        //
+                        // 只在帧源已接入时输出：未接入是预期形态（没装摄像头），
+                        // 每轮刷一条会把日志变成噪音。
+                        if (frames.valid()) {
+                            LOG_INFO(LogModule::NETWORK,
+                                "frame stats: window_ms=" << frames.window_ms
+                                << " expected=" << frames.frames_expected
+                                << " received=" << frames.frames_received
+                                << " corrupt=" << frames.frames_corrupt
+                                << " lost=" << frames.framesLost()
+                                << " bytes=" << frames.bytes_received
+                                << " seq_gap=" << frames.seq_gap_count
+                                << " max_gap_ms=" << frames.max_gap_ms
+                                << " p95_gap_ms=" << frames.p95_gap_ms
+                                << " p95_dequeue_ms=" << frames.p95_dequeue_latency_ms);
+                        }
                         weaknet::VideoNetworkObservation net_obs;
                         // 网络侧观测：直接取本轮已算出的 SLE 结论，不重复采集。
                         // available 取"至少有一个核心 SLE 有结论"，避免在

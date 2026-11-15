@@ -68,6 +68,7 @@
 | --- | --- |
 | [cross-probe-join-dns.md](cross-probe-join-dns.md) | 跨探针拼一次观测，query 与 response 会数成两个世界（`tracker_q=45` vs `tracker_r=324`） |
 | [oracle-exit-code-as-truth.md](oracle-exit-code-as-truth.md) | 拿工具进程的退出码当 ground truth，会把健康解析器判成故障 |
+| [dmesg-not-history-and-nonmonotonic-counters.md](dmesg-not-history-and-nonmonotonic-counters.md) | 用 `dmesg` 与单次 `/proc/interrupts` 采样断言「从未发生」，把可自愈故障判成硬件损坏（149 次错误被读成 0 次） |
 
 ### 帧统计与 V4L2
 

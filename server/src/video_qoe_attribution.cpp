@@ -52,8 +52,28 @@ std::vector<std::string> collectFrameIssues(const FrameStats& frames,
     // 同一份物理事实在不同板子上得到相反结论，这是判据本身的缺陷。
     //
     // 帧数阈值与帧率解耦后，「丢 3 帧」在任何板子上都是「丢 3 帧」。
+    //
+    // 越过阈值之后必须再分一次形状：`framesLost()` 对下面两件事给出同一个
+    // 数字，但它们的处置方向**相反**。
+    //
+    //   期望 451、收到 0   → 采集端一个字节都没出来（sensor / CSI-2 / 供电 / 接线）
+    //   期望 451、收到 448 → 帧在路上丢了（链路 / 编码器占用 / 缓冲区不足）
+    //
+    // 只报 `FRAME_LOSS` 会把人指向后者。两者的排障入口完全不同：
+    // 前者要查采集端有没有出数据（设备节点、驱动流式状态、sensor 配置），
+    // 后者要查帧在哪一段丢的（链路、编码器占用、缓冲区）。
+    //
+    // ZERO_FRAME 是 FRAME_LOSS 的**细化**而不是并存项：收到 0 帧时 FRAME_LOSS
+    // 必然也成立且不携带任何额外信息，两条同时出现只会让 `issues.size()`
+    // 这个被下游当「劣化项个数」读的数字虚高。
+    //
+    // 阈值复用同一条 `frame_loss_frames_bad`：单个帧周期的瞬时全空不值得
+    // 单独定性（33ms 窗口里 expected=1），否则每次调度抖动都会被报成
+    // 「采集端故障」。要求先越过丢帧阈值，等于要求「这是一次成规模的空白」。
     if (frames.framesLost() >= thresholds.frame_loss_frames_bad) {
-        issues.emplace_back("FRAME_LOSS");
+        const bool zero_frame =
+            frames.frames_expected > 0 && frames.frames_received == 0;
+        issues.emplace_back(zero_frame ? "ZERO_FRAME" : "FRAME_LOSS");
     }
 
     if (frames.p95_gap_ms >= thresholds.frame_gap_p95_bad_ms) {

@@ -438,6 +438,84 @@ TEST(VideoQoeAttribution, IssuesOnlyReportsWhatActuallyExceeded) {
     EXPECT_EQ(r.issues[0], "FRAME_LOSS");
 }
 
+// ---------------------------------------------------------------------------
+// 6.4 「一帧都没收到」必须是独立标签，不能混进 FRAME_LOSS
+//
+// 这两个形态在 `framesLost()` 眼里是同一个数字，但处置方向**相反**：
+//   期望 451、收到 0    → 采集端没出数据（sensor / CSI-2 / 供电 / 接线）
+//   期望 451、收到 448  → 帧在路上丢了（链路 / 编码器占用 / 缓冲区不足）
+//
+// 若归因层只报 `FRAME_LOSS`，前一种形态会把人指向链路——去查一条
+// 根本没问题的线。这条用例守的就是这个分流。
+// ---------------------------------------------------------------------------
+
+TEST(VideoQoeAttribution, ZeroReceivedFramesReportedAsZeroFrameNotFrameLoss) {
+    FrameStats f = goodFrames();
+    f.frames_expected = 451;     // 15s × 30fps（真机日志里的真实值）
+    f.frames_received = 0;
+    f.bytes_received = 0;
+    // 无帧时 v4l2 源刻意不填 gap，保持 0 —— 否则「没帧」会伪装成「长停顿」
+    f.max_gap_ms = 0;
+    f.p95_gap_ms = 0;
+
+    auto r = attributeVideoQoe(f, netGood());
+
+    ASSERT_EQ(r.attribution, VideoQoeAttribution::APP_LAYER_SUSPECT);
+    const std::set<std::string> got(r.issues.begin(), r.issues.end());
+    EXPECT_TRUE(got.count("ZERO_FRAME"))
+        << "收到 0 帧必须报 ZERO_FRAME——这是采集端没出数据，不是链路丢帧";
+    EXPECT_FALSE(got.count("FRAME_LOSS"))
+        << "收到 0 帧时 FRAME_LOSS 不携带任何额外信息，并存会让 issues.size() 虚高"
+           "（下游把它读作「劣化项个数」）";
+}
+
+TEST(VideoQoeAttribution, PartialLossStillReportedAsFrameLoss) {
+    // 收到非零帧就是「路上丢了」，不是「没出数据」。这条守着拆分的另一半：
+    // 不能因为加了 ZERO_FRAME 就把所有丢帧都当成采集端故障。
+    FrameStats f = goodFrames();
+    f.frames_expected = 451;
+    f.frames_received = 448;     // 丢 3 帧 = 阈值
+
+    auto r = attributeVideoQoe(f, netGood());
+
+    const std::set<std::string> got(r.issues.begin(), r.issues.end());
+    EXPECT_TRUE(got.count("FRAME_LOSS"));
+    EXPECT_FALSE(got.count("ZERO_FRAME"))
+        << "收到过帧就不可能是「采集端没出数据」";
+}
+
+TEST(VideoQoeAttribution, ZeroExpectedIsNotZeroFrame) {
+    // frames_expected == 0 是「没有分母」，不是「期望若干帧却一帧没来」。
+    // 把它报成 ZERO_FRAME 等于用缺失数据编造一个采集端故障。
+    FrameStats f = goodFrames();
+    f.frames_expected = 0;
+    f.frames_received = 0;
+
+    auto r = attributeVideoQoe(f, netGood());
+
+    const std::set<std::string> got(r.issues.begin(), r.issues.end());
+    EXPECT_FALSE(got.count("ZERO_FRAME"));
+    EXPECT_FALSE(got.count("FRAME_LOSS"));
+}
+
+TEST(VideoQoeAttribution, SingleFrameWindowZeroReceivedIsNotZeroFrame) {
+    // 单个帧周期的瞬时空白（33ms 窗口里 expected=1）不值得单独定性，
+    // 否则每次调度抖动都会被报成「采集端故障」。要求先越过丢帧阈值，
+    // 等于要求「这是一次成规模的空白」。
+    FrameStats f;
+    f.frames_expected = 1;
+    f.frames_received = 0;
+    f.window_ms = 33;
+    f.sampled_at = std::chrono::steady_clock::now();
+
+    VideoQoeThresholds t;                 // frame_loss_frames_bad = 3
+    auto r = attributeVideoQoe(f, netGood(33), t);
+
+    const std::set<std::string> got(r.issues.begin(), r.issues.end());
+    EXPECT_FALSE(got.count("ZERO_FRAME"))
+        << "丢帧数未越阈值时不得升级为 ZERO_FRAME";
+}
+
 TEST(VideoQoeAttribution, IssuesIsEmptyWhenRefusingToAttribute) {
     // 拒绝归因时没有采到任何帧，"问题清单"必须是空的——
     // 把"不知道"写成"有问题"与把"不知道"写成"健康"同样有害。
