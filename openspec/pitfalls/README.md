@@ -68,6 +68,7 @@
 | --- | --- |
 | [cross-probe-join-dns.md](cross-probe-join-dns.md) | 跨探针拼一次观测，query 与 response 会数成两个世界（`tracker_q=45` vs `tracker_r=324`） |
 | [oracle-exit-code-as-truth.md](oracle-exit-code-as-truth.md) | 拿工具进程的退出码当 ground truth，会把健康解析器判成故障 |
+| [proc-stat-field-split-vs-comm.md](proc-stat-field-split-vs-comm.md) | `/proc/*/stat` 按空白取第 3 字段，comm 含空格时错位 → D 线程数不出来、判据恒通过 |
 | [dmesg-not-history-and-nonmonotonic-counters.md](dmesg-not-history-and-nonmonotonic-counters.md) | 用 `dmesg` 与单次 `/proc/interrupts` 采样断言「从未发生」，把可自愈故障判成硬件损坏（149 次错误被读成 0 次） |
 | [register-value-semantics-not-verified.md](register-value-semantics-not-verified.md) | 不知道寄存器/时钟值的语义就当判据，一天内错 7 次且全部静默通过 |
 
@@ -94,6 +95,12 @@
 | --- | --- |
 | [resolver-whitelist-attribution-gap.md](resolver-whitelist-attribution-gap.md) | 诊断规则的字段解析器只认 SLE evidence，没有字段等于永远无法归因 |
 
+### 线程接线与生命周期
+
+| 文件 | 一句话 |
+| --- | --- |
+| [capture-before-creation-null-consumer.md](capture-before-creation-null-consumer.md) | 线程启动时捕获下游对象的 `get()`，必然是空指针且永不刷新，失败被 `&&` 短路吞成一行含糊日志 |
+
 ### 设备树与硬件实测
 
 | 文件 | 一句话 |
@@ -107,6 +114,7 @@
 | 文件 | 一句话 |
 | --- | --- |
 | [execute-process-foreign-binary-sh-fallback.md](execute-process-foreign-binary-sh-fallback.md) | `execute_process` 探测异构架构二进制，内核回退 `/bin/sh` 解析 ELF，在 cwd 里造出名字是乱码字节的垃圾文件 |
+| [install-no-parent-dir-with-set-e.md](install-no-parent-dir-with-set-e.md) | `install` 不建父目录，`set -e` 脚本里新增一行就让整个打包静默中断 |
 
 ## 一条元教训（跨越多篇）
 
@@ -159,3 +167,28 @@
 
 这次戳穿它的仍然是最下层的事实——**帧内容的零字节游程**：
 真实数据的空洞位置不撒谎，而任何 `ioctl` 回报的字段都可能。
+
+### 2026-11-15 补充：有些坑只能靠「换一个编译器」和「真跑一遍打包」发现
+
+这一轮的两篇（`proc-stat-field-split-vs-comm`、`install-no-parent-dir-with-set-e`）
+有一个共同的、值得记住的特征：**它们在被发现时，所有既有关卡都是绿的**。
+
+| 关卡 | 当时状态 | 为什么没拦住 |
+| --- | --- | --- |
+| x86 `g++ -Werror` | 通过 | g++ 不报未使用的 `constexpr`（clang 报） |
+| 78 项单元测试 | 全通过 | 测试只覆盖「数出来之后怎么判」，没覆盖「能不能数出来」 |
+| `bash -n` 语法检查 | 通过 | 语法完全合法，是路径不存在 |
+| 代码审查 | 会漏 | diff 只有一行 `install`，看起来完全正常 |
+
+两条的发现方式分别是：**换 ARM64 clang 编译**时由一条看似无关的
+`-Wunused-const-variable` 告警牵出来；以及**逐行核对打包段路径**时，
+用 `install` 亲手实测一次「父目录不存在会怎样」确认。
+
+由此再多一问：**我这次的验证，覆盖的是「我写的逻辑对不对」，还是「我以为存在的
+前置条件是否真的成立」？** 单元测试天然只能验证前者。后者需要跑真实的
+构建/打包/部署链路 —— 而在没有板子的时候，至少可以跑「打包到 dist 为止」。
+
+另外一条更具体的教训：**多编译器交叉验证的成本极低、收益不对称**。
+g++ 与 clang 对「未使用的定义」告警策略不同，这一条差异直接指向了一处
+从未被认真执行过的代码路径。
+
