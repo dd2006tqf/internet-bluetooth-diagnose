@@ -88,6 +88,8 @@ namespace LogModule {
     constexpr const char* BLUETOOTH    = "bluetooth";
     constexpr const char* SYSTEM       = "system";
     constexpr const char* HOST_PRESSURE = "host_pressure";
+    /// 视频链路（采集 → 帧中枢 → 编码 → 推流）
+    constexpr const char* VIDEO        = "video";
 }
 
 /**

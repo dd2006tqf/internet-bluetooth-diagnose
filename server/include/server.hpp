@@ -34,6 +34,7 @@
 #include "edge_wireless_uplink_exporter.hpp"
 #include "assurance/edge_ai_scheduler.hpp"
 #include "video_frame_hub.hpp"
+#include "video_clip_exporter.hpp"
 // 为什么是完整 include 而不是前向声明：
 //   ServerContext 用 `unique_ptr<V4l2FrameSource>` 持有帧源。unique_ptr 的
 //   析构需要完整类型——只用前向声明时，任何包含 server.hpp 却不包含本头的
@@ -196,6 +197,62 @@ struct ServerContext {
     /// 而中枢的 configure 必须在第一帧 publish 之前完成。做成「首帧惰性
     /// 配置」，就需要一个跨帧记住「已经配过了」的地方。
     std::atomic<bool> video_hub_configured{false};
+
+    // ---------- 编码消费者（帧中枢的第二个消费者）----------
+    //
+    // 编码器由本线程**独占**（`IVideoEncoder` 明确不保证线程安全），所以
+    // 这里只留线程句柄与停止标志，编码器实例是线程的局部变量。等归因层
+    // 需要读它的统计时，再由该线程往一个带锁的快照槽里写——而不是让别的
+    // 线程直接去读 `peekStats()`（那是未加锁的普通结构体，是数据竞争）。
+    std::thread video_encode_thread;
+
+    /// 请求编码线程退出。与 `running` 分开：`running=false` 会停掉所有监控，
+    /// 而这里只需要停掉这一个消费者（先停它才能安全销毁 `video_hub`）。
+    std::atomic<bool> video_encode_stop{false};
+
+    // ---------- 视频留证上行（事件触发）----------
+    //
+    // 与遥测上行**并列独立**：幂等域是 clip_id/chunk_index，失败重发语义
+    // 也不同（整段重传而非补一条），所以各自线程与队列。
+    //
+    // 为什么上行器单独一个线程：一次 22 MB 片段在跨公网 RTT 234ms 的链路上
+    // 要传几十秒。同步做会让编码线程几十秒不取帧——那会同时拖垮面板与归因。
+    std::unique_ptr<weaknet::VideoClipExporter> video_clip_exporter;
+
+    /// 供编码线程取用的上行器槽位。
+    ///
+    /// 为什么不能把 `video_clip_exporter.get()` 直接抓进编码线程的捕获列表：
+    /// 编码线程在本函数**前半段**启动，而上行器要到**后半段**才创建，捕获
+    /// 那一刻必然是 nullptr，于是每个片段都在「上行器未启用」分支被静默丢弃
+    /// ——事故、录制都正常，只有上传永远不发生，且日志里看不出是接线问题。
+    /// 直接读 `ctx.video_clip_exporter` 也不行：那是 unique_ptr 的非原子写，
+    /// 与编码线程的读构成数据竞争。故与 `video_clip_recorder` 同法，用原子
+    /// 槽位承载「本线程可见的当前实例」，创建成功后才发布、停止前先撤下。
+    std::atomic<weaknet::VideoClipExporter*> video_clip_exporter_slot{nullptr};
+    /// 片段录制者在编码线程内构造（它只被那一个线程使用），
+    /// 但停止时要能从主线程查统计，故用注记指针 + 生命周期由线程负责。
+    std::atomic<weaknet::VideoClipRecorder*> video_clip_recorder{nullptr};
+
+    /// 事故轮询线程：把「关联器确认了新事故」翻译成「开始录一段」。
+    ///
+    /// 为什么不直接在 observe() 的回调里触发：关联器由 bt_events 插件拥有，
+    /// 让插件去认识视频录制器会把两条无关的能力线绑在一起（插件不可用就
+    /// 连视频也一并失效）。轮询的代价是一次 2 秒的 JSON 快照拷贝，可以忽略。
+    std::thread video_incident_watch_thread;
+    std::atomic<bool> video_incident_watch_stop{false};
+
+    /// 待开始的录制请求（incident_id）。巡检线程写、编码线程**换出**。
+    ///
+    /// 为什么不能用 `std::atomic<std::string>`（试过，编译期就废）：
+    /// `atomic<T>` 要求 T 平凡可拷贝，而 `std::string` 不是。
+    ///
+    /// 为什么也不该换成无锁环形队列：写入是「最多每 2 秒一次、每次一个 ID」
+    /// 的极低频率，读取在每帧路径上。互斥只会在**真的有请求**时才被争用，
+    /// 而那种时刻每帧多几十纳秒毫无影响；反过来，把一个低频信号做成无锁，
+    /// 只会增加出错面积而不减少任何可测量的开销。
+    std::mutex video_pending_clip_mutex;
+    /// 空串 = 无待办请求（incident_id 永不为空，见关联器的生成规则）。
+    std::string video_pending_clip_incident;
 
     // ---------- 端侧确定性诊断引擎与证据生成服务 ----------
     std::shared_ptr<weaknet::ActionRegistry> action_registry;
