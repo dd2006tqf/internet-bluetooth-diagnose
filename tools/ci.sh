@@ -142,7 +142,7 @@ info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(npr
           -DBUILD_EBPF=ON 2>&1
 
     echo "--- 编译服务端 + eBPF + 客户端 (-j$(nproc)) ---"
-    cmake --build build-arm64-native --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf test_crash_handler ebpf -j"$(nproc)" 2>&1
+    cmake --build build-arm64-native --target weaknet-dbus-server history_query_tool weaknet weaknet_cli weaknet_health_guard test_client_bin test_ebpf test_crash_handler ebpf -j"$(nproc)" 2>&1
 
     # ===== Qt 本地看板（可选产物）=====
     #
@@ -175,7 +175,7 @@ info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(npr
     echo "--- 打包 dist-arm64 ---"
     rm -rf dist-arm64
     mkdir -p dist-arm64/server/bin dist-arm64/server/build dist-arm64/server/test \
-             dist-arm64/client/bin dist-arm64/client/lib dist-arm64/lib
+             dist-arm64/client/bin dist-arm64/client/lib dist-arm64/lib dist-arm64/tools
 
     install -m 0755 build-arm64-native/server/weaknet-dbus-server dist-arm64/server/bin/
     install -m 0755 build-arm64-native/server/history_query_tool dist-arm64/server/bin/
@@ -184,6 +184,7 @@ info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(npr
     for f in build-arm64-native/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true; done
     install -m 0755 build-arm64-native/client/bin/test_client_bin dist-arm64/client/bin/test-client
     install -m 0755 build-arm64-native/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
+    install -m 0755 build-arm64-native/client/bin/weaknet_health_guard dist-arm64/client/bin/weaknet-health-guard
     install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
     install -m 0644 build-arm64-native/client/lib/libweaknet.so dist-arm64/client/lib/
     # 看板与 weaknet-cli 同目录（client/bin），库在 ../lib —— RUNPATH 是
@@ -191,6 +192,9 @@ info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(npr
     if [ -f "${DASHBOARD_BIN}" ]; then
         install -m 0755 "${DASHBOARD_BIN}" dist-arm64/client/bin/weaknet-dashboard
     fi
+    # 系统健康看门狗：接管脚本随包下发（单元里的 ExecStartPre/ExecStopPost
+    # 经 current 软链寻址，OTA 翻链后自动跟着翻）。
+    install -m 0755 "${ROOT}/tools/weaknet-wdt-takeover.sh" dist-arm64/tools/weaknet-wdt-takeover.sh
     install -m 0755 "AI-assisted analysis/edge_network_rag.py" dist-arm64/edge_network_rag.py
     install -m 0644 "AI-assisted analysis/network_knowledge_base.py" dist-arm64/network_knowledge_base.py
     cp -a "${SYSROOT_DIR}/usr/local/lib/libbpf.so"* dist-arm64/lib/ 2>/dev/null || true
@@ -249,6 +253,39 @@ if [ "$SKIP_DEPLOY" = false ]; then
     if [ "${BOARD}" != "board" ] && ! ping -c 1 -W 2 "${BOARD#*@}" >/dev/null 2>&1; then
         fail "开发板不可达"
     fi
+
+    # ---- 部署期间暂停健康判据 ----
+    #
+    # 下面某一步要 stop weaknet-server，直到 adopt 完成才恢复，间隔可达
+    # 数分钟 —— 远超 health-guard 的 12 秒容忍窗口（kInactiveGraceSec）。没有这个标记，每次
+    # 部署都会把「服务被我停了」判成「服务死了」，然后在部署中途复位整机
+    # （最坏落点是指针已翻、release 未转正）。标记由 guard 识别为
+    # 「人工声明的受控过渡」，期间只喂狗不判定，且有 30 分钟自动过期。
+    #
+    # 必须在停服**之前**创建。清理走 EXIT 陷阱，覆盖所有失败/中断路径。
+    ssh "${BOARD}" "sudo install -d -m 0755 /var/lib/weaknet && \
+        sudo touch /var/lib/weaknet/health-guard-maintenance" \
+        || warn "无法创建健康判据维护标记（若 health-guard 已启用，本次部署可能触发误复位）"
+    DEPLOY_MAINT_ARMED=true
+    cleanup_maint_flag() {
+        if [ "${DEPLOY_MAINT_ARMED:-false}" = true ]; then
+            # 先确保服务在跑，再解除标记。
+            #
+            # 顺序不能反：若部署在中途失败（服务已被 stop、adopt 未完成），
+            # 先清标记就会让 guard 立刻看到一个不在的服务，12 秒后复位整机。
+            # 那时运维看到的是「板子自己重启了」而不是「部署失败了」，
+            # 真因被复位抹掉。
+            #
+            # 尽力而为：start 失败也照样清标记 —— 标记残留等于永久暂停
+            # 保护（虽然 30 分钟会自动过期），比误复位更糟。服务真起不来时，
+            # guard 判失败并复位反而是正确的自愈路径。
+            ssh "${BOARD}" "systemctl is-active -q weaknet-server 2>/dev/null || \
+                sudo systemctl start weaknet-server 2>/dev/null || true" || true
+            ssh "${BOARD}" "sudo rm -f /var/lib/weaknet/health-guard-maintenance" 2>/dev/null || true
+            DEPLOY_MAINT_ARMED=false
+        fi
+    }
+    trap cleanup_maint_flag EXIT INT TERM
 
     # 停服 + 清理 __pycache__（root 属主 .pyc，radxa 用户无法 unlink，
     # 曾导致 rsync --delete 恒失败，实测踩过 3 次）。
@@ -399,6 +436,35 @@ if [ "$SKIP_DEPLOY" = false ]; then
         sudo systemctl enable weaknet-server"
     pass "weaknet-server 单元已落盘（依赖 weaknet-ota-gate.service）"
 
+    # ---- 系统健康看门狗单元：落盘但**不 enable** ----
+    #
+    # 为什么落盘：单元、二进制、接管脚本必须同源同版本发布，否则会出现
+    # 「新单元引用旧脚本路径」这类跨版本错配。
+    #
+    # 为什么**不自动 enable**：这是行为改变型能力——它会在判定不健康时
+    # 复位整机。启用与否是一个运维决策，不该由一次常规部署静默完成。
+    # 首次启用必须由人显式执行：
+    #   ssh board 'sudo systemctl enable --now weaknet-health-guard'
+    # 并在启用前先跑 --dry-run 观察判据是否稳定。
+    #
+    # 已经 enable 过的板子不受影响：cp 只覆盖文件，enable 状态在
+    # /etc/systemd/system/*.wants/ 里独立存在，不会被这次 cp 改变。
+    if [ -f "${ROOT}/tools/weaknet-health-guard.service" ]; then
+        scp "${ROOT}/tools/weaknet-health-guard.service" \
+            "${BOARD}:/tmp/weaknet-health-guard.service" 2>/dev/null \
+            || warn "health-guard 单元上传失败（不影响业务）"
+        if ssh "${BOARD}" "sudo install -m 0644 /tmp/weaknet-health-guard.service \
+                /etc/systemd/system/weaknet-health-guard.service && sudo systemctl daemon-reload" 2>/dev/null; then
+            if ssh "${BOARD}" "systemctl is-enabled -q weaknet-health-guard 2>/dev/null"; then
+                pass "health-guard 单元已更新（当前为启用状态，会在下次服务重启后生效）"
+            else
+                info "health-guard 单元已落盘但未启用（需人工 systemctl enable --now weaknet-health-guard）"
+            fi
+        else
+            warn "health-guard 单元落盘失败（不影响业务；看门狗功能不可用）"
+        fi
+    fi
+
     # 观测用内核模块加载单元：**可选能力**，失败不阻塞 weaknet-server。
     #
     # 依赖方向要看清：本单元 Wants/After=weaknet-server（等它先起），
@@ -546,8 +612,13 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # 部署已完成，立即恢复常驻服务（不必等脚本整体结束——后面还有隧道重启
     # 与板端测试，那些阶段同样需要恢复服务在位）。
     restore_ota_recover
-    trap - EXIT INT TERM
     pass "恢复服务已恢复运行"
+
+    # 部署主流程已完成、服务在跑，可以解除维护标记了。
+    # 位置：必须在服务真正 active 之后 —— 提前清掉会让 guard 在服务尚未
+    # 起来时开始判定，等于把「部署还没结束」当成「服务死了」。
+    cleanup_maint_flag
+    trap - EXIT INT TERM
 
     # 反向隧道收尾重启（I5，full-code-review 2026-11-01）。
     #
