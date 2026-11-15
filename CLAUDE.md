@@ -265,6 +265,21 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 | "查历史数据" / "查数据库" | `ssh radxa@radxa-cubie-a7a.local 'sudo /home/radxa/weaknet/server/bin/history_query_tool --info'` | 查看数据库信息 |
 | "查 wlan0 最近 1 小时" | `ssh radxa@radxa-cubie-a7a.local 'sudo /home/radxa/weaknet/server/bin/history_query_tool --iface wlan0 --last 1h'` | 按网卡 + 时间查询 |
 
+### 事故构造与留证链路回归
+
+区域事故的触发门槛写死在产品定义里（同一现场至少 2 台设备同时合格异常且比例达标），单网关现场永远凑不出真实事故。`tools/weaknet-incident-forge` 用一条命令构造合格事故条件，让整条留证链路可重复回归。
+
+| 用户意图 | 执行命令 | 说明 |
+|---------|---------|------|
+| "构造一个事故" / "forge" | `./tools/weaknet-incident-forge --apply` | 写入合格异常事件并重启插件回放，开出真实事故 |
+| "构造事故并看全链路" | `./tools/weaknet-incident-forge --apply --watch` | 构造后观察录制、上传，并下载云端片段核对 sha256 与 NAL |
+| "干跑看看会写什么" | `./tools/weaknet-incident-forge --dry-run` | 只报告不写库（默认行为） |
+| "清掉构造的事件" | `./tools/weaknet-incident-forge --cleanup` | 只删 forge 前缀事件，保留事故行作为证据 |
+
+> **不要用 sudo 运行本工具**：需要提权的三步（写库、清理、重启插件）由工具在远端自行 `sudo -n`。在云端开发机上外层 `sudo` 会让 ssh 改用 root 的 known_hosts，`ssh board` 别名随即失效并报 `Host key verification failed`。
+>
+> 判定、聚合、持久化、触发留证全部走生产代码，工具只往 `device_events` 写事实。构造事件带 `forge_` 前缀与 `INCIDENT_FORGE` 来源标记，可与真实采集甄别。
+
 ### Harness 工作流
 
 | 用户意图 | 执行命令 | 说明 |
