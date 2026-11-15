@@ -369,6 +369,26 @@ sudo chown -R radxa:radxa /tmp/weaknet/
 sudo systemctl restart weaknet-server
 ```
 
+> ⚠️ **停/重启 `weaknet-server` 之前必须建维护标记，否则板子会在 16 秒内整机复位。**
+>
+> 硬件看门狗已由 `weaknet-health-guard` 接管（`kmod/weaknet_wdt.c`），
+> 它的健康判据包含「D-Bus 采集推进」。服务不在 = 判据必失败 = 守卫停止喂狗
+> = `sunxi_wdt` 硬件超时复位整板。这不是 bug，是设计意图。
+>
+> ```bash
+> ssh board 'sudo touch /var/lib/weaknet/health-guard-maintenance'
+> # ... 停服务 / 换二进制 / 排障 ...
+> ssh board 'sudo rm /var/lib/weaknet/health-guard-maintenance'
+> ```
+>
+> 标记存在期间守卫**无条件继续喂狗**，并在日志里声明自己处于维护模式。
+> `./tools/ci.sh` 已内置这一步（见脚本 267 行），**只有手工操作需要自己加**。
+>
+> 实测代价：2026-11-15 我漏了这一步，`systemctl restart weaknet-server` 后
+> 板子 16 秒整机复位。守卫留下的证据在
+> `/var/lib/weaknet/health-guard-last-failure.json`（`reason: service_absent`，
+> `busctl rc=256`）。
+
 **实时调参（部署后即可使用，无需重启服务）：**
 ```bash
 # 查看所有可调监控器

@@ -322,6 +322,13 @@ add_executable(test_looper_dispatch_gtest
     unit/test_looper_dispatch_gtest.cpp)
 target_link_libraries(test_looper_dispatch_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+# TopNRecent：遍历中保留「最近 N 条」的定长选择器。
+# 该逻辑原本埋在 TcpRttMonitor::getStats() 内，依赖真实 BPF map 无法单测；
+# 堆式选择写错不会报错（只是少一条明细），所以必须用纯逻辑单测钉死。
+add_executable(test_top_n_recent_gtest
+    unit/test_top_n_recent_gtest.cpp)
+target_link_libraries(test_top_n_recent_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 add_executable(runner_bt_hci_analyzer
     runner_bt_hci_analyzer.cpp)
 target_link_libraries(runner_bt_hci_analyzer PRIVATE ${TEST_COMMON_LIBS})
@@ -412,6 +419,7 @@ foreach(test_target
     test_bt_anomaly_detector_gtest
     test_bt_events_lifecycle_gtest
     test_looper_dispatch_gtest
+    test_top_n_recent_gtest
     test_client_cli_contract_gtest)
     add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()

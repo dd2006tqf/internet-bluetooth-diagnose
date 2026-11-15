@@ -245,12 +245,30 @@ static int wn_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
+/*
+ * vma 引用计数必须在 open/close **两个**回调里配对。只写 close 会破坏计数：
+ * 内核在复制 vma（fork() 继承、munmap() 拆分）时对每个副本都调一次 close，
+ * 而 get 只在 mmap 时发生一次，put 多于 get → 计数下溢成无符号最大值。
+ *
+ * 实测（2026-11-15 板端）：/sys/module/weaknet_cpu_stat/refcnt 变成 -1，
+ * rmmod 直接失败，模块**永久无法卸载**；进程 execve() 时 exit_mmap 还会
+ * 在计数已为 0 的情况下走到 module_put，命中 kernel/module.c 的 WARN_ON。
+ *
+ * 详细分析见 weaknet_softirq.c 同名函数上方的长注释（两份模块同构）。
+ */
+static void wn_vma_open(struct vm_area_struct *vma)
+{
+	if (!try_module_get(THIS_MODULE))
+		pr_err("%s: vma_open 无法取得模块引用\n", DEVICE_NAME);
+}
+
 static void wn_vma_close(struct vm_area_struct *vma)
 {
 	module_put(THIS_MODULE);
 }
 
 static const struct vm_operations_struct wn_vm_ops = {
+	.open  = wn_vma_open,
 	.close = wn_vma_close,
 };
 
@@ -278,17 +296,27 @@ static int wn_mmap(struct file *file, struct vm_area_struct *vma)
 		return -EINVAL;
 	}
 
-	/* 映射存活期间禁止卸载，避免 vm_ops 回调进已释放的代码段。 */
-	if (!try_module_get(THIS_MODULE))
-		return -ENODEV;
-
+	/*
+	 * 这里**不再**自己做 try_module_get：引用计数由 vma 的 open/close
+	 * 回调成对维护（见 wn_vma_open 上方的说明）。
+	 *
+	 * 之前在这里 get 一次、只在 close 里 put，看似配对，实则 fork()/munmap()
+	 * 复制 vma 时 close 会被多调一次，计数下溢成 -1，模块永久不可卸载。
+	 *
+	 * mmap 执行期间本模块必然常驻：file_operations.owner 已经保证了这一点，
+	 * 内核在调用 ->mmap 前就持有 file 的模块引用。
+	 */
 	ret = remap_vmalloc_range(vma, g_shared, 0);
-	if (ret) {
-		module_put(THIS_MODULE);
+	if (ret)
 		return ret;
-	}
 
 	vma->vm_ops = &wn_vm_ops;
+	/*
+	 * 手动调用一次 open：内核只在驱动设置 vm_ops 之后、vma 被复制时
+	 * 才调用它，首次映射不会自动触发。少了这一行，首次映射就没有 get，
+	 * 而 close 照常 put——又回到下溢。
+	 */
+	wn_vma_open(vma);
 	return 0;
 }
 

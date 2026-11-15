@@ -116,12 +116,44 @@ static int wn_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
+/*
+ * vma 生命周期的引用计数必须**成对**，而且必须在 open/close 两个回调里配对。
+ *
+ * 这里曾经只写了 .close：mmap 时 try_module_get 一次，vma 关闭时
+ * module_put 一次，看起来是配对的。实际不是——内核在**复制** vma 时
+ * （fork() 继承映射、munmap() 把一段 vma 拆成多段）会先调用 vm_ops->open，
+ * 而对每个副本都调用一次 vm_ops->close。只实现 close 的后果是 put 次数
+ * 多于 get 次数，引用计数下溢成无符号最大值：
+ *
+ *   实测（2026-11-15 板端）：/sys/module/weaknet_softirq/refcnt 变成 -1，
+ *   lsmod 同样显示 -1，rmmod 直接失败 rc=1——模块**永久无法卸载**。
+ *
+ * 更隐蔽的是它会污染 module_put 的全局路径：同一个进程里 execve() 会
+ * 触发 exit_mmap → wn_vma_close → module_put，在计数已经为 0 的情况下
+ * 命中 kernel/module.c 的 WARN_ON，内核被 taint 成 G O。
+ *
+ * 修法就是补上 .open：它在 mmap 成功建立映射时被调用一次，之后每复制一份
+ * vma 就再调用一次，与 close 的调用次数严格对齐。
+ */
+static void wn_vma_open(struct vm_area_struct *vma)
+{
+	/*
+	 * 返回值无法向上传递（open 回调返回 void），所以这里不能失败。
+	 * 拿不到引用意味着模块正在被卸载，而它的代码马上就要消失——
+	 * 此时最安全的动作是让后续访问出错而不是继续跑在本模块的代码上。
+	 * 实际上 .owner 已经保证 mmap 期间模块常驻，这条分支只在极端竞态下可达。
+	 */
+	if (!try_module_get(THIS_MODULE))
+		pr_err("%s: vma_open 无法取得模块引用\n", DEVICE_NAME);
+}
+
 static void wn_vma_close(struct vm_area_struct *vma)
 {
 	module_put(THIS_MODULE);
 }
 
 static const struct vm_operations_struct wn_vm_ops = {
+	.open  = wn_vma_open,
 	.close = wn_vma_close,
 };
 
@@ -149,16 +181,27 @@ static int wn_mmap(struct file *file, struct vm_area_struct *vma)
 		return -EINVAL;
 	}
 
-	if (!try_module_get(THIS_MODULE))
-		return -ENODEV;
-
+	/*
+	 * 这里**不再**自己做 try_module_get：引用计数由 vma 的 open/close
+	 * 回调成对维护（见 wn_vma_open / wn_vma_close 的说明）。
+	 *
+	 * 之前在这里 get 一次、只在 close 里 put，看似配对，实则 fork()/munmap()
+	 * 复制 vma 时 close 会被多调一次，计数下溢成 -1，模块永久不可卸载。
+	 *
+	 * mmap 执行期间本模块必然常驻：file_operations.owner 已经保证了这一点，
+	 * 内核在调用 ->mmap 前就持有 file 的模块引用。
+	 */
 	ret = remap_vmalloc_range(vma, g_shared, 0);
-	if (ret) {
-		module_put(THIS_MODULE);
+	if (ret)
 		return ret;
-	}
 
 	vma->vm_ops = &wn_vm_ops;
+	/*
+	 * 手动调用一次 open：内核只在驱动设置 vm_ops 之后、vma 被复制时
+	 * 才调用它，首次映射不会自动触发。少了这一行，首次映射就没有 get，
+	 * 而 close 照常 put——又回到下溢。
+	 */
+	wn_vma_open(vma);
 	return 0;
 }
 

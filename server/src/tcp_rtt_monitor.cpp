@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include "logger.hpp"
 #include "ebpf_log_bridge.hpp"
+#include "utils/top_n_recent.hpp"
 
 #if defined(__has_include)
 #  if __has_include(<linux/bpf.h>) && __has_include(<bpf/libbpf.h>) && __has_include(<bpf/bpf.h>)
@@ -219,35 +220,78 @@ TcpRttSummary TcpRttMonitor::getStats() {
     }
 
     // 2. 遍历 per-connection map
+    //
+    // 【为什么遍历时不构造明细】
+    //
+    // 这个 map 在板端会定标到 65536 条（config.yaml 的 map_sizing_mode: auto，
+    // 按内存 0.5% 分摊），实测常见 1500~2300 条常驻。一次遍历曾为**每一条**
+    // 都做两件事：inet_ntop + 两次 std::string 构造（各一次堆分配），然后
+    // 对全量做两次 std::sort。
+    //
+    // 实测（2026-11-15 板端，2258 条）：单次 getStats() 47 ms，而这段时间
+    // 全程持有 impl_->mutex —— 同一个监控器的 isAvailable() / health() /
+    // metrics() 全部被阻塞，上行遥测采样器也在等。CPU 只是次要代价。
+    //
+    // 但**不能**因此缩小遍历范围：TcpRttEvaluator 用 activeConns（连接总数）
+    // 和全量 RTT 分位数判定健康，少看一条就是判定失真。所以仍然逐条 lookup，
+    // 只是把「物化」推迟到筛选之后。
+    //
+    // 这里只累积两类东西：
+    //   - all_rtts：全量 srtt，分位数必须基于全体连接；
+    //   - top：按 lastTimestampNs 维护「最近采样」的 kTopConnLimit 条。
+    //
+    // top 用小顶堆而非全量 vector + sort：堆里始终只有 N 条，插入 O(log N)，
+    // 总体 O(n log N) 且没有 2258 条明细的构造/析构成本。
     TcpConnKeyBpf key = {}, next_key = {};
     TcpRttStatBpf val = {};
     std::vector<uint32_t> all_rtts;
 
+    // 对外暴露的连接明细上限。
+    //
+    // 取 32 是因为两个消费者都不需要更多：上行导出器自己又 resize(10)，
+    // D-Bus 的 GetTcpRttStats 是诊断接口（CLI 用），32 条足够定位问题。
+    // 之前「有多少给多少」让一条 1200 条连接的上行报文膨胀到数百 KB，
+    // 而对任何消费方都没有增加信息量。
+    constexpr size_t kTopConnLimit = 32;
+    weaknet::TopNRecent<TcpRttConnItem> top(kTopConnLimit);
+
+    size_t conn_count = 0;
     bool has_key = (bpf_map_get_next_key(impl_->statsMapFd, nullptr, &next_key) == 0);
     while (has_key) {
         key = next_key;
-        if (bpf_map_lookup_elem(impl_->statsMapFd, &key, &val) == 0) {
-            TcpRttConnItem item;
-            item.saddr = formatIpv4(key.saddr);
-            item.daddr = formatIpv4(key.daddr);
-            item.sport = key.sport;
-            item.dport = key.dport;
-            item.srttUs = val.srtt_us;
-            item.minRttUs = val.min_rtt_us;
-            item.maxRttUs = val.max_rtt_us;
-            item.sndCwnd = val.snd_cwnd;
-            item.sndWnd = val.snd_wnd;
-            item.rcvWnd = val.rcv_wnd;
-            item.sampleCount = val.sample_count;
-            item.lastTimestampNs = val.last_timestamp_ns;
-
-            summary.topConns.push_back(item);
-            all_rtts.push_back(val.srtt_us);
-        }
+        // 先取下一个 key 再 lookup：lookup 失败不该打断遍历。
         has_key = (bpf_map_get_next_key(impl_->statsMapFd, &key, &next_key) == 0);
+
+        if (bpf_map_lookup_elem(impl_->statsMapFd, &key, &val) != 0) {
+            continue;
+        }
+
+        all_rtts.push_back(val.srtt_us);
+        ++conn_count;
+
+        // 堆已满且当前这条比堆顶还旧 → 它进不了 top-N，跳过全部字符串构造。
+        // 这是本函数最热的分支：正常情况下绝大多数条目走这里。
+        if (top.full() && val.last_timestamp_ns <= top.oldest().lastTimestampNs) {
+            continue;
+        }
+
+        TcpRttConnItem item;
+        item.saddr = formatIpv4(key.saddr);
+        item.daddr = formatIpv4(key.daddr);
+        item.sport = key.sport;
+        item.dport = key.dport;
+        item.srttUs = val.srtt_us;
+        item.minRttUs = val.min_rtt_us;
+        item.maxRttUs = val.max_rtt_us;
+        item.sndCwnd = val.snd_cwnd;
+        item.sndWnd = val.snd_wnd;
+        item.rcvWnd = val.rcv_wnd;
+        item.sampleCount = val.sample_count;
+        item.lastTimestampNs = val.last_timestamp_ns;
+        top.offer(std::move(item));
     }
 
-    summary.activeConns = summary.topConns.size();
+    summary.activeConns = conn_count;
 
     // 3. 计算分位数 (P50, P90, P99)
     if (!all_rtts.empty()) {
@@ -258,11 +302,8 @@ TcpRttSummary TcpRttMonitor::getStats() {
         summary.p99RttUs = all_rtts[std::min(n - 1, n * 99 / 100)];
     }
 
-    // 4. 按最近采样时间排序取活跃连接
-    std::sort(summary.topConns.begin(), summary.topConns.end(),
-              [](const TcpRttConnItem& a, const TcpRttConnItem& b) {
-                  return a.lastTimestampNs > b.lastTimestampNs;
-              });
+    // 4. 明细按最近采样时间降序（输出顺序与原先的全量 sort 一致）
+    summary.topConns = top.take();
 
     impl_->cachedSummary = summary;
     impl_->metricsData.samples++;
