@@ -1716,11 +1716,29 @@ std::vector<SiteIncident> DatabaseManager::loadSiteIncidentsSince(int64_t start_
 
     // 正序 + 按 last_event_ms 过滤：上行按"事故最近演化时间"推进，
     // 这样一起仍在吸收证据的事故会被反复重发（云端 UPSERT 幂等）。
+    //
+    // 必须是**严格大于**，与基线域（`updated_at > ?`）一致：
+    //
+    //   调用方 collect() 传的正是游标本身（不是游标+1），而 advanceCursors
+    //   把游标推进到 max(inc.last_event_ms)。若这里用 `>=`，游标推进到
+    //   `last_event_ms` 之后**仍会命中同一行**，于是：
+    //     发出 → 游标不变 → 下一轮又撈回同一条 → run() 的积压探测看到非空
+    //     → continue → 无限循环。
+    //   2026-11-15 板端实测该循环 5 分钟刷了 976 条同样的日志（约 0.3s 一次），
+    //   并把同一批数据重复 POST 了近千次。
+    //
+    // 「仍在吸收证据就重发」的原意图不受影响：upsertSiteIncident 的
+    // `ON CONFLICT DO UPDATE SET last_event_ms = excluded.last_event_ms`
+    // 会在新证据到达时推进 last_event_ms，届时自然重新越过 `>` 被捞到。
+    // 而**没有**新证据时本来就不该重发 —— 那正是 `>=` 与 `>` 的分界。
+    //
+    // 不用"调用方 +1"的方案：last_event_ms 是毫秒时间戳，+1 会跳过落在
+    // 同一毫秒内的其它事故（一起区域事故本就可能在同一毫秒演化）。
     const char* sql = R"(
         SELECT incident_id, site_id, gateway_id, started_at_ms, last_event_ms,
                resolved_at_ms, affected_devices, state, suspected_cause
         FROM site_incidents
-        WHERE last_event_ms >= ?
+        WHERE last_event_ms > ?
         ORDER BY last_event_ms ASC
         LIMIT ?;
     )";

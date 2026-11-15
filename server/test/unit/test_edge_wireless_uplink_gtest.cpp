@@ -462,3 +462,72 @@ TEST(EdgeWirelessUplinkCollect, UsesIndependentPerDomainCursors) {
     std::remove(state_path.c_str());
     std::remove(db_path.c_str());
 }
+
+// ============================================================================
+// 游标收敛：事故域不得在游标等于 last_event_ms 时反复捞回同一行
+// ============================================================================
+//
+// 背景（2026-11-15 板端实测）：事故域的三件事组合成了一个**紧密循环**。
+//
+//   1. `loadSiteIncidentsSince` 的 SQL 是 `WHERE last_event_ms >= ?`
+//   2. `collect()` 传的正是游标本身（事件域传的是 `events_ms + 1`）
+//   3. `advanceCursors` 把游标推进到 `max(inc.last_event_ms)` —— 也就是原地不动
+//
+// 于是「发出去 → 游标不变 → 下一轮又捞回同一条」。`run()` 里那句
+// 「成功但仍有积压就 continue」把这个环闭合成了不停歇的循环：
+// 板端实测 5 分钟刷了 976 条同样的上行日志（约 0.3s 一次），
+// 云端被重复 POST 了近千次。
+//
+// 已有的 `UsesIndependentPerDomainCursors` 用了 incidents_ms=0 和 5000
+// 两个值，恰好都不等于 last_event_ms(4000)，所以从没覆盖到这个边界。
+// 本条测试专门钉住它。
+TEST(EdgeWirelessUplinkCollect, IncidentCursorAtWatermarkYieldsNoNewFacts) {
+    const std::string db_path = uniqueTempPath("incident_cursor.db");
+    const std::string state_path = uniqueTempPath("incident_cursor.state");
+    std::remove(db_path.c_str());
+    std::remove(state_path.c_str());
+
+    WeakNetConfig cfg;
+    DatabaseManager db(db_path);
+    ASSERT_TRUE(db.isOpen());
+
+    auto inc = makeIncident("inc-loop");
+    inc.started_at_ms = 3'000ULL;
+    inc.last_event_ms = 4'000ULL;
+    ASSERT_TRUE(db.upsertSiteIncident(inc.incident_id, inc.site_id, inc.gateway_id,
+                                      static_cast<int64_t>(inc.started_at_ms),
+                                      static_cast<int64_t>(inc.last_event_ms),
+                                      std::nullopt, inc.affected_devices,
+                                      toString(inc.state), std::nullopt));
+
+    EdgeWirelessUplinkExporter exporter(cfg, db, state_path);
+
+    // 第一轮：游标落后 → 应该撈到这条事故
+    exporter.storeCursors({0ULL, 0ULL, 0ULL});
+    WirelessUplinkPayload first;
+    std::string error;
+    ASSERT_TRUE(exporter.collect(&first, &error)) << error;
+    ASSERT_EQ(first.incidents.size(), 1u);
+
+    // 模拟上行成功后 advanceCursors 的结果：推进到 last_event_ms
+    const WirelessUplinkCursors advanced = EdgeWirelessUplinkExporter::advanceCursors(
+        {0ULL, 0ULL, 0ULL}, first);
+    EXPECT_EQ(advanced.incidents_ms, 4'000ULL);
+    exporter.storeCursors(advanced);
+
+    // 第二轮：游标已经等于 last_event_ms。
+    // 这里必须返回 false + "no new facts"，**不能**再捞出同一条事故。
+    // 若返回 true，run() 会 continue 并在下一轮得到同样的结果 —— 无限循环。
+    WirelessUplinkPayload second;
+    std::string second_error;
+    const bool has_facts = exporter.collect(&second, &second_error);
+    EXPECT_FALSE(has_facts) << "游标已推进到 last_event_ms，事故域不应再产出事实"
+                            << "（否则 run() 的积压探测会无限 continue）";
+    EXPECT_EQ(second_error, "no new facts");
+    EXPECT_TRUE(second.incidents.empty())
+        << "事故被重复捞回：游标 " << advanced.incidents_ms
+        << " 与该行 last_event_ms 相等时仍命中 SQL 的 >=";
+
+    std::remove(state_path.c_str());
+    std::remove(db_path.c_str());
+}
