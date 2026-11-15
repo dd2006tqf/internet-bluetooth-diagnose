@@ -8,9 +8,17 @@
  *       在确认自身可用后按需加载（见 openspec/tasks/ 下的任务记录）。
  *
  * 为什么需要它：
- *   /dev/watchdog0 由内建的 sunxi_wdt 持有，而该驱动把超时固定为 16 秒
- *   且 WDIOC_SETTIMEOUT 返回 EINVAL。要让「系统健康」而非「进程活着」
- *   成为喂狗条件，就必须把喂狗权拿到用户态可控的设备上。
+ *   /dev/watchdog0 由内建的 sunxi_wdt 持有。要让「系统健康」而非「进程活着」
+ *   成为喂狗条件，可以把喂狗权拿到用户态可控的自注册设备上。
+ *
+ *   **注意（2026-11-15 板端取证更正）**：本节早前写「sunxi_wdt 把超时固定为
+ *   16 秒且 WDIOC_SETTIMEOUT 返回 EINVAL」，这是错的 ——
+ *   实测 options = 0x8180（含 WDIOF_MAGICCLOSE），且 WDIOC_SETTIMEOUT
+ *   接受 1..16 秒（奇数向上取偶），>16 才返回 EINVAL。
+ *   由于原厂驱动同样设了 MAGICCLOSE，「裸 close 不停狗 → 硬件倒计时 → 复位」
+ *   这条路在原厂 /dev/watchdog0 上同样成立，因此**本模块在技术上并非必需**，
+ *   只是为了获得一个不受内建驱动超时配置与持有关系影响的独立入口。
+ *   详见 openspec/tasks/2026-11-14-system-health-watchdog-plan-b.md 5.8。
  *
  * 为什么不直接 /dev/mem 写魔数：
  *   能力上完全等价（本模块的核心就是一行 writel），但 /dev/mem 方案里
@@ -169,9 +177,12 @@ static int wn_wdt_ping(struct watchdog_device *wdd)
 static int wn_wdt_set_timeout(struct watchdog_device *wdd, unsigned int t)
 {
 	/*
-	 * 与 sunxi_wdt 行为保持一致：只接受 16 秒，其余一律 EINVAL。
-	 * 硬件本身的超时编码无法在 0x14 的 cfg 里安全改写（本轮实验
-	 * 未验证其他超时值），因此不做超出已知范围的承诺。
+	 * 只接受 16 秒：这是唯一经过双向硬件验证的超时值（喂狗存活 / 停喂复位）。
+	 * 硬件 cfg 寄存器里其他超时档位的编码未经验证，不做超出已知范围的承诺。
+	 *
+	 * 注意：原厂 sunxi_wdt 实际接受 1..16 秒（奇数向上取偶，>16 返回 EINVAL），
+	 * 见 openspec/tasks/2026-11-14-system-health-watchdog-plan-b.md 5.8。
+	 * 本模块收窄为仅 16 是保守选择，并非与原厂行为一致 —— 早前注释如此声称，已更正。
 	 */
 	if (t != WN_TIMEOUT_SEC)
 		return -EINVAL;

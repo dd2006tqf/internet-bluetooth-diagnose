@@ -29,7 +29,12 @@ for (;;) { write(fd, "x", 1); sleep(2); }   // 证明的是「这个线程还被
 
 ### 选定路径：接管硬件 + 用户态判据
 
-关键在于把「喂狗权」从内建 `sunxi_wdt`（超时固定 16 秒、`WDIOC_SETTIMEOUT` 返回 EINVAL）拿到用户态可控的自注册设备上，再由一个用户态守护进程按健康判据决定喂不喂。
+关键在于把「喂狗权」从内建 `sunxi_wdt` 拿到用户态可控的自注册设备上，再由一个用户态守护进程按健康判据决定喂不喂。
+
+> **2026-11-15 更正**：本节原先写作「内建 `sunxi_wdt` 超时固定 16 秒、`WDIOC_SETTIMEOUT` 返回 EINVAL」。
+> 该结论**已被板端实测推翻**，见 5.8：超时实际可在 `1..16` 秒内设置（向上取偶）。这句错误前提
+> 当时只由「`SETTIMEOUT 30 → EINVAL`」一次实验归纳得出，而 `1..16` 区间从未测过。
+> 但它**不影响**选定路径的成立理由 —— 详见 5.8 对「为什么仍需接管」的重新论证。
 
 这需要先回答一个没人回答过的问题：**喂狗到底写哪个寄存器、写什么值**。这一步花了两次整机复位才查清，也是整个任务最大的成本。
 
@@ -62,7 +67,7 @@ writel(0x00 | ENABLE_KEY, base + 0x14);   /* 关狗 */
 
 - **不匹配 DT 节点**。`sunxi_wdt` 已绑定 `watchdog@2050000`，同一节点不能被第二个驱动 probe。走 `platform_device_register_simple()` + `devm_ioremap(0x02050000, 0x20)`，物理地址硬编码（A733 专用，源码顶部显式声明该假设）。
 - **probe 里不做任何 cfg 自检写**。探测阶段改写配置会在「另一条路径正在喂狗」时打断它，也可能把已有超时编码改错。开发期的自检块已删除，理由写进注释。
-- `.set_timeout` 只接受 16，其余返回 `-EINVAL` —— 与 `sunxi_wdt` 行为一致，不承诺未验证过的超时值。
+- `.set_timeout` 只接受 16，其余返回 `-EINVAL`。**这里的理由在 2026-11-15 被更正**：原文写「与 `sunxi_wdt` 行为一致」，但 5.8 实测表明原厂驱动接受 `1..16`（奇数向上取偶），并不只接受 16。真实理由是「16 是唯一经过双向硬件验证的值，不承诺未验证行为」。改为接受 `1..16` 会牵动 `test_16s_budget` 的全部预算推导，本轮不动。
 
 ### 3. `tools/weaknet-health-guard.cpp`（守护进程，约 700 行）
 
@@ -151,7 +156,7 @@ insmod → 确认 /dev/watchdog1 存在 → unbind sunxi_wdt → 任一失败立
 - **默认不启用**：`ci.sh` 只落盘单元、不 `enable`。这是行为改变型能力，启用是运维决策，须先 `--dry-run` 观察。
 - `/dev/sda3` 是 `write back`，失败 JSON 的 `fsync` 只保证「内核 → 设备」，复位瞬间仍在缓存里的块可能丢。**该 JSON 不保证一定留下来。**
 - `WDIOC_GETBOOTSTATUS` 恒为 `0x0`、`WDIOF_CARDRESET` 从不置位 ⇒ 无法事后从内核判断「上一次复位是否看门狗所致」，这也是必须自己写 JSON 的原因。
-- 板端硬件超时固定 16 秒、不可调；所有阈值都压在 16 秒预算内，改动任一参数都必须重新核对 `test_16s_budget`。
+- 板端硬件超时**当前采用 16 秒**（2026-11-15 实测可调 `1..16`，奇数取偶，见 5.8；早前记为「固定不可调」有误）；所有阈值都压在 16 秒预算内，改动任一参数都必须重新核对 `test_16s_budget`。
 
 ---
 
@@ -381,14 +386,166 @@ weaknet-health-guard.service: Succeeded.
 同一套健康判据直接写 `/dev/watchdog0` 即可，能省掉内核模块、安全网脚本与
 `take`/`give-back` 状态机（以及第三轮才发现的静默取消复位缺陷）。
 
-因此「必须接管」目前是**设计选择**，不是被证据强制的结论。待板子恢复后取证：
+因此「必须接管」目前是**设计选择**，不是被证据强制的结论。
 
-```bash
-cat /sys/class/watchdog/watchdog0/options    # bit 5 (0x20) = WDIOF_MAGICCLOSE
-```
+> **2026-11-15 已取证，本节结论作废。** 见 5.8：`options = 0x8180`，`sunxi_wdt`
+> **确实设了 `WDIOF_MAGICCLOSE`**。因此「接管硬件」在技术上**不是必需的** ——
+> 同一套健康判据可直接写 `/dev/watchdog0`。同时 5.7 给出的取证命令
+> `cat /sys/class/watchdog/watchdog0/options` **也作废**（`CONFIG_WATCHDOG_SYSFS` 未开，
+> 该路径不存在），正确途径是 `WDIOC_GETSUPPORT` ioctl（编号 `0x80285700`）。
+> 5.7 的追问过程保留不删，因为它记录了一次「未取证的前提被当作定论使用」的教训。
 
 > 注：本轮已把方案 B 的代码缺陷修完、测试补到 89 项并做了变异验证，这些工作
 > 即使将来改走「直接开原厂设备」路线也不白费 —— 健康判据、去抖、维护标记、
 > OTA 过渡识别、失败 JSON 全部可复用，只有接管层会被替换。
 
 另有一项板端遗留需清理：`/etc/systemd/system/` 下三个无害探针单元（`probe-execstop`、`probe2`、`probe3`）已删除，`/tmp/probe*.log` 因属 root 未能删除（不影响任何功能）。
+
+### 5.8 取证完成：`sunxi_wdt` 的 options 与超时可调范围（2026-11-15）
+
+板子恢复后，用 `WDIOC_GETSUPPORT` 直接取得 `sunxi_wdt` 的 `watchdog_info`：
+
+```
+options          = 0x00008180
+identity         = 'sunxi-wdt'
+firmware_version = 0
+置位标志         = ['SETTIMEOUT'(0x80), 'MAGICCLOSE'(0x100), 'KEEPALIVEPING'(0x8000)]
+timeout          = 0x10 (16 s)
+bootstatus       = 0x0
+```
+
+**结论一：`sunxi_wdt` 确实设了 `WDIOF_MAGICCLOSE`。**
+
+这回答了 5.7 悬置的问题，也**推翻了 5.7 的隐含判断**：
+
+> 它没有推翻「接管」这个选择本身，但推翻了「接管是唯一技术可行路径」的说法。
+> 原厂 `/dev/watchdog0` 同样满足「裸 `close()` 不停狗 → 硬件继续倒计时 → 复位」，
+> 因此**同一套健康判据可以直接写 `/dev/watchdog0`**，不需要内核模块、
+> 不需要 `unbind`/`bind`、不需要 `take`/`give-back` 状态机、
+> 也就没有「exec-stop 静默取消复位」那一整类缺陷。
+
+**`options` 的取证方法必须更正**：5.7 写的 `cat /sys/class/watchdog/watchdog0/options` **不可用**。
+
+板端实测该路径不存在 —— `/sys/class/watchdog/watchdog0/` 下只有 `dev`、`device`、`power`、`subsystem`、`uevent`，
+因为内核 `CONFIG_WATCHDOG_SYSFS` **未开启**（`/proc/config.gz` 已确认）。
+
+唯一可用的取证途径是 ioctl。注意 `WDIOC_GETSUPPORT` 的编号是 **`0x80285700`**（`nr=0`，size=40），
+不是常被误写的 `0x80285728` 或 `0x80005728` —— 写错会得到 `EINVAL` 且**不报具体原因**，
+本轮在这上面浪费了两次尝试（其中一次因未写 `'V'` 而让板子复位，见 5.9）：
+
+```python
+import fcntl, os, struct
+WDIOC_GETSUPPORT = 0x80285700          # _IOR('W', 0, struct watchdog_info)
+fd = os.open('/dev/watchdog0', os.O_WRONLY)
+try:
+    buf = bytearray(40)
+    fcntl.ioctl(fd, WDIOC_GETSUPPORT, buf, True)
+    print(hex(struct.unpack_from('<I', buf, 0)[0]))   # → 0x8180
+finally:
+    os.write(fd, b'V')                 # 关键：不写 'V' 会复位
+    os.close(fd)
+```
+
+**结论二：超时不是「固定 16 秒不可调」，实际可在 `1..16` 秒内设置（向上取偶）。**
+
+逐值实测 `WDIOC_SETTIMEOUT`：
+
+```
+可设成功: [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16]
+被拒绝  : 7→8, 9→10, 11→12, 13→14, 15→16   （奇数被静默改写为下一个偶数）
+           17 及以上 → EINVAL
+```
+
+即 `sunxi_wdt.set_timeout` 接受 `1..16`，奇数向上取偶；`>16` 返回 `EINVAL`。
+
+这条同样推翻了既有记录。`docs/ideas/喂狗条件检查-系统健康看门狗.md` 里
+「超时 16 秒不可调」的论断，来源仅仅是当年一次 `SETTIMEOUT 30 → EINVAL` 的实验 ——
+**只测了越界值就归纳出「整段不可调」**，`1..16` 区间从未被测过。这是一个方法论错误，
+值得记下来：**「某值被拒绝」不能推出「所有值都被拒绝」。**
+
+对设计的影响（均未实施，仅记录）：
+
+- `kmod/weaknet_wdt.c` 的 `.set_timeout` 只接受 16，注释称「与 `sunxi_wdt` 行为一致」——
+  这句话现在是**错的**，原厂驱动接受 `1..16`。但保守收窄并非缺陷（少承诺未验证行为），
+  且 16 秒是已双向硬件验证过的值，**暂不改动**：改动会破坏 `test_16s_budget` 的预算推导。
+- 若将来要缩短超时以加快故障响应，现在有据可依：`8` 秒是实测可设的最小偶数档之一。
+
+### 5.9 一次由我造成的真实复位（归因已核对，不作为方案证据）
+
+必须如实记录：本轮取证过程中**板子复位了一次**，原因是我自己的错误。
+
+时间线（板端 journal，UTC）：
+
+```
+09:02:02  sudo: radxa : COMMAND=/usr/bin/python3 -     ← 我的第一个探针，ioctl 编号写成 0x80005728
+09:02:02  （该 python 进程异常退出，未写 'V' 就 close）
+09:02:12  上一条启动的最后一条日志
+09:03:11  新 boot_id 9bfe8aed… 启动
+```
+
+**但归因需要谨慎，不能简单写成「16 秒后看门狗复位」**：
+
+- 从 `close()` 到启动隔了约 69 秒，远大于 16 秒
+- 期间隧道 guard 在 17:02:33 主动 kill 过承载转发的 sshd 会话
+- 上一次启动的**内核日志尾部为空**（`journalctl -k -b -1` 无输出），
+  没有 `Kernel panic`、没有 watchdog 相关打印，无法从日志直接判定复位源
+
+因此这条只能记为「**时间上与我的错误操作相关，但复位路径未经直接证实**」。
+它**不能**作为「裸 close 会复位」的证据 —— 该结论由 `options` 的 `MAGICCLOSE` 位置位
+加上 `nowayout=0` 推导得出，并由 5.8 的实测数据支撑，不依赖这次事故。
+
+同一次会话中，第二次探针（正确的 `0x80285700` 编号 + `finally` 里写 `'V'`）退出后板子未复位，
+与「写了 `'V'` 就停用」一致。
+
+**教训（已提升为操作规则）**：任何 `open("/dev/watchdog0")` 的探测脚本，必须满足两条 ——
+1. `'V'` 的写入放在 `finally`，不是正常路径末尾；
+2. 注册 `SIGTERM/SIGINT/SIGHUP/SIGQUIT` 处理器，在信号路径上也写 `'V'`。
+
+只做第 1 条不够：`ssh` 会话被 tunnel guard 清理时进程收到 `SIGTERM`，`finally` 在
+Python 里**会**执行，但若卡在 ioctl 或 write 上则来不及。第 2 条覆盖这个窗口。
+
+### 5.10 原厂 `/dev/watchdog0` 直接承载健康判据的可行性（已实测通过）
+
+5.8 证明「接管不是必需的」之后，必须回答：原厂设备是否**真能**当喂狗入口。
+板端实测（`/tmp/wdt_direct_feasibility.py`）：
+
+```
+1) open 成功，timeout = 16 s      （CONFIG_WATCHDOG_OPEN_TIMEOUT=0 ⇒ open 即倒计时）
+2) WDIOC_KEEPALIVE 连续喂 20 秒 → 存活  （20 > 16，证明喂狗有效）
+3) write("x") 连续喂 20 秒     → 存活  （两种喂狗方式都可用）
+4) SETTIMEOUT 8 → 回读 8 s；8 秒超时下喂 20 秒 → 存活
+5) 写 'V' close → 硬件狗停用
+```
+
+**结论：原厂 `/dev/watchdog0` 完全可作为健康判据的喂狗入口。**
+直接开原厂设备可省掉：`weaknet_wdt.ko`、`unbind`/`bind`、`take`/`give-back` 状态机，
+以及「exec-stop 静默取消复位」那一整类缺陷。
+
+**遗留副作用（已修复）**：步骤 4 把板端超时改成 8 秒后**没有在脚本内改回**，
+结束后板上仍是 8 秒。已另跑脚本恢复为 16 秒并写 `'V'` close，基线确认恢复。
+**教训**：任何改动看门狗超时的探测，必须在 `finally` 里同时恢复超时值，不能只 disarm。
+
+### 5.11 本轮板端复位的归因（只有一次确定由我造成，其余未证实）
+
+本轮板子重启了多次，逐次核对如下（CST = UTC+8）：
+
+| 启动 | 结束时刻 (CST) | 结束特征 | 归因 |
+| --- | --- | --- | --- |
+| `-4 b6b8663c` | 17:02:12 | 无 shutdown 记录，日志戛然而止 | **确定由我造成**：探针 ioctl 编号写错抛异常，未写 `'V'` 就 close |
+| `-3 9bfe8aed` | 17:07:10 | 无 shutdown 记录 | **未证实**；tunnel guard 的 kill 在 17:08:01，发生在结束**之后** |
+| `-2 da4035ea` | 17:22:41 | **有 `Reached target Shutdown` / `Exit the Session`** | **不是复位**，是正常关机 |
+| `-1 bf166180` | 17:36:07 | 无 shutdown 记录，最后一条日志是我执行的 `fuser`/`lsof`/`dmesg` 命令 | **未证实**；kill 在 17:36:41，发生在结束**之后** |
+
+必须说明的边界：
+
+- **只有 `-4` 能确定是我的错误操作导致的**（时间差约 69 秒，大于 16 秒超时，
+  且期间 tunnel guard 杀过承载转发的 sshd，复位路径未经直接证实 —— 但错误是明确的）。
+- `-3` 与 `-1` 的 tunnel guard kill 都发生在板子停止**之后**，是对已死连接的清理，
+  **不是复位原因**；这两次真正的复位源未知（无 shutdown 记录、无 panic、内核日志为空）。
+- `-1` 最后执行的命令是 `fuser -v /dev/watchdog0` / `lsof /dev/watchdog0` / `dmesg`。
+  **无法证明**它导致复位，但它的时序最接近，且 `fuser`/`lsof` 会短暂打开设备节点 ——
+  今后在这块板上**不要对 `/dev/watchdog0` 用 `fuser`/`lsof`**，改用
+  `WDIOC_GETSUPPORT` 或 `/proc/*/fd` 遍历，避免触发`.start`。
+- `-2` 是正常关机，与看门狗无关。
+
+**不得**把 `-3`/`-1` 写成「看门狗复位」，也不得写成「用户断开」——用户只说过 16:27 那次。
