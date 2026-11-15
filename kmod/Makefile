@@ -25,6 +25,12 @@
 obj-m += weaknet_cpu_stat.o
 obj-m += weaknet_softirq.o
 
+# weaknet_wdt.o 是**行为改变型**模块（会写硬件寄存器、接管看门狗），
+# 与上面两个只读观测模块定位完全不同：它不随发布包开机无条件加载，
+# 由 weaknet-health-guard 在确认自身可用后按需 insmod。
+# 但它必须参与同一份 obj-m 构建，否则交叉编译脚本收集不到产物。
+obj-m += weaknet_wdt.o
+
 # weaknet_lradc_keys.o 已于 2026-11-08 移除（LRADC 在 A733 上不可用，
 # 且无业务消费者）。历史实现见 git show 289cad4:kmod/weaknet_lradc_keys.c，
 # 根因定位与诊断方法学保留在 README.md 第八节。

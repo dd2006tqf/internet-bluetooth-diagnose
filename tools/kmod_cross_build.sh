@@ -141,7 +141,7 @@ mkdir -p "$BUILD" "$OUT"
 # 只把源文件和 Makefile 拷进临时构建目录，保持仓库工作区干净
 cp "$ROOT"/kmod/*.c "$ROOT"/kmod/*.h "$ROOT"/kmod/Makefile "$BUILD"/
 
-log "交叉编译 观测模块（weaknet_cpu_stat / weaknet_softirq）"
+log "交叉编译 观测模块 + 看门狗模块（weaknet_cpu_stat / weaknet_softirq / weaknet_wdt）"
 make -C "$BUILD" -j"$(nproc)" \
     ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- KDIR="$KDIR" \
     > "$BUILD/build.log" 2>&1 \

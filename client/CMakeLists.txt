@@ -29,6 +29,21 @@ target_link_libraries(weaknet_cli PRIVATE weaknet PkgConfig::DBUS1 glog pthread)
 set_target_properties(weaknet_cli PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin)
 
+# 系统健康看门狗守护进程（2026-11-14）
+#
+# 刻意不链接 weaknet 库与 libdbus：它只需要 stat/文件读/子进程，
+# 而 D-Bus 判据走 busctl 子进程（2 秒一次、实测 25ms，可接受）。
+# 这样它在最小镜像里也能单独跑起来，不引入 libdbus 的加载依赖。
+#
+# 注意它**不是**普通客户端工具：打开 /dev/weaknet_wdt 后不喂狗就会
+# 在 16 秒内复位整机。源码在 tools/ 下（运维工具定位），但产物要随
+# 发布包部署到板端，因此在这里构建。
+add_executable(weaknet_health_guard
+    ${CMAKE_SOURCE_DIR}/tools/weaknet-health-guard.cpp)
+target_compile_features(weaknet_health_guard PRIVATE cxx_std_17)
+set_target_properties(weaknet_health_guard PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/bin)
+
 # 示例/演示程序：EXCLUDE_FROM_ALL——只在显式 --target 时构建。
 # 它们不发布到 dist-arm64、不被 ctest/板端测试消费，全量编译（尤其
 # ARM64 QEMU 模拟）没必要为它们付时间。

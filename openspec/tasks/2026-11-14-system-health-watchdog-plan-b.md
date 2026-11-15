@@ -549,3 +549,107 @@ Python 里**会**执行，但若卡在 ioctl 或 write 上则来不及。第 2 �
 - `-2` 是正常关机，与看门狗无关。
 
 **不得**把 `-3`/`-1` 写成「看门狗复位」，也不得写成「用户断开」——用户只说过 16:27 那次。
+
+---
+
+## 六、2026-11-15 板端验收（第四轮）：补齐 10 分钟 dry-run 与 1 小时接喂狗空跑
+
+### 6.1 前置核对：板端跑的是不是修好的二进制
+
+上一轮（四、4.5）的判据修复是否真的进了部署包，必须用证据确认，不能靠"我记得部署过"：
+
+```
+=== 二进制特征 ===
+strings .../client/bin/weaknet-health-guard | grep last_successful_sample_ns
+  → \"last_successful_sample_ns\":$      ← 带反斜杠转义，是修复后的键
+=== 交叉来源核对 ===
+本地 tools/weaknet-health-guard.cpp  12b2cef21ae89ed7c70b42b603dabe11
+板端 weaknet-wdt-takeover.sh         与本地一致 0a3545b99a1c7335016c3797d8472309
+板端 weaknet-health-guard.service    与本地一致 7a880fec3ef3ff29baea7aa443c82d58
+```
+
+`.cpp` 的 md5 天然不同（源码 vs 编译产物），所以源码核对只能靠 `strings` 里的
+**转义键**做特征匹配。CPU 判据的修复无法用 `strings` 看出来，由运行时的
+`cpu_delta=ok(delta=151 in 6s)` 反证 —— 第一版对任何进程都返回 false，
+不可能打印出 delta 值。
+
+### 6.2 10 分钟 `--dry-run`（本轮完成）
+
+```
+命令: timeout 620 weaknet-health-guard --dry-run > /tmp/guard-dryrun.log 2>&1
+结果: 302 轮 × 2 秒 ≈ 10 分 04 秒
+      失败行 0 条（grep "FAIL|fail|trip" 无命中）
+      末行: [round 302] ... 四项全 ok
+      退出: graceful shutdown done（rc=0）
+样本: wal_mtime=ok(age_s=1..5)  sample_ns=ok(fresh=7 nonzero=7)
+      cpu_delta=ok(delta=106..151 in 6s 与 warming up 交替)  d_state=ok(d_threads=0)
+```
+
+`cpu_delta` 在 `delta=ok` 与 `warming up` 之间交替是**设计如此**：每 6 秒窗口
+才结算一次，中间轮次只打印 `warming up`。早期轮次还见过 `baseline established`。
+
+**踩坑记录（否则会误判为"仍在运行"）**：
+
+```bash
+# 错误写法：远端命令串本身就含 "--dry-run"，pgrep -f 会命中自己
+ssh board 'pgrep -f "weaknet-health-guard --dry-run" && echo 仍在运行'
+
+# 正确写法：按进程名精确匹配
+ssh board 'pgrep -x weaknet-health-guard'
+```
+
+这和第 4 轮 tunnel_guard 的自匹配问题是同一类错误（`pkill -f` 自匹配），
+在这块板上已经踩到第二次。
+
+**紧接着又踩了第三种写法**（同一个问题，三个不同的坑）：
+
+```bash
+ssh board 'pgrep -x weaknet-health-guard'   # 永远匹配不上
+```
+
+原因：内核 `comm` 字段上限 **15 字符**，进程名被截断成 `weaknet-health-`：
+
+```
+$ ps -eo pid,comm,args | grep health
+   7074 weaknet-health-  /home/radxa/weaknet/current/client/bin/weaknet-health-guard
+$ cat /proc/7074/comm
+weaknet-health-
+```
+
+正确做法是**不要按进程名判断**，直接问 systemd：
+
+```bash
+ssh board 'while [ "$(systemctl is-active weaknet-health-guard)" = active ]; do sleep 30; done'
+```
+
+第三次教训合起来是一句话：**在这块板上判断"进程/服务是否在跑"，用 systemd 的
+状态查询，不要用 pgrep（-f 会自匹配、-x 会被 comm 截断挡住）。**
+
+### 6.3 1 小时接喂狗空跑（进行中 → 结果见 6.4）
+
+与 dry-run 的**本质区别**：这次真的持有喂狗权（`weaknet_wdt` 已 insmod、
+`sunxi_wdt` 已 unbind、guard 持有 `/dev/watchdog1`），判据一旦连续两轮失败
+就会**真的停喂并复位板子**。这是 dry-run 无法替代的验证。
+
+启动确认：
+
+```
+start rc=0
+systemctl is-active weaknet-health-guard  → active
+MainPID=7074   NRestarts=0
+/dev/watchdog1                            → crw------- 246,1 出现
+/sys/bus/platform/drivers/sunxi-wdt/      → 只剩 bind/uevent/unbind（设备已解绑）
+lsmod                                     → weaknet_wdt 16384 2
+journal                                   → [wdt] 已 unbind sunxi_wdt
+                                            [wdt] 接管完成：喂狗入口 /dev/watchdog1
+```
+
+warmup 过后判据转绿（round 16..21）：
+
+```
+[round 16] wal_mtime=ok(age_s=5,f0) sample_ns=ok(fresh=7 nonzero=7) cpu_delta=ok(delta=151 in 6s,f0) d_state=ok(d_threads=0,f0)
+```
+
+**这一步同时验证了接管链路在真实服务模式下可用**：前几轮 dry-run 是不碰设备的，
+所以「insmod → 确认 /dev/watchdog1 → unbind sunxi_wdt」这条顺序链直到此刻
+才第一次以 systemd 单元的形式跑通。
