@@ -266,3 +266,91 @@ clk_summary 也证实 `csi` / `isp` / `csi-mclk` 实际 enabled。
 方法论部分（`dmesg` 不是历史、单次采样不能否定全时段、优先怀疑状态）
 不受影响，仍然有效。
 
+---
+
+## 第二轮：逐层排除到「sensor 之后」（13:15~13:30）
+
+上面写完还没收工，接着做了一轮系统排查。结论是：
+**sensor 侧与 SoC 侧的软件配置全部正确，问题在 sensor 之后、SoC 之前。**
+
+### 这一轮用的手段
+
+板端没有 `i2c-tools`，改用 Python `ioctl(I2C_RDWR)` 裸读裸写
+`/dev/i2c-3` 上的 IMX219（地址 `0x10`，16 位寄存器地址）。
+脚本 `/tmp/rd2.py`、`/tmp/wr.py`、`/tmp/cmp.py`（一次性探针，未入库）。
+
+### 已彻底排除（每条都有实测）
+
+| 层 | 证据 | 结论 |
+| --- | --- | --- |
+| kmod 干扰 | `weaknet_cpu_stat` / `weaknet_softirq` 只有 `hrtimer(1s)` 读 CPU 统计 + `vmalloc_user` 字符设备，**无 kprobe/tracepoint/hook** | 排除 |
+| i2c 写通路 | 写 `0x0157=0x02` → 读回 `0x02`；恢复 `0x00` → 读回 `0x00` | 正常 |
+| sensor 身份 | `MODEL_ID = 0x0219` | 是 IMX219 |
+| 模式寄存器 | VTS `0x0A8C` / HTS `0x0D78` / lane=2 / `0x0128=0x00` / `0x012A=0x18` / exposure=1000 / gain=1，与 `imx219.c` 的 `sensor_hxga_regs` **逐项一致** | 配置正确 |
+| streaming | `MODE_SELECT(0x0100) = 0x01` | 命令已生效 |
+| 供电 | `axp8191-bldo1` 1800 mV enabled | 正常 |
+| 时钟 | `csi`/`isp` 704 MHz、`csi-mclk`/`isp-mclk` 26 MHz、`csi-master1` enabled | 正常 |
+| 设备树 | `csi@5821000` / `mipi@5810200` / `phy@6b00000(sunxi-plat-phy)` 均 `okay`；其余端口 `disabled` 与拓扑使用的 `.1` 端口一致 | 正确 |
+| 拓扑 | 7 跳全 ENABLED | 正确 |
+| 中断 | `tdm` 停在 3（重启后新 boot 为 0）、`isp`/`vinc` 恒 0，多次采样不增长 | 无数据流动 |
+
+### 一个真实缺陷（但不是本次根因）
+
+`docs/hardware/radxa-cubie-a7a/vin-references/imx219.c:966` `sensor_reg_init()`：
+
+```c
+ret = sensor_write_array(sd, sensor_default_regs, ARRAY_SIZE(sensor_default_regs));
+if (ret < 0) { sensor_err(...); return ret; }        // 只有这一处检查
+sensor_write_array(sd, sensor_fmt->regs, ...);        // 返回值忽略
+if (wsize->regs)
+    sensor_write_array(sd, wsize->regs, ...);         // 返回值忽略
+...
+return 0;                                             // 恒定成功
+```
+
+**后果**：后续寄存器写失败时 `s_stream` 仍返回 0，用户态看到「采集启动成功」
+而硬件没配好。这是结构性的观测盲区。
+
+**为什么不是本次根因**：本轮用裸 i2c 验证了写通路正常，且模式表寄存器
+逐项对得上（10 项 `0x47xx` 不匹配已确认是 write-only 寄存器，读回 0 属正常）。
+即本例中「写成功了」，缺陷只是让这类问题**无法被内核发现**，不是它导致了零帧。
+
+### 这轮的判据错误（7 次，全部事后自查纠正）
+
+本轮排查中我反复在「某个寄存器/时钟的值代表什么」上猜错：
+
+1. Python 脚本把寄存器地址高位固定写成 `0x01` → 地址全错
+2. `FRM_LENGTH` / `GAIN` 寄存器地址凭记忆猜，全错（真值在 `0x0160`/`0x0157`）
+3. VTS/HTS 拼读错位（`0x0160-01`=VTS、`0x0162-63`=HTS，不是一个 24 位数）
+4. `0x0128` 猜成 "CSI2_EN"，实际模式表就写 `0x00`（正常值）
+5. `0x0005~0x0007` 猜成帧计数器，实际是 OTP/参数区
+6. `0x47xx` 读回 0 判成写失败，实际是 write-only 寄存器（读回 0 正常）
+7. **最险的一次**：`combphy0/1` 的 `enable_count=0` 判成「CSI PHY 未使能」，
+   实际它们是 **DSI combo PHY**（`allwinner,sunxi-dsi-combo-phy`），
+   状态 `disabled` 完全正常；真正的 CSI PHY 是 `phy@6b00000`，`okay`
+
+第 7 次差点被写成根因。共同点是：**在断言某个值的语义之前，没有先去代码
+或设备树里找它的定义**。前六次靠事后自查发现，第七次靠查 compatible 字符串
+发现——说明这个习惯还没建立。
+
+**可迁移的规则**：读一个寄存器/时钟/节点的值之前，先回答两个问题：
+「它的定义在哪个文件里？」「已知正常状态长什么样？」
+两个都答不上来，读到的数字就不是证据。
+
+### 仍未排除
+
+- sensor 芯片本身在收到 streaming 命令后未真正输出（内部 PLL 未锁定等）；
+- CSI-2 物理链路（FPC 排线、连接器）在某次操作后劣化；
+- SoC 侧 CSI PHY 的 lane 训练失败后不重试；
+- 冷启动时 sensor 上电/复位时序偶发不完整（与「曾经出过帧」不矛盾——
+  出过帧那次可能恰好时序正确）。
+
+**这些方向都需要物理层或更底层的观测手段**，本轮已无零风险可查项。
+
+### 结论
+
+**仍未定根因。** 但排查范围已从「整条链路」缩小到
+「sensor 输出之后、SoC 接收之前」这一段。下一步若要继续，
+需要物理检查（重插 FPC）或专用测量设备，不再有纯软件的零风险手段。
+
+
