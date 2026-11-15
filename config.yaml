@@ -133,7 +133,23 @@ monitors:
 
 edge:
   enabled: true
-  url: "http://127.0.0.1:8000/api/v1/network/edge/telemetry"
+  # 上行必须指向**云端可达地址**，不能是板子自己的回环。
+  #
+  # 历史坑：这里曾写 http://127.0.0.1:8000/...，而板端 8000 上**没有任何常驻
+  # 监听**——`weaknet-tunnel.service` 只做 `-R 22222`，从不转发 8000
+  # （2026-11-10 那次事故后刻意移除，见该 unit 的注释）。于是遥测、无线事件、
+  # 留证三条上行在板端全部失败，日志表现为 `Couldn't connect to server http=0`，
+  # 而设备侧一切正常，极难定位。
+  #
+  # 2026-11-15 改为直连云端公网 8000（云控制台已放行该端口）。实测板端
+  # `curl -X POST http://81.71.76.133:8000/api/v1/network/edge/telemetry`
+  # 返回 401（端点存在、缺签名），证明路径可达。
+  url: "http://81.71.76.133:8000/api/v1/network/edge/telemetry"
+  # 非回环明文 HTTP 会被 loadWeakNetConfig() 拒绝（weaknet_config.cpp:538-563）。
+  # 这是刻意的策略：只允许回环走明文。改成公网地址后必须显式开这个开关，
+  # 等于在配置里留下"我知道我在用明文过公网"的痕迹。
+  # 若要收回这条降级，应改为 https + 反代，而不是删掉这个键。
+  allow_insecure_http: true
   tenant: "tenant-m1-demo"
   device_id: "radxa-cubie-a7a"
   # 现场标识（多网关部署时同一现场的多台网关填同一个值）。
