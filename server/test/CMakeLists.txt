@@ -214,6 +214,27 @@ add_executable(test_video_qoe_attribution_gtest
     unit/test_video_qoe_attribution_gtest.cpp)
 target_link_libraries(test_video_qoe_attribution_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+# 编码器契约：几何拒绝、dropped/failed 分离、window_ms 是事实值、
+# 零拷贝默认关闭。**不需要 VE 硬件**——真后端的失败路径由工厂回落覆盖，
+# 其余语义用桩后端断言。这份测试在 CI 与开发机上必须全绿。
+add_executable(test_video_encoder_gtest
+    unit/test_video_encoder_gtest.cpp)
+target_link_libraries(test_video_encoder_gtest PRIVATE ${TEST_COMMON_LIBS})
+
+# 留证上行器契约：URL 派生、分片规划、清单/分片报文形状、
+# base64 与 sha256 正确性、队列丢弃语义。**不需要网络也不需要开发板**——
+# 网络失败路径由「地址不可达」覆盖，云端契约由字段断言覆盖。
+add_executable(test_video_clip_exporter_gtest
+    unit/test_video_clip_exporter_gtest.cpp)
+target_link_libraries(test_video_clip_exporter_gtest PRIVATE ${TEST_COMMON_LIBS})
+
+# MP4 封装器：无 ffmpeg 的机器上也能全绿（成功路径用 GTEST_SKIP 跳过）。
+# 不放进板端测试集之外的任何门禁，因为它调外部进程——但它的**失败**路径
+# 才是关键（缺 ffmpeg 必须报「没装」），而那部分永远会跑。
+add_executable(test_video_clip_muxer_gtest
+    unit/test_video_clip_muxer_gtest.cpp)
+target_link_libraries(test_video_clip_muxer_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 add_executable(test_thermal_monitor_gtest
     unit/test_thermal_monitor_gtest.cpp)
 target_link_libraries(test_thermal_monitor_gtest PRIVATE ${TEST_COMMON_LIBS})
@@ -342,6 +363,9 @@ foreach(test_target
     test_video_frame_hub_gtest
     test_video_frame_dbus_gtest
     test_video_qoe_attribution_gtest
+    test_video_encoder_gtest
+    test_video_clip_exporter_gtest
+    test_video_clip_muxer_gtest
     test_thermal_monitor_gtest
     test_active_connectivity_gtest
     test_tls_probe_client_gtest

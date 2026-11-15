@@ -30,7 +30,12 @@
 #include <algorithm>
 #include <mutex>
 #include <csignal>
+#include <cerrno>
 #include <net/if.h>
+// 编码消费者要 mmap 帧中枢的租约 fd（memcpy 路径需要可读地址），
+// 并 close 租约自己的那份 fd 副本。
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "common.hpp"
 #include "network_epoch_store.hpp"
@@ -57,6 +62,9 @@
 #include "video_qoe_attribution.hpp"
 #include "v4l2_frame_source.hpp"
 #include "video_frame_hub.hpp"
+#include "video_encoder.hpp"
+#include "video_clip_exporter.hpp"
+#include "site_incident_correlator.hpp"
 #include "assurance/state_stabilizer.hpp"
 #include "assurance/ip_reachability_evaluator.hpp"
 #include "assurance/responsiveness_evaluator.hpp"
@@ -100,6 +108,18 @@ namespace weaknet_dbus {
 ServerContext::~ServerContext() {
     // 注意：所有捕获 ctx* 的监控线程必须在调用此析构函数前已完成 join。
     // start_server() 通过 join_all → ctx 离开作用域的顺序保证这一点。
+
+    // 防御性收尾：编码消费者线程若因启动中途失败而没走到 start_server 的
+    // 关停段，这里必须 join。`std::thread` 析构时仍 joinable 会直接
+    // std::terminate——那会把「某一步初始化失败」变成「进程被 abort」，
+    // 现场只能看到 core 而看不到真正的原因。
+    //
+    // 正常路径下这个线程已在关停段 join 过，joinable() 为 false，是空操作。
+    if (video_encode_thread.joinable()) {
+        video_encode_stop.store(true, std::memory_order_release);
+        running.store(false, std::memory_order_release);
+        video_encode_thread.join();
+    }
 
     if (connection) {
         // 共享连接（dbus_bus_get 获取）不应调用 dbus_connection_close，
@@ -1704,6 +1724,290 @@ int start_server(int argc, char** argv) {
         }
     }
 
+    // ================================================================
+    // 编码消费者：帧中枢的第二个消费者
+    //
+    // 为什么它必须和面板走**同一条** acquire()/release() 通路：
+    // 中枢不知道也不关心里程碑是谁，两个消费者各自持一个独立租约。
+    // 任何绕过中枢的取帧方式（自己 open 设备、直接拿采集 buffer 的 fd）
+    // 都会把「消费者慢」变成「采集侧丢帧」，而这条链路的全部意义正是
+    // 判断链路质量——观测缺陷栽给被观测对象是这里最不能犯的错。
+    //
+    // 为什么编码器实例是**线程局部**的：`IVideoEncoder` 明确不保证线程
+    // 安全（一个实例只许一个线程用）。把它放进线程里，就再也不可能被
+    // 别的线程误用；代价是归因层要读统计时必须经由共享快照，见下面的
+    // 周期日志——那是本线程唯一写出的地方。
+    //
+    // 零拷贝为什么关着：`VideoEncoderConfig::allow_zero_copy` 默认 false，
+    // 因为硬件编码是异步的，`encode()` 返回时硬件可能仍在读那块 dma-buf，
+    // 而中枢的租约语义是「release 之后即可覆写」。开了就必须持有租约到
+    // 下一次 encode() 返回——那条约束目前只有单测覆盖，没有真机验证，
+    // 所以先走 memcpy（多一次 3MB 拷贝，但没有任何生命周期约束）。
+    // ================================================================
+    {
+        auto hub = ctx.video_hub.get();
+        auto* hub_configured = &ctx.video_hub_configured;
+        auto* running = &ctx.running;
+        auto* stop = &ctx.video_encode_stop;
+        auto* cfg = &ctx.cfg;
+        auto* exporter_slot = &ctx.video_clip_exporter_slot;
+        auto* recorder_slot = &ctx.video_clip_recorder;
+        auto* ctx_pending_incident = &ctx.video_pending_clip_incident;
+        auto* pending_mutex = &ctx.video_pending_clip_mutex;
+        ctx.video_encode_thread = std::thread([hub, hub_configured, running, stop, cfg,
+                                               exporter_slot, recorder_slot,
+                                               ctx_pending_incident, pending_mutex]() {
+            std::unique_ptr<weaknet::IVideoEncoder> enc = weaknet::createVideoEncoder(true);
+            LOG_INFO(LogModule::VIDEO, "video encoder consumer started: " << enc->describe());
+
+            // 留证录制器与编码器同为线程局部：它只在 encode() 返回后取码流，
+            // 因此天然只被本线程访问。几何来自 configure 的**事实值**（下面填），
+            // 不在这里猜——宽度反推高度会让云端索引到错误尺寸。
+            std::unique_ptr<weaknet::VideoClipRecorder> recorder;
+
+            bool enc_configured = false;
+            bool enc_failure_logged = false;
+            uint64_t last_seq = UINT64_MAX;
+            uint64_t last_published = 0;
+            uint64_t total_frames = 0;
+            uint64_t total_bytes = 0;
+            int64_t last_report_ms = 0;
+
+            while (running->load(std::memory_order_acquire) &&
+                   !stop->load(std::memory_order_acquire)) {
+                // 几何还没就位（摄像头没出第一帧 / 相机不在位）就没有可编的
+                // 东西。这不是错误状态：整条视频线缺席时本线程空转，其它
+                // 监控完全不受影响。
+                if (!hub_configured->load(std::memory_order_acquire)) {
+                    std::this_thread::sleep_for(50ms);
+                    continue;
+                }
+
+                // 用 `published` 计数等新帧，而不是每 20ms 无脑 acquire。
+                //
+                // 为什么这不是过早优化：中枢的 `describe()` 里 `acq`/`rel`
+                // 是判断租约协议有没有真的被走通的**第一现场**。无脑轮询会
+                // 让这两个计数膨胀到发布帧数的数倍（中枢限速 10fps，而本线程
+                // 每 20ms 转一圈 = 每帧取 5 次），于是那条日志再也读不出
+                // 「到底编了几帧」——一个本来可以直接对照 pub 的数字，变成
+                // 需要先知道轮询频率才能解释的数字。
+                //
+                // `stats()` 只加一把锁拷几个整数，比重分配租约便宜得多。
+                const uint64_t published = hub->stats().published;
+                if (published == last_published) {
+                    std::this_thread::sleep_for(20ms);
+                    continue;
+                }
+                last_published = published;
+
+                weaknet::VideoFrameLease lease;
+                if (!hub->acquire(lease)) {
+                    // 有帧但全被租用（面板拿得太慢）。跳过是可观测的
+                    // （中枢计 skipped_busy），不阻塞、不覆写。
+                    std::this_thread::sleep_for(20ms);
+                    continue;
+                }
+
+                // 同一帧不重复编。上面的 published 判断已经挡掉了绝大多数，
+                // 这条是兜底：publish 提交与 acquire 之间有窗口，极端情况下
+                // 可能拿到上一帧。真的发生了也不该白烧一次 VE。
+                if (lease.sequence == last_seq) {
+                    hub->release(lease.slot);
+                    ::close(lease.fd);
+                    std::this_thread::sleep_for(20ms);
+                    continue;
+                }
+
+                // 首次拿到租约时按**事实几何**配置编码器。
+                // 与中枢同一个理由：宽高/stride/uv_offset 都由驱动回报，
+                // 任何一个用 width 反推都会得到斜切或偏色的画面，且不报错。
+                if (!enc_configured) {
+                    weaknet::VideoEncoderConfig ecfg;
+                    ecfg.width = lease.width;
+                    ecfg.height = lease.height;
+                    ecfg.stride = lease.stride;
+                    ecfg.uv_offset = lease.uv_offset;
+                    ecfg.fourcc = lease.fourcc;
+                    ecfg.frame_bytes = static_cast<uint32_t>(lease.size);
+                    if (enc->configure(ecfg)) {
+                        enc_configured = true;
+                        enc_failure_logged = false;
+                        LOG_INFO(LogModule::VIDEO,
+                                 "video encoder configured: " << enc->describe());
+
+                        // 录制器必须在首次 encode() 之前就位：它的价值全在
+                        // 「事故发生时回溯窗口里已经有东西」。
+                        weaknet::VideoClipRecorderConfig rcfg;
+                        rcfg.device_id = cfg->edge.device_id.get();
+                        rcfg.site_id = cfg->edge.site_id.get();
+                        rcfg.gateway_id = cfg->edge.device_id.get();
+                        rcfg.width = lease.width;
+                        rcfg.height = lease.height;
+                        recorder = std::make_unique<weaknet::VideoClipRecorder>(rcfg);
+                        recorder_slot->store(recorder.get(), std::memory_order_release);
+                        LOG_INFO(LogModule::VIDEO,
+                                 "video clip recorder ready: pre=" << rcfg.pre_roll_ms
+                                 << "ms post=" << rcfg.post_roll_ms
+                                 << "ms max=" << rcfg.max_bytes << "B");
+                    } else if (!enc_failure_logged) {
+                        // 只报一次：几何是这个进程内不变的，每帧刷一条会把
+                        // 日志淹掉，而它并不提供新增信息。
+                        enc_failure_logged = true;
+                        LOG_WARNING(LogModule::VIDEO,
+                                    "video encoder configure failed: "
+                                    << enc->describe());
+                    }
+                    if (!enc_configured) {
+                        hub->release(lease.slot);
+                        ::close(lease.fd);
+                        last_seq = lease.sequence;
+                        std::this_thread::sleep_for(100ms);
+                        continue;
+                    }
+                }
+
+                // memcpy 路径需要可读的映射地址，而租约只给 fd。
+                // 只读映射即可：编码器自己不写这块内存。
+                void* map = ::mmap(nullptr, lease.size, PROT_READ, MAP_SHARED,
+                                   lease.fd, 0);
+                if (map == MAP_FAILED) {
+                    LOG_WARNING(LogModule::VIDEO,
+                                "video frame mmap failed: " << std::strerror(errno));
+                    hub->release(lease.slot);
+                    ::close(lease.fd);
+                    last_seq = lease.sequence;
+                    std::this_thread::sleep_for(100ms);
+                    continue;
+                }
+
+                weaknet::VideoFrameView view;
+                view.data = map;
+                view.size = lease.size;
+                // 显式 -1 而不是透传 lease.fd：零拷贝没启用，把 fd 交进去
+                // 只会让「哪些路径会碰硬件导入」变得不可预测。
+                view.dmabuf_fd = -1;
+                view.sequence = lease.sequence;
+                view.timestamp_ns = lease.timestamp_ns;
+
+                weaknet::EncodedFrame ef;
+                const bool produced = enc->encode(view, ef);
+
+                ::munmap(map, lease.size);
+                hub->release(lease.slot);
+                ::close(lease.fd);
+                last_seq = lease.sequence;
+
+                if (produced) {
+                    ++total_frames;
+                    total_bytes += ef.size;
+
+                    // 留证：把码流拷进预录环形缓冲，并在事故后到点产出片段。
+                    //
+                    // 为什么必须在这里拷：`ef.data` 只在下一次 encode() 之前
+                    // 有效，而回溯窗口要跨越几十秒。
+                    //
+                    // 时间基准：`ef.timestamp_ns` 原样来自 v4l2_buffer.timestamp，
+                    // 是**内核单调时钟**。片段窗口的判定全部用单调毫秒（见
+                    // VideoClipRecorder 的说明），墙钟只在产出时按一次采样换算。
+                    if (recorder && ef.valid()) {
+                        const uint64_t mono_ms = ef.timestamp_ns / 1000000ull;
+                        recorder->push(ef.data, ef.size, ef.keyframe, mono_ms);
+
+                        // 事故触发由 video_incident_watch_thread 写入
+                        // `pending_clip_incident`，这里只消费。做成「主线程置标志、
+                        // 编码线程消费」而不是让巡检线程直接调 startClip()：
+                        // 录制器被编码线程独占，跨线程调用会把锁竞争带进每帧路径。
+                        std::string pending;
+                        {
+                            std::lock_guard<std::mutex> pl(*pending_mutex);
+                            pending.swap(*ctx_pending_incident);
+                        }
+                        if (!pending.empty()) {
+                            if (recorder->startClip(pending)) {
+                                LOG_INFO(LogModule::VIDEO,
+                                         "视频留证开始录制 incident_id=" << pending
+                                         << " 缓冲=" << recorder->bufferedFrames() << " 帧/"
+                                         << recorder->bufferedBytes() << "B");
+                            }
+                        }
+
+                        const int64_t wall_now_ms =
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch()).count();
+                        std::vector<uint8_t> clip_bytes;
+                        auto clip_meta = recorder->poll(mono_ms,
+                                                        static_cast<uint64_t>(wall_now_ms),
+                                                        &clip_bytes);
+                        if (clip_meta.has_value()) {
+                            const size_t clip_size = clip_bytes.size();
+                            // 从槽位取当前实例：本线程启动时上行器尚未创建，
+                            // 捕获当时的裸指针必然是 nullptr。
+                            weaknet::VideoClipExporter* exporter =
+                                exporter_slot->load(std::memory_order_acquire);
+                            if (exporter &&
+                                exporter->enqueue(*clip_meta, std::move(clip_bytes))) {
+                                LOG_INFO(LogModule::VIDEO,
+                                         "视频留证已入队 clip_id=" << clip_meta->clip_id
+                                         << " incident=" << clip_meta->incident_id
+                                         << " bytes=" << clip_size);
+                            } else {
+                                LOG_WARNING(LogModule::VIDEO,
+                                            "视频留证入队被拒 clip_id=" << clip_meta->clip_id
+                                            << " bytes=" << clip_size
+                                            << (exporter ? "（队列已满）"
+                                                         : "（上行器未创建或已停止）"));
+                            }
+                        }
+                    }
+                }
+
+                // 周期性地把编码侧事实写进日志。这些计数是归因层区分
+                // 「编码器跟不上」与「网络差」的唯一依据（queue 涨 + 发送
+                // 队列空 = 编码瓶颈），所以不能只在退出时打印。
+                //
+                // 取一次快照再读，而不是在一条日志里连调四次 `peekStats()`：
+                // 后者每次都会重新加锁拷贝，四个字段可能来自**不同时刻**
+                // （例如 frames_in 是前一瞬的、dropped 是后一瞬的），
+                // 而这条日志的全部价值就是让这几项能互相对账。
+                const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                if (last_report_ms == 0) last_report_ms = now_ms;
+                if (now_ms - last_report_ms >= 10000) {
+                    last_report_ms = now_ms;
+                    const weaknet::EncoderStats st = enc->peekStats();
+                    LOG_INFO(LogModule::VIDEO,
+                             "video encode: " << st.frames_in << " in / "
+                             << total_frames << " kept / "
+                             << total_bytes << " bytes / "
+                             << st.dropped << " dropped / "
+                             << st.failed << " failed / "
+                             << st.queue_depth << " queued / "
+                             << st.bitrate_kbps() << " kbps / "
+                             << (st.valid ? "valid" : "no-input"));
+                }
+            }
+
+            // 收尾：冲出硬件里还没吐出的在途帧。不 flush 会丢掉最后几帧，
+            // 而事件留证最需要的恰恰可能是最后那几帧。
+            if (enc_configured) {
+                const size_t flushed = enc->flush(
+                    [&total_frames, &total_bytes](const weaknet::EncodedFrame& ef) {
+                        ++total_frames;
+                        total_bytes += ef.size;
+                    });
+                LOG_INFO(LogModule::VIDEO,
+                         "video encoder consumer stopped: " << enc->describe()
+                         << " | encoded=" << total_frames
+                         << " bytes=" << total_bytes
+                         << " flushed=" << flushed);
+            } else {
+                LOG_INFO(LogModule::VIDEO,
+                         "video encoder consumer stopped (never configured): "
+                         << enc->describe());
+            }
+        });
+    }
+
     // 初始化接口列表到WeakNetMgr中
     LOG_INFO(LogModule::WEAK_MGR, "initializing interface list...");    auto initial_interfaces = ctx.weak_mgr->collectCurrentInterfaces();
     ctx.weak_mgr->updateInterfaces(initial_interfaces);
@@ -1732,6 +2036,97 @@ int start_server(int argc, char** argv) {
     if (!ctx.monitor_manager->startConfigured()) {
         LOG_WARNING(LogModule::NETWORK,
                     "one or more monitor plugins failed to initialize or start");
+    }
+
+    // ================================================================
+    // 视频留证上行（事件触发）
+    //
+    // 两件事必须分开看：
+    //   1. exporter：把「一段已编码字节」送到云端（可独立单测，无硬件依赖）
+    //   2. 录制器：决定「留哪一段」（在编码线程内，跟随编码器几何）
+    //
+    // 配置不全时 start() 返回 false 并保持关闭，绝不半启用——与遥测上行同一纪律。
+    // ================================================================
+    {
+        ctx.video_clip_exporter = std::make_unique<weaknet::VideoClipExporter>(
+            ctx.cfg, ctx.cfg.edge.url.get());
+
+        if (!ctx.cfg.edge.enabled.load()) {
+            LOG_INFO(LogModule::SYSTEM,
+                     "视频留证上行未启动：edge.enabled=false（留证依赖同一条 edge 通道）");
+        } else if (ctx.video_clip_exporter->start()) {
+            LOG_INFO(LogModule::SYSTEM,
+                     "video clip exporter started: clips="
+                         << weaknet::VideoClipExporter::deriveClipsUrl(ctx.cfg.edge.url.get()));
+
+            // 发布给编码线程。只在 start() 成功之后发布：start() 失败时
+            // 内部的 stop_requested_ 仍是 false，此时发布会让 enqueue 照常
+            // 接收片段，而背后没有任何消费线程——队列涨到上限再开始丢，比
+            // 直接不接收更难归因。
+            ctx.video_clip_exporter_slot.store(ctx.video_clip_exporter.get(),
+                                               std::memory_order_release);
+
+            // 事故巡检：关联器确认的活跃事故 → 请求录一段。
+            //
+            // 为什么是轮询而不是回调：关联器由 bt_events 插件拥有。让插件去
+            // 认识视频录制器会把两条无关能力线绑在一起（插件不可用就连视频
+            // 也失效）。轮询代价是每 2 秒一次快照拷贝，与「一段 22 MB 的码流
+            // 要传几十秒」相比完全可以忽略。
+            auto* stop = &ctx.video_incident_watch_stop;
+            auto* pending = &ctx.video_pending_clip_incident;
+            auto* pending_mutex = &ctx.video_pending_clip_mutex;
+            auto* correlator_slot = &ctx.site_incident_correlator;
+            auto* pointers_mutex = &ctx.monitor_pointers_mutex;
+            ctx.video_incident_watch_thread = std::thread(
+                [stop, pending, pending_mutex, correlator_slot, pointers_mutex]() {
+                    // 已触发过的 incident_id。只保留最近的一批：事故 ID 含
+                    // 时间戳与随机码，不会重复使用，无限增长才是真问题。
+                    std::deque<std::string> seen;
+                    std::unordered_set<std::string> seen_set;
+
+                    while (!stop->load(std::memory_order_acquire)) {
+                        std::this_thread::sleep_for(std::chrono::seconds(2));
+
+                        std::vector<weaknet_dbus::SiteIncident> active;
+                        {
+                            std::shared_lock<std::shared_mutex> lock(*pointers_mutex);
+                            if (*correlator_slot != nullptr) {
+                                active = (*correlator_slot)->activeIncidents();
+                            }
+                        }
+                        if (active.empty()) continue;
+
+                        // 取最早的那条：多条同时活跃时，最早开始的与本次
+                        // 「这片区域出问题了」最相关，后续的会由下一次轮询接上。
+                        const weaknet_dbus::SiteIncident* target = &active.front();
+                        for (const auto& inc : active) {
+                            if (inc.started_at_ms < target->started_at_ms) target = &inc;
+                        }
+                        if (target->incident_id.empty()) continue;
+                        if (seen_set.count(target->incident_id) != 0) continue;
+
+                        seen.push_back(target->incident_id);
+                        seen_set.insert(target->incident_id);
+                        while (seen.size() > 64) {
+                            seen_set.erase(seen.front());
+                            seen.pop_front();
+                        }
+
+                        {
+                            std::lock_guard<std::mutex> pl(*pending_mutex);
+                            *pending = target->incident_id;
+                        }
+                        LOG_INFO(LogModule::VIDEO,
+                                 "检测到活跃事故，请求留证 incident_id="
+                                     << target->incident_id << " active=" << active.size());
+                    }
+                });
+        } else {
+            // 保持指针非空但未运行：调用方不必写空指针分支，能力缺失
+            // 体现在 isRunning() 与日志里，而不是崩溃。
+            LOG_INFO(LogModule::SYSTEM,
+                     "视频留证上行未启动（配置不全或无网络能力），留证保持关闭");
+        }
     }
 
     // 启动历史数据持久化线程（非监控器，server.cpp 单独管理）
@@ -1866,14 +2261,34 @@ int start_server(int argc, char** argv) {
     // 中枢。若只等 ~ServerContext 析构，那时 Ctrl-C 之后的各种收尾已经在跑，
     // 采集线程仍可能在回调里访问即将销毁的 video_hub。
     //
-    // 顺序：先停帧源（不再有新的 publish），再销毁中枢（消费者已无从 acquire）。
-    // 反过来的话，中枢析构后采集线程仍持有它的裸指针，那是 UAF。
+    // 顺序：先停帧源（不再有新的 publish），再停编码消费者（不再 acquire），
+    // 最后销毁中枢。反过来的话，中枢析构后采集线程/编码线程仍持有它的裸指针，
+    // 那是 UAF。
     if (ctx.frame_source) {
         ctx.frame_source->stop();
         ctx.frame_source_running.store(false, std::memory_order_release);
         LOG_INFO(LogModule::NETWORK,
                  "camera capture stopped: " << ctx.frame_source->describe());
     }
+
+    // 编码消费者必须在 video_hub 之前停：它无条件持有 hub 的裸指针。
+    // 先置停止标志再 join——`running=false` 已经在上面设过了，但那条会
+    // 同时停掉所有监控；这里需要的是「只停这一个消费者」，所以两者都置。
+    // 事故巡检先停：它会往 pending 槽写，编码线程换出该槽。
+    // 顺序反了也不会崩（atomic<string> 自身安全），但停掉编码线程后就没人
+    // 消费 pending 了，巡检还在写只会积压无意义的请求。
+    ctx.video_incident_watch_stop.store(true, std::memory_order_release);
+    if (ctx.video_incident_watch_thread.joinable()) {
+        ctx.video_incident_watch_thread.join();
+    }
+
+    ctx.video_encode_stop.store(true, std::memory_order_release);
+    if (ctx.video_encode_thread.joinable()) {
+        ctx.video_encode_thread.join();
+    }
+
+    // 编码线程已退出 → 录制器指针已失效（对象是线程局部的），清掉。
+    ctx.video_clip_recorder.store(nullptr, std::memory_order_release);
     // 中枢的累计计数必须**在析构前**取出，这是它唯一的存活窗口。
     //
     // 为什么这条日志不是可有可无的装饰：`describe()` 在启动时打印过一次，
@@ -1891,6 +2306,28 @@ int start_server(int argc, char** argv) {
     }
     ctx.video_hub.reset();
     ctx.frame_source.reset();
+
+    // 停止视频留证上行：先于 ~ServerContext，保证不再访问 ctx.cfg。
+    // stop() 会尽量把在途片段传完（受 stop_requested 中断，剩余计入 dropped）。
+    if (ctx.video_clip_exporter) {
+        // 先撤下槽位再停：编码线程此刻可能仍在一帧处理中间已取到该指针。
+        // 顺序上必须让「不再发布新指针」先于「销毁对象」——槽位置空之后，
+        // 编码线程下一次取到的就是 nullptr，走「未创建或已停止」分支。
+        ctx.video_clip_exporter_slot.store(nullptr, std::memory_order_release);
+        ctx.video_clip_exporter->stop();
+        const auto vstats = ctx.video_clip_exporter->stats();
+        LOG_INFO(LogModule::VIDEO,
+                 "video clip exporter stopped: enqueued=" << vstats.clips_enqueued
+                 << " uploaded=" << vstats.clips_uploaded
+                 << " failed=" << vstats.clips_failed
+                 << " dropped=" << vstats.clips_dropped
+                 << " mux_failures=" << vstats.mux_failures
+                 << " manifests=" << vstats.manifests_sent
+                 << " chunks=" << vstats.chunks_sent
+                 << " bytes=" << vstats.bytes_sent
+                 << " send_failures=" << vstats.send_failures);
+        ctx.video_clip_exporter.reset();
+    }
 
     // 停止端侧 AI 调度器：先于 edge_exporter 停止，避免回调访问已析构的 exporter
     if (ctx.edge_ai_scheduler) {

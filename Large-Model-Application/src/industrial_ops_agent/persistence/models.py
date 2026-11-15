@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -6543,6 +6544,89 @@ class NetworkActionApprovalDecisionRecord(TenantScopedMixin, Base):
     #: 批准时的载荷哈希快照（execute 侧 execution_rejection 用它比对参数）
     approval_payload_digest: Mapped[str] = mapped_column(String(128), nullable=False)
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class NetworkVideoClipRecord(TenantScopedMixin, Base):
+    """【留证】一个已登记的板端视频片段（清单事实，不含像素或码流）。
+
+    主键与 ``network_wireless_events`` / ``network_site_incidents`` 同形：
+    裸 ``clip_id``，``tenant_id`` 由 mixin 提供。跨租户撞号按既有规则处理
+    ——``_require_same_tenant`` 判成冲突，而不是悄悄覆盖。
+
+    本表**不存** ``received_chunks`` 与 ``state``：两者都能由分片表推出，
+    存成列就多了一个必须与分片表同步的计数器，而少写一次同步就是一个
+    永远卡在 PENDING 的片段。推导的代价是一次带索引的 count。
+    """
+
+    __tablename__ = "network_video_clips"
+    __table_args__ = (
+        Index(
+            "ix_network_video_clips_asset",
+            "tenant_id",
+            "asset_id",
+            "started_at_ms",
+        ),
+        Index(
+            "ix_network_video_clips_incident",
+            "tenant_id",
+            "incident_id",
+        ),
+    )
+
+    clip_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    #: 上传该片段的网关（= network_assets.asset_id，也就是 device_id）
+    asset_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    site_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    gateway_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    #: 关联的区域事故；空串表示"没有关联事故"，不是"关联到空事故"
+    incident_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    codec: Mapped[str] = mapped_column(String(16), nullable=False, default="H264")
+    width: Mapped[int] = mapped_column(Integer, nullable=False)
+    height: Mapped[int] = mapped_column(Integer, nullable=False)
+    fps: Mapped[int] = mapped_column(Integer, nullable=False, default=25)
+    started_at_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ended_at_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    total_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    expected_chunks: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 整段码流 sha256，**仅留存声明值**。请求路径不回读全部对象校验它。
+    declared_content_sha256: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=""
+    )
+    #: 云端收到清单的时刻（≠ started_at_ms：那是板端自述的拍摄时间）
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class NetworkVideoClipChunkRecord(TenantScopedMixin, Base):
+    """【留证】片段中的一个已落盘分片（不可变，按索引唯一）。
+
+    载荷本身在对象存储里，这里只留索引、摘要与对象键。分片一旦写入就不再
+    改动：同索引不同内容会被服务层判成冲突而拒绝。之所以必须拒绝而不是覆盖，
+    是因为覆盖之后"片段内容"就取决于到达顺序，而证据不能有这种事。
+
+    主键 ``(tenant_id, clip_id, chunk_index)`` 是真正的幂等保证：两个并发的
+    同分片提交不能都插入，靠的是它而不是服务层那次预检（预检只让
+    ``duplicate`` 计数准确）。
+    """
+
+    __tablename__ = "network_video_clip_chunks"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["clip_id"],
+            ["network_video_clips.clip_id"],
+            name="fk_network_video_clip_chunks_clip",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id"), primary_key=True, nullable=False
+    )
+    clip_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, primary_key=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: 对象存储键（已规范化，读回时用 ``tenant_object_key_from_value`` 重建）
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 TENANT_TABLE_NAMES = frozenset(

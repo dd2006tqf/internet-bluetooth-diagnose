@@ -69,6 +69,9 @@ set(SERVER_SOURCES
     src/utils/bpf_map_sizing.cpp
     src/utils/json_escape.cpp
     src/video_frame_hub.cpp
+    src/video_encoder.cpp
+    src/video_clip_exporter.cpp
+    src/video_clip_muxer.cpp
     src/video_qoe_attribution.cpp
     src/weaknet_config.cpp
     src/weak_netmgr.cpp
@@ -109,6 +112,11 @@ pkg_check_modules(NL80211 QUIET IMPORTED_TARGET libnl-3.0 libnl-genl-3.0)
 find_library(SQLITE3_LIB sqlite3 REQUIRED)
 target_link_libraries(server_lib PUBLIC
     PkgConfig::DBUS1 glog bpf pthread ${SQLITE3_LIB}
+    # video_encoder.cpp 用 dlopen/dlsym 加载 libvencoder.so（不能静态链接：
+    # sysroot 里没有板厂的 cedarc 库，且必须让动态链接器按 so 自己的
+    # DT_NEEDED 顺序解析，见该文件头注释）。PUBLIC 是因为静态库里含未定义
+    # 的 dl* 符号，最终可执行文件（含各测试目标）都必须带上。
+    ${CMAKE_DL_LIBS}
     $<$<BOOL:${NL80211_FOUND}>:PkgConfig::NL80211>)
 
 # ---- W1: OpenSSL（TLS 探测能力）----

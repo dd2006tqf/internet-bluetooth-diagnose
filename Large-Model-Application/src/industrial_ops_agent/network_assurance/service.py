@@ -67,6 +67,13 @@ from industrial_ops_agent.network_assurance.contracts import (
     SiteGatewayItem,
     SiteSummary,
 )
+from industrial_ops_agent.network_assurance.video_contracts import (
+    VideoClipChunk,
+    VideoClipChunkResult,
+    VideoClipItem,
+    VideoClipManifest,
+    VideoClipManifestResult,
+)
 from industrial_ops_agent.network_assurance.wireless_contracts import (
     BaselineView,
     EnvironmentWindowView,
@@ -87,6 +94,8 @@ from industrial_ops_agent.persistence.models import (
     NetworkPendingActionRecord,
     NetworkSiteIncidentRecord,
     NetworkSnapshotRecord,
+    NetworkVideoClipChunkRecord,
+    NetworkVideoClipRecord,
     NetworkWirelessEventRecord,
 )
 from industrial_ops_agent.persistence.tenant import TenantContext, validate_boundary_identifier
@@ -508,6 +517,289 @@ class NetworkAssuranceService:
                 baselines=duplicate_baselines,
             ),
         )
+
+    # ------------------------------------------------------------------
+    # 视频留证片段（清单 + 分片）
+    # ------------------------------------------------------------------
+
+    def register_video_clip(
+        self,
+        context: TenantContext,
+        manifest: VideoClipManifest,
+        *,
+        key_id: str,
+        received_at: datetime | None = None,
+    ) -> VideoClipManifestResult:
+        """登记一个片段清单；重放计 duplicate，内容冲突拒绝。
+
+        为什么「同 clip_id 不同内容」要拒绝而不是覆盖：``clip_id`` 是板端生成的
+        幂等键，同一个键出现两种内容意味着板端编号逻辑坏了（或者有人重放了别的
+        片段）。覆盖之后「这段证据到底是什么」就取决于到达顺序——证据不能这样。
+
+        冲突判定用**关键字段**而不是全字段比对：``received_at`` 这类服务端字段
+        每次都会不同，拿它参与比对会让每一次重放都变成冲突。
+        """
+
+        now = as_utc(received_at or datetime.now(UTC))
+        with self._database.transaction(context) as session:
+            asset = self._ensure_uplink_asset(
+                session, context, device_id=manifest.device_id, key_id=key_id
+            )
+            existing = session.get(NetworkVideoClipRecord, manifest.clip_id)
+            if existing is not None:
+                self._require_same_tenant(context, existing.tenant_id, manifest.clip_id)
+                if self._video_clip_differs(existing, manifest):
+                    raise NetworkAssuranceConflict(
+                        f"video clip {manifest.clip_id} was already registered "
+                        "with different content"
+                    )
+                received = self._count_video_clip_chunks(session, context, manifest.clip_id)
+                return VideoClipManifestResult(
+                    clip_id=manifest.clip_id,
+                    accepted=False,
+                    duplicate=True,
+                    expected_chunks=existing.expected_chunks,
+                    received_chunks=received,
+                    complete=received >= existing.expected_chunks,
+                )
+
+            session.add(
+                NetworkVideoClipRecord(
+                    clip_id=manifest.clip_id,
+                    tenant_id=context.tenant_id,
+                    asset_id=asset.asset_id,
+                    site_id=manifest.site_id,
+                    gateway_id=manifest.gateway_id,
+                    incident_id=manifest.incident_id,
+                    codec=manifest.codec,
+                    width=manifest.width,
+                    height=manifest.height,
+                    fps=manifest.fps,
+                    started_at_ms=manifest.started_at_ms,
+                    ended_at_ms=manifest.ended_at_ms,
+                    total_bytes=manifest.total_bytes,
+                    expected_chunks=manifest.expected_chunks,
+                    declared_content_sha256=manifest.declared_content_sha256,
+                    received_at=now,
+                )
+            )
+            try:
+                session.flush()
+            except IntegrityError as exc:
+                # 并发登记同一片段：唯一约束才是正确性保证，上面那次 get 只是让
+                # 常见路径的 duplicate 计数准确。撞到约束说明另一个请求先提交了，
+                # 语义等价于重放。
+                raise NetworkAssuranceConflict(
+                    f"video clip {manifest.clip_id} was concurrently registered"
+                ) from exc
+
+            return VideoClipManifestResult(
+                clip_id=manifest.clip_id,
+                accepted=True,
+                duplicate=False,
+                expected_chunks=manifest.expected_chunks,
+                received_chunks=0,
+                complete=manifest.expected_chunks == 0,
+            )
+
+    def store_video_clip_chunk(
+        self,
+        context: TenantContext,
+        chunk: VideoClipChunk,
+        *,
+        object_key: str,
+        received_at: datetime | None = None,
+    ) -> VideoClipChunkResult:
+        """记录一个已落盘分片；同索引同内容计 duplicate，同索引异内容拒绝。
+
+        ``object_key`` 由调用方（路由层）在**写对象存储成功之后**传入。顺序不可
+        颠倒：先写库再写对象会得到「行存在但内容不存在」——那比孤儿对象糟得多，
+        因为行会声称分片已送达，片段可能被判成 COMPLETE 而实际取不出内容。
+
+        片段必须已登记：分片先到意味着板端跳过了清单，接受它就等于让服务端
+        猜这个片段属于谁。
+        """
+
+        now = as_utc(received_at or datetime.now(UTC))
+        with self._database.transaction(context) as session:
+            clip = session.get(NetworkVideoClipRecord, chunk.clip_id)
+            if clip is None:
+                raise NetworkAssuranceNotFound(
+                    f"video clip {chunk.clip_id} is not registered"
+                )
+            self._require_same_tenant(context, clip.tenant_id, chunk.clip_id)
+            if chunk.chunk_index >= clip.expected_chunks:
+                raise NetworkAssuranceConflict(
+                    f"chunk index {chunk.chunk_index} is beyond the declared "
+                    f"chunk count {clip.expected_chunks}"
+                )
+
+            existing = session.get(
+                NetworkVideoClipChunkRecord,
+                (context.tenant_id, chunk.clip_id, chunk.chunk_index),
+            )
+            if existing is not None:
+                if existing.content_sha256 != chunk.content_sha256:
+                    raise NetworkAssuranceConflict(
+                        f"chunk {chunk.chunk_index} of clip {chunk.clip_id} "
+                        "was already stored with different content"
+                    )
+                received = self._count_video_clip_chunks(session, context, chunk.clip_id)
+                return VideoClipChunkResult(
+                    clip_id=chunk.clip_id,
+                    chunk_index=chunk.chunk_index,
+                    accepted=False,
+                    duplicate=True,
+                    received_chunks=received,
+                    expected_chunks=clip.expected_chunks,
+                    complete=received >= clip.expected_chunks,
+                )
+
+            session.add(
+                NetworkVideoClipChunkRecord(
+                    tenant_id=context.tenant_id,
+                    clip_id=chunk.clip_id,
+                    chunk_index=chunk.chunk_index,
+                    size_bytes=chunk.size_bytes,
+                    content_sha256=chunk.content_sha256,
+                    object_key=object_key,
+                    received_at=now,
+                )
+            )
+            try:
+                session.flush()
+            except IntegrityError as exc:
+                raise NetworkAssuranceConflict(
+                    f"chunk {chunk.chunk_index} of clip {chunk.clip_id} "
+                    "was concurrently stored"
+                ) from exc
+
+            received = self._count_video_clip_chunks(session, context, chunk.clip_id)
+            return VideoClipChunkResult(
+                clip_id=chunk.clip_id,
+                chunk_index=chunk.chunk_index,
+                accepted=True,
+                duplicate=False,
+                received_chunks=received,
+                expected_chunks=clip.expected_chunks,
+                complete=received >= clip.expected_chunks,
+            )
+
+    def list_video_clips(
+        self,
+        context: TenantContext,
+        *,
+        asset_id: str | None = None,
+        incident_id: str | None = None,
+        limit: int = 50,
+    ) -> list[VideoClipItem]:
+        """运营端读取：某网关或某事故下的留证片段摘要（不含载荷）。
+
+        ``received_chunks`` 在这里按片段逐条 count。用 N+1 而不是一条 group-by
+        子查询，是因为 N 由 ``limit`` 封顶（默认 50），而可读性换来的复杂度更低；
+        真到需要分页扫全表时再改成聚合查询。
+
+        ``state`` 只有两个取值：``COMPLETE``（分片到齐）与 ``PENDING``。刻意
+        不引入 ``EXPIRED``/``FAILED`` 之类的"超时未收齐"状态——那需要一个后台
+        定时器，而当前没有任何消费者会用这个状态做决策；凭空造出它只会在
+        接口上留一个永远没人推进的字段。
+        """
+
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        with self._database.transaction(context) as session:
+            stmt = select(NetworkVideoClipRecord).where(
+                NetworkVideoClipRecord.tenant_id == context.tenant_id
+            )
+            if asset_id is not None:
+                stmt = stmt.where(NetworkVideoClipRecord.asset_id == asset_id)
+            if incident_id is not None:
+                stmt = stmt.where(NetworkVideoClipRecord.incident_id == incident_id)
+            stmt = stmt.order_by(NetworkVideoClipRecord.started_at_ms.desc()).limit(limit)
+            records = session.scalars(stmt).all()
+            items: list[VideoClipItem] = []
+            for r in records:
+                # 只数一次：count 是这里唯一有真实开销的查询，写两遍会同时
+                # 让开销翻倍，并给 received 与 state 之间留一个"两次计数之间
+                # 又有分片到达"的不一致窗口。
+                received = self._count_video_clip_chunks(session, context, r.clip_id)
+                items.append(
+                    VideoClipItem(
+                        clip_id=r.clip_id,
+                        asset_id=r.asset_id,
+                        site_id=r.site_id,
+                        gateway_id=r.gateway_id,
+                        incident_id=r.incident_id,
+                        codec=r.codec,
+                        width=r.width,
+                        height=r.height,
+                        fps=r.fps,
+                        started_at_ms=r.started_at_ms,
+                        ended_at_ms=r.ended_at_ms,
+                        total_bytes=r.total_bytes,
+                        expected_chunks=r.expected_chunks,
+                        received_chunks=received,
+                        state=(
+                            "COMPLETE" if received >= r.expected_chunks else "PENDING"
+                        ),
+                        declared_content_sha256=r.declared_content_sha256,
+                    )
+                )
+            return items
+
+    def list_video_clip_chunks(
+        self,
+        context: TenantContext,
+        clip_id: str,
+    ) -> list[NetworkVideoClipChunkRecord]:
+        """按索引升序取分片行（下载路径用它拼回完整码流）。"""
+
+        with self._database.transaction(context) as session:
+            clip = session.get(NetworkVideoClipRecord, clip_id)
+            if clip is None:
+                raise NetworkAssuranceNotFound(f"video clip {clip_id} is not registered")
+            self._require_same_tenant(context, clip.tenant_id, clip_id)
+            stmt = (
+                select(NetworkVideoClipChunkRecord)
+                .where(
+                    NetworkVideoClipChunkRecord.tenant_id == context.tenant_id,
+                    NetworkVideoClipChunkRecord.clip_id == clip_id,
+                )
+                .order_by(NetworkVideoClipChunkRecord.chunk_index.asc())
+            )
+            return list(session.scalars(stmt).all())
+
+    @staticmethod
+    def _video_clip_differs(
+        existing: NetworkVideoClipRecord, manifest: VideoClipManifest
+    ) -> bool:
+        """重放判定：只看板端自述的、决定「这是哪段视频」的字段。"""
+
+        return (
+            existing.asset_id != manifest.device_id
+            or existing.site_id != manifest.site_id
+            or existing.gateway_id != manifest.gateway_id
+            or existing.incident_id != manifest.incident_id
+            or existing.codec != manifest.codec
+            or existing.width != manifest.width
+            or existing.height != manifest.height
+            or existing.fps != manifest.fps
+            or existing.started_at_ms != manifest.started_at_ms
+            or existing.ended_at_ms != manifest.ended_at_ms
+            or existing.total_bytes != manifest.total_bytes
+            or existing.expected_chunks != manifest.expected_chunks
+            or existing.declared_content_sha256 != manifest.declared_content_sha256
+        )
+
+    @staticmethod
+    def _count_video_clip_chunks(
+        session: Session, context: TenantContext, clip_id: str
+    ) -> int:
+        stmt = select(func.count()).select_from(NetworkVideoClipChunkRecord).where(
+            NetworkVideoClipChunkRecord.tenant_id == context.tenant_id,
+            NetworkVideoClipChunkRecord.clip_id == clip_id,
+        )
+        return int(session.scalar(stmt) or 0)
 
     def _ensure_uplink_asset(
         self,

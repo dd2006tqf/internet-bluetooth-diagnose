@@ -64,6 +64,36 @@ def knowledge_source_object_key(
     return TenantObjectKey(tenant_id=context.tenant_id, zone=zone, value=value)
 
 
+def edge_video_chunk_object_key(
+    context: TenantContext,
+    clip_id: str,
+    chunk_index: int,
+) -> TenantObjectKey:
+    """Edge-uploaded evidence clip chunk.
+
+    Deliberately **not** reusing ``quarantine_object_key``: that builder's
+    middle segment means "incident draft id" and its last segment means
+    "media id". Passing a clip id as a draft id would produce keys that
+    parse back into a plausible but wrong draft/media pair, so anything
+    that later enumerates a draft's media would see these objects as
+    members. A separate segment keeps the two namespaces from ever
+    being confused.
+
+    The chunk index is zero-padded so that lexicographic key order equals
+    numeric chunk order — an operator listing objects in a bucket gets the
+    stream in playback order rather than ``0, 1, 10, 11, 2``.
+    """
+
+    clip_id = validate_boundary_identifier(clip_id, field="clip_id")
+    if chunk_index < 0:
+        raise TenantBoundaryViolation("chunk index must not be negative")
+    value = (
+        f"tenant/{context.tenant_id}/{ObjectZone.QUARANTINE.value}/"
+        f"video-clips/{clip_id}/chunk-{chunk_index:05d}"
+    )
+    return TenantObjectKey(tenant_id=context.tenant_id, zone=ObjectZone.QUARANTINE, value=value)
+
+
 def tenant_object_key_from_value(
     context: TenantContext,
     value: str,

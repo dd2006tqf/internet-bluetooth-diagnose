@@ -148,6 +148,41 @@ _api_deps.get_risk_prediction_service = _risk_prediction_service
 _api_deps.get_network_action_approval_service = _network_action_approval_service
 _api_deps.get_network_council_service = _network_council_service
 _api_deps.AccessTokenVerifier = object
+
+
+# 下行签名器：与真实的 accessor 语义逐条一致——**可选**，未装配时返回 None，
+# 而不是像 `_state_dep` 那样抛 RuntimeError。用 `_state_dep` 会让一个「未配置
+# 下行密钥」的排练环境在**每个**上行请求上 500，而真实平台在同一种情况下
+# 正常受理未签名响应（S1#1 的迁移语义，见 dependencies.py 该函数的 docstring）。
+# 排练环境本来就没有生成下行密钥对，所以恒为 None 是它的真实状态。
+async def _edge_downlink_signer(request: Request):
+    return getattr(request.app.state, "edge_downlink_signer", None)
+
+
+_api_deps.get_edge_downlink_signer = _edge_downlink_signer
+
+
+# 对象存储：真实 accessor 在未装配时抛 503 `object_store_unavailable`
+# （**可重试**的依赖故障），不是 RuntimeError。排练环境装一个真实实现
+# （见 build_app 里的 InMemoryTenantObjectStore），所以这个兜底分支正常
+# 不会被走到；保留它是为了语义一致——把「存储没装配」与「代码写错了」
+# 区分开，前者板端可以重试，后者重试多少次都一样。
+async def _object_store(request: Request):
+    store = getattr(request.app.state, "object_store", None)
+    if store is None:
+        from industrial_ops_agent.api.errors import AppError
+
+        raise AppError(
+            status_code=503,
+            code="object_store_unavailable",
+            category="dependency",
+            message="Object store unavailable",
+            retryable=True,
+        )
+    return store
+
+
+_api_deps.get_object_store = _object_store
 sys.modules.setdefault("industrial_ops_agent.api.dependencies", _api_deps)
 
 from industrial_ops_agent.api.routes.network_assurance import router  # noqa: E402
@@ -299,6 +334,24 @@ def build_app() -> FastAPI:
     app.state.network_assurance_service = service
     app.state.edge_telemetry_verifier = verifier
     app.state.wireless_diagnosis_service = WirelessDiagnosisService(database)
+
+    # 视频留证分片的落点是对象存储。排练环境用**真实**的 InMemory 实现，
+    # 不是 None 也不是桩：分片路由的执行顺序是「对象存储 → 数据库」，
+    # 装配 None 就只能验证到 503，验不到写入顺序与幂等这两条真正要守的约束。
+    #
+    # 用 InMemory 而不是 MinIO 的理由：排练服务的存在意义是「一条最小闭环」，
+    # 它已经在同一份 docstring 里拒绝为了这个闭环拉起重依赖；而且它的断言
+    # 对象是数据库行与路由语义，不是对象存储的持久性。代价是**进程重启后
+    # 分片对象丢失（数据库行还在）**——这正是本环境的一条已知边界，不假装没有。
+    from industrial_ops_agent.object_store.memory import (  # noqa: PLC0415
+        InMemoryTenantObjectStore,
+    )
+
+    app.state.object_store = InMemoryTenantObjectStore()
+
+    # 下行签名器：本排练环境没有生成下行密钥对，诚实置 None。
+    # 真实平台在同一种情况下的行为就是「不受理签名、回未签名响应」。
+    app.state.edge_downlink_signer = None
 
     app.include_router(router, prefix="/api/v1")
     return app

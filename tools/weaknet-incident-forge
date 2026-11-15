@@ -1,0 +1,962 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""weaknet-incident-forge — 命令行构造一次区域级事故（SiteIncident）
+
+为什么需要这个程序
+==================
+
+区域事故的触发门槛是产品定义写死的：同一现场至少 2 台设备在关联窗口内同时
+出现合格异常，且受影响比例达标。这是「一台设备坏了」与「这一片无线环境出了
+问题」的分界线，不能为了测试通过就调低它。
+
+后果是：单网关、周边设备稀少的现场永远凑不出一次真实事故。而留证链路
+（事故 → 回溯预录 → 切片 → 签名分片上传 → 云端入库）的价值全在事故真的
+发生那一刻。没有事故，那条链路在单测之外从未被完整走过一遍——第一次运行就是
+真出事那次，等于从未拥有过这个能力。
+
+本工具解决的是这个可测性问题：用一条命令构造出合格的事故条件，让整条留证
+链路可以按需、可重复、可回归地跑通。
+
+关键设计：不注入内存态，只构造事实
+==================================
+
+最省事的做法是往关联器对象里直接塞一个 SiteIncident。本工具刻意不那么做。
+
+理由是「什么算事故」这段语义恰恰是留证链路最不可替代的部分：注入内存态绕过
+了 QualifyingAnomalyPolicy::qualify() 与双门槛判定，验完仍然不知道生产代码
+会不会自己开出一场事故。
+
+因此本工具的做法是：
+
+  1. 往 device_events 表写入 N 条合格异常（真实 schema、真实枚举字符串）
+  2. 通过 D-Bus 重启 bt_events 插件
+  3. 插件 start() 里的 recoverFromStore() 按生产逻辑回放这些事件，
+     用 observeLocked() 重新推导事故，双门槛照常判定
+  4. 巡检线程每 2 秒轮询活跃事故 → 请求留证 → 编码器回溯预录 → 上传
+
+也就是说：除了事件来源是构造的，判定、聚合、持久化、触发留证每一步都是生产
+代码。工具本身不含任何判定逻辑，它只是往事实表里写事实。
+
+三条必须守住的边界
+==================
+
+不伪造已有事故：只写 device_events，绝不写 site_incidents 或
+site_incident_events。事故行只能由关联器自己产出，否则证据链断裂。
+
+不改生产阈值：不读也不写 incident_min_devices 等配置。门槛不够就多造几台
+设备，绝不放松判定标准。
+
+事件可甄别：所有构造事件的 event_id 带 forge 前缀、source_detail 标为
+INCIDENT_FORGE。任何人查库都能一眼分清哪些是构造的、哪些是真实采集的。
+
+两个会让构造静默失效的坑（本工具已内置防护）
+============================================
+
+坑一，回放窗口。recoverFromStore 只回放 ts 落在
+[now - (关联窗口 + 静默窗口), now] 的事件。默认各 60 秒，即必须落在最近
+120 秒内。构造事件写「现在 - 8 秒」，既有余量又不像未来。
+
+坑二，结案下限。回放左边界是
+max(回放窗口左沿, 该现场最近一次 resolved_at_ms)。上一轮构造的事故结案后
+（resolved_at_ms 约等于其最后事件加 60 秒），任何早于该时刻的新事件都会被
+跳过，表现为「写进去了但回放读到 0 条」。本工具写入前读这个下限，撞上就拒绝
+执行并提示还要等多少秒——绝不硬写一版注定被忽略的数据。
+
+用法
+====
+
+  # 干跑：只报告将写入什么，不碰数据库（默认行为）
+  ./tools/weaknet-incident-forge --dry-run
+
+  # 构造一次事故（默认 3 台设备）
+  ./tools/weaknet-incident-forge --apply
+
+  # 构造后等待并打印事故与留证片段的流转
+  ./tools/weaknet-incident-forge --apply --watch
+
+  # 指定设备数（必须不低于生产绝对门槛）
+  ./tools/weaknet-incident-forge --apply --devices 4
+
+  # 清掉本工具构造过的事件（只删自己写的，绝不碰真实采集）
+  ./tools/weaknet-incident-forge --cleanup
+
+  # 只看数据库 schema 与枚举自检，不做任何写入
+  ./tools/weaknet-incident-forge --check-schema
+
+在云端开发机（板子通过反向隧道接入）上运行时，本工具自动检测并给所有命令加
+ssh board 前缀；--local 可强制在本机执行。
+
+注意：**不要**用 sudo 运行本工具本身。两句提醒：
+
+  1. 需要 root 的三步（写库、清理、重启插件）由工具在远端自行加 sudo -n，
+     不需要外层再套一层。外层 sudo 不会让它做得更对，只会改变执行身份。
+  2. 在云端开发机上外层 sudo 会**直接把它跑坏**：ssh 会改用 root 的
+     known_hosts 与密钥，`ssh board` 别名随即失效，报的却是
+     「Host key verification failed」——看起来像板子掉线，实际是身份被换了。
+
+因此写库必须提权这一点在工具内部解决，调用方保持普通用户即可。
+
+退出码
+======
+
+  0  成功（干跑即「检查通过」）
+  1  参数或环境错误，或阈值预判必然不达标
+  2  数据库不可写、schema 不符
+  3  构造后事故未出现
+  4  撞上结案下限，本轮拒绝写入
+  5  片段已到云端，但载荷核对未全通过（sha256 不符、MP4 缺 moov/mdat，
+     或缺 SPS/PPS/IDR）
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import shlex
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+# ---- 构造事件的身份标记 -----------------------------------------------------
+# event_id 前缀与 source_detail 双标记：前者让 SQL 能按前缀精确扫出构造数据，
+# 后者让「这条事件是谁产出的」在事件语义层面也可读。两者必须同时存在——
+# 只靠 event_id 前缀的话，归一化器未来改命名规则就扫不到了。
+FORGE_EVENT_PREFIX = "forge"
+FORGE_SOURCE_DETAIL = "INCIDENT_FORGE"
+
+# ---- 生产表枚举值（必须与 server/src/wireless_event.cpp 的 toString 逐字一致）--
+# 这些字符串是本工具与生产代码之间唯一的耦合点。它们一旦漂移，关联器会解析成
+# fallback，构造出来的事故会静默消失（而不是报错）。因此集中声明，并由
+# --check-schema 在运行时与真实数据比对。
+EVENT_TYPE_LINK_DISCONNECTED = "LINK_DISCONNECTED"
+EVENT_TYPE_LINK_DEGRADED = "LINK_DEGRADED"
+REASON_CONNECTION_TIMEOUT = "CONNECTION_TIMEOUT"
+REASON_OTHER = "OTHER"
+# REMOTE_USER_TERMINATED 与 LOCAL_HOST_TERMINATED 是计划内断开，绝不构成事故
+# （见 QualifyingAnomalyPolicy::isPlannedTermination）。本工具只用上面两类。
+SOURCE_KERNEL_HCI_TIMEOUT = "KERNEL_HCI_TIMEOUT"
+SOURCE_KERNEL_HCI = "KERNEL_HCI"
+PROTOCOL_BLUETOOTH = "BLUETOOTH"
+ADDRESS_TYPE_BREDR = "BREDR"
+ADDRESS_TYPE_LE_PUBLIC = "LE_PUBLIC"
+
+# ---- 默认参数 ---------------------------------------------------------------
+DEFAULT_DB = "/home/radxa/weaknet/data/history.db"
+DEFAULT_DEVICES = 3
+DEFAULT_COOLDOWN_S = 30
+DEFAULT_MONITOR = "bt_events"
+DEFAULT_CLI = "/home/radxa/weaknet/client/bin/weaknet-cli"
+
+# 构造事件的时间：现在 - 8 秒。
+#
+# 为什么要有这个回退量：recoverFromStore 的右边界是插件启动那一刻的墙钟，而
+# 写入发生在重启之前。若事件写成「现在」，写入与重启之间那几秒会让它落在边界
+# 之外，回放读到 0 条。退 8 秒既能保证远早于重启时刻，又远在 120 秒的回放
+# 窗口内部，两头都有余量。
+EVENT_BACKDATE_MS = 8 * 1000
+
+# 关联窗口默认 60 秒。同一批事件必须落在同一个窗口内才会被聚成一起事故，因此
+# 设备之间的时间偏移必须远小于窗口。
+DEVICE_SPREAD_MS = 2000
+
+# 本工具要求的 device_events 最小列集合。列名漂移 = schema 不符 = 拒绝执行，
+# 绝不在未知 schema 上盲写（盲写会产出关联器读不懂的行，且不报错）。
+REQUIRED_COLUMNS = {
+    "event_id", "ts", "site_id", "gateway_id", "protocol", "device_address",
+    "address_type", "hci_index", "event_type", "rssi_at_event_dbm",
+    "raw_reason_code", "reason", "source", "source_detail", "suspected_cause",
+    "details_json",
+}
+
+
+# ============================================================================
+# 远端执行抽象
+# ============================================================================
+class Runner:
+    """命令执行器。板端模式下所有命令都经 ssh board 前缀。
+
+    为什么要这层抽象：本工具的主要使用者是云端开发机（板子走反向隧道接入）。
+    若工具内部硬编码「本机执行」或「ssh 板子」，就无法在两种场景下复用，
+    最终会催生两份几乎相同的脚本。
+    """
+
+    def __init__(self, remote, board_alias="board"):
+        self.remote = remote
+        self.board_alias = board_alias
+
+    def wrap(self, argv):
+        if not self.remote:
+            return list(argv)
+        return ["ssh", self.board_alias] + list(argv)
+
+    def run(self, argv, timeout=60, input_text=None):
+        cmd = self.wrap(argv)
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=input_text,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            raise SystemExit("[forge] 找不到可执行文件 %s：%s" % (cmd[0], exc))
+        except subprocess.TimeoutExpired:
+            raise SystemExit("[forge] 命令超时（%ss）：%s"
+                             % (timeout, shlex.join(cmd)))
+        return proc.returncode, proc.stdout, proc.stderr
+
+    def run_script(self, script, payload, timeout=120, elevate=False):
+        """把一段 Python 代码交给远端 python3 执行，报文内联成模块级常量。
+
+        为什么不走 argv：SQL 与 JSON 含引号、换行与中文，经 ssh 时远端 shell
+        会二次解释，迟早出错。为什么不走 stdin 第二条流：python3 接 `-` 时
+        stdin 整条都是源码，没有第二条流可用，`readline()` 读到的会是源码
+        第一行——这是一个静默出错到 JSON 解析才暴露的坑。
+
+        因此把报文用 repr() 内联进源码：repr 产出的字面量由 Python 自己解析，
+        传输层不参与任何内容解释。
+
+        elevate=True 时以 root 身份执行。这不是「为了省事给的权限」，而是写
+        history.db 的必要条件：库是 WAL 方言，写事务必须同时拿到 `-wal` 与
+        `-shm` 的写权限，而这两个文件由服务端进程持有、属主是 root（服务以
+        root 运行，见 `systemctl show weaknet-server -p User`）。以普通用户
+        写入会在第一次写事务就被 SQLite 拒绝，报的却是 `attempt to write a
+        readonly database`——文件本身可写，是配套文件不可写，这句话极具误导性。
+
+        以 root 写入同时保证了另一件事：全库只有服务端与（临时）本工具两个
+        写入者，且两者身份一致，不会出现「同一份 WAL 被两种 uid 交替改写」。
+        """
+        prelude = "PAYLOAD_JSON = %r\n" % (json.dumps(payload),)
+        argv = ["python3", "-"]
+        if elevate:
+            argv = ["sudo", "-n"] + argv
+        return self.run(argv, timeout=timeout, input_text=prelude + script)
+
+
+# ============================================================================
+# 板端 Python 片段（用板端 sqlite3；py3.9 足够，不引入任何额外依赖）
+# ============================================================================
+# 每个片段都从模块级常量 PAYLOAD_JSON 读参数（由 Runner.run_script 用 repr()
+# 内联注入），再把结果作为最后一行 JSON 打印出来。失败也要打印 JSON 而不是抛栈
+# ——栈会淹没在 ssh 的 stderr 里，让诊断变成猜谜。
+
+PROBE_SCRIPT = r'''
+import json, sqlite3, sys
+payload = json.loads(PAYLOAD_JSON)
+db = payload["db"]
+out = {"ok": False}
+try:
+    conn = sqlite3.connect("file:" + db + "?mode=ro", uri=True, timeout=5)
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": "open: %s" % exc})); sys.exit(0)
+try:
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(device_events)")]
+    out["columns"] = cols
+    out["has_events_table"] = bool(cols)
+    out["event_count"] = conn.execute(
+        "SELECT COUNT(*) FROM device_events").fetchone()[0]
+    out["incident_count"] = conn.execute(
+        "SELECT COUNT(*) FROM site_incidents").fetchone()[0]
+    out["forge_event_count"] = conn.execute(
+        "SELECT COUNT(*) FROM device_events WHERE event_id LIKE 'forge_%'"
+    ).fetchone()[0]
+    out["latest_event_ts"] = conn.execute(
+        "SELECT MAX(ts) FROM device_events").fetchone()[0] or 0
+    out["latest_resolved_at"] = conn.execute(
+        "SELECT MAX(resolved_at_ms) FROM site_incidents"
+        " WHERE resolved_at_ms IS NOT NULL").fetchone()[0] or 0
+    out["ok"] = True
+except Exception as exc:
+    out["error"] = "query: %s" % exc
+finally:
+    conn.close()
+print(json.dumps(out))
+'''
+
+INSERT_SCRIPT = r'''
+import json, sqlite3, sys
+payload = json.loads(PAYLOAD_JSON)
+out = {"ok": False, "inserted": 0, "skipped": 0}
+try:
+    conn = sqlite3.connect(payload["db"], timeout=10)
+    conn.execute("PRAGMA busy_timeout = 10000")
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": "open: %s" % exc})); sys.exit(0)
+try:
+    sql = (
+        "INSERT OR IGNORE INTO device_events ("
+        "event_id, ts, site_id, gateway_id, protocol, device_address,"
+        " address_type, hci_index, event_type, rssi_at_event_dbm,"
+        " raw_reason_code, reason, source, source_detail, suspected_cause,"
+        " details_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    )
+    rows = payload["rows"]
+    before = conn.total_changes
+    conn.executemany(sql, rows)
+    conn.commit()
+    out["inserted"] = conn.total_changes - before
+    out["skipped"] = len(rows) - out["inserted"]
+    out["ok"] = True
+except Exception as exc:
+    out["error"] = "insert: %s" % exc
+finally:
+    conn.close()
+print(json.dumps(out))
+'''
+
+QUERY_SCRIPT = r'''
+import json, sqlite3, sys
+payload = json.loads(PAYLOAD_JSON)
+out = {"ok": False, "incidents": [], "clips": [], "has_clips_table": False}
+try:
+    conn = sqlite3.connect("file:" + payload["db"] + "?mode=ro",
+                           uri=True, timeout=5)
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": "open: %s" % exc})); sys.exit(0)
+try:
+    # 只看构造之后开始的事故——历史事故与本轮无关，混进来会误报成功。
+    for r in conn.execute(
+        "SELECT incident_id, started_at_ms, last_event_ms, resolved_at_ms,"
+        " affected_devices, state FROM site_incidents"
+        " WHERE started_at_ms >= ? ORDER BY started_at_ms DESC LIMIT 10",
+        (payload["since_ms"],)):
+        out["incidents"].append({
+            "incident_id": r[0], "started_at_ms": r[1], "last_event_ms": r[2],
+            "resolved_at_ms": r[3], "affected_devices": r[4], "state": r[5],
+        })
+    # 留证片段的落库表在云端侧；板端可能没有。缺表不等于失败，但要如实报告。
+    names = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    out["has_clips_table"] = "video_clips" in names
+    out["ok"] = True
+except Exception as exc:
+    out["error"] = "query: %s" % exc
+finally:
+    conn.close()
+print(json.dumps(out))
+'''
+
+CLEANUP_SCRIPT = r'''
+import json, sqlite3, sys
+payload = json.loads(PAYLOAD_JSON)
+out = {"ok": False, "deleted": 0}
+try:
+    conn = sqlite3.connect(payload["db"], timeout=10)
+    conn.execute("PRAGMA busy_timeout = 10000")
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": "open: %s" % exc})); sys.exit(0)
+try:
+    # 只删本工具写的：event_id 前缀是唯一判据。
+    # 刻意不级联删 site_incident_events：那条回链是关联器写的证据，删掉会让
+    # 已产出的事故失去可追溯性。留着它，靠 event_id 前缀仍能查出证据来源。
+    cur = conn.execute(
+        "DELETE FROM device_events WHERE event_id LIKE 'forge_%'")
+    conn.commit()
+    out["deleted"] = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+    out["ok"] = True
+except Exception as exc:
+    out["error"] = "delete: %s" % exc
+finally:
+    conn.close()
+print(json.dumps(out))
+'''
+
+
+# ============================================================================
+# 构造事件
+# ============================================================================
+def _mac_for(index):
+    """生成一个明确属于本地管理地址段的假 MAC。
+
+    为什么用 02 开头：IEEE 规定首字节第 2 个最低位为 1 表示本地管理地址。
+    真实厂商设备永远不会用这个段，因此构造出来的设备地址在语义上就与真实设备
+    不冲突——即便有人把构造数据误当成真实采集，MAC 段本身就是提示。
+    """
+    return "02:00:00:00:00:%02X" % (index & 0xFF)
+
+
+def build_rows(devices, now_ms, site_id, gateway_id):
+    """构造 N 台设备的合格异常事件。
+
+    为什么混合两种事件类型：LINK_DISCONNECTED（原因 CONNECTION_TIMEOUT）与
+    LINK_DEGRADED 都是合格异常，混合写入能同时覆盖 qualify() 的两条分支。
+    只写一种的话，另一条分支的判定逻辑就从未被这个工具打中过。
+
+    为什么交替用 BREDR 与 LE_PUBLIC：deviceKeyOf() 把 address_type 纳入身份，
+    同一 MAC 的 BREDR 与 LE 是两个不同设备。交替使用能验证「身份复合键真的按
+    protocol 加 address_type 区分」，而不是只看 MAC 字符串。
+    """
+    rows = []
+    base = now_ms - EVENT_BACKDATE_MS
+    for i in range(devices):
+        is_degraded = (i % 2 == 1)
+        ts = base + i * DEVICE_SPREAD_MS
+        event_id = "%s_%d_%d" % (FORGE_EVENT_PREFIX, now_ms, i)
+        address_type = ADDRESS_TYPE_LE_PUBLIC if i % 3 == 2 else ADDRESS_TYPE_BREDR
+        if is_degraded:
+            event_type = EVENT_TYPE_LINK_DEGRADED
+            reason = REASON_OTHER
+            source = SOURCE_KERNEL_HCI
+        else:
+            event_type = EVENT_TYPE_LINK_DISCONNECTED
+            reason = REASON_CONNECTION_TIMEOUT
+            source = SOURCE_KERNEL_HCI_TIMEOUT
+        details = json.dumps({
+            "raw_evidence": [{
+                "source": source,
+                "source_detail": FORGE_SOURCE_DETAIL,
+                "note": "synthesized by weaknet-incident-forge",
+            }]
+        }, ensure_ascii=False)
+        rows.append([
+            event_id, ts, site_id, gateway_id, PROTOCOL_BLUETOOTH,
+            _mac_for(i + 1), address_type, 0, event_type,
+            None,                    # rssi_at_event_dbm：未采集写 NULL 而非 0
+            0, reason, source, FORGE_SOURCE_DETAIL,
+            None,                    # suspected_cause：采集层不做诊断，恒 NULL
+            details,
+        ])
+    return rows
+
+
+# ============================================================================
+# 远端片段调用
+# ============================================================================
+def _parse_last_json(text, what):
+    for line in reversed(text.strip().splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            return json.loads(line)
+        except ValueError:
+            continue
+    raise SystemExit("[forge] %s的输出无法解析：%s" % (what, text[:400]))
+
+
+def do_probe(runner, db_path):
+    code, out, err = runner.run_script(PROBE_SCRIPT, {"db": db_path})
+    if code != 0:
+        raise SystemExit("[forge] 探测数据库失败（rc=%s）：%s" % (code, err.strip()))
+    return _parse_last_json(out, "探测")
+
+
+def do_insert(runner, db_path, rows):
+    # elevate=True：WAL 配套文件（-wal/-shm）属主是 root，普通用户写不进去。
+    code, out, err = runner.run_script(
+        INSERT_SCRIPT, {"db": db_path, "rows": rows}, timeout=60, elevate=True)
+    if code != 0:
+        raise SystemExit("[forge] 写入失败（rc=%s）：%s" % (code, err.strip()))
+    return _parse_last_json(out, "写入")
+
+
+def do_query(runner, db_path, since_ms):
+    code, out, err = runner.run_script(
+        QUERY_SCRIPT, {"db": db_path, "since_ms": since_ms}, timeout=60)
+    if code != 0:
+        raise SystemExit("[forge] 查询事故失败（rc=%s）：%s" % (code, err.strip()))
+    return _parse_last_json(out, "查询")
+
+
+def do_cleanup(runner, db_path):
+    # 同 do_insert：DELETE 也是写事务，必须与 -wal/-shm 的属主同身份。
+    code, out, err = runner.run_script(
+        CLEANUP_SCRIPT, {"db": db_path}, timeout=60, elevate=True)
+    if code != 0:
+        raise SystemExit("[forge] 清理失败（rc=%s）：%s" % (code, err.strip()))
+    return _parse_last_json(out, "清理")
+
+
+# ============================================================================
+# 阈值与重启
+# ============================================================================
+def read_thresholds(runner, cli):
+    """从 weaknet-cli 读运行时阈值，用于预判本次构造能否达标。
+
+    这一步是诊断辅助，不是判定依据：真正的判定仍然发生在关联器里。读不到就按
+    生产默认值提示，绝不因为读不到就中断——工具的核心价值是构造事实。
+    """
+    defaults = {
+        "min_devices": 2, "min_ratio_bp": 3000,
+        "window_ms": 60000, "quiet_ms": 60000, "active_ms": 60000,
+    }
+    code, out, _ = runner.run([cli, "get", "bluetooth"], timeout=30)
+    if code != 0:
+        return defaults, False
+    for line in out.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            blob = json.loads(line)
+        except ValueError:
+            continue
+        bt = blob.get("bluetooth")
+        if not isinstance(bt, dict):
+            continue
+        def pick(key, default):
+            try:
+                return int(bt.get(key, default))
+            except (TypeError, ValueError):
+                return default
+        return {
+            "min_devices": pick("incident_min_devices", 2),
+            "min_ratio_bp": pick("incident_min_ratio_bp", 3000),
+            "window_ms": pick("incident_window_ms", 60000),
+            "quiet_ms": pick("incident_quiet_window_ms", 60000),
+            "active_ms": pick("incident_active_window_ms", 60000),
+        }, True
+    return defaults, False
+
+
+def read_cloud_base(runner, cli):
+    """从 edge.url 反推云端根地址，用于查询留证是否真的落地。
+
+    为什么不复用 VideoClipExporter::deriveClipsUrl 的那条规则（只认
+    `/edge/telemetry` 结尾）：那是**发送**侧的约束，要严到「猜错就不发」。
+    本工具是**观察**侧，目标是尽量把已有的事实读出来，宁可读不到也不该因为
+    地址形态不标准就拒绝观察。因此这里只做最小限度的推导：拿 url 的主机端口
+    部分，再拼上固定的 API 前缀。读不到就返回空串，watch 会退化成只报板端。
+    """
+    code, out, _ = runner.run([cli, "get", "edge"], timeout=30)
+    if code != 0:
+        return ""
+    for line in out.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            blob = json.loads(line)
+        except ValueError:
+            continue
+        edge = blob.get("edge")
+        if not isinstance(edge, dict):
+            continue
+        url = str(edge.get("url") or "")
+        marker = "/api/"
+        idx = url.find(marker)
+        if idx <= 0:
+            return ""
+        return url[:idx] + "/api/v1/network"
+    return ""
+
+
+def fetch_cloud_clips(base, device_id, incident_id, timeout=10):
+    """查云端已收的留证片段摘要（只读，无鉴权写操作）。
+
+    为什么要查云端而不是板端：板端根本没有 video_clips 表——片段记录只在云端
+    落库，板端只在内存队列里短暂存在。早先版本在板端查表，于是每条成功的上传
+    都会被报成「未观察到留证片段」，把最该被看见的成功当成了失败。
+    """
+    if not base or not device_id:
+        return None
+    url = "%s/assets/%s/video-clips?limit=50" % (base, device_id)
+    if incident_id:
+        url += "&incident_id=" + incident_id
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            payload = resp.read()
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def fetch_cloud_clip_bytes(base, device_id, clip_id, timeout=30):
+    """下载已拼装的码流，用于核对 sha256 与 NAL 结构。"""
+    url = "%s/assets/%s/video-clips/%s/content" % (base, device_id, clip_id)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.read()
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def looks_like_mp4(data):
+    """判断字节是否是 MP4 容器。
+
+    判据是 ISO/IEC 14496-12 规定的第一个 box 类型 `ftyp`，落在 `[4, 8)`。
+    为什么不能看扩展名或清单字段：容器是码流自身的事实。板端封装是**尽力而为**
+    （缺 ffmpeg 或码流不合规时降级传裸流），云端历史片段又全是裸流，
+    所以同一个下载端点的字节既可能是 MP4 也可能是 Annex-B——只能按字节判。
+    """
+    return len(data) >= 12 and data[4:8] == b"ftyp"
+
+
+def describe_mp4_layout(data):
+    """列出顶层 box，回答「这个 MP4 结构是否完整」。
+
+    为什么值得做：`ftyp` 只能证明「开头像 MP4」。真正决定它能不能播的是
+    `moov`（索引）与 `mdat`（码流数据）是否都在。封装被截断时会留下一个
+    只有 `ftyp`+`mdat` 的半截文件，播放器打不开，而 sha256 依然与清单一致
+    ——校验和只证明「云端存的字节就是板端发的字节」，不证明那串字节可用。
+    """
+    boxes = []
+    i = 0
+    while i + 8 <= len(data) and len(boxes) < 64:
+        size = int.from_bytes(data[i:i + 4], "big")
+        kind = data[i + 4:i + 8]
+        try:
+            name = kind.decode("ascii")
+        except UnicodeDecodeError:
+            name = kind.hex()
+        boxes.append(name)
+        if size < 8:
+            break
+        i += size
+    return {
+        "boxes": boxes,
+        "has_moov": "moov" in boxes,
+        "has_mdat": "mdat" in boxes,
+        "has_ftyp": "ftyp" in boxes,
+    }
+
+
+def describe_nal_layout(data):
+    """统计 Annex-B NAL 类型，回答「这段码流能不能解码」。
+
+    为什么值得做：sha256 一致只证明「云端存的字节和板端发的一致」，
+    完全不证明那些字节是一段可解码的视频。缺少 SPS/PPS/IDR 的码流可以
+    完美通过校验和，却解不出任何画面——这正是留证链路最需要排除的失败。
+    """
+    types = {}
+    order = []
+    i = 0
+    while True:
+        j = data.find(b"\x00\x00\x01", i)
+        if j < 0:
+            break
+        start = j + 3
+        i = start
+        if start >= len(data):
+            break
+        t = data[start] & 0x1F
+        types[t] = types.get(t, 0) + 1
+        if len(order) < 8:
+            order.append(t)
+    return {
+        "units": sum(types.values()),
+        "has_sps": types.get(7, 0) > 0,
+        "has_pps": types.get(8, 0) > 0,
+        "has_idr": types.get(5, 0) > 0,
+        "idr_count": types.get(5, 0),
+        "starts_with_sps": bool(order) and order[0] == 7,
+    }
+
+
+def restart_monitor(runner, cli, monitor):
+    """重启插件，触发 recoverFromStore 回放。
+
+    这是本工具唯一的副作用动作。它之所以安全：monitor restart 走的是生产既有
+    的 D-Bus 生命周期接口，与运维手动重启插件完全同一条路径。
+
+    必须带 sudo：D-Bus 侧对 restart 做了 root 校验（requireRootCaller），
+    普通用户调用会被直接拒绝，且拒绝发生在回放之前——表现为「什么都没发生」。
+    """
+    code, out, err = runner.run(["sudo", "-n", cli, "monitor", "restart", monitor],
+                               timeout=90)
+    return code, (out + err).strip()
+
+
+# ============================================================================
+# 主流程
+# ============================================================================
+def local_has_db(db_path):
+    return os.path.exists(db_path)
+
+
+def detect_remote(args):
+    """自动判断该不该走 ssh。
+
+    判据是「本机有没有那个数据库」。云端开发机上没有，说明必须远端执行；
+    板子上有，说明是本地执行。这样默认行为在两种场景下都正确，不需要用户每次
+    手动加 --local。
+    """
+    if args.local:
+        return False
+    return not local_has_db(args.db)
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(
+        prog="weaknet-incident-forge",
+        description="命令行构造一次区域级事故（SiteIncident），用于留证链路回归",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "示例：\n"
+            "  %(prog)s --dry-run\n"
+            "  %(prog)s --apply --watch\n"
+            "  %(prog)s --cleanup\n"
+        ),
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true",
+                      help="只报告将写入什么，不碰数据库（默认）")
+    mode.add_argument("--apply", action="store_true",
+                      help="实际写入事件并重启插件")
+    mode.add_argument("--cleanup", action="store_true",
+                      help="删除本工具构造过的事件")
+    parser.add_argument("--devices", type=int, default=DEFAULT_DEVICES,
+                        help="构造几台设备（默认 %d）" % DEFAULT_DEVICES)
+    parser.add_argument("--cooldown", type=int, default=DEFAULT_COOLDOWN_S,
+                        help="等待事故出现的秒数（默认 %d）" % DEFAULT_COOLDOWN_S)
+    parser.add_argument("--watch", action="store_true",
+                        help="构造后持续打印事故与留证流转")
+    parser.add_argument("--watch-seconds", type=int, default=180,
+                        help="--watch 的总观察时长（默认 180 秒）")
+    parser.add_argument("--db", default=DEFAULT_DB, help="history.db 路径")
+    parser.add_argument("--cli", default=DEFAULT_CLI, help="weaknet-cli 路径")
+    parser.add_argument("--monitor", default=DEFAULT_MONITOR,
+                        help="要重启的插件名（默认 %s）" % DEFAULT_MONITOR)
+    parser.add_argument("--site-id", default="", help="site_id（默认与网关一致）")
+    parser.add_argument("--gateway-id", default="", help="gateway_id（默认自动推导）")
+    parser.add_argument("--local", action="store_true",
+                        help="强制在本机执行，不加 ssh 前缀")
+    parser.add_argument("--board", default="board", help="ssh 别名（默认 board）")
+    parser.add_argument("--check-schema", action="store_true",
+                        help="只校验数据库 schema 与枚举值，不做任何写入")
+    args = parser.parse_args(argv)
+
+    # 默认行为是干跑：这是刻意的。一个能写事件表的工具，绝不能因为「没写参数」
+    # 就产生副作用。
+    if not (args.apply or args.cleanup or args.check_schema):
+        args.dry_run = True
+
+    if args.devices < 1:
+        raise SystemExit("[forge] --devices 必须不小于 1")
+    if args.devices > 64:
+        raise SystemExit("[forge] --devices 上限 64（再多也只是一次事故）")
+
+    remote = detect_remote(args)
+    runner = Runner(remote=remote, board_alias=args.board)
+    where = "远端(%s)" % args.board if remote else "本机"
+    print("[forge] 执行位置：%s，数据库：%s" % (where, args.db))
+
+    # ---- schema 探测 ---------------------------------------------------
+    probe = do_probe(runner, args.db)
+    if not probe.get("ok"):
+        print("[forge] 探测失败：%s" % probe.get("error", "unknown"))
+        return 2
+    if not probe.get("has_events_table"):
+        print("[forge] device_events 表不存在——服务从未启动过或数据库不对")
+        return 2
+    missing = REQUIRED_COLUMNS - set(probe.get("columns", []))
+    if missing:
+        print("[forge] device_events 缺少列：%s" % sorted(missing))
+        print("[forge] schema 与预期不符，拒绝写入（盲写会产出关联器读不懂的行）")
+        return 2
+
+    thresholds, read_ok = read_thresholds(runner, args.cli)
+    src = "运行时配置" if read_ok else "生产默认值（读取失败）"
+    print("[forge] 阈值（%s）：最少 %d 台设备、比例门槛 %.1f%%、"
+          "关联窗口 %dms、静默期 %dms"
+          % (src, thresholds["min_devices"], thresholds["min_ratio_bp"] / 100.0,
+             thresholds["window_ms"], thresholds["quiet_ms"]))
+
+    if args.check_schema:
+        print("[forge] schema 校验通过")
+        print("[forge] 现有事件 %s 条，其中构造事件 %s 条；事故 %s 起"
+              % (probe.get("event_count"), probe.get("forge_event_count"),
+                 probe.get("incident_count")))
+        return 0
+
+    # ---- 清理模式 ------------------------------------------------------
+    if args.cleanup:
+        res = do_cleanup(runner, args.db)
+        if not res.get("ok"):
+            print("[forge] 清理失败：%s" % res.get("error", "unknown"))
+            return 2
+        print("[forge] 已删除构造事件 %s 条" % res.get("deleted", 0))
+        print("[forge] 注意：已产出的事故行与其证据回链刻意保留——"
+              "它们是关联器的产出，删掉会让证据链断掉")
+        return 0
+
+    # ---- 阈值可达性预判 ------------------------------------------------
+    # 这一层是预判而非判定：真判定在关联器里。但如果连预判都不达标，写进去也是
+    # 白写，不如直接告诉用户要加几台设备。
+    if args.devices < thresholds["min_devices"]:
+        print("[forge] 设备数 %d 低于绝对门槛 %d，本次必然开不出事故"
+              % (args.devices, thresholds["min_devices"]))
+        print("[forge] 请加 --devices %d 或更多" % thresholds["min_devices"])
+        return 1
+
+    now_ms = int(time.time() * 1000)
+    # ---- 结案下限预检 --------------------------------------------------
+    # 回放左边界 = max(回放窗口左沿, 最近一次 resolved_at_ms)。一旦上一轮事故
+    # 已结案，其 resolved_at_ms 会越过本轮事件时刻，回放就把它们全部跳过，
+    # 表现为「写进去了但事故没出现」。撞上就拒绝，并给出还要等多久。
+    latest_resolved = int(probe.get("latest_resolved_at") or 0)
+    event_ts = now_ms - EVENT_BACKDATE_MS
+    if latest_resolved > 0 and latest_resolved >= event_ts:
+        wait_s = (latest_resolved - event_ts) // 1000 + 2
+        print("[forge] 撞上结案下限：最近一次事故结案于 %d，"
+              "而本轮事件时刻是 %d" % (latest_resolved, event_ts))
+        print("[forge] 回放会跳过全部早于 %d 的事件，本轮必然读不到。"
+              % latest_resolved)
+        print("[forge] 请等待约 %d 秒后重跑，或用 --cleanup 清掉构造事件"
+              % wait_s)
+        return 4
+
+    gateway_id = args.gateway_id or "radxa-cubie-a7a"
+    site_id = args.site_id or gateway_id
+    rows = build_rows(args.devices, now_ms, site_id, gateway_id)
+
+    if args.dry_run:
+        print("[forge] 干跑：将写入 %d 条合格异常事件" % len(rows))
+        print("[forge]   时间基准 ts=%d（现在 -8s）" % event_ts)
+        print("[forge]   site_id=%s gateway_id=%s" % (site_id, gateway_id))
+        for row in rows[:6]:
+            print("[forge]   event_id=%s ts=%d type=%s reason=%s addr=%s/%s source=%s"
+                  % (row[0], row[1], row[8], row[11], row[5], row[6], row[12]))
+        if len(rows) > 6:
+            print("[forge]   …… 其余 %d 条同构" % (len(rows) - 6))
+        print("[forge] 干跑结束，未写入任何数据。加 --apply 实际执行。")
+        return 0
+
+    # ---- 实际写入 ------------------------------------------------------
+    print("[forge] 写入 %d 条合格异常事件 …" % len(rows))
+    res = do_insert(runner, args.db, rows)
+    if not res.get("ok"):
+        print("[forge] 写入失败：%s" % res.get("error", "unknown"))
+        return 2
+    print("[forge] 写入完成：新增 %s 条，已存在跳过 %s 条"
+          % (res.get("inserted", 0), res.get("skipped", 0)))
+
+    # ---- 重启插件以触发回放 --------------------------------------------
+    # 必须重启：运行中的关联器不会去读库。recoverFromStore 只在插件 start()
+    # 里执行一次，这是生产既有的重启回放语义（不是为测试开的洞）。
+    print("[forge] 重启插件 %s 以触发回放 …" % args.monitor)
+    rc, out = restart_monitor(runner, args.cli, args.monitor)
+    if rc != 0:
+        print("[forge] 插件重启失败（rc=%d）：%s" % (rc, out))
+        print("[forge] 事件已写入，但未回放——可手动执行：")
+        print("[forge]   sudo %s monitor restart %s" % (args.cli, args.monitor))
+        return 3
+    tail = out.splitlines()[-1] if out else "ok"
+    print("[forge] 插件已重启：%s" % tail)
+
+    # ---- 等待事故出现 --------------------------------------------------
+    print("[forge] 等待事故出现（最多 %ds）…" % args.cooldown)
+    incident = None
+    deadline = time.time() + args.cooldown
+    while time.time() < deadline:
+        time.sleep(3)
+        snapshot = do_query(runner, args.db, event_ts)
+        if snapshot.get("incidents"):
+            incident = snapshot["incidents"][0]
+            break
+
+    if not incident:
+        print("[forge] %ds 内未出现事故，退出码 3" % args.cooldown)
+        print("[forge] 可能原因：")
+        print("  1. 回放窗口已过——事件写得太早，或插件重启太慢；重跑即可")
+        print("  2. 活跃分母被真实设备拉大，比例门槛未达；加 --devices")
+        print("  3. 插件重启失败但 rc=0（查看 journalctl -u weaknet-server）")
+        return 3
+
+    print("[forge] 事故已开出：%s" % incident["incident_id"])
+    print("[forge]   受影响设备 %s 台，状态 %s"
+          % (incident["affected_devices"], incident["state"]))
+    print("[forge]   started_at_ms=%s" % incident["started_at_ms"])
+    print("[forge] 巡检线程每 2 秒轮询一次；留证需要预录窗口内有 IDR，"
+          "通常 10 到 30 秒内开始录制")
+
+    if not args.watch:
+        return 0
+
+    # ---- 观察留证流转 --------------------------------------------------
+    #
+    # 观察点必须放在**云端**：板端没有 video_clips 表，片段记录只落云端。
+    # 早先版本在板端查表，于是每条成功上传都被报成失败——把最该被看见的
+    # 成功当成了失败，比不报更糟。
+    cloud_base = read_cloud_base(runner, args.cli)
+    if cloud_base:
+        print("[forge] 云端观察点：%s（设备 %s）" % (cloud_base, gateway_id))
+    else:
+        print("[forge] 读不到 edge.url，只能观察板端事故，留证成果无法核对")
+    print("[forge] 观察留证流转（%ds）…" % args.watch_seconds)
+
+    seen = {}
+    end = time.time() + args.watch_seconds
+    while time.time() < end:
+        time.sleep(5)
+        clips = fetch_cloud_clips(cloud_base, gateway_id, incident["incident_id"])
+        for clip in clips or []:
+            cid = clip.get("clip_id")
+            state = clip.get("state")
+            if seen.get(cid) == state:
+                continue
+            seen[cid] = state
+            print("[forge]   片段 %s state=%s 分片 %s/%s 字节 %s"
+                  % (cid, state, clip.get("received_chunks"),
+                     clip.get("expected_chunks"), clip.get("total_bytes")))
+
+    if not seen:
+        print("[forge] 云端未收到本次事故的留证片段")
+        print("[forge] 本次仍证明「事故被正确开出」；留证落空需查两处：")
+        print("[forge]   板端 sudo journalctl -u weaknet-server | grep 留证")
+        print("[forge]   云端是否可达：curl %s/assets/%s/video-clips"
+              % (cloud_base or "<cloud>", gateway_id))
+        return 0
+
+    # 逐段核对：sha256 一致 + NAL 结构完整。两者缺一都不能说「可解码」。
+    print("[forge] 核对片段载荷 …")
+    bad = 0
+    for cid, state in seen.items():
+        if state != "COMPLETE":
+            print("[forge]   %s 仍是 %s，跳过载荷核对" % (cid, state))
+            continue
+        data = fetch_cloud_clip_bytes(cloud_base, gateway_id, cid)
+        if data is None:
+            print("[forge]   %s 下载失败" % cid)
+            bad += 1
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        want = ""
+        for clip in fetch_cloud_clips(cloud_base, gateway_id,
+                                      incident["incident_id"]) or []:
+            if clip.get("clip_id") == cid:
+                want = clip.get("declared_content_sha256") or ""
+                break
+        sum_ok = (not want) or (digest == want)
+        print("[forge]   %s bytes=%d sha256=%s（%s）"
+              % (cid, len(data), digest[:16],
+                 "与清单一致" if sum_ok else "与清单不一致"))
+        # 载荷形态有且只有两种可能：板端封装成功是 MP4，封装失败降级是裸
+        # Annex-B。两种都要能判，否则任一种形态都会被误报成失败。
+        if looks_like_mp4(data):
+            mp4 = describe_mp4_layout(data)
+            decodable = mp4["has_ftyp"] and mp4["has_moov"] and mp4["has_mdat"]
+            print("[forge]     MP4 容器，顶层 box：%s（moov=%s mdat=%s）"
+                  % (" ".join(mp4["boxes"]) or "(空)",
+                     mp4["has_moov"], mp4["has_mdat"]))
+        else:
+            nal = describe_nal_layout(data)
+            decodable = nal["has_sps"] and nal["has_pps"] and nal["has_idr"]
+            print("[forge]     裸 Annex-B（板端未封装），NAL 单元 %d，"
+                  "SPS=%s PPS=%s IDR=%d，首个 NAL 是 SPS=%s"
+                  % (nal["units"], nal["has_sps"], nal["has_pps"],
+                     nal["idr_count"], nal["starts_with_sps"]))
+        if not (sum_ok and decodable):
+            bad += 1
+
+    if bad:
+        print("[forge] 留证链路走通但载荷核对未全通过（%d 段）" % bad)
+        return 5
+    print("[forge] 留证链路完整：事故 → 录制 → 上传 → 云端落库 → 载荷可解码")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        print("\n[forge] 已中断")
+        sys.exit(130)

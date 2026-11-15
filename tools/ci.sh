@@ -677,6 +677,18 @@ if [ "$SKIP_DEPLOY" = false ]; then
         || warn "weaknet-test-full.sh 上传失败（板端文件可能属主异常：rm 后重试）"
     ssh "${BOARD}" "chmod +x /home/radxa/weaknet/weaknet-test-full.sh" 2>/dev/null \
         || warn "weaknet-test-full.sh chmod 失败"
+    # 视频留证的 MP4 封装是**运行时**依赖（调 ffmpeg 命令行，不链接 libav*）。
+    # 缺它不会让服务起不来、录制也正常，只有真出事故要封装时才发现——
+    # 所以要在部署时就报出来，而不是等一次真实事故之后。
+    # 只告警不失败：改传裸 H.264 仍是可交付的证据（云端下载端点按字节嗅探
+    # ftyp 决定 Content-Type），不足以阻断一次部署。
+    if ssh "${BOARD}" "command -v ffmpeg >/dev/null 2>&1"; then
+        pass "板端 ffmpeg 就位（视频留证可封装 MP4）"
+    else
+        warn "板端缺 ffmpeg：视频留证将改传裸 H.264（仍可用，但浏览器不能拖进度条）"
+        warn "  安装：ssh ${BOARD} 'sudo apt-get install -y ffmpeg'"
+    fi
+
     pass "部署完成"
 else
     info "跳过部署"

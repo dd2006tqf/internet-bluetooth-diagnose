@@ -26,6 +26,9 @@ must happen against the bytes that actually arrived. See
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -43,6 +46,7 @@ from industrial_ops_agent.api.dependencies import (
     get_network_assurance_service,
     get_network_copilot_service,
     get_network_council_service,
+    get_object_store,
     get_risk_prediction_service,
     get_wireless_diagnosis_service,
 )
@@ -81,11 +85,23 @@ from industrial_ops_agent.network_assurance.signing import (
     EdgeTelemetryVerifier,
     NetworkSignatureError,
 )
+from industrial_ops_agent.network_assurance.video_contracts import (
+    VideoClipChunk,
+    VideoClipChunkResult,
+    VideoClipItem,
+    VideoClipManifest,
+    VideoClipManifestResult,
+)
 from industrial_ops_agent.network_assurance.wireless_contracts import (
     PredictionResult,
     WirelessEventIngestResult,
     WirelessEventUplinkBatch,
 )
+from industrial_ops_agent.object_store.keys import (
+    edge_video_chunk_object_key,
+    tenant_object_key_from_value,
+)
+from industrial_ops_agent.media.service import TenantObjectStore
 from industrial_ops_agent.persistence.tenant import TenantContext, validate_boundary_identifier
 
 router = APIRouter(prefix="/network", tags=["network-assurance"])
@@ -409,6 +425,197 @@ async def ingest_edge_wireless_events(
             code="edge_device_tenant_conflict",
             category="conflict",
             message="Device is registered to another tenant",
+        ) from exc
+
+
+@router.post(
+    "/edge/video-clips",
+    response_model=VideoClipManifestResult,
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Register a signed manifest for an edge evidence video clip",
+)
+async def register_edge_video_clip(
+    request: Request,
+    verifier: Annotated[EdgeTelemetryVerifier, Depends(get_edge_telemetry_verifier)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+) -> VideoClipManifestResult:
+    """登记一个待上传的留证片段清单。
+
+    为什么清单和分片是两个端点而不是一个：片段是几十 MB 量级，而所有 edge
+    端点共享 1 MB 的原始体上限。抬掉这个上限会同时抬掉**每个** edge 端点的
+    内存与解析代价——一次畸形请求就能让一个 worker 占住几十 MB。清单很小
+    （几百字节），分片才大，所以只有分片需要拆。
+
+    为什么分片载荷是 base64 而不是裸二进制：``_read_verified_body`` 靠报文里
+    的 ``device_id`` 把签名绑定到设备。二进制报文里没有 JSON 可解析，设备身份
+    就只能改从 header 取，于是同一套 Ed25519 信任锚在两类端点上出现两种绑定
+    方式。代价是 33% 体积膨胀，而留证是事件触发的偶发行为，不是持续推流。
+    """
+
+    raw = await _read_verified_body(request, verifier)
+
+    try:
+        manifest = VideoClipManifest.model_validate_json(raw)
+    except ValidationError as exc:
+        import logging
+        from hashlib import sha256
+
+        logging.getLogger("uvicorn.error").error(
+            "422 edge video-clip manifest validation failure: %s, "
+            "payload_sha256=%s bytes=%d errors=%d",
+            exc.errors(),
+            sha256(raw).hexdigest()[:16],
+            len(raw),
+            exc.error_count(),
+        )
+        raise AppError(
+            status_code=422,
+            code="edge_payload_invalid",
+            category="validation",
+            message="Edge video clip manifest failed contract validation",
+            details={"errors": exc.error_count()},
+        ) from exc
+
+    try:
+        context = TenantContext(
+            tenant_id=_edge_tenant_id(request, verifier),
+            subject_id=edge_subject_id(manifest.device_id),
+        )
+    except ValueError as exc:
+        raise _bad_request("edge_tenant_invalid") from exc
+
+    try:
+        return service.register_video_clip(context, manifest, key_id=verifier.key_id)
+    except NetworkAssuranceConflict as exc:
+        # 三种冲突语义不同但对外同一个码：同 clip_id 异内容、并发登记、
+        # 设备属于别的租户。对设备而言正确反应都是"不要重试这段"。
+        raise AppError(
+            status_code=409,
+            code="edge_video_clip_conflict",
+            category="conflict",
+            message="Video clip conflicts with an existing registration",
+        ) from exc
+
+
+@router.post(
+    "/edge/video-clips/{clip_id}/chunks/{chunk_index}",
+    response_model=VideoClipChunkResult,
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Upload one signed chunk of an edge evidence video clip",
+)
+async def upload_edge_video_clip_chunk(
+    request: Request,
+    clip_id: str,
+    chunk_index: int,
+    verifier: Annotated[EdgeTelemetryVerifier, Depends(get_edge_telemetry_verifier)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+    object_store: Annotated[TenantObjectStore, Depends(get_object_store)],
+) -> VideoClipChunkResult:
+    """接收片段中的一个分片。
+
+    ``clip_id`` / ``chunk_index`` 出现在路径里是**冗余**的（报文里也有），
+    这是刻意的：看起来更啰嗦，但让路径本身就能作为幂等键被网关/重试层使用，
+    并且允许在解析 1 MB 报文之前先做一次廉价的形状校验。两者不一致直接
+    拒绝——接受它就等于允许"报到 A 片段名下、实际写进 B 片段"。
+
+    写入顺序是 **对象存储 → 数据库**，不可颠倒：先写库再写对象会得到
+    「行存在但内容不存在」，那比孤儿对象糟得多——行会声称分片已送达，
+    片段可能被判成 COMPLETE 而实际取不出内容。
+    """
+
+    try:
+        validate_boundary_identifier(clip_id, field="clip_id")
+    except ValueError as exc:
+        raise _bad_request("edge_video_clip_id_invalid") from exc
+
+    raw = await _read_verified_body(request, verifier)
+
+    try:
+        chunk = VideoClipChunk.model_validate_json(raw)
+    except ValidationError as exc:
+        import logging
+        from hashlib import sha256
+
+        logging.getLogger("uvicorn.error").error(
+            "422 edge video-clip chunk validation failure: %s, "
+            "payload_sha256=%s bytes=%d errors=%d",
+            exc.errors(),
+            sha256(raw).hexdigest()[:16],
+            len(raw),
+            exc.error_count(),
+        )
+        raise AppError(
+            status_code=422,
+            code="edge_payload_invalid",
+            category="validation",
+            message="Edge video clip chunk failed contract validation",
+            details={"errors": exc.error_count()},
+        ) from exc
+
+    if chunk.clip_id != clip_id or chunk.chunk_index != chunk_index:
+        # 路径与报文不一致说明板端拼错了 URL，而不是内容有问题。回 400
+        # 而不是 409：这不是"与已有状态冲突"，重试同一个请求永远不会成功。
+        raise AppError(
+            status_code=400,
+            code="edge_video_clip_path_mismatch",
+            category="validation",
+            message="Chunk path does not match the signed payload",
+        )
+
+    try:
+        payload = base64.b64decode(chunk.payload_b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise AppError(
+            status_code=422,
+            code="edge_video_clip_payload_not_base64",
+            category="validation",
+            message="Chunk payload is not valid base64",
+        ) from exc
+
+    # 顺序不可换：先解 base64、再算摘要、最后比对声明值。先比长度的话，
+    # 一个只改了 padding 的报文就能让两者都"看起来对"。
+    if len(payload) != chunk.size_bytes:
+        raise AppError(
+            status_code=422,
+            code="edge_video_clip_chunk_size_mismatch",
+            category="validation",
+            message="Chunk payload length does not match its declared size",
+            details={"declared": chunk.size_bytes, "actual": len(payload)},
+        )
+    if hashlib.sha256(payload).hexdigest() != chunk.content_sha256:
+        raise AppError(
+            status_code=422,
+            code="edge_video_clip_chunk_digest_mismatch",
+            category="validation",
+            message="Chunk payload digest does not match its declared sha256",
+        )
+
+    try:
+        context = TenantContext(
+            tenant_id=_edge_tenant_id(request, verifier),
+            subject_id=edge_subject_id(chunk.device_id),
+        )
+    except ValueError as exc:
+        raise _bad_request("edge_tenant_invalid") from exc
+
+    key = edge_video_chunk_object_key(context, chunk.clip_id, chunk.chunk_index)
+    await object_store.put(context, key, payload)
+
+    try:
+        return service.store_video_clip_chunk(context, chunk, object_key=key.value)
+    except NetworkAssuranceNotFound as exc:
+        raise AppError(
+            status_code=404,
+            code="edge_video_clip_not_registered",
+            category="not_found",
+            message="Video clip manifest has not been registered",
+        ) from exc
+    except NetworkAssuranceConflict as exc:
+        raise AppError(
+            status_code=409,
+            code="edge_video_clip_chunk_conflict",
+            category="conflict",
+            message="Video clip chunk conflicts with an existing upload",
         ) from exc
 
 
@@ -1022,6 +1229,152 @@ async def list_asset_wireless_events(
         ]
 
 
+
+
+@router.get(
+    "/assets/{asset_id}/video-clips",
+    response_model=list[VideoClipItem],
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="List evidence video clips uploaded by this gateway asset",
+)
+async def list_asset_video_clips(
+    request: Request,
+    asset_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+    incident_id: Annotated[str | None, Query(max_length=128)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[VideoClipItem]:
+    """运营端列出某网关的留证片段（只读摘要，不含载荷）。
+
+    这是**必须存在的消费者**：没有它，上面两个 edge 端点收上来的数据在
+    平台里没有任何出口，那才是真正的「孤儿表面」——收得进来、看不到。
+    按 ``incident_id`` 过滤是事故详情页的主要用法（"这次事故有什么现场
+    画面"），所以它在这里是一等参数而不是让调用方自己再筛一遍。
+    """
+
+    _require_read_scope(request, identity, authorizer, asset_id)
+    return service.list_video_clips(
+        identity.tenant_context,
+        asset_id=asset_id,
+        incident_id=incident_id,
+        limit=limit,
+    )
+
+
+@router.get(
+    "/assets/{asset_id}/video-clips/{clip_id}/content",
+    responses={
+        **STANDARD_ERROR_RESPONSES,
+        200: {"content": {"video/mp4": {}, "video/h264": {}}},
+    },
+    summary="Download the reassembled bitstream of an evidence clip",
+)
+async def download_asset_video_clip(
+    request: Request,
+    asset_id: str,
+    clip_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+    object_store: Annotated[TenantObjectStore, Depends(get_object_store)],
+) -> Response:
+    """把分片按索引拼回完整码流交给运营端（MP4 或裸 Annex-B H.264）。
+
+    为什么两种格式都要支持，而不是「统一转成 MP4 再给」：板端封装是**尽力**
+    行为（缺 ffmpeg 或码流不合规时改传裸码流），而云端历史片段全是裸码流。
+    强行在这里统一意味着云端要装 ffmpeg 并重封装——那是一台 API 服务器上
+    不该有的 CPU 与依赖负担，而且对已存在的历史证据无效。所以云端只做
+    一件事：**如实告诉浏览器这段字节是什么**。
+
+    判据是字节本身（``ftyp`` box 落在 ``[4, 8)``），不是清单里的字段：
+    容器类型是码流自身的事实，再在清单里声明一份就等于允许两者不一致，
+    而不一致时以谁为准没有答案。
+
+    为什么不是 ``StreamingResponse`` 逐块转出：对象存储的 ``get`` 是
+    **整块读**，逐块 await 也只是一次性把 640 KiB 读进内存再写出，省不下
+    什么。真正的流式需要存储层支持 range 读取，而那属于另一个改造。
+    当前上限 256 MB，一次性拼装在可接受范围内，且实现简单到不会错。
+
+    未收齐时返回 409 而不是返回半个文件：半段码流解不出画面，交给播放器
+    只会得到\"文件损坏\"这种无法归因的错误。运营端应该看到\"还在传\"。
+    """
+
+    _require_read_scope(request, identity, authorizer, asset_id)
+    context = identity.tenant_context
+    clips = service.list_video_clips(context, asset_id=asset_id, limit=200)
+    clip = next((c for c in clips if c.clip_id == clip_id), None)
+    if clip is None:
+        raise AppError(
+            status_code=404,
+            code="network_video_clip_not_found",
+            category="not_found",
+            message="Video clip not found for this asset",
+            details={"clip_id": clip_id},
+        )
+    if clip.received_chunks < clip.expected_chunks:
+        raise AppError(
+            status_code=409,
+            code="network_video_clip_incomplete",
+            category="conflict",
+            message="Video clip has not finished uploading",
+            details={
+                "received_chunks": clip.received_chunks,
+                "expected_chunks": clip.expected_chunks,
+            },
+        )
+
+    rows = service.list_video_clip_chunks(context, clip_id)
+    if [r.chunk_index for r in rows] != list(range(clip.expected_chunks)):
+        # 数量对得上但索引有洞：那是服务端的账算错了，不是设备的问题。
+        # 明确报出来，而不是悄悄拼出顺序错乱的码流。
+        raise AppError(
+            status_code=500,
+            code="network_video_clip_gap",
+            category="dependency",
+            message="Video clip chunk indices are not contiguous",
+            retryable=True,
+        )
+
+    body = bytearray()
+    for row in rows:
+        key = tenant_object_key_from_value(context, row.object_key)
+        content = await object_store.get(context, key)
+        if content is None:
+            # 行说已送达、对象却不在：这是真正的数据丢失，不能当成 404
+            # 悄悄返回——运营端看到 404 会以为片段不存在，而实际上证据丢了。
+            raise AppError(
+                status_code=500,
+                code="network_video_clip_object_missing",
+                category="dependency",
+                message="A stored chunk is missing from object storage",
+                retryable=True,
+                details={"chunk_index": row.chunk_index},
+            )
+        body.extend(content)
+
+    # 容器类型按字节判，不看清单字段。判据与板端 `looksLikeMp4()` 同形：
+    # ISO/IEC 14496-12 的 `ftyp` box 类型落在 [4, 8)，而 Annex-B 的起始码
+    # 在最前 4 字节内，两者不可能混淆。
+    #
+    # 为什么这里必须判对：`media_type` 直接决定浏览器走哪条播放路径。
+    # 把 MP4 标成 `video/h264` 时浏览器会下载而不是播放（`<video>` 不支持
+    # 该 type）；把裸码流标成 `video/mp4` 时浏览器会尝试解析容器并失败，
+    # 报「无法播放此文件」——两种错法都表现为"留证播不了"，而证据本身是好的。
+    payload = bytes(body)
+    is_mp4 = len(payload) >= 12 and payload[4:8] == b"ftyp"
+    suffix = "mp4" if is_mp4 else "h264"
+
+    return Response(
+        content=payload,
+        media_type="video/mp4" if is_mp4 else "video/h264",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'inline; filename="{clip_id}.{suffix}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get(
