@@ -653,3 +653,61 @@ warmup 过后判据转绿（round 16..21）：
 **这一步同时验证了接管链路在真实服务模式下可用**：前几轮 dry-run 是不碰设备的，
 所以「insmod → 确认 /dev/watchdog1 → unbind sunxi_wdt」这条顺序链直到此刻
 才第一次以 systemd 单元的形式跑通。
+
+### 6.4 停喂复位的真实结果（2026-11-16，方案已改为直接喂 `/dev/watchdog0`）
+
+6.3 那条 1 小时空跑最终没有按原计划走完 —— 中途读内核源码时发现「必须接管」
+这个前提本身是错的，于是路线改了。但**停喂 → 复位**这条最关键的端到端验证
+在改路线之后照样做了，也照样成立：方案 B（直接喂平台设备）与自建模块走的是
+同一个 `watchdog_release()` 代码路径，区别只在设备来自哪个驱动。
+
+实测记录：
+
+| 项 | 值 |
+| :--- | :--- |
+| 停喂前 `boot_id` | `499b69fc-aca5-4e8e-ad67-a4fc0db1ac63` |
+| 复位后 `boot_id` | `07d95e5a-0832-4838-b43e-72b9bfd6dbe3` |
+| 从停止喂狗到板子重新可连 | 约 **28 秒** |
+| 硬件超时 | 16 秒（`WDIOC_GETTIMEOUT`） |
+| 复位类型 | SoC 硬件复位，无 shutdown 记录、无 umount |
+
+**28 秒 ≠ 16 秒的原因**：16 秒只是硬件计数器到点的时刻，之后还有 bootloader
+加载内核、内核初始化、`weaknet-server` 与 `weaknet-health-guard` 起来的时间。
+所以任何文档都**不能**写「16 秒内复位」。硬件超时是下限，不是端到端时间。
+
+**同轮踩到的坑**：第一次把停喂日志写到 `/tmp` 想看结果，复位后文件不见了。
+`/tmp` 由 systemd tmpfiles 在开机时清空，**跨复位留证必须落 `/var/lib/`**。
+这也间接验证了复位确实是「整机断电级别」而非进程级重启。
+
+**这次验证证明了什么、没证明什么**：
+
+- 证明了：持有设备 + 停止喂狗 ⇒ 一定发生硬件复位，`boot_id` 会变。
+- 没证明：「没人持有设备时内核是不是在喂」。这两件事可以区分，
+  但本实验分不开。实际运行由 systemd 单元保证「要么守卫持有，要么没人持有
+  且内核代喂」，两种状态都不会误复位。
+
+### 6.5 路线修正：删除自建模块与接管脚本（2026-11-16）
+
+第四轮之后读内核源码，发现方案 B 的整个接管层是多余的：
+
+- `watchdog_dev.c::watchdog_need_worker()` 的两项条件，在 `sunxi_wdt`
+  （不设 `max_hw_heartbeat_ms`）且用户态已 `open()` 的场景下同时为假
+  ⇒ 内核停止代喂。「接管喂狗权」= `open("/dev/watchdog0")`。
+- 板端 `WDIOC_GETSUPPORT` 实测 `options = 0x8180`，含 `WDIOF_MAGICCLOSE`
+  ⇒ 停止语义与自建模块完全一致。
+
+删除清单：
+
+| 文件 | 行数 | 原因 |
+| :--- | ---: | :--- |
+| `kmod/weaknet_wdt.c` | 327 | 不需要自建设备 |
+| `tools/weaknet-wdt-takeover.sh` | 313 | 没有需要接管/归还的东西 |
+
+配套改动：`kmod/Makefile`（去掉 `obj-m`）、`tools/ci.sh`（不再打包接管脚本）、
+`tools/kmod_cross_build.sh`（日志文案）、`client/CMakeLists.txt`（注释路径）、
+`tools/weaknet-health-guard.service`（删三个 hook，`ExecStartPre` 等 `/dev/watchdog0`）、
+`tools/weaknet-health-guard.cpp`（新增 `VerifyDeviceContract()` + 新 `OpenWatchdog()`）、
+`tools/test_weaknet_health_guard.py`（删 3 个引用已删脚本的测试类，
+新增 `TestDeviceContract` 7 项 + `TestGuardDoesNotRepairService` 2 项）。
+
+验证：x86 与 ARM64 交叉编译均通过；判据测试仍是 **89 项全绿**。
