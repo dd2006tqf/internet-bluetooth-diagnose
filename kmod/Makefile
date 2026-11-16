@@ -9,9 +9,15 @@
 # 不能被本 Makefile 的 obj-m 收进来——那个模块会改变 HID 绑定行为，
 # 走的是 udev 按需加载而非开机加载。两种加载模型必须分开。
 #
+# weaknet_wdt.o 已于 2026-11-16 移除：方案 B 实测确认内核 watchdog core 在
+# 用户态 open 之后停止代喂，因此不需要自建 watchdog 设备来抢喂狗权，
+# 直接喂平台驱动导出的 /dev/watchdog 即可。历史实现见
+# git show beff747:kmod/weaknet_wdt.c，路线论证见
+# openspec/tasks/2026-11-14-system-health-watchdog-plan-b.md。
+#
 # 用法：
 #   宿主机交叉编译（推荐，随发布包走）
-#     ./tools/kmod_cross_build.sh      # 三个模块一起编
+#     ./tools/kmod_cross_build.sh      # 观测模块一起编
 #
 #   板端就地编译（调试验证用）
 #     make
@@ -24,12 +30,6 @@
 
 obj-m += weaknet_cpu_stat.o
 obj-m += weaknet_softirq.o
-
-# weaknet_wdt.o 是**行为改变型**模块（会写硬件寄存器、接管看门狗），
-# 与上面两个只读观测模块定位完全不同：它不随发布包开机无条件加载，
-# 由 weaknet-health-guard 在确认自身可用后按需 insmod。
-# 但它必须参与同一份 obj-m 构建，否则交叉编译脚本收集不到产物。
-obj-m += weaknet_wdt.o
 
 # weaknet_lradc_keys.o 已于 2026-11-08 移除（LRADC 在 A733 上不可用，
 # 且无业务消费者）。历史实现见 git show 289cad4:kmod/weaknet_lradc_keys.c，

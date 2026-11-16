@@ -42,6 +42,44 @@ RESTART_WINDOW_S = 20 * 60
 RESTART_MAX_IN_WIN = 6
 
 
+def _strip_c_comments(text):
+    """
+    去掉 // 行注释与 /* */ 块注释，保留字符串字面量原样。
+
+    为什么测试需要这个：本文件里有一批断言是「源码中不得出现某个符号」
+    （禁止的 ioctl、禁止的 systemctl 子命令）。而源码的注释恰好在解释
+    「为什么不能那么做」，会把符号名写进去。不剥注释，这些断言就会因为
+    作者的说明文字而失败 —— 那会诱导人去删掉有价值的注释，而不是修代码。
+    """
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == '\\':
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            out.append(text[i:j])
+            i = j
+        elif ch == '/' and i + 1 < n and text[i + 1] == '/':
+            j = text.find('\n', i)
+            i = n if j < 0 else j
+        elif ch == '/' and i + 1 < n and text[i + 1] == '*':
+            j = text.find('*/', i + 2)
+            i = n if j < 0 else j + 2
+            out.append(' ')
+        else:
+            out.append(ch)
+            i += 1
+    return ''.join(out)
+
+
 def _c_unescape(literal):
     """按 C 字符串字面量语义反转义，用于校验源码里的转义是否真的生效。"""
     out, i = [], 0
@@ -904,18 +942,30 @@ class TestSystemdUnitConsistency(unittest.TestCase):
         """
         self.assertRegex(self.unit, r"(?m)^Restart=no$")
 
-    def test_has_stop_post_for_give_back(self):
+    def test_has_no_stop_post_hook(self):
         """
-        必须有 ExecStopPost 归还看门狗：否则 guard 退出后整机既无健康
-        看门狗也无原生看门狗，而 systemctl status 看起来正常。
+        方案 B 下**不应**有 ExecStopPost：驱动从未被 unbind，没有需要归还的
+        东西。归还脚本的残留会在 guard 正常停机时跑一段无意义的逻辑，更糟的
+        是给人「设备被接管过」的错觉，掩盖「停止语义完全由 MAGICCLOSE 契约
+        决定」这个真正的机制。
         """
-        self.assertIn("ExecStopPost=", self.unit)
-        self.assertIn("give-back", self.unit)
+        self.assertNotIn("ExecStopPost=", self.unit)
+        self.assertNotIn("weaknet-wdt-takeover", self.unit)
+
+    def test_pre_waits_for_platform_device(self):
+        """
+        ExecStartPre 必须等 /dev/watchdog0 就绪，而不是等自建的 watchdog1。
+        设备由平台驱动 sunxi_wdt 在 probe 时导出；不等待就有可能在 devtmpfs
+        极早期抢跑失败，日志上表现为「打开失败」而非「驱动未就绪」。
+        """
+        self.assertIn("ExecStartPre=", self.unit)
+        self.assertIn("/dev/watchdog0", self.unit)
+        self.assertNotIn("/dev/watchdog1", self.unit)
 
     def test_requires_ota_gate(self):
         """
         必须依赖 OTA 启动门禁：门禁拒绝时服务不会起来，
-        guard 若照样接管看门狗就会在 16 秒后复位——把「不要启动业务」
+        guard 若照样打开看门狗就会在硬件超时后复位——把「不要启动业务」
         变成「无限重启」。
         """
         self.assertIn("Requires=weaknet-ota-gate.service", self.unit)
@@ -926,331 +976,202 @@ class TestSystemdUnitConsistency(unittest.TestCase):
         self.assertNotIn("KillSignal=SIGKILL", self.unit)
 
 
-class TestTakeoverScriptOrdering(unittest.TestCase):
-    """接管脚本的顺序不可颠倒 —— 颠倒会产生无保护窗口。"""
+class TestDeviceContract(unittest.TestCase):
+    """
+    方案 B 的全部安全性都压在「设备契约」上，因此必须逐条钉死。
+
+    这套用例只读源码、不需要开发板，但每一条都对应一个会在真机上表现为
+    「保护看起来在、实际不在」的失效模式。
+    """
 
     @classmethod
     def setUpClass(cls):
-        with open("tools/weaknet-wdt-takeover.sh", encoding="utf-8") as f:
-            cls.sh = f.read()
+        with open("tools/weaknet-health-guard.cpp", encoding="utf-8") as f:
+            raw = f.read()
+        # 只断言**代码**，不断言注释：注释里点名被禁的 ioctl（说明为什么
+        # 不用它）不构成违规。不剥注释，这些「不得出现」的断言会被作者的
+        # 说明文字触发，反过来逼人删掉有价值的注释。
+        cls.src = _strip_c_comments(raw)
 
-    def test_insmod_before_unbind(self):
-        """
-        必须先 insmod 再 unbind：反过来会在「旧狗已撤、新狗未起」之间
-        出现真空期，此时任何故障都不会被复位兜住，且 dmesg 什么都不留。
-        """
-        i_insmod = self.sh.find('insmod "$KO_PATH"')
-        i_unbind = self.sh.find('"${SYSFS_DRV}/unbind"')
-        self.assertGreater(i_insmod, 0, "找不到 insmod")
-        self.assertGreater(i_unbind, 0, "找不到 unbind")
-        self.assertLess(i_insmod, i_unbind,
-                        "insmod 必须在 unbind 之前")
+    def _func(self, name):
+        """截出 C 函数体（花括号配平），避免断言误命中别处的同名片段。"""
+        m = re.search(r"\n(?:\w[\w\s\*&:<>]*?)\b" + name + r"\([^)]*\)\s*\{", self.src)
+        self.assertIsNotNone(m, f"找不到函数 {name}")
+        i = self.src.index("{", m.start())
+        depth = 0
+        for j in range(i, len(self.src)):
+            if self.src[j] == "{":
+                depth += 1
+            elif self.src[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    return self.src[i:j + 1]
+        self.fail(f"{name} 的花括号没有配平")
 
-    def test_verifies_device_before_unbind(self):
+    def test_opens_platform_device_not_private_node(self):
         """
-        unbind 之前必须确认新设备节点存在。这是唯一的安全闸门：
-        不存在就退出，绝不 unbind。
-        """
-        i_check = self.sh.find('[ ! -c "$NEW_DEV" ]')
-        i_unbind = self.sh.find('"${SYSFS_DRV}/unbind"')
-        self.assertGreater(i_check, 0, "找不到设备存在性检查")
-        self.assertLess(i_check, i_unbind,
-                        "设备存在性检查必须在 unbind 之前")
+        必须打开平台驱动导出的 /dev/watchdog，而不是自建 /dev/weaknet_wdt。
 
-    def test_give_back_binds_before_rmmod(self):
+        自建设备需要 insmod + unbind 原驱动，二者之间必然存在一个
+        「旧狗已撤、新狗未起」的真空期。方案 B 的整个价值就在于没有这个窗口。
         """
-        归还顺序：先 bind 回原驱动，再 rmmod。
-        反过来会再制造一次真空期。
+        self.assertIn('kWatchdogDev = "/dev/watchdog"', self.src)
+        self.assertIn('kWatchdogAlt = "/dev/watchdog0"', self.src)
+        self.assertNotIn("/dev/weaknet_wdt", self.src)
+        self.assertNotIn("/dev/watchdog1", self.src)
+
+    def test_magicclose_is_hard_asserted(self):
         """
-        gb = self.sh[self.sh.find("do_give_back()"):]
-        i_bind = gb.find('"${SYSFS_DRV}/bind"')
-        i_rmmod = gb.find('rmmod "$KMOD_NAME"')
-        self.assertGreater(i_bind, 0)
-        self.assertGreater(i_rmmod, 0)
-        self.assertLess(i_bind, i_rmmod, "bind 必须在 rmmod 之前")
+        WDIOF_MAGICCLOSE 是「不写 V 也能停狗」与「不写 V 就复位」的分界。
 
-    def test_respects_trip_flag(self):
+        驱动不支持它时，close() 会无条件 ops->stop()：停止喂狗不再触发复位，
+        四项判据全部归零，而进程仍然退出码 0、日志一片安静。
+        因此这一条必须是启动期硬断言，不能只写在注释里。
         """
-        已触发状态下必须拒绝接管与归还：
-          * 接管 = 重新 insert 模块 + 可能 open，会重新喂狗
-          * 归还 = rmmod 触发 .stop 关狗
-        两者都会取消已排定的复位。
+        body = self._func("VerifyDeviceContract")
+        self.assertIn("WDIOF_MAGICCLOSE", body)
+        self.assertRegex(body, r"WDIOF_MAGICCLOSE\)\s*==\s*0",
+                         "必须检查 MAGICCLOSE 位为 0 的情况")
+        self.assertIn("return false", body)
+
+    def test_timeout_lower_bound_exceeds_debounce(self):
         """
-        self.assertIn("tripped_this_boot", self.sh)
-        take = self.sh[self.sh.find("do_take()"):self.sh.find("do_give_back()")]
-        self.assertIn("tripped_this_boot", take,
-                      "do_take 必须检查已触发状态")
-        gb = self.sh[self.sh.find("do_give_back()"):]
-        self.assertIn("tripped_this_boot", gb,
-                      "do_give_back 必须检查已触发状态")
+        硬件超时必须显著长于确认窗口，否则「连续 K 次判据失败」期间就会
+        超时复位 —— 判据去抖形同虚设，一次网络抖动就能复板子。
 
-    def test_reloads_boot_id(self):
-        """boot_id 必须现读，不能用缓存值（否则复位后仍判为已触发）。"""
-        self.assertIn("/proc/sys/kernel/random/boot_id", self.sh)
-
-    def test_give_back_checks_clean_exit(self):
+        下限取 2 倍确认窗口（TICK_S * DEBOUNCE_K），给采集与落盘留余量。
         """
-        do_give_back 必须调用 guard_exited_uncleanly。
+        body = self._func("VerifyDeviceContract")
+        self.assertIn("WDIOC_GETTIMEOUT", body)
+        self.assertRegex(body, r"timeout\s*<\s*need",
+                         "必须对硬件超时做下限断言")
+        self.assertIn("kTickSeconds * kDebounceK * 2", body)
 
-        注意：这条只是**存在性**检查，不是有效性检查 —— 把实现改成
-        `if false; then` 它照样通过。真正挡住这种退化的是
-        TestGiveBackDoesNotReturnOnUncleanExit，后者真跑 do_give_back
-        并断言 rmmod 没有被调用。保留本条是因为它失败时的信息更直接
-        （函数整个消失 vs 判定变了）。
+    def test_contract_failure_writes_v_before_close(self):
         """
-        gb = self.sh[self.sh.find("do_give_back()"):]
-        self.assertIn("guard_exited_uncleanly", gb,
-                      "do_give_back 必须检查 guard 的退出方式")
+        契约不满足时必须先写 'V' 再 close。
+
+        因为 open() 已经把硬件使能了：直接 return 会让 fd 被内核关掉，
+        走的就是「没写 V → 拒绝停狗 → 硬件超时复位」那条故障路径 ——
+        一个配置错误会变成无限复位。写 'V' 把这条路径显式改成优雅停机。
+        """
+        m = re.search(r"VerifyDeviceContract\(wd_fd.*?return 1;", self.src, re.S)
+        self.assertIsNotNone(m, "找不到 main() 里的契约检查分支")
+        branch = m.group(0)
+        i_v = branch.find('write(wd_fd, "V", 1)')
+        i_close = branch.find("close(wd_fd)")
+        self.assertGreater(i_v, 0, "契约失败分支必须写 'V'")
+        self.assertGreater(i_close, 0, "契约失败分支必须 close")
+        self.assertLess(i_v, i_close, "必须先写 'V' 再 close")
+
+    def test_no_ioctl_that_changes_hardware_state(self):
+        """
+        除只读的 GETSUPPORT / GETTIMEOUT 外，不得出现任何会改硬件状态的
+        ioctl（SETTIMEOUT / SETOPTIONS / SETPRETIMEOUT / KEEPALIVE）。
+
+        理由：喂狗只走 write()。一旦用 ioctl 去 arm/disarm 或改超时，
+        停止喂狗就不再是唯一出口，「不写 V 就复位」这条不变量被绕过，
+        而且改过的超时不会自动恢复。
+        """
+        for banned in ("WDIOC_SETTIMEOUT", "WDIOC_SETOPTIONS",
+                       "WDIOC_SETPRETIMEOUT", "WDIOC_KEEPALIVE"):
+            self.assertNotIn(banned, self.src,
+                             f"{banned} 会改硬件状态，喂狗只允许 write()")
+        self.assertIn("WDIOC_GETSUPPORT", self.src)
+
+    def test_bootstatus_is_deliberately_not_read(self):
+        """
+        WDIOC_GETBOOTSTATUS 在本平台恒返回 0（sunxi_wdt 未实现 .bootstatus），
+        读它只会产生「本次复位不是看门狗导致」的假结论。宁可完全不读。
+        """
+        self.assertNotIn("WDIOC_GETBOOTSTATUS", self.src)
+
+    def test_first_feed_happens_immediately_after_open(self):
+        """
+        open() 已经启动硬件计时，因此契约通过后必须立刻喂第一次。
+
+        否则「open → 进入循环 → 第一次 tick」之间是一段完全没有喂狗的窗口，
+        在超时调小的设备上会直接复位。
+        """
+        m = re.search(r"VerifyDeviceContract\(wd_fd.*?wd_fd = |return 1;\s*\n\s*\}", self.src, re.S)
+        # 退而求其次：直接在 main 里找契约调用之后是否紧接 write "1"
+        i_verify = self.src.find("VerifyDeviceContract(wd_fd")
+        self.assertGreater(i_verify, 0)
+        tail = self.src[i_verify:]
+        # 到主循环为止的区间内必须有首次喂狗
+        i_loop = tail.find("while (")
+        self.assertGreater(i_loop, 0, "找不到主循环")
+        self.assertIn('write(wd_fd, "1", 1)', tail[:i_loop],
+                      "契约通过后必须立刻喂第一次")
 
 
-class TestGiveBackDoesNotReturnOnUncleanExit(unittest.TestCase):
+class TestGuardDoesNotRepairService(unittest.TestCase):
     """
-    真跑 do_give_back，断言「不洁退出时绝不 rmmod」。
+    守卫**刻意不**拉起采集服务。这条必须在测试里固定住。
 
-    为什么必须做到这个程度：本条用例的第一版只断言源码里出现了
-    `guard_exited_uncleanly`，而把调用点改成 `if false; then` 之后
-    测试**全绿**。那是假守护 —— 与 sample_ns/cpu_delta 那次同一个病根：
-    检查「代码看起来写了什么」，而不是「代码实际做了什么」。
-
-    做法：用 PATH 桩把 rmmod/insmod 换成写标记文件的脚片，
-    SYSFS_DRV 指向临时目录，于是可以观察「有没有真的去卸载」。
+    为什么这不是「少写了一个功能」：修复动作本身需要时间，而硬件超时
+    不会等你。修复期间要么继续喂狗（于是故障期没有保护），要么不喂狗
+    （于是复位发生在修复中途）。守卫唯一的职责是**发现**，恢复交给
+    硬件复位 + systemd 开机自启。
     """
-
-    #: (描述, 环境变量, 是否应当拒绝归还)
-    CASES = [
-        ("kill -9", {"SERVICE_RESULT": "signal",
-                     "EXIT_CODE": "killed", "EXIT_STATUS": "9"}, True),
-        ("段错误", {"SERVICE_RESULT": "signal",
-                    "EXIT_CODE": "dumped", "EXIT_STATUS": "11"}, True),
-        ("判定不健康 return 99", {"SERVICE_RESULT": "exit-code",
-                                  "EXIT_CODE": "exited",
-                                  "EXIT_STATUS": "99"}, True),
-        ("正常 stop", {"SERVICE_RESULT": "success",
-                       "EXIT_CODE": "killed", "EXIT_STATUS": "TERM"}, False),
-    ]
 
     @classmethod
     def setUpClass(cls):
-        import subprocess
-        cls._subprocess = subprocess
+        with open("tools/weaknet-health-guard.cpp", encoding="utf-8") as f:
+            raw = f.read()
+        # 只检查**代码**，不检查注释。注释里出现 systemctl restart 是
+        # 在解释「为什么不能那么做」，把它当成违规会让这条断言反向失真。
+        cls.src = cls._strip_comments(raw)
 
-    def _run_give_back(self, extra_env):
-        import os
-        import stat
-        import tempfile
+    @staticmethod
+    def _strip_comments(text):
+        """去掉 // 行注释与 /* */ 块注释，保留字符串字面量原样。"""
+        out = []
+        i, n = 0, len(text)
+        while i < n:
+            ch = text[i]
+            if ch == '"':
+                j = i + 1
+                while j < n:
+                    if text[j] == '\\':
+                        j += 2
+                        continue
+                    if text[j] == '"':
+                        j += 1
+                        break
+                    j += 1
+                out.append(text[i:j])
+                i = j
+            elif ch == '/' and i + 1 < n and text[i + 1] == '/':
+                j = text.find('\n', i)
+                i = n if j < 0 else j
+            elif ch == '/' and i + 1 < n and text[i + 1] == '*':
+                j = text.find('*/', i + 2)
+                i = n if j < 0 else j + 2
+                out.append(' ')
+            else:
+                out.append(ch)
+                i += 1
+        return ''.join(out)
 
-        tmp = tempfile.mkdtemp(prefix="wdt-gb-")
-        try:
-            stub_bin = os.path.join(tmp, "bin")
-            sysfs = os.path.join(tmp, "sunxi-wdt")
-            state = os.path.join(tmp, "state")
-            os.makedirs(stub_bin)
-            os.makedirs(sysfs)
-            os.makedirs(state)
+    def test_no_service_start_or_restart(self):
+        for banned in ("systemctl start", "systemctl restart",
+                       "systemctl stop", "systemctl enable",
+                       "systemctl daemon-reload"):
+            self.assertNotIn(banned, self.src,
+                             f"guard 不得执行 {banned}：喂狗期间修服务等于关掉保护")
 
-            # rmmod 桩：被调用就留下痕迹。成功返回 0（模拟卸载成功），
-            # 这样测试能区分「拒绝归还」与「归还了但 rmmod 失败」。
-            rmmod_mark = os.path.join(state, "rmmod-called")
-            with open(os.path.join(stub_bin, "rmmod"), "w") as f:
-                f.write("#!/bin/sh\ntouch %s\nexit 0\n" % rmmod_mark)
-            os.chmod(os.path.join(stub_bin, "rmmod"), 0o755)
-
-            # insmod 桩：take 路径用不到，给一个安全的空实现
-            with open(os.path.join(stub_bin, "insmod"), "w") as f:
-                f.write("#!/bin/sh\nexit 0\n")
-            os.chmod(os.path.join(stub_bin, "insmod"), 0o755)
-
-            # 预置 sunxi_wdt 的绑定标记：让 sunxi_bound 返回真，跳过 bind 分支。
-            # 若不建它，脚本会尝试写 <SYSFS_DRV>/bind —— 宿主机上没有这个文件，
-            # bind 必然失败，测试就会走进与「已绑定」不同的分支。
-            open(os.path.join(sysfs, "2050000.watchdog"), "w").close()
-
-            # ORIG_DEV 必须是**字符设备**：脚本用 `[ -c "$ORIG_DEV" ]` 等待它
-            # 出现。普通文件过不了这个判断，会让每个用例白等 2 秒再报错。
-            # /dev/null 恰好是字符设备，语义上也满足「归还后设备已恢复」。
-            orig_dev_ok = "/dev/null"
-
-            with open("tools/weaknet-wdt-takeover.sh", encoding="utf-8") as f:
-                src = f.read()
-            # 去掉最后的 case 分发，只 source 函数定义
-            src = src.split('case "${1:-status}" in')[0]
-
-            # 注意顺序：脚本内部会把 SYSFS_DRV / NEW_DEV / ORIG_DEV / TRIP_FLAG
-            # 全部重新赋成写死的板端路径（那是刻意的 —— 生产行为不应被环境
-            # 变量意外改变）。因此覆盖必须发生在 source **之后**，放在前面
-            # 会被脚本自己的赋值冲掉。
-            harness = (
-                "set -u\n"
-                + src
-                + "\nTRIP_FLAG=%s\n" % os.path.join(tmp, "no-trip-flag")
-                + "SYSFS_DRV=%s\n" % sysfs
-                + "NEW_DEV=%s\n" % os.path.join(tmp, "watchdog1")
-                + "ORIG_DEV=%s\n" % orig_dev_ok
-                + "BOOT_ID_FILE=/proc/sys/kernel/random/boot_id\n"
-                # kmod_loaded 查的是 /sys/module/weaknet_wdt，宿主机上必然不存在。
-                # 不覆盖它就永远进不了 rmmod 分支 —— 于是本用例会对「不洁退出
-                # 不 rmmod」恒真通过，又变成假守护。覆盖为「模块已加载」。
-                + "kmod_loaded() { return 0; }\n"
-                + "do_give_back\n"
-            )
-
-            env = {k: v for k, v in os.environ.items()
-                   if k not in ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS")}
-            env["PATH"] = stub_bin + os.pathsep + env.get("PATH", "")
-            env.update(extra_env)
-
-            self._subprocess.run(["bash", "-c", harness],
-                                 capture_output=True, text=True, env=env,
-                                 timeout=60)
-            return os.path.exists(rmmod_mark)
-        finally:
-            import shutil
-            shutil.rmtree(tmp, ignore_errors=True)
-
-    def test_matrix_real_execution(self):
-        for desc, env, expect_reject in self.CASES:
-            with self.subTest(scenario=desc):
-                rmmod_called = self._run_give_back(env)
-                if expect_reject:
-                    self.assertFalse(
-                        rmmod_called,
-                        f"{desc}: guard 未正常退出，do_give_back 仍然调用了 "
-                        f"rmmod —— 这会经 watchdog_stop_on_unregister 调 "
-                        f".stop 关掉硬件看门狗，把已排定的复位静默取消")
-                else:
-                    self.assertTrue(
-                        rmmod_called,
-                        f"{desc}: 正常停机应当归还（rmmod 应被调用），"
-                        f"否则模块与设备永久残留")
-
-
-class TestGuardExitSemantics(unittest.TestCase):
-    """
-    guard_exited_uncleanly 的判定矩阵 —— 真跑 bash，不在 Python 里复刻。
-
-    为什么必须执行而不是复刻：本文件已有一次教训。sample_ns 与 cpu_delta
-    两个判据的测试都「复刻了正确逻辑」，而 C++ 里的实现是错的，78 项测试
-    全绿却掩盖了两个 100% 恒失败的判据（2026-11-15 板端 dry-run 才发现）。
-    对 shell 函数同理 —— 复刻一遍只会得到「我以为它这么判」，不是「它这么判」。
-
-    取值全部来自 systemd 247 在开发板上的实测，不是推测：
-
-      场景                          SERVICE_RESULT  EXIT_CODE  EXIT_STATUS
-      ----------------------------  --------------  ---------  -----------
-      systemctl stop（优雅 SIGTERM） success         killed     TERM
-      捕获 SIGTERM 后 exit 0         success         exited     0
-      kill -9                        signal          killed     9
-      段错误                         signal          dumped     11
-      主进程 return 99               exit-code       exited     99
-      TimeoutStopSec 超时            timeout         killed     9
-
-    第一行是关键陷阱：正常 stop 时 EXIT_CODE 是 'killed'、EXIT_STATUS 是
-    'TERM'，**都不是 0**。若按「EXIT_STATUS != 0 就拒绝归还」实现，每次
-    正常停止服务都会被拒绝，模块与设备永久残留。这一条是板端实测抓到的真 bug。
-    """
-
-    #: 每种场景 = (描述, 期望是否拒绝归还, 环境变量)
-    CASES = [
-        ("systemctl stop（优雅 SIGTERM）", False,
-         {"SERVICE_RESULT": "success", "EXIT_CODE": "killed", "EXIT_STATUS": "TERM"}),
-        ("捕获 SIGTERM 后 exit 0", False,
-         {"SERVICE_RESULT": "success", "EXIT_CODE": "exited", "EXIT_STATUS": "0"}),
-        ("kill -9", True,
-         {"SERVICE_RESULT": "signal", "EXIT_CODE": "killed", "EXIT_STATUS": "9"}),
-        ("段错误", True,
-         {"SERVICE_RESULT": "signal", "EXIT_CODE": "dumped", "EXIT_STATUS": "11"}),
-        ("OOM 被杀", True,
-         {"SERVICE_RESULT": "signal", "EXIT_CODE": "killed", "EXIT_STATUS": "9"}),
-        ("判定不健康 return 99", True,
-         {"SERVICE_RESULT": "exit-code", "EXIT_CODE": "exited", "EXIT_STATUS": "99"}),
-        ("喂狗失败 return 1", True,
-         {"SERVICE_RESULT": "exit-code", "EXIT_CODE": "exited", "EXIT_STATUS": "1"}),
-        ("stop 超时", True,
-         {"SERVICE_RESULT": "timeout", "EXIT_CODE": "killed", "EXIT_STATUS": "9"}),
-        ("exit-code 但 EXIT_STATUS=0（兼容）", False,
-         {"SERVICE_RESULT": "exit-code", "EXIT_CODE": "exited", "EXIT_STATUS": "0"}),
-        # 变量缺失 = 运维手工执行，必须放行，否则无法手动恢复
-        ("手工执行（无变量）", False, {}),
-        ("手工强制（全空）", False,
-         {"SERVICE_RESULT": "", "EXIT_CODE": "", "EXIT_STATUS": ""}),
-    ]
-
-    @classmethod
-    def setUpClass(cls):
-        import subprocess
-        with open("tools/weaknet-wdt-takeover.sh", encoding="utf-8") as f:
-            src = f.read()
-        m = re.search(r"^guard_exited_uncleanly\(\) \{.*?^\}", src, re.S | re.M)
-        if not m:
-            raise AssertionError("找不到 guard_exited_uncleanly 的定义")
-        cls.func_src = m.group(0)
-
-        # 探针脚本：source 函数后按环境变量判定，拒绝归还 return 0 / 放行 return 1
-        cls.probe = (
-            "set -u\n"
-            + cls.func_src
-            + "\nif guard_exited_uncleanly; then exit 0; else exit 1; fi\n"
-        )
-
-        # 先确认函数能被 bash 解析 —— 语法坏时所有断言都会以相同方式失败，
-        # 那会把「语法错误」误报成「判定错误」。
-        chk = subprocess.run(["bash", "-n", "-c", cls.probe],
-                             capture_output=True, text=True)
-        if chk.returncode != 0:
-            raise AssertionError(
-                "guard_exited_uncleanly 无法被 bash 解析: " + chk.stderr)
-
-        cls._subprocess = subprocess
-
-    def test_matrix(self):
-        import os
-        env_base = {k: v for k, v in os.environ.items()
-                    if k not in ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS")}
-        for desc, expect_reject, extra in self.CASES:
-            with self.subTest(scenario=desc):
-                env = dict(env_base)
-                env.update(extra)
-                r = self._subprocess.run(["bash", "-c", self.probe],
-                                         capture_output=True, text=True, env=env)
-                reject = (r.returncode == 0)
-                self.assertEqual(
-                    reject, expect_reject,
-                    f"{desc}: 期望{'拒绝' if expect_reject else '允许'}归还，"
-                    f"实际{'拒绝' if reject else '允许'}")
-
-    def test_normal_stop_must_not_be_rejected(self):
+    def test_mainpid_query_is_the_only_systemctl_use(self):
         """
-        单独钉死最危险的一条：正常 systemctl stop 必须允许归还。
+        允许的唯一 systemctl 用法是只读的 `show -p MainPID`
+        —— 它用来判断服务进程是否还在、是否换过 PID。
 
-        这条独立成用例而不是只放在矩阵里，是因为它的失败后果最严重且
-        最容易被"改得更严格"的动机破坏 —— 每次 stop 都拒绝归还，模块
-        与设备永久残留，下一次 take 会撞上已存在的模块。
+        命令是通过 snprintf 拼成单个字符串交给 popen 的（不是 execv 数组），
+        因此按「代码里出现的所有 systemctl 子命令」来断言。
         """
-        import os
-        env = {k: v for k, v in os.environ.items()
-               if k not in ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS")}
-        env.update({"SERVICE_RESULT": "success",
-                    "EXIT_CODE": "killed", "EXIT_STATUS": "TERM"})
-        r = self._subprocess.run(["bash", "-c", self.probe],
-                                 capture_output=True, text=True, env=env)
-        self.assertEqual(r.returncode, 1,
-                         "systemctl stop 的正常停机被拒绝归还 —— "
-                         "这会让模块与设备永久残留")
-
-    def test_unclean_always_rejects(self):
-        """任何非 success 的 SERVICE_RESULT 都不得放行（除 exit-code/0）。"""
-        import os
-        env_base = {k: v for k, v in os.environ.items()
-                    if k not in ("SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS")}
-        for result in ("signal", "timeout", "core-dump", "watchdog", "oom-kill"):
-            with self.subTest(result=result):
-                env = dict(env_base)
-                env.update({"SERVICE_RESULT": result,
-                            "EXIT_CODE": "killed", "EXIT_STATUS": "9"})
-                r = self._subprocess.run(["bash", "-c", self.probe],
-                                         capture_output=True, text=True, env=env)
-                self.assertEqual(r.returncode, 0,
-                                 f"SERVICE_RESULT={result} 未被判定为不洁退出")
+        subs = re.findall(r"systemctl\s+([a-z-]+)", self.src)
+        self.assertEqual(subs, ["show"],
+                         f"guard 里的 systemctl 子命令只能是 show，实际 {subs}")
 
 
 if __name__ == "__main__":

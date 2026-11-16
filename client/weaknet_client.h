@@ -23,13 +23,24 @@
  *   - GetEbpfMonitorHealth      eBPF 监控器健康快照
  *   - GetHistory                查询历史监控数据
  *
- * ⚠️ 事件订阅族已于 2026-11-01 **删除**（服务端 2026-10-19 起停发全部 D-Bus 信号）。
+ * ⚠️ 事件订阅族已于 2026-11-01 **删除**（服务端 2026-10-19 起不再对外发送 D-Bus 信号）。
  *
  *   停发的信号：Changed / InterfaceChanged / ConnectionModeChanged /
  *   NetworkQualityChanged / BluetoothDeviceChanged / MonitorStateChanged /
- *   EbpfMonitorStats。原因是停发时它们**没有任何生产订阅者**——`server.cpp`
- *   注释宣称的「信号替代轮询」这个消费者从未建出来。决策记录见
- *   openspec/tasks/2026-10-19-stop-unsubscribed-dbus-signals.md。
+ *   EbpfMonitorStats。
+ *
+ *   **为什么服务端不对外发信号（这不是"因为没人订阅"，因果顺序反过来）**：
+ *   服务端产出的对外数据是经过迟滞平滑的结论型快照，正确消费方式是每次读全量，
+ *   不是维护本地增量副本。而 D-Bus 信号是单向广播，没有投递确认、没有背压、
+ *   没有重放，也无法表达"不知道"——消费者漏一条就会永久停留在过期的旧值上，
+ *   且"状态没变"与"消息没收到"在信号语义里无法区分。评估模型必须能明确回答
+ *   UNKNOWN 及其原因（no_assessment_yet / stale_assessment），只有方法调用能做到。
+ *   因此对外这条链路从一开始就设计成拉取式；核对时发现订阅者为零，是这个设计
+ *   的结果，而不是停止发送的理由。
+ *
+ *   注意：D-Bus 信号并未废弃，服务端仍在**接收**方向使用它（订阅 org.bluez 的
+ *   PropertiesChanged / InterfacesAdded / InterfacesRemoved）。信号适合
+ *   "别人变了、不问就不会知道"的场景，不适合"我自己算出来的东西、你随时能来问"。
  *
  *   已删除的 API（曾长期"空转"：订得上但永远等不到事件）：
  *     weaknet_check_changes()              永远返回 false
@@ -45,9 +56,12 @@
  *   **静默的谎**——比编译报错危险得多。保留只会让人以为事件系统可用。
  *
  *   **迁移指引**：要拿当前状态请直接调用对应的 get_* / *_stats 查询方法。
- *   事件驱动需求若真实出现，须先有真实订阅者再重建服务端发射端
- *   （走 OpenSpec change），不得凭空恢复发射。
- *   对照表见 docs/架构设计-模块与代码结构.md 的"信号停发与出口对照表"。
+ *   这是**架构选择，不是待补的缺口**：拉取才能保证消费者拿到的一定是当前结论，
+ *   或者明确告知"不知道"。若确有事件驱动的真实需求，须先有真实订阅者、
+ *   且先解决"如何表达不知道"，
+ *   再走 OpenSpec change 重建发射端，不得凭空恢复发射。
+ *   架构层面的取舍见 docs/架构设计-模块与代码结构.md 的 DbusService 段与
+ *   server/src/dbus_service.cpp 文件头的 O3-B 说明。
  *
  * 使用流程：
  *   1. weaknet_init()              -- 初始化库并建立 D-Bus 连接
@@ -183,8 +197,9 @@ bool weaknet_ping_host(const char* hostname, char* result_buffer, size_t result_
 /**
  * @brief 获取 WeakNet 客户端库版本信息
  *
- * 本函数不发起 D-Bus 调用，直接返回硬编码版本字符串
- * "WeakNet Client Library v1.0.0"。
+ * 本函数不发起 D-Bus 调用，直接返回 "WeakNet Client Library v<X.Y.Z>"。
+ * 版本号来自仓库根 VERSION（构建期以宏 WEAKNET_VERSION 注入），与发布包版本
+ * 始终一致；此前是硬编码的 "v1.0.0"，与 VERSION 脱钩后无法用于版本判定。
  *
  * @param buffer      结果缓冲区
  * @param buffer_size 缓冲区大小

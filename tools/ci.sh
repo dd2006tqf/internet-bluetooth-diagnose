@@ -186,15 +186,20 @@ info "使用宿主机裸机原生交叉编译 (Clang + Bullseye Sysroot, -j$(npr
     install -m 0755 build-arm64-native/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
     install -m 0755 build-arm64-native/client/bin/weaknet_health_guard dist-arm64/client/bin/weaknet-health-guard
     install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
-    install -m 0644 build-arm64-native/client/lib/libweaknet.so dist-arm64/client/lib/
+    # 客户端库带 SONAME：产物是 libweaknet.so.1.1.0 + 软链 .so.1 / .so。
+    # 必须用 cp -a 保留整条链——`install libweaknet.so` 只落一个同名真文件，
+    # 而 weaknet-cli 的 DT_NEEDED 记的是 `libweaknet.so.1`，板上会
+    # "cannot open shared object file"。RUNPATH 是 `$ORIGIN/../lib`，
+    # 因此这三个条目必须一起躺在 client/lib 里。
+    cp -a build-arm64-native/client/lib/libweaknet.so* dist-arm64/client/lib/
     # 看板与 weaknet-cli 同目录（client/bin），库在 ../lib —— RUNPATH 是
     # `$ORIGIN/../lib`，两者相对位置必须保持这个关系。
     if [ -f "${DASHBOARD_BIN}" ]; then
         install -m 0755 "${DASHBOARD_BIN}" dist-arm64/client/bin/weaknet-dashboard
     fi
-    # 系统健康看门狗：接管脚本随包下发（单元里的 ExecStartPre/ExecStopPost
-    # 经 current 软链寻址，OTA 翻链后自动跟着翻）。
-    install -m 0755 "${ROOT}/tools/weaknet-wdt-takeover.sh" dist-arm64/tools/weaknet-wdt-takeover.sh
+    # 系统健康看门狗不需要额外脚本随包下发：方案 B 直接喂平台驱动导出的
+    # /dev/watchdog，不加载自建模块、不改驱动绑定，因此没有「接管/归还」
+    # 这一步。guard 本体在上一段已装到 client/bin。
     install -m 0755 "AI-assisted analysis/edge_network_rag.py" dist-arm64/edge_network_rag.py
     install -m 0644 "AI-assisted analysis/network_knowledge_base.py" dist-arm64/network_knowledge_base.py
     cp -a "${SYSROOT_DIR}/usr/local/lib/libbpf.so"* dist-arm64/lib/ 2>/dev/null || true
@@ -341,7 +346,17 @@ if [ "$SKIP_DEPLOY" = false ]; then
     pass "edge token 已安全注入 /etc/weaknet/config.yaml（0600，不进 argv/tmp）"
 
     # 客户端动态库安装到系统路径，供 weaknet-cli 链接（服务端走 unit 内 LD_LIBRARY_PATH）
-    scp "${DIST_DIR}/client/lib/libweaknet.so" "${BOARD}:/tmp/libweaknet.so" 2>/dev/null
+    #
+    # 带 SONAME 的库必须连软链一起搬：运行期 DT_NEEDED 是 `libweaknet.so.1`，
+    # 只落 `/usr/local/lib/libweaknet.so` 会在启动时报
+    # "error while loading shared libraries: libweaknet.so.1"。
+    #
+    # 这里**不**用 `scp -r` 传软链：scp 对软链的处理随实现而变（有的跟随、
+    # 有的保留），而本步必须可预测。传真实文件（SONAME 指向的那个名字），
+    # 再在板端用 ln -sfn 显式重建两条相对软链，最后 ldconfig 建缓存。
+    LIB_REAL="libweaknet.so.$(tr -d '[:space:]' < "${ROOT}/VERSION")"
+    scp "${DIST_DIR}/client/lib/${LIB_REAL}" "${BOARD}:/tmp/${LIB_REAL}" 2>/dev/null \
+        || fail "客户端动态库上传失败（${LIB_REAL}）"
     # OTA Phase 2：分发发布公钥到板端 config 目录（供 weaknet-local-update 强制验签）
     if [ -f "${ROOT}/certs/release_pub.pem" ]; then
         scp "${ROOT}/certs/release_pub.pem" "${BOARD}:/tmp/release_pub.pem" 2>/dev/null
@@ -352,7 +367,10 @@ if [ "$SKIP_DEPLOY" = false ]; then
     # `Requires=weaknet-ota-gate.service`，必须等门禁单元先安装（见下方
     # P0-C1 一段），否则 daemon-reload 后即出现"依赖单元不存在"。
     ssh "${BOARD}" "sudo cp /tmp/com.example.WeakNet.conf /etc/dbus-1/system.d/com.example.WeakNet.conf && \
-        sudo cp /tmp/libweaknet.so /usr/local/lib/libweaknet.so && sudo ldconfig && \
+        sudo cp /tmp/${LIB_REAL} /usr/local/lib/${LIB_REAL} && \
+        sudo ln -sfn ${LIB_REAL} /usr/local/lib/libweaknet.so.1 && \
+        sudo ln -sfn ${LIB_REAL} /usr/local/lib/libweaknet.so && \
+        sudo ldconfig && \
         sudo chmod o+rx /home/radxa/weaknet/data 2>/dev/null || true && \
         sudo systemctl daemon-reload && sudo systemctl reload dbus 2>/dev/null || true"
     # 注意：此处刻意不 restart——重启由 adopt 在 current 翻转之后执行，

@@ -239,7 +239,7 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 |---------|---------|------|
 | "编译一下" / "build" | `cmake -B build-x86 -DCMAKE_BUILD_TYPE=Debug -DBUILD_EBPF=OFF && cmake --build build-x86 -j$(nproc)` | x86 本地快速编译 |
 | "跑测试" / "test" | `build-x86/server/test/test_database_manager_gtest` | 运行指定测试 |
-| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure` | x86 全量单元测试（61 套件，无需 D-Bus/真机环境） |
+| "跑全部测试" | `cmake --build build-x86 -j$(nproc) && ctest --test-dir build-x86/server --output-on-failure` | x86 全量单元测试（67 套件，无需 D-Bus/真机环境） |
 
 ### 部署到开发板
 
@@ -386,9 +386,16 @@ sudo systemctl restart weaknet-server
 
 > ⚠️ **停/重启 `weaknet-server` 之前必须建维护标记，否则板子会在 16 秒内整机复位。**
 >
-> 硬件看门狗已由 `weaknet-health-guard` 接管（`kmod/weaknet_wdt.c`），
+> 硬件看门狗由 `weaknet-health-guard` 直接喂平台驱动导出的 `/dev/watchdog0`
+> （`sunxi_wdt`，开机 probe 时自动导出）。它**不加载任何自建模块、不改驱动绑定**：
+> 此前的「接管脚本 + `kmod/weaknet_wdt.c`」方案已整体废弃删除（见
+> `openspec/tasks/2026-11-14-system-health-watchdog-plan-b.md`）。
 > 它的健康判据包含「D-Bus 采集推进」。服务不在 = 判据必失败 = 守卫停止喂狗
 > = `sunxi_wdt` 硬件超时复位整板。这不是 bug，是设计意图。
+>
+> 停止语义完全交给设备的 `MAGICCLOSE` 契约（由内核 `release()` 执行）：
+> 写 `'V'` → 优雅停狗；没写 `'V'` → 拒绝停狗 + 硬件超时复位。
+> 守卫启动时会硬断言驱动支持 `WDIOF_MAGICCLOSE`，不支持就拒绝启动。
 >
 > ```bash
 > ssh board 'sudo touch /var/lib/weaknet/health-guard-maintenance'

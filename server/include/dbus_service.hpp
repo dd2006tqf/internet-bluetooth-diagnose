@@ -13,9 +13,13 @@
  *
  * O3-B 说明：此前本类还提供 emitChanged()/emitSpecificSignal()/
  * emitNetworkQualitySignal()（含 sendSignalInternal 重试底层与 send_mutex_
- * 串行化），用于发射 Changed 等 7 个信号。它们零生产订阅者，发射管线随
- * "停发信号"决策一并删除；客户端侧的订阅 API（weaknet_subscribe_*）
- * 暂留待后续批次处置。
+ * 串行化），用于发射 Changed 等 7 个信号，这些已于 2026-10-19 整段删除；
+ * 客户端侧的订阅 API（weaknet_subscribe_* / weaknet_check_*）也已于
+ * 2026-11-01 一并删除，不再是"暂留待处置"的状态。
+ *
+ * 不发信号是**架构选择**而非能力缺失：对外产出是迟滞平滑过的结论型快照，
+ * 信号无投递确认且无法表达「不知道」，消费者漏一条就永久错。详见
+ * dbus_service.cpp 文件头的 O3-B 说明。
  */
 
 #pragma once

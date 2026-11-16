@@ -25,10 +25,24 @@ PHY 无时钟、lane 数错）逐一推翻。
 | `vin_video.c` | `__vin_s_input`、`__vin_s_parm`（**强制 `reserved[2]=3`** 处）、`vidioc_s_parm` |
 | `vin_video.h` | `struct vin_core` / `vin_vid_cap` 定义 |
 
-另有一批未收进本目录、放在 `/tmp/bsp-extra/` 的分册
-（`vin_tdm.c`、`tdm200_reg.c`、`sunxi_mipi.c`、`sunxi_csi.c`、
-`combo_csi_reg.c`、`dphy_reg.c` 等）。它们是**临时副本，不进仓库**
-——需要时重新从上游取。
+> **2026-11-16 更新：完整的 `drivers/vin` 子树已入库，见 `../bsp-vin/`（363 个文件）。**
+>
+> 本目录仍是「精读摘录」：每份文件都带「为什么读它」的说明。
+> 但**需要查任何不被摘录覆盖的定义时，直接去 `../bsp-vin/` 找**，
+> 不要再靠猜或从 `/tmp` 临时副本翻。
+>
+> 起因：2026-11-16 排查 MIPI PHY 状态时，`CMB_PHY_CTL_REG_OFF` 等寄存器
+> 偏移定义只存在于 `combo_csi_reg_i.h`，而它既不在本目录、也不在板端内核
+> 头文件包里，全盘搜不到 → 寄存器读不了，排查硬阻塞。同一次还缺
+> `vin_set_mclk_freq()` 实现，无法确认 skill MCLK 选源逻辑。
+> 补齐整棵子树后两个缺口同时消失。
+>
+> 已核对：本目录 7 份 `.c`/`.h` 与 `../bsp-vin/` 中的同名文件**逐字一致**，
+> 因此下文所有结论的代码锚点仍然有效。
+
+另有一批早期散落的临时副本（`vin_tdm.c`、`tdm200_reg.c`、`sunxi_csi.c` 等）
+曾放在 `/tmp/bsp-extra/`。**现在不必再用了** —— `../bsp-vin/` 是同一分支的
+完整原文，`vin-tdm/`、`vin-mipi/`、`vin-csi/` 等目录各就各位。
 
 ## 已从这些源码得到的关键结论
 

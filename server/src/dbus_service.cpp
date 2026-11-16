@@ -3,9 +3,19 @@
  * @brief DBus 服务层实现：方法分发
  *
  * 本文件实现 DbusService 类，作为 WeakNet 服务与外部世界交互的唯一入口。
- * 上层通过它暴露 28 个 DBus 方法（ListInterfaces、HealthCheck、Ping、
- * GetBluetoothDevices、GetEbpfMonitorHealth、GetHistory、SetMonitorParam、
- * EnableMonitor 等）。
+ * 上层通过它暴露 **35 条** DBus 方法分发分支（对应 34 个方法名——
+ * GetInterfaces 是 ListInterfaces 的别名，两者走同一个 handler）。
+ * 方法名常量定义在 server/include/common.hpp（kMethod*）。
+ *
+ * 覆盖范围：ListInterfaces/GetInterfaces、HealthCheck、GetDiagnosis、
+ * ExecuteAction、Ping、GetBluetoothDevices/Adapter/AudioQuality、
+ * QueryDeviceEvents/BtDataPath/SiteIncidents、GetCoexistenceConflict、
+ * GetNetworkExperience、GetVideoFrame/ReleaseVideoFrame、GetDnsStats/
+ * WifiLossStats/HttpLatencyStats/ProcessProfiling/SkbDropStats/
+ * TcpRttStats/TcpRetransStats/TcpConnStats、GetEbpfMonitorHealth、
+ * GetHistory、Set/GetMonitorParam、ListMonitors、GetMonitorStatus、
+ * Enable/Disable/RestartMonitor（共用 handleMonitorOperation）、
+ * SaveMonitorOverrides、GetUpdateStatus。
  *
  * 设计思路：
  *   - MessageHandler 采用「C 回调 → 静态函数 → 对象方法」三段式，规避 libdbus
@@ -16,9 +26,18 @@
  *
  * O3-B 说明：此前本文件还实现信号发送管线——sendSignalInternal（3 次重试 +
  * send_mutex_ 串行化）、emitChanged/emitSpecificSignal/emitNetworkQualitySignal，
- * 以及 ChangedPayload 的成功后落盘。7 个信号零生产订阅者，发射管线随停发
- * 决策整段删除（持久化写侧随 emitChanged 一并消失；客户端读侧的
- * deserializeChangedPayloadFromFile 暂留，随订阅 API 后续批次处置）。
+ * 以及 ChangedPayload 的成功后落盘，均已整段删除。
+ *
+ * **为什么服务端不对外发信号（注意因果顺序）**：本服务的对外产出是经
+ * StateStabilizer 迟滞平滑过的结论型快照，正确消费方式是读全量而非维护
+ * 本地增量；而 D-Bus 信号是单向广播，无投递确认、无背压、无重放，也无法
+ * 表达「不知道」——消费者漏一条即永久停留在过期旧值，且「状态没变」与
+ * 「消息没收到」在信号语义里不可区分。本模块必须能显式回答 UNKNOWN 及其
+ * 原因（no_assessment_yet / stale_assessment），只有方法调用能做到，故这条
+ * 链路从设计上就是拉取式。事后核对订阅者为零是这个设计的结果，不是理由。
+ *
+ * 注意：D-Bus 信号并未废弃——服务端在**接收**方向仍在用它（见 bt_monitor
+ * 订阅 org.bluez 的 PropertiesChanged / InterfacesAdded / InterfacesRemoved）。
  *
  * 线程安全：
  *   - 所有 handleXxx 在 DBus 主循环线程中串行执行（libdbus 单线程 dispatching）

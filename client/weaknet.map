@@ -1,0 +1,25 @@
+/* libweaknet 导出符号白名单（GNU ld / gold / lld 通用的 version script）
+ *
+ * 这个库的对外契约**只有** weaknet_client.h 里声明的 C API。默认可见性会
+ * 把 client.cpp 内部用到的 C++ 模板实例、std::{string,shared_ptr,filesystem}
+ * 的弱定义、RTTI 与 typeinfo 一起导出——实测 421 个动态符号里只有 39 个是
+ * `weaknet_` 前缀，其余 382 个是实现细节。
+ *
+ * 为什么这算缺陷而不只是"不优雅"：
+ *   1. 泄漏的 C++ 符号带完整 mangled 类型（`weaknet_dbus::WeakNetClient`），
+ *      等于把内部类布局固化成 ABI，改个成员就会在不相关的下游产生符号缺失；
+ *   2. weak 定义（sized operator delete、std:: 模板）参与全局符号介入，
+ *      与消费者自己实例化的同名弱符号可能跨库绑定到不同实现；
+ *   3. 无法用 `-fvisibility=hidden` 做常规优化——符号表大小与动态哈希开销
+ *      会一直跟着内部实现增长。
+ *
+ * 维护规则：weaknet_client.h 新增一个对外函数，就要在这里放行（`weaknet_*`
+ * 通配已覆盖全部 C API，因此通常不需要改本文件）。新增非 `weaknet_` 前缀的
+ * 对外符号必须显式列出并说明理由。
+ */
+{
+  global:
+    weaknet_*;
+  local:
+    *;
+};

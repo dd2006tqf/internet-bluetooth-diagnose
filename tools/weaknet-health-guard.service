@@ -1,7 +1,7 @@
 [Unit]
 Description=WeakNet System Health Watchdog Guard
 
-# 启动顺序：先让 weaknet-server 起来，再接管看门狗。
+# 启动顺序：先让 weaknet-server 起来，再开始喂狗。
 #
 # 刻意用 Wants 而不是 Requires：weaknet-server 因故障起不来时，守卫
 # **必须**照样启动 —— 它看到服务缺席（超过容忍窗口）就会停止喂狗，
@@ -13,7 +13,7 @@ Wants=weaknet-server.service
 
 # 依赖 weaknet-ota-gate：守卫的判据依赖服务在线，而服务本身受
 # P0-C1 启动门禁约束。若门禁拒绝（救援态 / 状态不可读），服务不会起来，
-# 此时守卫接管看门狗只会得到一个必然失败的判据 —— 然后在 16 秒后复位
+# 此时守卫打开看门狗只会得到一个必然失败的判据 —— 然后硬件超时复位
 # 板子，把「不要启动业务」的明确指令变成「无限重启」。门禁拒绝时必须
 # 连守卫一起不启动。
 Requires=weaknet-ota-gate.service
@@ -21,39 +21,35 @@ After=weaknet-ota-gate.service
 
 [Service]
 Type=simple
-# 取 /dev/watchdog1 与写入 /var/lib/weaknet 需要 root
+# 打开 /dev/watchdog 与写入 /var/lib/weaknet 需要 root
 User=root
 Group=root
 
-# 接管脚本负责 insmod + unbind，顺序由脚本内部保证（见脚本头注释）。
-# ExecStartPre 失败则整个单元不启动，这是刻意的：拿不到喂狗权就不要
-# 假装在保护系统。
+# 等设备节点就绪。
 #
-# 注意接管脚本在「已触发」状态下会返回 0 且不做任何事 —— 这是为了让
-# ExecStartPre 不阻塞后续的 guard（后者会立刻以 kExitTripped 退出），
-# 从而保持「已触发 → 整机复位」这条路径畅通。
-ExecStartPre=/home/radxa/weaknet/current/tools/weaknet-wdt-takeover.sh take
+# 这条路线不加载任何自建模块、不改动驱动绑定，设备由平台驱动 sunxi_wdt
+# 在开机 probe 时导出，正常一定存在。保留这个短暂轮询只是为了把
+# 「驱动没起来」与「守卫自己打开失败」两种错误在日志里分开，
+# 并避免在 devtmpfs 极早期就抢跑失败。
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -c /dev/watchdog0 ] && exit 0; sleep 0.1; done; echo "/dev/watchdog0 不存在，平台看门狗驱动未就绪" >&2; exit 1'
 
 ExecStart=/home/radxa/weaknet/current/client/bin/weaknet-health-guard
 
-# 服务结束时把喂狗权交还内建 sunxi_wdt。
+# ---- 没有 ExecStopPost 钩子，这是刻意删除的 ----
 #
-# 用 ExecStopPost 而不是 ExecStop：ExecStop 只在 `systemctl stop/restart`
-# 时执行，**主进程自己退出或启动失败时不会跑**。若 guard 因启动失败退场，
-# 此时 ExecStartPre 已经把 sunxi_wdt unbind 了 —— 没有 ExecStopPost，
-# 整机就同时失去两套看门狗，而 systemctl status 只显示一个 failed。
+# 旧实现在这里跑一个「归还脚本」（rmmod 自建模块 + bind 回原驱动）。
+# 现在驱动全程在线、从未被 unbind，没有需要归还的东西。
 #
-# ExecStopPost 在**任何**结束路径上都会执行，正好覆盖这个洞。
-#
-# 已触发（判定不健康）时脚本内部会拒绝归还并返回 0：那时必须让硬件
-# 计时走完，归还等于取消复位。见 weaknet-wdt-takeover.sh 的
-# tripped_this_boot 注释。
-ExecStopPost=/home/radxa/weaknet/current/tools/weaknet-wdt-takeover.sh give-back
+# 停止语义完全交给设备本身的 MAGICCLOSE 契约，由内核在 release() 里执行：
+#   写了 'V'     → ops->stop() → 硬件关闭（优雅停机）
+#   没写 'V'     → 拒绝停狗、卸掉代喂 → 硬件超时复位（故障路径）
+# 契约在启动时由 VerifyDeviceContract() 硬断言，驱动一旦不支持
+# WDIOF_MAGICCLOSE 就拒绝启动，不会静默退化成「停不停都一样」。
 
 # ---- 停止语义：三种情况必须分开处理 ----
 #
 # 1) 判定不健康 → guard 停止喂狗，退出码 99（kExitTripped）
-#    **绝不能重启**：重启会重新 open 设备 → 触发 .start → 使能并喂狗，
+#    **绝不能重启**：重启会重新 open 设备 → watchdog_start → 使能并喂狗，
 #    于是已经排定的复位被静默取消，故障还在而保护没了。
 #    guard 自身还有一道 boot_id 标记兜底（防 systemd 配置漂移），
 #    这里是第二层。
@@ -71,18 +67,15 @@ KillMode=control-group
 TimeoutStopSec=10
 #
 # 3) guard 自己崩溃（段错误、被 OOM 杀）
-#    此时没机会写 'V'，硬件会在 16 秒后复位 —— 这是期望行为。
-#    但**不要**让 systemd 去重启它：重启会喂狗续命，掩盖崩溃。
+#    此时没机会写 'V'，内核代关 fd 后走同一个 release() → 硬件超时复位 ——
+#    这是期望行为。但**不要**让 systemd 去重启它：重启会喂狗续命，掩盖崩溃，
+#    或者更糟 —— 若崩溃发生在判定失败之后，重启会重新 open 并取消复位。
 #    宁可让硬件复位，也不要一个偷偷续命的半死守卫。
 Restart=no
 
 # ---- 其他 ----
-# 等设备节点就绪（接管脚本已自行重试，这里只是兜底）
-ExecStartPost=/bin/sh -c 'for i in $(seq 1 30); do [ -c /dev/watchdog1 ] && exit 0; sleep 0.1; done; exit 1'
-
 # /var/lib/weaknet 存放触发标记与失败快照。
-# 0755 而非 0700：weaknet-wdt-takeover.sh 以 root 运行 reconciler 时也要读，
-# 且失败快照的用途就是给运维查看，锁死权限只会让人绕过它。
+# 0755 而非 0700：失败快照的用途就是给运维查看，锁死权限只会让人绕过它。
 StateDirectory=weaknet
 StateDirectoryMode=0755
 

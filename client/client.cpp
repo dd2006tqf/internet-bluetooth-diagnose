@@ -1625,10 +1625,16 @@ extern "C" bool weaknet_is_connected() {
     return weaknet_dbus::g_client && weaknet_dbus::g_client->isConnected();
 }
 
-/** @brief C 接口：返回硬编码版本字符串 "WeakNet Client Library v1.0.0"（不发起 D-Bus 调用） */
+/** @brief C 接口：返回库版本字符串 "WeakNet Client Library v<X.Y.Z>"（不发起 D-Bus 调用）
+ *
+ * 版本号的单一来源是仓库根 VERSION（见根 CMakeLists.txt → PROJECT_VERSION），
+ * 由 server/CMakeLists.txt 的 weaknet_common PUBLIC 宏 WEAKNET_VERSION 传下来。
+ * 此前这里硬编码 "v1.0.0"，而 VERSION 早已是 1.1.0 —— 库自报版本与实际发布
+ * 版本脱钩，`weaknet_get_version()` 因此无法用于任何版本判定。
+ */
 extern "C" bool weaknet_get_version(char* buffer, size_t buffer_size) {
     std::lock_guard<std::mutex> client_lock(weaknet_dbus::g_client_mutex);
-    snprintf(buffer, buffer_size, "WeakNet Client Library v1.0.0");
+    snprintf(buffer, buffer_size, "WeakNet Client Library v%s", WEAKNET_VERSION);
     return true;
 }
 

@@ -177,10 +177,19 @@ jobs:
             # -j$(nproc)：原生 arm64 执行，可安全并行。历史上这里是 -j1，
             # 那是 QEMU 模拟时代的约束（高并行度会 segfault），随 runner
             # 改为原生 ARM64 后不再适用。
-            cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf ebpf -j"$(nproc)"
+            # 构建目标必须与 tools/ci.sh / tools/release.sh 对齐（C2）。
+            # 此前这里缺 weaknet_health_guard 与 test_crash_handler，于是
+            # 「发布链出的固件」不包含系统健康看门狗 —— 而 ci.sh 部署出的现场
+            # 有它。同一版本号在两条路径下内容不同，是发布可信度缺陷。
+            cmake --build build-arm64 --target weaknet-dbus-server history_query_tool weaknet weaknet_cli weaknet_health_guard test_client_bin test_ebpf test_crash_handler ebpf -j"$(nproc)"
           '
 
           # 组装 dist（单独一步，仍带 set -e）
+          #
+          # **这一步的产物会被下一步的 release.sh --skip-build 原样打包**，
+          # 因此内容必须与 tools/ci.sh 的 dist 组装逐项一致（C2）。此前缺
+          # weaknet-health-guard、看板与 kmod/*.ko：板端 weaknet-kmod.service
+          # 必然失败，host_pressure 恒 unavailable，观测能力在发布路径上静默丢失。
           docker exec arm64-builder bash -c '
             set -euo pipefail
             cd /src
@@ -191,16 +200,46 @@ jobs:
             install -m 0755 build-arm64/server/weaknet-dbus-server dist-arm64/server/bin/
             install -m 0755 build-arm64/server/history_query_tool dist-arm64/server/bin/
             install -m 0755 build-arm64/server/test/test_ebpf dist-arm64/server/test/
+            install -m 0755 build-arm64/server/test/test_crash_handler dist-arm64/server/test/
             for f in build-arm64/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/; done
             install -m 0755 build-arm64/client/bin/test_client_bin dist-arm64/client/bin/test-client
             install -m 0755 build-arm64/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
+            install -m 0755 build-arm64/client/bin/weaknet_health_guard dist-arm64/client/bin/weaknet-health-guard
             install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
-            install -m 0644 build-arm64/client/lib/libweaknet.so dist-arm64/client/lib/
+            # 带 SONAME 的库：cp -a 保留 libweaknet.so.1.1.0 + 两条软链。
+            # `install libweaknet.so` 只落一个同名真文件，而消费方 DT_NEEDED
+            # 是 `libweaknet.so.1`，板上必然加载失败。
+            cp -a build-arm64/client/lib/libweaknet.so* dist-arm64/client/lib/
             install -m 0755 "AI-assisted analysis/edge_network_rag.py" dist-arm64/edge_network_rag.py
             install -m 0644 "AI-assisted analysis/network_knowledge_base.py" dist-arm64/network_knowledge_base.py
             cp -a /usr/local/lib/libbpf.so* dist-arm64/lib/
             install -m 0644 VERSION dist-arm64/VERSION
             install -m 0755 tools/weaknet-local-update.sh dist-arm64/weaknet-local-update.sh
+          '
+
+          # Qt 看板（可选产物，失败不中断）
+          #
+          # 独立 CMake 工程，理由见 qt_dashboard/CMakeLists.txt 头注释：看板是
+          # 可选人机界面，不是所有部署都装显示器。与 ci.sh 同一策略 ——
+          # 编不出来就跳过，发布照常（下一步 install 用 -f 判存在）。
+          docker exec arm64-builder bash -c '
+            set -euo pipefail
+            cd /src
+            if cmake -S qt_dashboard -B build-qt-dashboard-arm64 \
+                     -DCMAKE_BUILD_TYPE=Release \
+                     -DWEAKN_DASHBOARD_WITH_UI=ON \
+                     -DWEAKNET_CLIENT_LIB=/src/build-arm64/client/lib/libweaknet.so \
+                     >/dev/null 2>&1 \
+               && cmake --build build-qt-dashboard-arm64 -j"$(nproc)" >/dev/null 2>&1; then
+              if [ -f build-qt-dashboard-arm64/weaknet_dashboard ]; then
+                install -m 0755 build-qt-dashboard-arm64/weaknet_dashboard dist-arm64/client/bin/weaknet-dashboard
+                echo "看板已打入 dist"
+              else
+                echo "警告: 看板构建报告成功但找不到产物——本次不含看板"
+              fi
+            else
+              echo "警告: Qt 看板编译失败——本次发布不含看板（业务链路不受影响）"
+            fi
           '
 
           # 产物健全性断言：发布前证明"这不是一个残缺包"。
@@ -226,6 +265,33 @@ jobs:
             [ "$BPF_COUNT" -ge 12 ] || { echo "::error::eBPF 程序不足（${BPF_COUNT} < 12）"; exit 1; }
             echo "dist 文件数: $(find dist-arm64 -type f | wc -l)"
           '
+
+      - name: 交叉编译内核模块（观测面，可选）
+        run: |
+          # kmod 交叉编译需要目标板**逐字一致**的内核头文件（vermagic 由内核在
+          # load_module() 里逐字比对，不一致直接 -ENOEXEC）。头文件只能从板端
+          # 同步，而本 workflow 跑在 GitHub 托管 runner 上，没有板子。
+          #
+          # 因此这里分两种情况，都显式播报，不留静默缺口：
+          #   1. 有头文件缓存（self-hosted runner 或带 cache 的作业）→ 正常构建
+          #   2. 无缓存 → 明确告警说明本次发布**不含** kmod，并指出补齐方式
+          #
+          # 为什么不能静默跳过：`weaknet-kmod.service` 会去
+          # `current/kmod/*.ko` 找模块，找不到时 host_pressure 恒 unavailable。
+          # 「发布物里没有」与「模块加载失败」在板端表现相同，只有发布日志能
+          # 区分，所以必须在这里留痕。
+          set -euo pipefail
+          CACHE="${KMOD_CACHE:-$HOME/.cache/weaknet-kmod-headers}"
+          if [ -d "$CACHE" ] && [ -n "$(ls -1d "$CACHE"/*/ 2>/dev/null | grep -v -- '-build/$' || true)" ]; then
+            if ./tools/kmod_cross_build.sh --out dist-arm64/kmod; then
+              echo "kmod 产物: $(ls -1 dist-arm64/kmod/*.ko 2>/dev/null | wc -l) 个"
+            else
+              echo "::warning::kmod 交叉编译失败——本次发布不含内核模块（host_pressure 将报 unavailable，业务不受影响）"
+              rm -rf dist-arm64/kmod
+            fi
+          else
+            echo "::warning::无内核头文件缓存（$CACHE），本次发布不含 kmod。补齐方式：在有开发板的机器上执行一次 ./tools/kmod_cross_build.sh --refresh-headers 建立缓存，或用 self-hosted runner 并持久化该目录。业务不受影响，但 host_pressure 会报 unavailable。"
+          fi
 
       - name: 制品打包、ECDSA 签名与自验
         env:

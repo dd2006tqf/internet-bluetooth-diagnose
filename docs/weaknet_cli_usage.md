@@ -32,7 +32,10 @@
 ```
 
 **依赖**：
-- `libweaknet.so` 必须在系统库路径（`/usr/local/lib/`），由 `tools/ci.sh` 自动部署并 `ldconfig`
+- `libweaknet.so` 必须在系统库路径（`/usr/local/lib/`），由 `tools/ci.sh` 自动部署并 `ldconfig`。
+  该库带 SONAME：`/usr/local/lib/` 下需要 `libweaknet.so.<major>.<minor>.<patch>` 真文件
+  与 `libweaknet.so.<major>`、`libweaknet.so` 两条软链（`weaknet-cli` 的 DT_NEEDED 记的是
+  带主版本号的 SONAME）。只拷 `libweaknet.so` 会在启动时报找不到共享库。
 - D-Bus 系统总线（服务端运行在系统总线 `com.example.WeakNet`）
 
 ### 2.2 开发机验证（x86_64）

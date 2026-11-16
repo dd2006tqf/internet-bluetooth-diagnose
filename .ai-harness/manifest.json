@@ -103,7 +103,7 @@
       "path": "CLAUDE.md",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:2a541570ca6ef8e26a161af226bbb1b3b78f81b636528040a140059f395fbb7d"
+      "content_sha256": "sha256:f1403c6123281d4610d349355166c5440e09f9c36c364150a644a79370d8eee3"
     },
     {
       "path": "debt-register.md",
@@ -229,7 +229,7 @@
       "path": "prompts/debt-scan.md",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:8dea7ca044eb330dd1e09ca9775012890e55a5b7a28d36ea48c663d9a6fc5c0c"
+      "content_sha256": "sha256:7754ad2c98e4b825cb7db7ba00e698a5146dc775e93b6d061f8ea538179333dc"
     },
     {
       "path": "prompts/evaluator.md",
@@ -265,7 +265,7 @@
       "path": "prompts/rca.md",
       "ownership": "template",
       "template_version": 2,
-      "content_sha256": "sha256:471228c9cad51b2b99fbf372b0ead412f2b15a193d39a9d2aa2f2096c360df9b"
+      "content_sha256": "sha256:f30908ec94c10f2cc0afcfd7d35ef7b1010b2a1016b840d7a225c651428352cb"
     },
     {
       "path": "prompts/resume.md",

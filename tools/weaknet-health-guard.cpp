@@ -18,14 +18,37 @@
  *                  名字，无法按线程名识别角色（这是设计上的硬约束）。
  *   4. D 状态      /proc/<pid>/task/<tid>/stat 第 3 字段。
  *
- * 16 秒硬约束：硬件超时固定 16 秒、WDIOC_SETTIMEOUT 返回 EINVAL、
- *   CONFIG_WATCHDOG_OPEN_TIMEOUT=0 无宽限期。因此判据周期 2 秒、
- *   去抖 K=2（最坏 4 秒确认），所有阈值都压在 16 秒预算内。
+ * 路线：不改动内核，直接使用标准看门狗设备 /dev/watchdog0。
+ *   平台驱动 sunxi_wdt 全程在线，负责使能、配置、喂狗这几条寄存器写；
+ *   本程序不碰任何寄存器，只通过字符设备的标准 write/ioctl 语义驱动它。
+ *   板端实测 /dev/watchdog0 是 (10,130) 的 misc 节点，同时存在 (246,0)
+ *   的动态节点，两者指向同一个 watchdog_device。
+ *
+ * 喂狗权是怎么转移的（内核源码级事实，drivers/watchdog/watchdog_dev.c）：
+ *   * open() 调 watchdog_start()，置 WDOG_ACTIVE 并使能硬件；
+ *   * watchdog_need_worker() 只在「用户态未激活」时代喂：
+ *       (hm && active && t > hm) || (t && !active && hw_running)
+ *     sunxi_wdt 不设 max_hw_heartbeat_ms（hm = 0），第一项恒假；
+ *     open 之后 WDOG_ACTIVE 已置位，第二项也恒假 ⇒ 内核彻底停止代喂。
+ *   这就是「不写就没人写」的机制来源，不是约定俗成。
  *
  * 三条退出路径（必须显式区分，混在一起会出人命）：
- *   判据失败      不写 'V'，直接 close()  ->  16 秒后硬件复位
- *   正常停机      写 'V' 再 close()        ->  停用看门狗，不复位
- *   自己崩溃      没机会写 'V'             ->  16 秒后复位（期望行为）
+ *   判据失败      不写 'V'，直接 close()  ->  内核拒绝停狗、卸掉代喂 -> 硬件超时复位
+ *   正常停机      写 'V' 再 close()        ->  内核调 ops->stop() 停狗 -> 不复位
+ *   自己崩溃      没机会写 'V'（内核代关 fd，走同一条 release）
+ *                                          ->  硬件超时复位（期望行为）
+ *   第二条依赖驱动的 WDIOF_MAGICCLOSE，见下面的契约断言。
+ *
+ * MAGICCLOSE 是本路线唯一的外部依赖，必须在启动时硬断言：
+ *   若驱动不支持，watchdog_release() 会无条件 watchdog_stop()，
+ *   于是「不写 'V' 直接 close」也会把狗停掉 —— 判据失败不再复位，
+ *   保护看起来在、实际不在。VerifyDeviceContract() 不满足就拒绝启动。
+ *
+ * 超时预算：硬件超时由驱动决定（本板实测 16 秒），判据周期 2 秒、
+ *   去抖 K=2（最坏 4 秒确认）。启动时读 WDIOC_GETTIMEOUT 做下限断言，
+ *   低于 2×去抖窗口就拒绝启动，避免确认还没跑完板子先复位。
+ *   实测从最后一次喂狗到整机复位的端到端延迟约 28 秒（含调度与重启），
+ *   因此本文件与文档一律写「由硬件超时复位」，不承诺具体秒数。
  *
  * 失败 JSON 必须自己写：sunxi-wdt 不实现 bootstatus
  *   （WDIOC_GETBOOTSTATUS 恒返回 0x0、WDIOF_CARDRESET 位从不置位），
@@ -45,9 +68,12 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include <linux/watchdog.h>
 
 namespace {
 
@@ -157,8 +183,20 @@ constexpr int kRestartWarmupSec = 12;
 constexpr int kRestartWindowSec = 20 * 60;
 constexpr int kRestartMaxInWin  = 6;
 
-constexpr const char* kWatchdogDev = "/dev/weaknet_wdt";
-constexpr const char* kFallbackDev = "/dev/watchdog1";
+/*
+ * 看门狗设备：标准 watchdog 字符设备，由平台驱动 sunxi_wdt 提供。
+ *
+ * 首选 misc 节点 /dev/watchdog（10,130）。板端同时存在动态编号的
+ * /dev/watchdog0（246,0），两者由同一个 watchdog_device 导出，语义等价；
+ * 首选 misc 是为了在 devtmpfs 尚未就绪的极早期也能打开。
+ *
+ * 为什么不做「扫描 /dev/watchdog* 取最小号」：本程序必须精确知道自己
+ * 打开的是哪个设备。设备被别的进程占用时（内核强制 single-open，
+ * 第二次 open 返回 -EBUSY），盲目试下一个号会让「设备被占」这个
+ * 重要信号被悄悄吞掉。
+ */
+constexpr const char* kWatchdogDev = "/dev/watchdog";
+constexpr const char* kWatchdogAlt = "/dev/watchdog0";
 constexpr const char* kWalPath     = "/home/radxa/weaknet/data/history.db-wal";
 constexpr const char* kFailureJson =
     "/var/lib/weaknet/health-guard-last-failure.json";
@@ -189,7 +227,7 @@ constexpr const char* kOtaReceipt = "/home/radxa/weaknet/data/pending_ota_receip
  *
  * 为什么必须有它，而不是靠 systemd 的 Restart 策略：
  *   guard 停止喂狗后会退出。systemd 若把它拉起来，新实例会重新
- *   open("/dev/weaknet_wdt") —— 而 open 会触发 .start（使能 + 喂狗），
+ *   open("/dev/watchdog") —— 而 open 会触发 watchdog_start（使能 + 喂狗），
  *   **复位就被静默取消了**。故障还在，保护却没了，比不加保护更糟：
  *   系统看起来「有看门狗」，实际上永远等不到复位。
  *
@@ -682,14 +720,96 @@ void WriteFailureJson(pid_t pid, const char* reason)
 
 /* ---- 主逻辑 ---- */
 
+/*
+ * 设备契约断言：这条路线把全部硬件操作交给平台驱动，因此必须在使用前
+ * 确认驱动仍然提供我们依赖的那几条语义。任一不满足就拒绝启动 ——
+ * 宁可没有保护，也不要一个「看起来有、实际没有」的保护。
+ *
+ * 断言项与它们各自的失效后果：
+ *
+ *   1) WDIOF_MAGICCLOSE
+ *      必须支持。判据失败时我们不写 'V' 直接 close；watchdog_release()
+ *      里只有「收到 'V'」或「驱动不支持 MAGICCLOSE」才走 watchdog_stop()。
+ *      驱动一旦不支持 MAGICCLOSE，那句 else-if 就恒为真，于是不写 'V'
+ *      也会停狗 —— 停止喂狗不再导致复位，整个判据归零。
+ *
+ *   2) 超时 >= 去抖窗口的 2 倍
+ *      判据确认需要 kTickSeconds * kDebounceK = 4 秒，硬件超时必须显著
+ *      大于它，否则还没确认完板子就复位了。读实际值而不是写死 16：
+ *      平台驱动或 DT 的 timeout-sec 都可能改变它。
+ *
+ *   3) 可写（以 O_WRONLY 打开成功）
+ *      写不进去就无法喂狗，等于立即触发复位。open 本身已经验证了这条。
+ *
+ * 不读 WDIOC_GETBOOTSTATUS：sunxi-wdt 从不设 bootstatus（恒 0x0），
+ * 该位没有任何信息量，读它只会制造「我有依据」的错觉。
+ */
+bool VerifyDeviceContract(int fd, char* out_reason, size_t len)
+{
+    struct watchdog_info wi {};
+    if (::ioctl(fd, WDIOC_GETSUPPORT, &wi) != 0) {
+        snprintf(out_reason, len, "WDIOC_GETSUPPORT failed: %s", strerror(errno));
+        return false;
+    }
+
+    /* identity 是驱动自报的名字；只用于日志，不参与判定 */
+    wi.identity[sizeof(wi.identity) - 1] = '\0';
+
+    if ((wi.options & WDIOF_MAGICCLOSE) == 0) {
+        /*
+         * 这是最危险的一种退化：设备能开、能喂、systemctl status 正常，
+         * 只有「停止喂狗」这一个动作失效。不硬断言就只能在故障当天才发现。
+         */
+        snprintf(out_reason, len,
+                 "driver %s 不支持 WDIOF_MAGICCLOSE（options=0x%04x）："
+                 "close 不写 'V' 也会停狗，停止喂狗无法触发复位",
+                 wi.identity, wi.options);
+        return false;
+    }
+
+    int timeout = 0;
+    if (::ioctl(fd, WDIOC_GETTIMEOUT, &timeout) != 0) {
+        snprintf(out_reason, len, "WDIOC_GETTIMEOUT failed: %s", strerror(errno));
+        return false;
+    }
+    const int need = kTickSeconds * kDebounceK * 2;
+    if (timeout < need) {
+        snprintf(out_reason, len,
+                 "硬件超时 %ds 小于安全下限 %ds（去抖 %ds 的两倍）",
+                 timeout, need, kTickSeconds * kDebounceK);
+        return false;
+    }
+
+    fprintf(stderr,
+            "watchdog contract ok: identity=%s options=0x%04x timeout=%ds\n",
+            wi.identity, wi.options, timeout);
+    return true;
+}
+
 int OpenWatchdog()
 {
-    /* 首选专用设备；回退到 watchdog1（与 unbind 后的编号约定一致） */
+    /*
+     * 两个候选节点指向同一个 watchdog_device，先 misc 后动态编号。
+     * 两者都不通才算失败：EBUSY 要原样回报，因为「设备被别的进程占着」
+     * 和「设备不存在」的处置完全不同（前者要人介入，后者多半是驱动没起）。
+     */
     int fd = ::open(kWatchdogDev, O_WRONLY | O_CLOEXEC);
-    if (fd >= 0) {
-        return fd;
+    if (fd < 0) {
+        int first_errno = errno;
+        fd = ::open(kWatchdogAlt, O_WRONLY | O_CLOEXEC);
+        if (fd < 0) {
+            /*
+             * 两个都失败时优先报告 EBUSY：如果第一个是 EBUSY，那才是
+             * 真实原因（有人在用），第二个的 ENOENT 只是噪声。
+             */
+            if (first_errno != EBUSY) {
+                /* 保留第二个 errno，调用方据此打印 */
+            } else {
+                errno = first_errno;
+            }
+            return -1;
+        }
     }
-    fd = ::open(kFallbackDev, O_WRONLY | O_CLOEXEC);
     return fd;
 }
 
@@ -936,7 +1056,26 @@ int main(int argc, char** argv)
         if (wd_fd < 0) {
             fprintf(stderr,
                     "无法打开看门狗设备（%s 或 %s）：%s\n",
-                    kWatchdogDev, kFallbackDev, strerror(errno));
+                    kWatchdogDev, kWatchdogAlt, strerror(errno));
+            return 1;
+        }
+        /*
+         * 契约断言必须在首次喂狗之前完成。
+         *
+         * 顺序理由：open() 已经把硬件使能了（watchdog_start），此时若发现
+         * 契约不满足，唯一的正确动作是「立刻写 'V' 关掉再退出」，而不是
+         * 「什么都不做直接退出」—— 后者会让硬件开始倒数，把一个「配置
+         * 不满足、明确不打算提供服务」的场景变成一次整机复位。
+         *
+         * 这里不会静默降级：断言失败必须让单元起不来，运维才会去看日志。
+         */
+        char reason[256];
+        if (!VerifyDeviceContract(wd_fd, reason, sizeof(reason))) {
+            fprintf(stderr, "看门狗设备契约不满足：%s\n", reason);
+            if (::write(wd_fd, "V", 1) != 1) {
+                fprintf(stderr, "契约失败后写 'V' 也失败：%s\n", strerror(errno));
+            }
+            ::close(wd_fd);
             return 1;
         }
         /* 启动时立刻喂第一次，缩短「无喂狗」窗口 */

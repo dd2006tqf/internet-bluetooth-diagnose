@@ -86,7 +86,36 @@ if [ "$SKIP_BUILD" = false ]; then
               -DCMAKE_BUILD_TYPE=Debug \
               -DBUILD_EBPF=ON >/dev/null
 
-        cmake --build build-arm64-native --target weaknet-dbus-server history_query_tool weaknet weaknet_cli test_client_bin test_ebpf test_crash_handler ebpf -j"$(nproc)" >/dev/null
+        cmake --build build-arm64-native --target weaknet-dbus-server history_query_tool weaknet weaknet_cli weaknet_health_guard test_client_bin test_ebpf test_crash_handler ebpf -j"$(nproc)" >/dev/null
+
+        # ===== Qt 本地看板（可选产物）=====
+
+        # 与 tools/ci.sh 同源：看板是独立 CMake 工程，不是所有部署都装显示器。
+
+        # 失败**不中断**发布：看板不参与任何业务链路，服务端/客户端/eBPF 才是
+
+        # 发布主体；编不出来就跳过，下面的 install 用 -f 判存在。
+
+        #
+
+        # 缺陷背景（C2）：此前 release.sh 完全不构建看板，于是「发布链出的
+
+        # 固件」与「ci.sh 部署出的现场」内容不同 —— 同一版本号在两条路径下
+
+        # 携带的文件集合不一样，OTA 包缺 weaknet-dashboard。
+
+        DASHBOARD_BIN="build-qt-dashboard-arm64/weaknet_dashboard"
+        if cmake -S qt_dashboard -B build-qt-dashboard-arm64 \
+                 -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-arm64-cross.cmake \
+                 -DCMAKE_BUILD_TYPE=Release \
+                 -DWEAKN_DASHBOARD_WITH_UI=ON \
+                 -DWEAKNET_CLIENT_LIB="${ROOT}/build-arm64-native/client/lib/libweaknet.so" \
+                 >/dev/null 2>&1 \
+           && cmake --build build-qt-dashboard-arm64 -j"$(nproc)" >/dev/null 2>&1; then
+            [ -f "${DASHBOARD_BIN}" ] || echo "警告: 看板构建报告成功但找不到 ${DASHBOARD_BIN}——本次不含看板"
+        else
+            echo "警告: Qt 看板编译失败——本次发布不含看板（业务链路不受影响）"
+        fi
 
         rm -rf dist-arm64
         mkdir -p dist-arm64/server/bin dist-arm64/server/build dist-arm64/server/test \
@@ -99,14 +128,46 @@ if [ "$SKIP_BUILD" = false ]; then
         for f in build-arm64-native/server/build/*.bpf.o; do install -m 0644 "$f" dist-arm64/server/build/ 2>/dev/null || true; done
         install -m 0755 build-arm64-native/client/bin/test_client_bin dist-arm64/client/bin/test-client
         install -m 0755 build-arm64-native/client/bin/weaknet_cli dist-arm64/client/bin/weaknet-cli
+        install -m 0755 build-arm64-native/client/bin/weaknet_health_guard dist-arm64/client/bin/weaknet-health-guard
         install -m 0755 client/weaknet-offline-diag dist-arm64/client/bin/weaknet-offline-diag
-        install -m 0644 build-arm64-native/client/lib/libweaknet.so dist-arm64/client/lib/
+        # 带 SONAME 的库：cp -a 保留 libweaknet.so.1.1.0 + 两条软链。
+        # 用 `install libweaknet.so` 只会落一个同名真文件，而消费方 DT_NEEDED
+        # 是 `libweaknet.so.1`，板上必然加载失败。
+        cp -a build-arm64-native/client/lib/libweaknet.so* dist-arm64/client/lib/
+        if [ -f "${DASHBOARD_BIN}" ]; then
+            install -m 0755 "${DASHBOARD_BIN}" dist-arm64/client/bin/weaknet-dashboard
+        fi
         install -m 0755 "AI-assisted analysis/edge_network_rag.py" dist-arm64/edge_network_rag.py
         install -m 0644 "AI-assisted analysis/network_knowledge_base.py" dist-arm64/network_knowledge_base.py
         cp -a "${SYSROOT_DIR}/usr/local/lib/libbpf.so"* dist-arm64/lib/ 2>/dev/null || true
 
         install -m 0644 "${ROOT}/VERSION" dist-arm64/VERSION
         install -m 0755 "${ROOT}/tools/weaknet-local-update.sh" dist-arm64/weaknet-local-update.sh
+
+        # ===== 内核模块（观测面）=====
+
+        # 缺陷背景（C2）：此前 release.sh 完全不打 kmod，发布出去的固件没有
+
+        # weaknet_cpu_stat.ko / weaknet_softirq.ko，`releases/<ver>/kmod/` 为空，
+
+        # weaknet-kmod.service 必然失败 → 板上 host_pressure 恒 unavailable。
+
+        # 观测能力在「发布路径」上静默丢失，而这正是运维最需要的归因数据。
+
+        #
+
+        # 与 ci.sh 一致：失败**不中断**发布。模块与用户态消费者共享
+
+        # kmod/weaknet_kmod_abi.h，ABI 版本必须同源发布；但缺它业务照常运行
+
+        # （host_pressure 报 unavailable），不该让整次发布卡住。
+
+        if "${ROOT}/tools/kmod_cross_build.sh" --out dist-arm64/kmod >/dev/null 2>&1; then
+            echo "kmod 产物: $(ls -1 dist-arm64/kmod/*.ko 2>/dev/null | wc -l) 个"
+        else
+            echo "警告: kmod 交叉编译失败——本次发布不含内核模块（host_pressure 将报 unavailable，业务不受影响）"
+            rm -rf dist-arm64/kmod
+        fi
     )
     echo "✅ 编译完成，产物已打包至 dist-arm64"
 else

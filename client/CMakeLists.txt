@@ -11,8 +11,30 @@ pkg_check_modules(DBUS1 REQUIRED IMPORTED_TARGET dbus-1)
 target_link_libraries(weaknet PRIVATE
     weaknet_common
     PkgConfig::DBUS1 glog pthread)
+# ---- 对外 ABI 边界 ----
+#
+# 1) version script 收敛导出符号（I1）。
+#    此前用默认可见性：实测 421 个动态符号里只有 39 个是 `weaknet_` 前缀，
+#    剩下 382 个是 C++ 模板实例 / std:: 弱定义 / RTTI —— 内部类名被固化进
+#    ABI，改个实现细节就可能在不相关的下游产生符号缺失。白名单见
+#    client/weaknet.map（只放行 weaknet_*）。
+#
+#    这里**不**加 `CXX_VISIBILITY_PRESET hidden`：-fvisibility=hidden 会在
+#    编译期把符号降成 hidden，而 version script 只能把 global 降成 local、
+#    无法把 hidden 提升回来 —— 两者同时用会让 C API 一起消失（空导出表）。
+#
+# 2) SOVERSION：`weaknet_client.h` 是对外 C 契约，历史上移除过 8 个导出符号
+#    （见 docs/架构设计-模块与代码结构.md），属破坏性变更，因此按主版本号
+#    定 SO name：产物为 libweaknet.so.<major>.<minor>.<patch> + 两条软链。
+#
+#    **消费方注意**：链接期用的是 `libweaknet.so`，但运行期 DT_NEEDED 记的是
+#    `libweaknet.so.<major>`。任何部署路径都必须带上真实文件与 SO name 软链，
+#    只拷 `libweaknet.so` 会在运行时报 "cannot open shared object file"。
 set_target_properties(weaknet PROPERTIES
     OUTPUT_NAME weaknet
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
+    LINK_FLAGS "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/weaknet.map"
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/client/lib)
 
 # 客户端测试程序
@@ -35,8 +57,8 @@ set_target_properties(weaknet_cli PROPERTIES
 # 而 D-Bus 判据走 busctl 子进程（2 秒一次、实测 25ms，可接受）。
 # 这样它在最小镜像里也能单独跑起来，不引入 libdbus 的加载依赖。
 #
-# 注意它**不是**普通客户端工具：打开 /dev/weaknet_wdt 后不喂狗就会
-# 在 16 秒内复位整机。源码在 tools/ 下（运维工具定位），但产物要随
+# 注意它**不是**普通客户端工具：打开 /dev/watchdog 后不喂狗就会
+# 触发硬件超时复位整机。源码在 tools/ 下（运维工具定位），但产物要随
 # 发布包部署到板端，因此在这里构建。
 add_executable(weaknet_health_guard
     ${CMAKE_SOURCE_DIR}/tools/weaknet-health-guard.cpp)

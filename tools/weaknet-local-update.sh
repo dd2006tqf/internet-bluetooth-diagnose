@@ -49,7 +49,14 @@ BUS_PATH="/com/example/WeakNet"
 BUS_IFACE="com.example.WeakNet"
 HEALTH_POLL_S="${HEALTH_POLL_S:-5}"
 HEALTH_OK_NEEDED=3
-COMPAT_ENTRIES=(server client lib edge_network_rag.py network_knowledge_base.py)
+# 兼容软链清单（$ROOT/<name> → current/<name>）。
+#
+# 每一条都必须有板端真实消费者，否则只是多一条没人走的路径：
+#   server / client     → 旧单元与运维习惯路径（新单元都走 current/）
+#   lib                  → libbpf 运行期依赖
+#   kmod                 → 模块经 current/kmod 加载，兼容链供手工排障
+#   edge_network_rag.py / network_knowledge_base.py → 板端 AI 辅助脚本
+COMPAT_ENTRIES=(server client lib kmod edge_network_rag.py network_knowledge_base.py)
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 # 诊断信息一律走 stderr：stdout 只留可被命令替换捕获的数据（版本号/目录路径/JSON）

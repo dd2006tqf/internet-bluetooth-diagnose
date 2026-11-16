@@ -70,7 +70,10 @@
 | [oracle-exit-code-as-truth.md](oracle-exit-code-as-truth.md) | 拿工具进程的退出码当 ground truth，会把健康解析器判成故障 |
 | [proc-stat-field-split-vs-comm.md](proc-stat-field-split-vs-comm.md) | `/proc/*/stat` 按空白取第 3 字段，comm 含空格时错位 → D 线程数不出来、判据恒通过 |
 | [dmesg-not-history-and-nonmonotonic-counters.md](dmesg-not-history-and-nonmonotonic-counters.md) | 用 `dmesg` 与单次 `/proc/interrupts` 采样断言「从未发生」，把可自愈故障判成硬件损坏（149 次错误被读成 0 次） |
+| [journal-log-date-attribution.md](journal-log-date-attribution.md) | 统计日志只给总数不给时间，把 5 天前（11-11）的 55771 条报错当成本次重启的现场，据此虚构出「两种失败形态」 |
+| [lsof-v4l2-kills-board.md](lsof-v4l2-kills-board.md) | `lsof /dev/video0` 看起来完全无害，实际两次导致整板失联，只能物理重启 |
 | [register-value-semantics-not-verified.md](register-value-semantics-not-verified.md) | 不知道寄存器/时钟值的语义就当判据，一天内错 7 次且全部静默通过 |
+| [two-similarly-named-reset-functions.md](two-similarly-named-reset-functions.md) | `grep` 给的是行号不是作用域——拿 A 行的 `if` 去解释 B 行的打印，把 `work_mode` 判反，方向整个反了 |
 
 ### 帧统计与 V4L2
 
@@ -88,6 +91,7 @@
 | [gst-v4l2src-fps-artifact.md](gst-v4l2src-fps-artifact.md) | `gst v4l2src` 把同一台设备量成 6.86fps（实为 18.56），测帧率不能用它 |
 | [black-frame-is-lens-film.md](black-frame-is-lens-film.md) | 全黑帧的 `max=60` vs `max=252` 是镜头保护膜的判据，不是 sensor 故障 |
 | [v4l2-sizeimage-selfconsistent-wrong.md](v4l2-sizeimage-selfconsistent-wrong.md) | `S_FMT` 后读到的 `sizeimage` 是个**自洽的错值**（3030720 而非 3045504），能通过为它写的每一道 guard |
+| [tdm-silent-skip-on-zero-pixel.md](tdm-silent-skip-on-zero-pixel.md) | TDM 有一处 `if (!speed_dn_en) return 0;`：`STREAMON` 成功、无日志、中断零次，整条链看不出任何异常 |
 
 ### 归因与数据可达性
 
@@ -108,6 +112,13 @@
 | [proc-device-tree-find-symlink.md](proc-device-tree-find-symlink.md) | `find /proc/device-tree` 永远是空的——它是个符号链接，而 find 默认不跟随 |
 | [dtbo-filename-node-identity.md](dtbo-filename-node-identity.md) | 从 dtbo 文件名推断设备树节点，会把「找错节点」当成「overlay 没生效」 |
 | [dmesg-error-vs-function.md](dmesg-error-vs-function.md) | 「dmesg 有报错」不等于「功能坏了」——pinctrl 报错与 console 存活可以同时成立 |
+
+### 驱动调试接口
+
+| 文件 | 一句话 |
+| --- | --- |
+| [vin-log-compiled-out.md](vin-log-compiled-out.md) | `CONFIG_VIN_LOG` 依赖 `DYNAMIC_DEBUG`，本板没开 → 整个 VIN 驱动的 `vin_log()` 是 `do{}while(0)`，调 `vin_log_mask` 永远空转 |
+| [mpp-mipi-debugfs-panics.md](mpp-mipi-debugfs-panics.md) | `/sys/kernel/debug/mpp/mipi` 是 0444，但 `open` 里直接 `readl` 已断电模块的寄存器 → panic 且 `PANIC_TIMEOUT=0` 永不重启，`timeout` 也救不了 |
 
 ### 构建与工具链
 
@@ -191,4 +202,51 @@
 另外一条更具体的教训：**多编译器交叉验证的成本极低、收益不对称**。
 g++ 与 clang 对「未使用的定义」告警策略不同，这一条差异直接指向了一处
 从未被认真执行过的代码路径。
+
+### 2026-11-16 补充：观测通道本身要先被验证一次
+
+这一轮的两篇（`vin-log-compiled-out`、`mpp-mipi-debugfs-panics`）
+不是「判据错了」，而是**根本拿不到判据**：
+
+| 通道 | 我以为它是 | 实际是 |
+| --- | --- | --- |
+| `dmesg` 里的 VIN 调试日志 | 驱动在打，只是等级被 mask | 宏被编译成 `do{}while(0)`，一行都不存在 |
+| `/sys/kernel/debug/mpp/mipi` | 0444 只读，可以小心地读一次 | `open` 里 `readl` 已断电的 PHY，一读即 panic |
+
+两者的共同点是**通道的失效是静默的**：写 `vin_log_mask` 成功返回、
+`cat` 一个 0444 文件在权限上完全合法。没有任何一步会告诉你
+「你正在看的是一个空的观测面」。
+
+所以在这一族里，「取一次真值」的做法本身也不够 —— 你取的那个真值
+可能来自一条已经断掉的线。前置动作应该是：**先确认这条线是通的**。
+
+- 对日志：做一次**阳性对照**，找一条已知必然发生的行，确认它可见。
+  （本案的对照是 `vin_err` 的 `tdm0 rx0 frame error`：它可见，
+  所以 `vin_log` 的缺席是宏的问题，不是通道的问题。）
+- 对 debugfs / sysfs / ioctl：先读源码里那个 `open` / `show` / handler
+  到底做了什么，再决定碰不碰。**权限位描述的是语义，不是行为。**
+
+一句话：**在真机上，最贵的错误不是算错，而是对着一个坏掉的仪表盘
+得出「一切正常」。**
+
+### 2026-11-16 追加：「读对了源码」也可能推出反的结论
+
+同一天晚些时候又来一篇（`two-similarly-named-reset-functions`），
+它和上面那一族不同：**仪表盘是好的，源码也读对了，错在把两行归给了同一个函数。**
+
+`vin_tdm.c` 里 `:1479` 的 `if (work_mode == TDM_OFFLINE) return;` 属于
+`__sunxi_tdm_wdr_reset`（:1465），而 `:1814` 那条 `reset!!!` 打印属于
+`__sunxi_tdm_reset_v2_handle`（:1746）—— 两个函数，相隔 335 行，
+中间还夹着一个 `__sunxi_tdm_reset_v2`（:1607）。名字共享
+`sunxi_tdm_reset` 主干，`grep` 一次就能同时命中，于是被我当成了同一个作用域。
+
+后果是「`reset!!!` 只可能出现在 ONLINE」这个结论恰好反了 ——
+真正的门是 `tdm_rx_reset[]` 数组，而它**只在 `tdm_rx_set_reset()` 里置 1**，
+那个函数开头就是 `if (work_mode == TDM_ONLINE) return;`。
+两跳之后，`reset!!!` 变成 OFFLINE-only。
+
+由此多一问：**我引用的这一行，它的作用域到哪里结束？**
+`grep` 输出的是行号，不是函数边界。长文件里凡是靠「A 行命中符号 X、
+B 行也命中符号 X」建立的因果，都要先把函数起始行也 `grep` 出来做区间归属。
+C 语言的缩进和空行不会阻止你读错，只有函数边界会。
 
