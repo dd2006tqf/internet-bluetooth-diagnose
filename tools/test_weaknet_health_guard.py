@@ -41,6 +41,17 @@ RESTART_WARMUP_S = 12
 RESTART_WINDOW_S = 20 * 60
 RESTART_MAX_IN_WIN = 6
 
+# ---- 2026-11-17 可靠性加固新增 ----
+CMD_TIMEOUT_MS = 1500
+PID_UNKNOWN_MAX_STREAK = 3
+TRIP_HISTORY_MAX = 5
+TRIP_BREAKER_THRESHOLD = 3
+TRIP_HISTORY_RESET_S = 30 * 60
+EXIT_BREAKER_OPEN = 98
+DISK_WARN_PCT = 10
+# 硬件超时（板端实测 WDIOC_GETTIMEOUT = 16）
+HARDWARE_TIMEOUT_S = 16
+
 
 def _strip_c_comments(text):
     """
@@ -126,6 +137,12 @@ class TestConstantsAgainstSource(unittest.TestCase):
             ("kRestartWarmupSec", RESTART_WARMUP_S),
             ("kRestartWindowSec", RESTART_WINDOW_S),
             ("kRestartMaxInWin", RESTART_MAX_IN_WIN),
+            ("kCmdTimeoutMs", CMD_TIMEOUT_MS),
+            ("kPidUnknownMaxStreak", PID_UNKNOWN_MAX_STREAK),
+            ("kTripHistoryMax", TRIP_HISTORY_MAX),
+            ("kTripBreakerThreshold", TRIP_BREAKER_THRESHOLD),
+            ("kTripHistoryResetSec", TRIP_HISTORY_RESET_S),
+            ("kExitBreakerOpen", EXIT_BREAKER_OPEN),
         ]:
             self.assertEqual(self._const(name), expected,
                              f"{name} 与源码不一致：常量已漂移")
@@ -928,12 +945,20 @@ class TestSystemdUnitConsistency(unittest.TestCase):
 
     def test_restart_prevent_matches_exit_code(self):
         """
-        代码退出 99，单元必须 RestartPreventExitStatus=99。
+        代码退出 99（判据失败）与 98（熔断），单元必须同时挡住这两个码。
         不一致 → 触发后 systemd 重启 guard → 重新 open 喂狗 → 复位被取消。
         这是整套设计里最致命的一处配置漂移。
+
+        断言的是「集合包含」而不是逐字相等：RestartPreventExitStatus 是
+        空格分隔的列表，将来若再加入第三个码，这条断言不应无谓失败。
         """
-        self.assertIn("RestartPreventExitStatus=99", self.unit)
+        m = re.search(r"(?m)^RestartPreventExitStatus=(.+)$", self.unit)
+        self.assertIsNotNone(m, "单元文件缺少 RestartPreventExitStatus")
+        codes = m.group(1).split()
+        self.assertIn("99", codes, "退出码 99（判据失败）必须被挡住")
+        self.assertIn("98", codes, "退出码 98（连续复位熔断）必须被挡住")
         self.assertIn("kExitTripped = 99", self.src)
+        self.assertIn("kExitBreakerOpen = 98", self.src)
 
     def test_restart_is_disabled(self):
         """
@@ -1172,6 +1197,401 @@ class TestGuardDoesNotRepairService(unittest.TestCase):
         subs = re.findall(r"systemctl\s+([a-z-]+)", self.src)
         self.assertEqual(subs, ["show"],
                          f"guard 里的 systemctl 子命令只能是 show，实际 {subs}")
+
+
+class TestCommandTimeout(unittest.TestCase):
+    """
+    命令超时：守卫不得被自己启动的子进程焊死。
+
+    这是本文件里最重要的一组断言。原始实现用 popen/pclose，没有超时：
+    子进程挂死 → 主循环停在 pclose → 不再喂狗 → 16 秒后整机复位，
+    而 WriteFailureJson 永远执行不到。「板子无缘无故重启」就是这么来的。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        with open("tools/weaknet-health-guard.cpp", encoding="utf-8") as f:
+            cls.raw = f.read()
+        cls.src = _strip_c_comments(cls.raw)
+
+    def _func(self, name):
+        m = re.search(r"\n\w[\w\s\*&:<>]*?\b" + name + r"\([^)]*\)\s*\{", self.src)
+        self.assertIsNotNone(m, f"找不到函数 {name}")
+        i = self.src.index("{", m.start())
+        depth = 0
+        for j in range(i, len(self.src)):
+            if self.src[j] == "{":
+                depth += 1
+            elif self.src[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    return self.src[i:j + 1]
+        self.fail(f"{name} 大括号未配平")
+
+    def test_no_popen_pclose(self):
+        """
+        popen/pclose 必须彻底消失。
+
+        这条不是「偏好」问题：pclose 的语义就是「等到子进程退出」，
+        它没有任何超时机制。保留它就是保留无限阻塞的可能。
+        """
+        body = self._func("RunCommand")
+        self.assertNotIn("pclose", body, "RunCommand 不得使用 pclose（无超时原语）")
+        self.assertNotIn("popen", body, "RunCommand 不得使用 popen（无超时原语）")
+
+    def test_uses_poll_with_deadline(self):
+        body = self._func("RunCommand")
+        self.assertIn("poll", body, "必须用 poll 带超时地等管道")
+        self.assertIn("deadline", body, "必须有显式死线，不能只靠单次 poll")
+
+    def test_kills_whole_process_group(self):
+        """
+        必须杀进程组而不是单个 pid。
+
+        命令是交给 /bin/sh -c 执行的，sh 会 fork 出真正的命令。
+        只杀 sh 会留下孤儿 busctl 继续占着管道 —— waitpid 收不到 EOF，
+        等于没杀。
+        """
+        body = self._func("RunCommand")
+        self.assertIn("kill(-pid", body,
+                      "必须 kill(-pid) 杀整个进程组，否则孤儿进程占住管道")
+        self.assertIn("setpgid", body,
+                      "必须 setpgid 建立独立进程组，kill(-pid) 才有意义")
+
+    def test_reaps_child_always(self):
+        """无论正常结束还是被杀，都必须 waitpid 回收，否则留僵尸。"""
+        body = self._func("RunCommand")
+        self.assertIn("waitpid", body, "必须 waitpid 回收子进程")
+
+    def test_child_does_not_inherit_watchdog_fd(self):
+        """
+        管道 fd 必须 CLOEXEC。
+
+        这条防的是一个会**彻底废掉整个保护**的写法：若子进程继承了
+        看门狗 fd，父进程死掉后 fd 仍被 sh 持有，内核不会执行 release()，
+        于是「停止喂狗」不再导致复位 —— 判据全部失效但系统看起来正常。
+        （看门狗 fd 本身已用 O_CLOEXEC 打开，这里再钉一次管道侧。）
+        """
+        body = self._func("RunCommand")
+        self.assertIn("O_CLOEXEC", body, "pipe 必须带 O_CLOEXEC")
+        self.assertIn("O_CLOEXEC", self._func("OpenWatchdog"),
+                      "看门狗 fd 必须带 O_CLOEXEC，否则子进程会继承它")
+
+    def test_budget_fits_hardware_timeout(self):
+        """
+        预算不变式：4 条判据各自超时，仍必须显著小于硬件超时。
+
+        这条断言的存在意义是防止后来者把 1500 改大。改成 4000 时
+        4×4000 = 16 秒 = 硬件超时，一次全挂就会在判定完成前复位，
+        而且 WriteFailureJson 来不及写。
+        """
+        worst_ms = CMD_TIMEOUT_MS * 4 + TICK_S * 1000
+        self.assertLess(worst_ms, HARDWARE_TIMEOUT_S * 1000,
+                        f"最坏 {worst_ms}ms 必须 < 硬件超时 "
+                        f"{HARDWARE_TIMEOUT_S * 1000}ms")
+        # 实际只有 2 条判据起子进程，真实最坏更宽松
+        real_ms = CMD_TIMEOUT_MS * 2 + TICK_S * 1000
+        self.assertLess(real_ms, HARDWARE_TIMEOUT_S * 1000 // 2,
+                        "真实最坏路径应有一倍以上余量")
+
+    def test_timeout_is_a_failure_not_a_pass(self):
+        """
+        超时必须算判据失败（ok=false），不能算通过。
+
+        算通过 = 一次挂死就能让保护永久静默。这是「无法判定 ≠ 健康」
+        这条不变式的可执行形式。
+        """
+        body = self._func("CheckSampleNs")
+        self.assertIn("-ETIMEDOUT", body, "CheckSampleNs 必须显式区分超时")
+        # 超时分支必须 return false
+        m = re.search(r"-ETIMEDOUT\)\s*\{(.*?)\n    \}", body, re.S)
+        self.assertIsNotNone(m, "找不到超时分支")
+        self.assertIn("return false", m.group(1),
+                      "超时分支必须 return false（无法判定 ≠ 健康）")
+
+    def test_mainpid_timeout_is_not_service_death(self):
+        """
+        systemctl 超时不得被当成「服务不存在」。
+
+        二者的运维含义完全不同：服务不存在 → 等 12 秒宽限 → 复位；
+        systemctl 卡住 → 我们只是不知道。混在一起会让一次 systemd 抖动
+        变成一次整机复位，也就是守卫用复位惩罚自己的观测失败。
+        """
+        body = self._func("GetMainPid")
+        self.assertIn("out_unobservable", body,
+                      "GetMainPid 必须把「观测失败」与「确实没有 PID」分开")
+        self.assertIn("kPidUnknownMaxStreak", self.src,
+                      "必须有有界容忍常量，不能无限喂狗也不能立即复位")
+
+    def test_pid_unknown_tolerance_is_bounded(self):
+        """
+        容忍必须有界，且必须小于服务缺席宽限的一半。
+
+        无界 = systemctl 永久挂死时保护永久失效。
+        大于等于宽限 = 「先容忍再判定」的总耗时挤占硬件预算。
+        """
+        self.assertLessEqual(PID_UNKNOWN_MAX_STREAK * TICK_S,
+                             INACTIVE_GRACE_S,
+                             "观测失败容忍总时长不得超过服务缺席宽限")
+        self.assertGreater(PID_UNKNOWN_MAX_STREAK, DEBOUNCE_K,
+                           "容忍轮数必须大于去抖 K，否则一次抖动就停喂")
+
+
+class TestResetBreaker(unittest.TestCase):
+    """
+    连续复位熔断：确定性故障不得把网关变成每 28 秒重置一次的砖。
+
+    这组用例把 BreakerOpen() 的判定规则用 Python 复现一遍。之所以值得
+    重复实现，是因为这条规则一旦写错，后果是「该熔断时不熔断」（无限复位）
+    或「不该熔断时熔断」（失去保护），两者在板端都很难观察到。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        with open("tools/weaknet-health-guard.cpp", encoding="utf-8") as f:
+            raw = f.read()
+        cls.src = _strip_c_comments(raw)
+
+    def breaker_open(self, ids, current):
+        """
+        BreakerOpen() 的规则复现。
+
+        ids 是历史里的 boot_id 列表（按时间顺序），current 是当前 boot_id。
+        规则：取最后 TRIP_BREAKER_THRESHOLD 条，要求互不相同且都不含当前 boot。
+        """
+        if len(ids) < TRIP_BREAKER_THRESHOLD:
+            return False
+        window = ids[-TRIP_BREAKER_THRESHOLD:]
+        if current in window:
+            return False
+        if len(set(window)) != len(window):
+            return False
+        return True
+
+    def test_no_history(self):
+        """没有历史 → 不熔断。首次启动就是这种情况。"""
+        self.assertFalse(self.breaker_open([], "boot-1"))
+
+    def test_below_threshold(self):
+        self.assertFalse(self.breaker_open(["a"], "d"))
+        self.assertFalse(self.breaker_open(["a", "b"], "d"))
+
+    def test_threshold_reached(self):
+        """三个不同 boot 连续以触发收场 → 熔断。"""
+        self.assertTrue(self.breaker_open(["a", "b", "c"], "d"))
+
+    def test_current_boot_excluded(self):
+        """
+        当前 boot 已在窗口里 → 不熔断。
+
+        理由：当前 boot 触发过一次，说明这次启动还没走完（它正在等复位）。
+        把它算进连续计数会让阈值提前一个 boot 触发 ——
+        第一次真实熔断本应在第 3 次失败后的那次启动，提前到第 2 次。
+        """
+        self.assertFalse(self.breaker_open(["a", "b", "c"], "c"))
+        self.assertFalse(self.breaker_open(["a", "b", "c"], "b"))
+
+    def test_duplicate_boot_ids_not_counted(self):
+        """
+        同一个 boot 触发两次只算一次。
+
+        RecordTrip() 在同一 boot 里理论上只会执行一次（写 flag 后退出），
+        但若 flag 写失败（磁盘满）就可能重复。重复不该加速熔断。
+        """
+        self.assertFalse(self.breaker_open(["a", "a", "b"], "d"))
+        self.assertFalse(self.breaker_open(["a", "b", "b"], "d"))
+
+    def test_only_last_n_matter(self):
+        """只有最后 N 条参与判定，更早的历史不影响。"""
+        # 前两个相同，但不在窗口内（窗口是后三条）
+        self.assertTrue(self.breaker_open(["x", "x", "a", "b", "c"], "d"))
+
+    def test_history_cap_enforced(self):
+        """
+        历史行数有上限。
+
+        没有上限 → 文件无限增长；有上限但太小 → 排障时看不到更早的触发。
+        TRIP_HISTORY_MAX 必须大于等于阈值，否则永远凑不够。
+        """
+        self.assertGreaterEqual(TRIP_HISTORY_MAX, TRIP_BREAKER_THRESHOLD,
+                                "历史容量必须不小于熔断阈值")
+        self.assertLess(TRIP_HISTORY_MAX, 20, "历史容量不应无谓地大")
+
+    def test_healthy_reset_window_longer_than_breaker_accumulation(self):
+        """
+        健康复位窗口必须远长于一次启动到判定所需时间。
+
+        太短 → 每次正常启动都会清空历史，熔断永远不触发（形同虚设）。
+        太长 → 偶发故障跨很久仍被累加，误熔断。
+        半小时对「启动 + 12 秒豁免 + 4 秒判据」是极宽松的余量。
+        """
+        startup_s = RESTART_WARMUP_S + TICK_S * DEBOUNCE_K
+        self.assertGreater(TRIP_HISTORY_RESET_S, startup_s * 10,
+                           "健康复位窗口应比启动耗时大一个数量级")
+
+    def test_exit_code_distinct_from_trip(self):
+        """
+        熔断退出码必须与判据失败退出码区分。
+
+        两者运维处置完全不同：99 → 查采集服务；98 → 查设备本身。
+        相同会让「设备级确定性故障」被误读成「服务又挂了」。
+        """
+        self.assertNotEqual(EXIT_BREAKER_OPEN, 99)
+        # 都必须小于 128（不与信号退出码混淆）
+        self.assertLess(EXIT_BREAKER_OPEN, 128)
+        self.assertGreaterEqual(EXIT_BREAKER_OPEN, 1)
+
+    def test_breaker_checked_before_open(self):
+        """
+        熔断判定必须在 open() 之前 —— 与 trip flag 同一条理由。
+
+        open() 会 arm 硬件。熔断的语义是「放弃保护、让设备留在可访问状态」，
+        一旦开了设备，进程退出反而会触发复位，与目的正好相反。
+        """
+        body = self.src
+        i_main = body.index("int main(int argc, char** argv)")
+        body = body[i_main:]
+        i_trip = body.index("AlreadyTrippedThisBoot()")
+        i_brk = body.index("BreakerOpen(brk_reason")
+        i_open = body.index("OpenWatchdog()")
+        self.assertLess(i_trip, i_open, "trip flag 判定必须在 open 之前")
+        self.assertLess(i_brk, i_open, "熔断判定必须在 open 之前")
+        self.assertLess(i_trip, i_brk, "先查本次 boot 是否已触发，再查跨 boot 历史")
+
+    def test_trip_records_history(self):
+        """
+        RecordTrip() 必须同时写 trip flag 与跨 boot 历史。
+
+        只写 flag → 熔断器永远看不到确定性故障。
+        只写历史 → systemd 重启能撤销已排定的复位。
+        两件事放同一个函数里，就是为了让它们不可能被漏掉其中一个。
+        """
+        m = re.search(r"void RecordTrip\(const char\* reason\)\s*\{(.*?)\n\}",
+                      self.src, re.S)
+        self.assertIsNotNone(m, "RecordTrip 必须接收 reason 参数")
+        self.assertIn("kTripFlag", m.group(1), "必须写 trip flag")
+        self.assertIn("AppendTripHistory", m.group(1), "必须追加跨 boot 历史")
+
+    def test_rescue_json_written(self):
+        """熔断进入时必须留下可读的记录，否则运维只能看到退出码 98。"""
+        self.assertIn("WriteRescueJson", self.src)
+        self.assertIn("kRescueJson", self.src)
+        self.assertIn("health-guard-rescue.json", self.src)
+
+
+class TestDiskWatermark(unittest.TestCase):
+    """
+    磁盘水位：只观测，不判定。
+
+    这组用例的核心是**守护「它不是判据」这件事**。初稿曾打算把它加成
+    第五项判据，推演后发现是错的：磁盘满是一个复位无法修复的条件，
+    加进判据就是用保护机制制造无限复位循环。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        with open("tools/weaknet-health-guard.cpp", encoding="utf-8") as f:
+            raw = f.read()
+        cls.raw = raw
+        cls.src = _strip_c_comments(raw)
+
+    def pct(self, blocks, bavail, frsize):
+        """SampleDisk() 的百分比算法复现（含四舍五入）。"""
+        total = blocks * frsize
+        avail = bavail * frsize
+        if total == 0:
+            return 0
+        return (avail * 100 + total // 2) // total
+
+    def test_percentage_rounding(self):
+        """四舍五入，不是截断 —— 9.6% 应报 10% 而不是 9%。"""
+        self.assertEqual(self.pct(1000, 96, 1), 10)   # 9.6% → 10%
+        self.assertEqual(self.pct(1000, 94, 1), 9)    # 9.4% → 9%
+        self.assertEqual(self.pct(1000, 1000, 1), 100)
+        self.assertEqual(self.pct(1000, 0, 1), 0)
+
+    def test_uses_bavail_not_bfree(self):
+        """
+        必须用 f_bavail（非特权可用）而不是 f_bfree（含保留块）。
+
+        f_bfree 会把 root 保留的 5% 算成「可用」，对一个以 root 运行的
+        进程勉强成立，但报告口径应保守 —— 保留块存在的意义就是不该被算进
+        正常可用空间。
+        """
+        body = self.src[self.src.index("void SampleDisk"):]
+        body = body[:body.index("\n}")]
+        self.assertIn("f_bavail", body, "必须用 f_bavail")
+        self.assertNotIn("f_bfree", body, "不得用 f_bfree（含保留块，口径偏乐观）")
+
+    def test_not_a_criterion(self):
+        """
+        **这条是这组用例的重点**：磁盘水位不得进 g_checks[]。
+
+        进 g_checks 就意味着它参与 any_persistent_fail 判定，即
+        「磁盘满 → 停喂 → 复位 → 磁盘还是满 → 再停喂」的无限循环。
+        而这个洞其实已被判据 1（WAL mtime）覆盖 —— 磁盘满会让 SQLite
+        写不进去，WAL 停止推进，12 秒内必被捕获。
+        """
+        m = re.search(r"CheckState g_checks\[\]\s*=\s*\{(.*?)\};", self.src, re.S)
+        self.assertIsNotNone(m, "找不到 g_checks")
+        self.assertNotIn("disk", m.group(1).lower(),
+                         "磁盘水位不得作为判据进入 g_checks")
+        self.assertEqual(DEBOUNCE_K, 2, "判据数量与去抖关系不应被这条改动影响")
+
+    def test_four_checks_unchanged(self):
+        """判据数量仍是 4 —— 这次加固没有增加也没有减少判定维度。"""
+        m = re.search(r"CheckState g_checks\[\]\s*=\s*\{(.*?)\};", self.src, re.S)
+        names = re.findall(r'\{"(\w+)"', m.group(1))
+        self.assertEqual(names, ["wal_mtime", "sample_ns", "cpu_delta", "d_state"])
+
+    def test_both_paths_sampled(self):
+        """
+        证据区与数据区必须分开采样。
+
+        两者常常不在同一个文件系统上。合并（取较小值）会正好把
+        「哪个分区满了」这个关键信息抹掉，而归因正是这项功能的全部价值。
+        """
+        self.assertIn("kFailureDir", self.src)
+        self.assertIn("kDataDir", self.src)
+        body = self.src[self.src.index("void SampleBothDisks"):]
+        body = body[:body.index("\n}")]
+        self.assertIn("kFailureDir", body, "必须采样证据分区")
+        self.assertIn("kDataDir", body, "必须采样数据分区")
+
+    def test_lands_in_failure_json(self):
+        """水位必须进失败快照，否则复位后照样归因不了。"""
+        m = re.search(r"void WriteFailureJson.*?\n\}", self.src, re.S)
+        self.assertIsNotNone(m, "找不到 WriteFailureJson")
+        body = m.group(0)
+        self.assertIn("SampleBothDisks", body, "快照里必须采样磁盘")
+        self.assertIn("free_pct", body, "快照里必须有剩余百分比")
+
+    def test_warn_threshold_reasonable(self):
+        """
+        告警阈值必须留出人工介入窗口。
+
+        太低（1~2%）→ 日志还没来得及被看到就已写满。
+        太高（50%）→ 天天报警，运维学会忽略它。
+        10% 对 192MB 库 + 5 秒落库周期是十几个小时的窗口。
+        """
+        self.assertGreaterEqual(DISK_WARN_PCT, 5, "阈值过低，来不及介入")
+        self.assertLessEqual(DISK_WARN_PCT, 25, "阈值过高，告警会被忽略")
+
+    def test_silent_failures_now_visible(self):
+        """
+        RecordTrip / WriteFailureJson 的写失败必须喊出来。
+
+        这是「看不见的失效」最典型的形态：证据分区写满 → 两个文件都写不进去
+        → 复位后没有任何记录 → 运维只知道「板子重启了」。
+        更糟的是 trip flag 丢失会让熔断器也看不到这次启动。
+        """
+        for fn in ("void RecordTrip", "void WriteFailureJson",
+                   "void AppendTripHistory"):
+            m = re.search(re.escape(fn) + r".*?\n\}", self.src, re.S)
+            self.assertIsNotNone(m, f"找不到 {fn}")
+            body = m.group(0)
+            self.assertRegex(body, r"fprintf\(stderr",
+                             f"{fn} 写失败时必须打印到 stderr，不能静默 return")
 
 
 if __name__ == "__main__":

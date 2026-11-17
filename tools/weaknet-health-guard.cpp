@@ -32,12 +32,15 @@
  *     open 之后 WDOG_ACTIVE 已置位，第二项也恒假 ⇒ 内核彻底停止代喂。
  *   这就是「不写就没人写」的机制来源，不是约定俗成。
  *
- * 三条退出路径（必须显式区分，混在一起会出人命）：
+ * 四条退出路径（必须显式区分，混在一起会出人命）：
  *   判据失败      不写 'V'，直接 close()  ->  内核拒绝停狗、卸掉代喂 -> 硬件超时复位
  *   正常停机      写 'V' 再 close()        ->  内核调 ops->stop() 停狗 -> 不复位
  *   自己崩溃      没机会写 'V'（内核代关 fd，走同一条 release）
  *                                          ->  硬件超时复位（期望行为）
- *   第二条依赖驱动的 WDIOF_MAGICCLOSE，见下面的契约断言。
+ *   连续复位熔断  **不 open 设备**直接退出（退出码 98）
+ *                                          ->  设备保持在线，无硬件保护
+ *   前两条依赖驱动的 WDIOF_MAGICCLOSE，见下面的契约断言。
+ *   第四条是「保护本身在制造故障」时的主动退让，见 kTripHistory 一节。
  *
  * MAGICCLOSE 是本路线唯一的外部依赖，必须在启动时硬断言：
  *   若驱动不支持，watchdog_release() 会无条件 watchdog_stop()，
@@ -68,9 +71,13 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
+#include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <linux/watchdog.h>
@@ -80,6 +87,27 @@ namespace {
 /* ---- 判据参数：全部受 16 秒硬约束 ---- */
 constexpr int kTickSeconds     = 2;   /* 判定周期 */
 constexpr int kDebounceK       = 2;   /* 连续失败 K 次才认定；不允许 3 */
+
+/*
+ * 单条外部命令的硬上限（毫秒）。
+ *
+ * 为什么必须有：RunCommand 走 popen/pclose，子进程不退出就是永久阻塞。
+ * 判据 2 与判据 3 各要起一个子进程（busctl / systemctl），任一个挂死都会
+ * 让主循环停在 pclose 上 —— 不再喂狗，16 秒后整机复位，而且
+ * WriteFailureJson 根本执行不到，运维只看到「板子无缘无故重启了」。
+ * 这等于守卫把自己的故障伪装成被监控对象的故障，是设计上不可接受的。
+ *
+ * 为什么是 1500 而不是更小的 500：板端 busctl 实测 25ms，但 SQLite
+ * checkpoint 叠加 12 个 eBPF 程序时 D-Bus 应答可能抖到几百毫秒。
+ * 1500ms 是实测值的 60 倍，足够吸收抖动。
+ *
+ * 预算推导（受 16 秒硬约束）：
+ *   kCheckCount × kCmdTimeoutMs + kTickSeconds×1000 < 16000
+ *        4 × 1500      +        2000         = 8000 ms
+ * 余量 50%。实际只有 2 个判据起子进程，真实最坏 2×1500+2000 = 5000 ms。
+ * 改动这个值时必须同时复核 TestCommandTimeout 里的预算断言。
+ */
+constexpr int kCmdTimeoutMs    = 1500;
 constexpr int kWalMaxAgeSec    = 12;  /* 落库周期 5s，留 2.4 倍余量 */
 constexpr int kSampleMaxAgeSec = 20;  /* 采集周期 10s，留 2 倍余量 */
 constexpr int kCpuWindowSec    = 6;   /* 进程总 CPU 观察窗 */
@@ -108,6 +136,26 @@ constexpr int kDStateMaxTasks  = 4096;/* 线程数上限，防御性 */
  * 所以实际窗口是「12 秒容忍 + 16 秒硬件」，不冲突。
  */
 constexpr int kInactiveGraceSec = 12;
+
+/*
+ * 「无法观测到 MainPID」的容忍轮数。
+ *
+ * 为什么需要一个独立的计数器，而不是让 systemctl 超时直接走
+ * 「服务缺席」那条 12 秒宽限：
+ *   两者含义完全不同。服务缺席 = 我们知道进程没了；systemctl 超时 =
+ *   我们不知道进程还在不在（systemd 自己卡了）。后者若走缺席路径，
+ *   守卫会用「复位整机」来惩罚一次 systemd 的抖动，而 systemd 重启后
+ *   守卫又会被拉起 —— 典型的自己打自己。
+ *
+ * 但也不能无限容忍：systemctl 永久挂死时，若一直当「无法观测」继续
+ * 喂狗，保护就永久失效了。所以给一个有界容忍：3 轮 = 6 秒（每轮
+ * kTickSeconds），超了就按判据失败处理，reason 写 pid_unobservable。
+ *
+ * 6 秒的选择：必须显著小于 kInactiveGraceSec(12)，否则「先容忍再判定」
+ * 的总耗时会挤占 16 秒硬件预算；也不能小于 2（一次去抖的长度），否则
+ * 一次 EDQUOT/ENOMEM 抖动就会直接停喂。
+ */
+constexpr int kPidUnknownMaxStreak = 3;
 
 /*
  * systemd 正在对该服务执行一个「非失败」的作业时，视为受控过渡。
@@ -198,6 +246,14 @@ constexpr int kRestartMaxInWin  = 6;
 constexpr const char* kWatchdogDev = "/dev/watchdog";
 constexpr const char* kWatchdogAlt = "/dev/watchdog0";
 constexpr const char* kWalPath     = "/home/radxa/weaknet/data/history.db-wal";
+
+/*
+ * 数据目录：WAL、pending_ota_receipt.json 都在这里，由 weaknet-server 写。
+ * 与 kFailureDir 分开采样磁盘水位 —— 二者常常不在同一个文件系统上
+ * （见 DiskWatermark 一节的第 2 条理由）。
+ */
+constexpr const char* kDataDir     = "/home/radxa/weaknet/data";
+
 constexpr const char* kFailureJson =
     "/var/lib/weaknet/health-guard-last-failure.json";
 constexpr const char* kFailureDir  = "/var/lib/weaknet";
@@ -242,6 +298,75 @@ constexpr const char* kTripFlag   = "/var/lib/weaknet/health-guard-tripped";
 /* 与 systemd RestartPreventExitStatus 约定对应，见单元文件的同级说明 */
 constexpr int kExitTripped = 99;
 
+/*
+ * 连续复位熔断：跨 boot 的触发历史。
+ *
+ * 为什么必须有：kTripFlag 用 boot_id 做失效判据，这在「重启撤销复位」这条
+ *   上是正确的，但它同时意味着**没有任何跨 boot 的记忆**。于是确定性故障
+ *   （配置写坏、数据库损坏、一次失败的 OTA）会变成：
+ *
+ *     boot 1 判据失败 → 停喂 → 复位
+ *     boot 2 判据失败 → 停喂 → 复位
+ *     boot 3 ...                              无限循环
+ *
+ *   板端实测每次复位到重新可连约 28 秒（完整记录见
+ *   openspec/tasks/2026-11-14-system-health-watchdog-plan-b.md §6.4）。
+ *   每 28 秒重置一次的网关等于永久离线，而且**远程隧道来不及建连**，
+ *   人永远进不去修 —— 产品上这叫「必须派人到现场」。
+ *
+ * 为什么用「连续启动次数」而不是时间窗：
+ *   本板**没有 RTC**，开机初期系统时间停在 1970 附近，NTP 校正会跳变。
+ *   任何「最近 N 小时内触发过几次」的时间窗都不可靠。boot_id 不依赖时钟。
+ *
+ * 文件格式：每行 `<boot_id> <reason> <epoch_or_0>`，追加写、保留最后若干行。
+ * 用纯文本而不是 JSON：解析器只有十几行，不值得为它引 JSON 依赖
+ * （本文件刻意不链接任何库，见 client/CMakeLists.txt 的说明）。
+ */
+constexpr const char* kTripHistory = "/var/lib/weaknet/health-guard-trip-history";
+
+/*
+ * 熔断进入标记。与失败 JSON 分开，语义不同：
+ * 后者是「本次判据为什么失败」，前者是「保护已被主动关闭，需要人来处理」。
+ * 运维在板上第一眼就该看到这个文件，所以单独一份、单独一个名字。
+ */
+constexpr const char* kRescueJson = "/var/lib/weaknet/health-guard-rescue.json";
+
+/*
+ * 保留的历史行数。够判定阈值 + 余量即可，不必无限增长。
+ * 5 行 = 阈值 3 + 2 行余量（人工排障时能看到更早的两次）。
+ */
+constexpr int kTripHistoryMax = 5;
+
+/*
+ * 连续多少个不同 boot 都以「触发」收场才熔断。
+ *
+ * 3 的理由：一次真实故障（内存瞬时耗尽、磁盘临时写满）复位后自愈，
+ *   不构成确定性故障；连续三次说明复位无法修复它。
+ *   不能取 2：单次偶发 + 一次真实故障就被判死，代价太大。
+ */
+constexpr int kTripBreakerThreshold = 3;
+
+/*
+ * 熔断后的退出码。与 kExitTripped(99) 并列，同样必须在
+ * systemd 的 RestartPreventExitStatus 里，否则会被重新拉起。
+ *
+ * 为什么单独一个码而不是复用 99：运维看到 98 就知道「不是判据失败，
+ * 是熔断器判定这台设备处于确定性故障」，处置完全不同（前者查服务，
+ * 后者查设备本身）。
+ */
+constexpr int kExitBreakerOpen = 98;
+
+/*
+ * 健康运行多久才清空触发历史。
+ *
+ * 为什么需要：没有它，一台设备跑几年、期间偶发两三次真实故障，
+ * 历史会永久累积，第四次就直接熔断 —— 那等于把「偶发」当成了「确定性」。
+ *
+ * 30 分钟：远超一次正常启动 + 判据稳定所需时间（启动豁免 12 秒 +
+ * 去抖 4 秒），又短到足以在一次人工巡检窗口内完成清空。
+ */
+constexpr int kTripHistoryResetSec = 30 * 60;
+
 /* ---- 单项检查状态 ---- */
 struct CheckState {
     const char* name;
@@ -281,32 +406,180 @@ bool ReadFile(const char* path, char* buf, size_t len)
     return true;
 }
 
-/** 执行命令并整段读取 stdout。调用方负责 free(buf)。 */
-char* RunCommand(const char* cmd, size_t cap, int* out_rc)
-{
-    char* buf = static_cast<char*>(malloc(cap));
-    if (!buf) {
-        if (out_rc) *out_rc = -ENOMEM;
-        return nullptr;
-    }
-    FILE* fp = popen(cmd, "r");
-    if (!fp) {
-        free(buf);
-        if (out_rc) *out_rc = -errno;
-        return nullptr;
-    }
-    size_t total = fread(buf, 1, cap - 1, fp);
-    int rc = pclose(fp);
-    buf[total] = '\0';
-    if (out_rc) *out_rc = rc;
-    return buf;
-}
-
 int64_t MonotonicNs()
 {
     struct timespec ts {};
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<int64_t>(ts.tv_sec) * 1000000000LL + ts.tv_nsec;
+}
+
+/*
+ * 执行命令并整段读取 stdout，**带硬超时**。调用方负责 free(buf)。
+ *
+ * 为什么不能用 popen/pclose（历史实现，2026-11-16 替换）：
+ *   pclose 会一直等到子进程退出。子进程挂死（D-Bus daemon 卡住、
+ *   systemd 卡住）时主循环永久停在 pclose 上 —— 不再喂狗，硬件超时复位，
+ *   而 WriteFailureJson 永远执行不到。见 kCmdTimeoutMs 的完整推导。
+ *
+ * 另一条同样致命的老缺陷：fread 只读 cap-1 字节就返回，随后 pclose 等
+ *   子进程退出，而子进程正阻塞在「写一个已满的管道」上 —— 输出超过
+ *   缓冲区时同样死锁。本实现改成「缓冲满后继续 drain 到丢弃缓冲」，
+ *   保证截断但不死锁。
+ *
+ * 语义约定：
+ *   返回非 nullptr 时 *out_rc 为：子进程退出码（正常结束），或 -ETIMEDOUT。
+ *   返回 nullptr 时 *out_rc 为 -errno（fork/pipe/malloc 失败）。
+ *   **超时也返回已读到的部分**（可能为空串），让调用方能把 timeout
+ *   当成一次「本轮判据失败」来记录，而不是把已有输出一并丢掉。
+ *
+ * 超时用 SIGKILL 杀**整个进程组**，不杀单个 pid：/bin/sh -c 会 fork
+ * 出真正的命令，只杀 sh 会留下孤儿继续占管道，waitpid 照样收不到 EOF。
+ */
+char* RunCommand(const char* cmd, size_t cap, int timeout_ms, int* out_rc)
+{
+    if (out_rc) *out_rc = -EINVAL;
+    if (cap < 2 || !cmd) {
+        return nullptr;
+    }
+
+    char* buf = static_cast<char*>(malloc(cap));
+    if (!buf) {
+        if (out_rc) *out_rc = -ENOMEM;
+        return nullptr;
+    }
+    buf[0] = '\0';
+
+    int fds[2];
+    /* CLOEXEC：读端不能泄漏给子进程，否则我们死了子进程还持着管道 */
+    if (::pipe2(fds, O_CLOEXEC) != 0) {
+        int e = errno;
+        free(buf);
+        if (out_rc) *out_rc = -e;
+        return nullptr;
+    }
+
+    pid_t pid = ::fork();
+    if (pid < 0) {
+        int e = errno;
+        ::close(fds[0]);
+        ::close(fds[1]);
+        free(buf);
+        if (out_rc) *out_rc = -e;
+        return nullptr;
+    }
+
+    if (pid == 0) {
+        /*
+         * 子进程：自成一个进程组，便于父进程一次杀干净 sh 及其后代。
+         * 父进程也会做同样的 setpgid，两边都设是为了消除「子进程还没
+         * 跑到这里就被 kill(-pid)」的竞态（谁先设上都不影响结果）。
+         */
+        ::setpgid(0, 0);
+        ::dup2(fds[1], STDOUT_FILENO);
+        ::dup2(fds[1], STDERR_FILENO);   /* 调用方的 cmd 已带 2>/dev/null */
+        ::close(fds[0]);
+        ::close(fds[1]);
+        ::execl("/bin/sh", "sh", "-c", cmd, static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+
+    ::setpgid(pid, pid);
+    ::close(fds[1]);
+
+    const int64_t deadline = MonotonicNs() +
+                             static_cast<int64_t>(timeout_ms) * 1000000LL;
+
+    size_t total = 0;
+    bool timed_out = false;
+    bool eof = false;
+
+    /*
+     * 读取阶段：缓冲未满时写入 buf，满了以后丢进一个小型 discard 缓冲。
+     * 两种情况都必须读到 EOF 或超时，不能「读满就撒手」——那会死锁。
+     */
+    char discard[4096];
+    while (!eof) {
+        int64_t remain_ns = deadline - MonotonicNs();
+        if (remain_ns <= 0) {
+            timed_out = true;
+            break;
+        }
+        int remain_ms = static_cast<int>(remain_ns / 1000000LL);
+        if (remain_ms < 1) {
+            remain_ms = 1;   /* poll 的 0 表示「立即返回」，不是「等到死线」 */
+        }
+
+        struct pollfd pfd {};
+        pfd.fd = fds[0];
+        pfd.events = POLLIN;
+        int pr = ::poll(&pfd, 1, remain_ms);
+        if (pr < 0) {
+            if (errno == EINTR) {
+                if (g_stop_requested) {
+                    break;   /* 收到 SIGTERM：交给收尾逻辑统一处理 */
+                }
+                continue;
+            }
+            break;
+        }
+        if (pr == 0) {
+            timed_out = true;    /* 到死线了 */
+            break;
+        }
+
+        char* dst = (total < cap - 1) ? (buf + total) : discard;
+        size_t dst_cap = (total < cap - 1) ? (cap - 1 - total) : sizeof(discard);
+        ssize_t n = ::read(fds[0], dst, dst_cap);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            break;
+        }
+        if (n == 0) {
+            eof = true;
+            break;
+        }
+        if (dst == buf) {
+            total += static_cast<size_t>(n);
+        }
+    }
+    buf[total] = '\0';
+    ::close(fds[0]);
+
+    if (!eof) {
+        /*
+         * 超时或读错误：杀整个进程组并回收，避免僵尸与孤儿。
+         * kill(-pid) 要求 pid 已是组长；父进程已 setpgid，正常都成立。
+         * 万一失败（子进程还没设组就死了），退回按 pid 杀。
+         */
+        if (::kill(-pid, SIGKILL) != 0) {
+            ::kill(pid, SIGKILL);
+        }
+        timed_out = true;
+    }
+
+    /* 回收：无论正常还是被杀都要 waitpid，否则留僵尸 */
+    int status = 0;
+    for (;;) {
+        pid_t w = ::waitpid(pid, &status, 0);
+        if (w == pid) {
+            break;
+        }
+        if (w < 0 && errno == EINTR) {
+            continue;
+        }
+        break;
+    }
+
+    if (timed_out) {
+        if (out_rc) *out_rc = -ETIMEDOUT;
+        return buf;
+    }
+    if (out_rc) {
+        *out_rc = WIFEXITED(status) ? WEXITSTATUS(status) : -ECHILD;
+    }
+    return buf;
 }
 
 /* ---- 判据 1：落库推进 ---- */
@@ -346,9 +619,22 @@ bool CheckSampleNs(CheckState& st)
         "com.example.WeakNet GetEbpfMonitorHealth 2>/dev/null";
 
     int rc = 0;
-    char* buf = RunCommand(kCmd, 64 * 1024, &rc);
+    char* buf = RunCommand(kCmd, 64 * 1024, kCmdTimeoutMs, &rc);
     if (!buf) {
-        snprintf(st.detail, sizeof(st.detail), "popen failed");
+        snprintf(st.detail, sizeof(st.detail), "spawn failed rc=%d", rc);
+        return false;
+    }
+    if (rc == -ETIMEDOUT) {
+        /*
+         * 超时算失败，交给 kDebounceK 吸收（单次抖动下一轮归零）。
+         * 不能算通过：判据在「无法判定」时必须按不健康处理，
+         * 否则一次挂死就能让保护永久静默。
+         *
+         * 也不能和 busctl 自身报错混成一个 detail —— 前者说明 D-Bus
+         * 或本进程的调度出了问题，后者说明服务端拒绝/超时，处置不同。
+         */
+        snprintf(st.detail, sizeof(st.detail), "timeout %dms", kCmdTimeoutMs);
+        free(buf);
         return false;
     }
     if (rc != 0 || buf[0] == '\0') {
@@ -429,15 +715,34 @@ bool CheckSampleNs(CheckState& st)
 
 /* ---- 判据 3 / 4：进程活性 ---- */
 
-/** 用 systemd 取 MainPID；返回 0 表示拿不到。 */
-pid_t GetMainPid()
+/**
+ * 用 systemd 取 MainPID。返回 0 表示拿不到。
+ *
+ * out_unobservable 用于把「观测失败」与「服务确实不在」分开：
+ *   systemctl 超时（systemd 自身卡住）不是「服务死了」的证据 ——
+ *   我们只是不知道。若把超时当成 pid<=0 处理，一次 systemd 抖动就会
+ *   走「服务缺席 12 秒 → 停喂 → 整机复位」那条路，而这正是守卫
+ *   把自己的故障伪装成被监控对象故障的第二种形态（第一种见 RunCommand）。
+ *
+ * 调用方据此决定：可观测失败按「无法判定」处理（见 main 里的
+ * pid_unknown_streak），真正拿不到 PID 才按服务缺席处理。
+ */
+pid_t GetMainPid(bool* out_unobservable)
 {
+    if (out_unobservable) *out_unobservable = false;
+
     char cmd[256];
     snprintf(cmd, sizeof(cmd),
              "systemctl show -p MainPID --value %s 2>/dev/null", kServiceName);
     int rc = 0;
-    char* buf = RunCommand(cmd, 64, &rc);
+    char* buf = RunCommand(cmd, 64, kCmdTimeoutMs, &rc);
     if (!buf) {
+        if (out_unobservable && rc == -ETIMEDOUT) *out_unobservable = true;
+        return 0;
+    }
+    if (rc == -ETIMEDOUT) {
+        free(buf);
+        if (out_unobservable) *out_unobservable = true;
         return 0;
     }
     pid_t pid = static_cast<pid_t>(strtol(buf, nullptr, 10));
@@ -648,10 +953,120 @@ bool CheckDState(CheckState& st, pid_t pid)
     return dur_s < static_cast<int64_t>(kDStateMaxSec);
 }
 
+/* ---- 磁盘取证（只观测，不参与判定） ---- */
+
+/*
+ * 为什么磁盘水位**不是**第五项判据。
+ *
+ * 初稿曾打算「剩余空间低于阈值即判不健康」，推演后否决：
+ *   磁盘满是一个**复位无法修复**的条件。加进判据 = 磁盘满 → 停喂 →
+ *   复位 → 磁盘还是满 → 再停喂 → 复位。这是用保护机制制造伤害。
+ *
+ *   而且这个洞已经堵上了：磁盘满导致 SQLite 写不进去 → history.db-wal
+ *   的 mtime 停止推进 → CheckWalMtime（kWalMaxAgeSec = 12）失败 →
+ *   判据 1 自然触发复位。再加一项只是把同一个事实数两遍。
+ *
+ * 那它还有什么用？两条，都是**取证**价值：
+ *
+ *   1) 归因。复位后运维只看得到 "wal_mtime age_s=15"，看不出是磁盘写满
+ *      还是落库线程卡死。把 free_pct 一起写进失败快照，一眼就能分开。
+ *
+ *   2) 反向暴露证据丢失。/var/lib/weaknet（放 trip flag 与失败 JSON）与
+ *      /home/radxa/weaknet/data（放 WAL）**可能不在同一个文件系统上**。
+ *      根分区写满时 RecordTrip() 与 WriteFailureJson() 会静默失败 ——
+ *      复位后没有任何记忆，而且没人知道。这正是「保护看起来在、实际
+ *      不在」最隐蔽的形态，必须让它可见。
+ */
+struct DiskWatermark {
+    const char*   path;
+    unsigned long free_pct;      /* 可用 / 总量 × 100，四舍五入 */
+    unsigned long long avail_mb; /* f_bavail × f_frsize / 1MiB */
+    bool          ok;            /* statvfs 是否成功 */
+};
+
+/*
+ * 低于这个百分比就在每轮日志里喊 DISK_LOW。
+ *
+ * 10% 的理由：本仓库历史库 192 MB 量级、落库间隔 5 秒。留 10% 意味着
+ * 还有十几个小时的人工介入窗口，足够一次远程排查；低于 5% 往往只剩
+ * 几十分钟，滚动日志本身就会把余量吃光。
+ *
+ * 这个阈值**只触发日志**，不改变喂狗行为 —— 见上面的否决理由。
+ */
+constexpr unsigned long kDiskWarnPct = 10;
+
+/*
+ * 采样一个路径所在文件系统的水位。
+ *
+ * 用 statvfs 的 f_bavail（非特权用户可用块）而不是 f_bfree：
+ * 后者含保留块，对「我这进程还写不写得进去」没有意义。
+ * guard 以 root 跑，但按最保守口径报告总是更安全。
+ */
+void SampleDisk(const char* path, DiskWatermark* out)
+{
+    out->path = path;
+    out->free_pct = 0;
+    out->avail_mb = 0;
+    out->ok = false;
+
+    struct statvfs vfs {};
+    if (::statvfs(path, &vfs) != 0) {
+        return;
+    }
+    if (vfs.f_blocks == 0 || vfs.f_frsize == 0) {
+        return;
+    }
+    out->ok = true;
+
+    const unsigned long long frsize = vfs.f_frsize;
+    const unsigned long long total = static_cast<unsigned long long>(vfs.f_blocks) * frsize;
+    const unsigned long long avail = static_cast<unsigned long long>(vfs.f_bavail) * frsize;
+    out->avail_mb = avail / (1024ULL * 1024ULL);
+    /* 四舍五入，避免 9.6% 显示成 9 还是 10 看实现 */
+    out->free_pct = total
+        ? static_cast<unsigned long>((avail * 100ULL + total / 2) / total)
+        : 0;
+}
+
+/*
+ * 两条路径必须分开采样：它们常常落在不同分区上（见上面第 2 条价值）。
+ * 失败 JSON 与日志都同时报两个，不做「取较小值」这种合并 ——
+ * 合并会正好把「哪个分区满了」这个关键信息抹掉。
+ */
+void SampleBothDisks(DiskWatermark* ev, DiskWatermark* data)
+{
+    SampleDisk(kFailureDir, ev);
+    SampleDisk(kDataDir, data);
+}
+
+void LogDisk(DiskWatermark& ev, DiskWatermark& data)
+{
+    unsigned long min_pct = 100;
+    if (ev.ok && ev.free_pct < min_pct) min_pct = ev.free_pct;
+    if (data.ok && data.free_pct < min_pct) min_pct = data.free_pct;
+
+    fprintf(stderr, " disk[evidence=");
+    if (ev.ok) {
+        fprintf(stderr, "%lu%%/%lluMB", ev.free_pct, ev.avail_mb);
+    } else {
+        fprintf(stderr, "STAT_FAILED");
+    }
+    fprintf(stderr, " data=");
+    if (data.ok) {
+        fprintf(stderr, "%lu%%/%lluMB", data.free_pct, data.avail_mb);
+    } else {
+        fprintf(stderr, "STAT_FAILED");
+    }
+    fprintf(stderr, "]%s", (min_pct < kDiskWarnPct) ? " DISK_LOW" : "");
+}
+
 /* ---- 失败 JSON ---- */
 
 /* 定义见下方「维护与触发标记」一节；这里前置声明以便复用 */
 void ReadBootId(char* buf, size_t len);
+
+/* 定义见下方「连续复位熔断」一节；RecordTrip 里要调用 */
+void AppendTripHistory(const char* reason);
 
 /*
  * 写失败现场快照。
@@ -665,6 +1080,17 @@ void WriteFailureJson(pid_t pid, const char* reason)
     ::mkdir(kFailureDir, 0755);
     int fd = ::open(kFailureJson, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0) {
+        /*
+         * 原本静默 return。快照写不出来的直接后果是「复位了但不知道为什么」,
+         * 而最常见的原因就是证据分区写满 —— 所以先把磁盘水位喊出来。
+         */
+        DiskWatermark ev{}, data{};
+        SampleBothDisks(&ev, &data);
+        LogDisk(ev, data);
+        fprintf(stderr,
+                " WriteFailureJson FAILED: %s (no post-mortem snapshot; "
+                "reason=%s pid=%d)\\n",
+                strerror(errno), reason, static_cast<int>(pid));
         return;
     }
 
@@ -682,7 +1108,15 @@ void WriteFailureJson(pid_t pid, const char* reason)
     gmtime_r(&now, &tmv);
     strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", &tmv);
 
-    char out[2048];
+    /*
+     * 磁盘水位随快照一起落盘（只观测，不参与判定，理由见 DiskWatermark）。
+     * 在**写 JSON 之前**采样：这次采样本身也要占几个字节，虽然可以忽略，
+     * 但顺序上先采样更符合「看到的就是写这一份时的水位」。
+     */
+    DiskWatermark disk_ev{}, disk_data{};
+    SampleBothDisks(&disk_ev, &disk_data);
+
+    char out[2560];
     int n = snprintf(out, sizeof(out),
         "{\n"
         "  \"detected_at\": \"%s\",\n"
@@ -696,8 +1130,15 @@ void WriteFailureJson(pid_t pid, const char* reason)
         "    \"cpu_delta\":  {\"ok\": %s, \"detail\": \"%s\", \"fails\": %d},\n"
         "    \"d_state\":    {\"ok\": %s, \"detail\": \"%s\", \"fails\": %d}\n"
         "  },\n"
+        "  \"disk\": {\n"
+        "    \"evidence_ok\": %s, \"evidence_free_pct\": %lu,"
+        " \"evidence_avail_mb\": %llu,\n"
+        "    \"data_ok\": %s, \"data_free_pct\": %lu,"
+        " \"data_avail_mb\": %llu,\n"
+        "    \"warn_pct\": %lu\n"
+        "  },\n"
         "  \"action\": \"stopped_petting\",\n"
-        "  \"reset_expected_in_s\": 16\n"
+        "  \"hardware_timeout_s\": 16\n"
         "}\n",
         ts, uptime, boot_id, static_cast<int>(pid), reason,
         g_checks[0].ok ? "true" : "false", g_checks[0].detail,
@@ -707,7 +1148,11 @@ void WriteFailureJson(pid_t pid, const char* reason)
         g_checks[2].ok ? "true" : "false", g_checks[2].detail,
         g_checks[2].consecutive_fail,
         g_checks[3].ok ? "true" : "false", g_checks[3].detail,
-        g_checks[3].consecutive_fail);
+        g_checks[3].consecutive_fail,
+        disk_ev.ok ? "true" : "false", disk_ev.free_pct, disk_ev.avail_mb,
+        disk_data.ok ? "true" : "false", disk_data.free_pct,
+        disk_data.avail_mb,
+        kDiskWarnPct);
 
     if (n > 0) {
         ssize_t w = ::write(fd, out, static_cast<size_t>(n));
@@ -922,20 +1367,295 @@ bool AlreadyTrippedThisBoot()
     return strcmp(saved, cur) == 0;
 }
 
-/** 记录本次启动已触发。失败不致命：本进程仍会停止喂狗。 */
-void RecordTrip()
+/**
+ * 记录本次启动已触发。失败不致命：本进程仍会停止喂狗。
+ *
+ * 同时把触发原因追加进跨 boot 历史（供熔断器使用）。两件事放在同一个
+ * 函数里，是因为它们必须成对发生：只写 trip flag 不写历史 → 熔断器
+ * 永远看不到确定性故障；只写历史不写 trip flag → 重启能撤销复位。
+ * 分成两个调用点让调用方各写一次，是最容易漏掉其中一个的写法。
+ *
+ * 已知边界：若 trip flag 写成功而历史写失败（例如两个路径在不同
+ * 分区、其中一个满了），熔断器会少看一次触发。这不是安全问题
+ * （少一次熔断只是保护弱一点），但会让阈值判定偏晚，AppendTripHistory
+ * 里已经会喊出失败原因。
+ */
+void RecordTrip(const char* reason)
 {
     ::mkdir(kFailureDir, 0755);
     int fd = ::open(kTripFlag, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (fd < 0) {
+        /*
+         * 这里原本是静默 return。改成喊出来，因为它的后果非常隐蔽：
+         * trip flag 没写下 = 复位后这个 boot 没有任何记忆 = 守卫被
+         * systemd 重新拉起后会再次 open 设备，把上一次判定的复位
+         * **静默取消**。系统看起来有保护，实际永远等不到复位。
+         *
+         * 顺带把磁盘水位一起报出来 —— 这个 open 失败最常见的原因就是
+         * 根分区写满，而 99% 的排障者不会想到去查磁盘。
+         */
+        DiskWatermark ev{}, data{};
+        SampleBothDisks(&ev, &data);
+        LogDisk(ev, data);
+        fprintf(stderr,
+                " RecordTrip FAILED: %s (trip flag LOST for boot; "
+                "a restart would silently cancel the scheduled reset)\n",
+                strerror(errno));
         return;
     }
     char bid[64];
     ReadBootId(bid, sizeof(bid));
+
+    /*
+     * trip flag 保持「只有一个 boot_id」的极简格式：
+     * 它的唯一用途是 AlreadyTrippedThisBoot() 的等值比较，不需要更多信息。
+     * 带 reason 的历史在 kTripHistory 里，两份职责分开。
+     */
     char line[80];
     int n = snprintf(line, sizeof(line), "%s\n", bid);
     if (n > 0) {
         ssize_t w = ::write(fd, line, static_cast<size_t>(n));
+        (void)w;
+        ::fsync(fd);
+    }
+    ::close(fd);
+
+    /* 定义在下方「连续复位熔断」一节；前置声明避免把两节搅在一起 */
+    AppendTripHistory(reason);
+}
+
+/* ---- 连续复位熔断 ---- */
+
+/**
+ * 追加一条触发记录，只保留最后 kTripHistoryMax 行。
+ *
+ * 读取 → 追加 → 截断重写，全程不用 flock：guard 是单实例的
+ * （设备本身 single-open，第二个实例连 watchdog 都打不开，
+ * 会在 open 阶段就退出），因此不存在并发写这个文件的问题。
+ *
+ * 用 O_TRUNC 重写而不是 append：需要真的裁掉老行。文件只有几百字节，
+ * 重写的代价可以忽略，而「文件不会无限增长」比省一次 write 重要得多。
+ */
+void AppendTripHistory(const char* reason)
+{
+    ::mkdir(kFailureDir, 0755);
+
+    char bid[64];
+    ReadBootId(bid, sizeof(bid));
+
+    time_t now = ::time(nullptr);
+    /* 无 RTC 时 time() 可能是 1970；记 0 让读的人知道「这个时间戳无意义」 */
+    long long epoch = (now > 1600000000) ? static_cast<long long>(now) : 0;
+
+    /*
+     * 读出现有行。文件最大 5 行 × 约 60 字节，1KB 足够；
+     * 万一被外部写大了，按整块读入再按行裁，不丢最新记录。
+     */
+    char old[4096];
+    old[0] = '\0';
+    ReadFile(kTripHistory, old, sizeof(old));
+
+    /* 按行收集（保留最后 kTripHistoryMax-1 行，再追加本次） */
+    char lines[kTripHistoryMax][128];
+    int cnt = 0;
+    const char* p = old;
+    while (*p != '\0') {
+        const char* nl = strchr(p, '\n');
+        size_t len = nl ? static_cast<size_t>(nl - p) : strlen(p);
+        if (len > 0 && len < sizeof(lines[0])) {
+            if (cnt < kTripHistoryMax) {
+                memcpy(lines[cnt], p, len);
+                lines[cnt][len] = '\0';
+                ++cnt;
+            } else {
+                /* 满了：整体前移一行，腾出末尾 */
+                for (int i = 1; i < kTripHistoryMax; ++i) {
+                    memcpy(lines[i - 1], lines[i], sizeof(lines[0]));
+                }
+                memcpy(lines[kTripHistoryMax - 1], p, len);
+                lines[kTripHistoryMax - 1][len] = '\0';
+            }
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+
+    /* 本次记录压入末尾（同样保持上限） */
+    char cur[128];
+    snprintf(cur, sizeof(cur), "%s %s %lld", bid, reason, epoch);
+    if (cnt < kTripHistoryMax) {
+        snprintf(lines[cnt], sizeof(lines[0]), "%s", cur);
+        ++cnt;
+    } else {
+        for (int i = 1; i < kTripHistoryMax; ++i) {
+            memcpy(lines[i - 1], lines[i], sizeof(lines[0]));
+        }
+        snprintf(lines[kTripHistoryMax - 1], sizeof(lines[0]), "%s", cur);
+    }
+
+    int fd = ::open(kTripHistory,
+                    O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        /*
+         * 写不进去不致命，但必须喊出来：没有历史 = 熔断器看不到这次触发，
+         * 无限复位会继续。与 RecordTrip 同样把磁盘水位一起报出来。
+         */
+        DiskWatermark ev{}, data{};
+        SampleBothDisks(&ev, &data);
+        LogDisk(ev, data);
+        fprintf(stderr,
+                " AppendTripHistory FAILED: %s (breaker blind to this trip)\n",
+                strerror(errno));
+        return;
+    }
+    for (int i = 0; i < cnt; ++i) {
+        char buf[140];
+        int n = snprintf(buf, sizeof(buf), "%s\n", lines[i]);
+        if (n > 0) {
+            ssize_t w = ::write(fd, buf, static_cast<size_t>(n));
+            (void)w;
+        }
+    }
+    ::fsync(fd);
+    ::close(fd);
+}
+
+/**
+ * 熔断器是否应该打开。
+ *
+ * 判定：历史里最后 kTripBreakerThreshold 条的 boot_id
+ *       **互不相同**且**都不是当前 boot** 时打开。
+ *
+ * 「都不是当前 boot」这一条是必须的：如果当前 boot 已经触发过一次，
+ * 那说明本次启动还没失败 —— 它只是还没走完。把它算进去会让阈值
+ * 提前一个 boot 触发。
+ *
+ * 返回 true 时把原因写进 out_reason 供日志与 rescue JSON 使用。
+ */
+bool BreakerOpen(char* out_reason, size_t len)
+{
+    char cur[64];
+    ReadBootId(cur, sizeof(cur));
+
+    char raw[4096];
+    if (!ReadFile(kTripHistory, raw, sizeof(raw))) {
+        snprintf(out_reason, len, "no history");
+        return false;
+    }
+
+    /* 收集所有 boot_id */
+    char ids[kTripHistoryMax][64];
+    int cnt = 0;
+    const char* p = raw;
+    while (*p != '\0' && cnt < kTripHistoryMax) {
+        const char* nl = strchr(p, '\n');
+        size_t linelen = nl ? static_cast<size_t>(nl - p) : strlen(p);
+        if (linelen > 0) {
+            /* 第一段是 boot_id */
+            size_t j = 0;
+            while (j < linelen && p[j] != ' ' && j < sizeof(ids[0]) - 1) {
+                ids[cnt][j] = p[j];
+                ++j;
+            }
+            ids[cnt][j] = '\0';
+            if (j > 0) ++cnt;
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+
+    if (cnt < kTripBreakerThreshold) {
+        snprintf(out_reason, len, "history only %d/%d",
+                 cnt, kTripBreakerThreshold);
+        return false;
+    }
+
+    /*
+     * 取最后 kTripBreakerThreshold 条，要求它们互不相同且不含当前 boot。
+     * 从末尾往前扫，遇到当前 boot 就整体作废（说明本次启动还没成功）。
+     */
+    int start = cnt - kTripBreakerThreshold;
+    for (int i = start; i < cnt; ++i) {
+        if (strcmp(ids[i], cur) == 0) {
+            snprintf(out_reason, len,
+                     "current boot already in window (slot %d)", i - start);
+            return false;
+        }
+        for (int j = start; j < i; ++j) {
+            if (strcmp(ids[i], ids[j]) == 0) {
+                snprintf(out_reason, len, "duplicate boot_id in window");
+                return false;
+            }
+        }
+    }
+
+    snprintf(out_reason, len,
+             "%d consecutive trips on distinct boots: %s..%s",
+             kTripBreakerThreshold, ids[start], ids[cnt - 1]);
+    return true;
+}
+
+/** 健康运行满 kTripHistoryResetSec 后清空历史（见该常量的注释）。 */
+void ResetTripHistoryIfHealthy()
+{
+    struct stat sb {};
+    if (::stat(kTripHistory, &sb) != 0) {
+        return;   /* 没有历史，无需清理 */
+    }
+    time_t now = ::time(nullptr);
+    long age = static_cast<long>(now - sb.st_mtime);
+    if (age < 0) {
+        /*
+         * 时钟回跳（无 RTC 的板子第一次 NTP 校正）：不能把它当成
+         * 「很旧」而清空 —— 那正好会让刚累积的历史被一次校正抹掉。
+         * 保守地不清。
+         */
+        return;
+    }
+    if (age < kTripHistoryResetSec) {
+        return;
+    }
+    if (::unlink(kTripHistory) == 0) {
+        fprintf(stderr,
+                "trip history cleared after %lds of healthy operation\n", age);
+    }
+}
+
+/**
+ * 写熔断进入记录。与失败 JSON 分开，因为语义不同：
+ * 后者是「本次判据为什么失败」，前者是「保护已被主动关闭」。
+ */
+void WriteRescueJson(const char* reason)
+{
+    ::mkdir(kFailureDir, 0755);
+    int fd = ::open(kRescueJson, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        fprintf(stderr, "WriteRescueJson FAILED: %s\n", strerror(errno));
+        return;
+    }
+    char boot_id[64];
+    ReadBootId(boot_id, sizeof(boot_id));
+
+    char ts[64];
+    time_t now = ::time(nullptr);
+    struct tm tmv {};
+    gmtime_r(&now, &tmv);
+    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", &tmv);
+
+    char out[1024];
+    int n = snprintf(out, sizeof(out),
+        "{\n"
+        "  \"entered_at\": \"%s\",\n"
+        "  \"boot_id\": \"%s\",\n"
+        "  \"reason\": \"%s\",\n"
+        "  \"action\": \"breaker_open_no_watchdog\",\n"
+        "  \"threshold\": %d,\n"
+        "  \"recover_by\": \"remove /var/lib/weaknet/health-guard-trip-history "
+        "and restart weaknet-health-guard\"\n"
+        "}\n",
+        ts, boot_id, reason, kTripBreakerThreshold);
+    if (n > 0) {
+        ssize_t w = ::write(fd, out, static_cast<size_t>(n));
         (void)w;
         ::fsync(fd);
     }
@@ -950,6 +1670,15 @@ void LogCheckRound(int round)
                 g_checks[i].ok ? "ok" : "FAIL",
                 g_checks[i].detail, g_checks[i].consecutive_fail);
     }
+    /*
+     * 磁盘水位只进日志，不进判据（理由见 DiskWatermark 一节）。
+     * 放在同一行末尾，是为了让「判据全绿但磁盘只剩 2%」这种组合
+     * 在一行日志里就能看见 —— 它往往是下一次复位的预告。
+     */
+    DiskWatermark ev{}, data{};
+    SampleBothDisks(&ev, &data);
+    LogDisk(ev, data);
+
     fprintf(stderr, "\n");
 }
 
@@ -1050,6 +1779,33 @@ int main(int argc, char** argv)
         return kExitTripped;
     }
 
+    /*
+     * 连续复位熔断，同样必须在 open() 之前。
+     *
+     * 顺序理由与上面那条相同：open() 会 arm 硬件。熔断的语义是
+     * 「主动放弃保护、让设备留在可远程访问的状态」，一旦开了设备，
+     * 本进程意外退出反而会触发复位 —— 与熔断的目的正好相反。
+     *
+     * 这里只判定、不写任何东西就退出：rescue JSON 由 WriteRescueJson 写，
+     * 它自己会创建目录。不写 trip flag —— 熔断不是「判据失败」，
+     * 混淆两者会让下一次启动的 AlreadyTrippedThisBoot 误判。
+     */
+    if (!dry_run) {
+        char brk_reason[256];
+        if (BreakerOpen(brk_reason, sizeof(brk_reason))) {
+            fprintf(stderr,
+                    "连续复位熔断已打开：%s\n"
+                    "本设备连续 %d 次以「判定不健康并复位」收场，"
+                    "复位无法修复这个故障。\n"
+                    "**本次不打开看门狗设备，设备无硬件保护但保持在线**，"
+                    "请远程介入排查。\n"
+                    "解除方式：删除 %s 后重启本服务。\n",
+                    brk_reason, kTripBreakerThreshold, kTripHistory);
+            WriteRescueJson(brk_reason);
+            return kExitBreakerOpen;
+        }
+    }
+
     int wd_fd = -1;
     if (!dry_run) {
         wd_fd = OpenWatchdog();
@@ -1090,6 +1846,7 @@ int main(int argc, char** argv)
     int round = 0;
     int64_t inactive_since_ns = 0;   /* 服务首次被发现不在 active 的时刻 */
     RestartTracker restart_tracker;  /* 见 InRestartWarmup */
+    int pid_unknown_streak = 0;      /* 见 kPidUnknownMaxStreak */
 
     while (!g_stop_requested) {
         ++round;
@@ -1116,8 +1873,47 @@ int main(int argc, char** argv)
             continue;
         }
 
-        pid_t pid = GetMainPid();
+        bool pid_unobservable = false;
+        pid_t pid = GetMainPid(&pid_unobservable);
+        if (pid_unobservable) {
+            /*
+             * systemctl 超时 = 我们不知道服务还在不在，而不是「它没了」。
+             * 见 kPidUnknownMaxStreak：有界容忍后按判据失败处理，
+             * 绝不悄悄走「服务缺席」那条路径，也不无限喂狗。
+             */
+            ++pid_unknown_streak;
+            if (pid_unknown_streak <= kPidUnknownMaxStreak) {
+                fprintf(stderr,
+                        "[round %d] mainpid UNOBSERVABLE (%d/%d): "
+                        "MainPID query timed out -> keep feeding, "
+                        "judgement suspended\n",
+                        round, pid_unknown_streak, kPidUnknownMaxStreak);
+                if (!dry_run && ::write(wd_fd, "1", 1) != 1) {
+                    fprintf(stderr, "[round %d] feed failed: %s\n",
+                            round, strerror(errno));
+                    WriteFailureJson(0, "feed_write_failed");
+                    ::close(wd_fd);
+                    return 1;
+                }
+                for (int s = 0; s < kTickSeconds && !g_stop_requested; ++s) {
+                    sleep(1);
+                }
+                continue;
+            }
+            fprintf(stderr,
+                    "[round %d] mainpid UNOBSERVABLE for %d rounds (> %d) "
+                    "-> stop feeding, expect hardware reset\n",
+                    round, pid_unknown_streak, kPidUnknownMaxStreak);
+            if (!dry_run) {
+                RecordTrip("pid_unobservable");
+                WriteFailureJson(0, "pid_unobservable");
+                ::close(wd_fd);
+                return kExitTripped;
+            }
+            pid = 0;
+        }
         if (pid <= 0) {
+            pid_unknown_streak = 0;
             /*
              * 先看是不是受控过渡（OTA 正在推进）。
              * 升级期间服务必然缺席，且时长可达数分钟，任何固定宽限都不够。
@@ -1170,18 +1966,19 @@ int main(int argc, char** argv)
             } else {
                 fprintf(stderr,
                         "[round %d] service %s absent for %llds (> grace %ds) "
-                        "-> stop feeding, expect reset in ~16 s\n",
+                        "-> stop feeding, hardware watchdog will reset the board\n",
                         round, kServiceName, static_cast<long long>(gone_s),
                         kInactiveGraceSec);
                 if (!dry_run) {
-                    RecordTrip();
+                    RecordTrip("service_absent");
                     WriteFailureJson(0, "service_absent");
-                    ::close(wd_fd);   /* 不写 'V'，16 秒后复位 */
+                    ::close(wd_fd);   /* 不写 'V' → 拒绝停狗 → 硬件超时复位 */
                     return kExitTripped;
                 }
             }
         } else {
             inactive_since_ns = 0;
+            pid_unknown_streak = 0;   /* 观测恢复正常，容忍计数归零 */
 
             /*
              * 新 PID 的豁免窗口：见 kRestartWarmupSec 注释。
@@ -1231,9 +2028,9 @@ int main(int argc, char** argv)
             if (any_persistent_fail) {
                 fprintf(stderr,
                         "[round %d] persistent failure -> stop feeding, "
-                        "expect reset in ~%d s\n", round, 16);
+                        "hardware watchdog will reset the board\n", round);
                 if (!dry_run) {
-                    RecordTrip();
+                    RecordTrip("criteria_unhealthy");
                     WriteFailureJson(pid, "criteria_unhealthy");
                     ::close(wd_fd);   /* 不写 'V' */
                     return kExitTripped;
@@ -1245,6 +2042,15 @@ int main(int argc, char** argv)
                     WriteFailureJson(pid, "feed_write_failed");
                     ::close(wd_fd);
                     return 1;
+                }
+                /*
+                 * 健康运行时清空触发历史（见 kTripHistoryResetSec）。
+                 * 每 15 轮检查一次就够：阈值是 30 分钟，而一轮 2 秒，
+                 * 15 轮 = 30 秒的检测粒度，误差对 30 分钟毫无意义。
+                 * 不每轮 stat 是为了让这条路径的开销可以忽略。
+                 */
+                if ((round % 15) == 0) {
+                    ResetTripHistoryIfHealthy();
                 }
             }
         }

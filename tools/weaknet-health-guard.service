@@ -46,7 +46,7 @@ ExecStart=/home/radxa/weaknet/current/client/bin/weaknet-health-guard
 # 契约在启动时由 VerifyDeviceContract() 硬断言，驱动一旦不支持
 # WDIOF_MAGICCLOSE 就拒绝启动，不会静默退化成「停不停都一样」。
 
-# ---- 停止语义：三种情况必须分开处理 ----
+# ---- 停止语义：四种情况必须分开处理 ----
 #
 # 1) 判定不健康 → guard 停止喂狗，退出码 99（kExitTripped）
 #    **绝不能重启**：重启会重新 open 设备 → watchdog_start → 使能并喂狗，
@@ -55,7 +55,16 @@ ExecStart=/home/radxa/weaknet/current/client/bin/weaknet-health-guard
 #    这里是第二层。
 # （Restart=no 已经排除了自动重启，这条是纵深防御：万一将来有人把
 #   Restart 改成 on-failure，退出码 99 依然能挡住。）
-RestartPreventExitStatus=99
+#
+# 1b) 连续复位熔断 → 退出码 98（kExitBreakerOpen）
+#    连续 3 个 boot 都以「判定不健康并复位」收场时，守卫判定这是确定性
+#    故障，**主动不打开看门狗设备**、写下 rescue JSON 后退出。
+#    语义是「放弃硬件保护，换取设备留在可远程访问的状态」——
+#    每 28 秒重置一次的板子连隧道都建不起来，人永远进不去修。
+#    同样绝不能重启。
+#    98 与 99 分开是给运维的信号：看到 99 去查采集服务，
+#    看到 98 去查设备本身（配置损坏 / 数据库损坏 / 坏 OTA）。
+RestartPreventExitStatus=98 99
 #
 # 2) 正常 stop/restart（systemctl stop、OTA 翻转、ci.sh 部署）
 #    guard 收到 SIGTERM 后写 'V' 并 close，主动停用看门狗，不复位。
