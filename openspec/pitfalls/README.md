@@ -112,6 +112,9 @@
 | [proc-device-tree-find-symlink.md](proc-device-tree-find-symlink.md) | `find /proc/device-tree` 永远是空的——它是个符号链接，而 find 默认不跟随 |
 | [dtbo-filename-node-identity.md](dtbo-filename-node-identity.md) | 从 dtbo 文件名推断设备树节点，会把「找错节点」当成「overlay 没生效」 |
 | [dmesg-error-vs-function.md](dmesg-error-vs-function.md) | 「dmesg 有报错」不等于「功能坏了」——pinctrl 报错与 console 存活可以同时成立 |
+| [mailbox-has-no-sysfs-class.md](mailbox-has-no-sysfs-class.md) | 5.15 的 mailbox 框架只维护链表、不建 class，`/sys/class/mailbox/` 查不到不等于驱动没 probe |
+| [proc-interrupts-irq-number-not-hwirq.md](proc-interrupts-irq-number-not-hwirq.md) | `GIC_SPI n` 不是 Linux IRQ 号（`GIC_SPI 0` 实测映射为 432），按 n 去 grep `/proc/interrupts` 会得到假阴性 |
+| [msgbox-fifo-read-underflow.md](msgbox-fifo-read-underflow.md) | 读空 FIFO 让 `MSG_ST` 从 0 下溢成 15，完美模拟「有 15 条积压」；我据此虚构出「对端存活且发过消息」 |
 
 ### 驱动调试接口
 
