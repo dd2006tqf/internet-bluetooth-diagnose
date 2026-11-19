@@ -138,6 +138,13 @@ std::string formatRfc3339Utc(int64_t epoch_ms) {
     return std::string(buf, static_cast<size_t>(written));
 }
 
+/// 去重表落盘路径；与 OTA 回执同目录（都属 data_dir 下的运行态证据）。
+std::string getExecutedActionsPath(const weaknet_dbus::WeakNetConfig& cfg) {
+    const std::string& d = cfg.data_dir.get();
+    return d.empty() ? "/home/radxa/weaknet/data/executed_actions.jsonl"
+                     : d + "/executed_actions.jsonl";
+}
+
 /// 生成 16 位小写 hex 随机串（本地变更回执的 action_id 后缀）。
 ///
 /// 每次调用都是**新事件**：同一 key 后续再改要落成另一行 L1 事实，因此
@@ -291,7 +298,124 @@ EdgeTelemetryExporter::EdgeTelemetryExporter(
     const weaknet_dbus::WeakNetConfig& config, std::string hostname,
     std::shared_ptr<weaknet_dbus::ConfigTransaction> config_txn)
     : config_(config), hostname_(std::move(hostname)),
-      config_txn_(std::move(config_txn)) {}
+      config_txn_(std::move(config_txn)) {
+    // 去重表必须在任何一次 applyPendingActions 之前恢复。构造期做而不是
+    // start() 里做：applyPendingActions 是 public 且单测直接调用，若恢复
+    // 绑在 start()（需要 TLS/curl/完整配置）上，单测路径就永远拿不到磁盘态。
+    executed_actions_path_ = getExecutedActionsPath(config_);
+    loadExecutedActions();
+}
+
+void EdgeTelemetryExporter::loadExecutedActions() {
+    if (executed_actions_path_.empty()) return;
+    std::ifstream in(executed_actions_path_);
+    if (!in.is_open()) return;
+
+    std::string line;
+    size_t loaded = 0;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        const auto tab = line.find('\t');
+        if (tab == std::string::npos || tab == 0) continue;  // 损坏行跳过
+        const std::string action_id = line.substr(0, tab);
+        const std::string flag = line.substr(tab + 1);
+        if (flag.empty()) continue;
+        // 后写覆盖先写：同一 action 只会有一条有效终态（OTA 调度成功→真实终态
+        // 会被重写成后者，与运行期 `executed_action_ids_[id] = ...` 一致）。
+        // 同一 action 的重复行只保留最后一次的 FIFO 位置，避免压缩时顺序膨胀。
+        if (executed_action_ids_.find(action_id) == executed_action_ids_.end()) {
+            executed_action_order_.push_back(action_id);
+        }
+        executed_action_ids_[action_id] = (flag == "1" || flag == "true");
+        ++loaded;
+    }
+    if (loaded > 0) {
+        LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+                 "已恢复动作去重表: " << loaded << " 条 (" << executed_actions_path_ << ")");
+    }
+}
+
+void EdgeTelemetryExporter::persistExecutedAction(const std::string& action_id,
+                                                 bool first_ok) const {
+    if (executed_actions_path_.empty() || action_id.empty()) return;
+
+    // 追加写 + fsync。去重表是"防重复执行"的最后一道闸，掉电丢失会让
+    // 重启后重放动作被真执行一次；相比每次写几十字节的开销，这个代价更贵。
+    // 允许同一 action_id 出现多行——loadExecutedActions 按后写覆盖处理，
+    // 这样"调度成功→升级失败"的终态纠正不需要原地改写文件。
+    std::ostringstream line;
+    line << action_id << '\t' << (first_ok ? '1' : '0') << '\n';
+    const std::string payload = line.str();
+
+    const int fd = ::open(executed_actions_path_.c_str(),
+                          O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                  "动作去重表写入失败: " << executed_actions_path_
+                  << " (errno=" << errno << ")");
+        return;
+    }
+    size_t written = 0;
+    while (written < payload.size()) {
+        const ssize_t n = ::write(fd, payload.data() + written, payload.size() - written);
+        if (n <= 0) {
+            if (errno == EINTR) continue;
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                      "动作去重表写入失败: " << executed_actions_path_);
+            ::close(fd);
+            return;
+        }
+        written += static_cast<size_t>(n);
+    }
+    ::fsync(fd);
+    ::close(fd);
+}
+
+void EdgeTelemetryExporter::compactExecutedActions() {
+    if (executed_actions_path_.empty()) return;
+
+    // 重写为"当前内存态"的紧凑文件：tmp + rename，避免半截文件。
+    // 只在条目超限时调用，不是每轮热路径。
+    const std::string tmp = executed_actions_path_ + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        if (!out.is_open()) {
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                      "动作去重表压缩失败（无法写 tmp）: " << tmp);
+            return;
+        }
+        for (const auto& [id, ok] : executed_action_ids_) {
+            out << id << '\t' << (ok ? '1' : '0') << '\n';
+        }
+        out.flush();
+        if (!out.good()) {
+            LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                      "动作去重表压缩失败（写入不完整）: " << tmp);
+            return;
+        }
+    }
+    if (std::rename(tmp.c_str(), executed_actions_path_.c_str()) != 0) {
+        LOG_ERROR(weaknet_dbus::LogModule::SYSTEM,
+                  "动作去重表压缩失败（rename）: " << executed_actions_path_);
+        std::remove(tmp.c_str());
+    }
+}
+
+void EdgeTelemetryExporter::evictOldestExecutedActions() {
+    // 砍掉最旧的一半，而不是整表清空。整表清空会让**所有**历史动作在一瞬间
+    // 失去去重保护，而云端最可能重放的恰恰是最旧那批（它们的回执最容易丢）。
+    // 保留一半 = 内存占用有界，同时保留最近的执行证据。
+    const size_t target = kMaxExecutedActionIds / 2;
+    while (executed_action_order_.size() > target) {
+        const std::string& oldest = executed_action_order_.front();
+        executed_action_ids_.erase(oldest);
+        executed_action_order_.pop_front();
+    }
+    compactExecutedActions();
+    LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
+             "动作去重表超过上限 " << kMaxExecutedActionIds << "，已淘汰至 "
+                                    << executed_action_ids_.size() << " 条");
+}
 
 EdgeTelemetryExporter::~EdgeTelemetryExporter() {
     stop();
@@ -875,7 +999,11 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
                 if (config_txn_ && action.generation > 0) {
                     config_txn_->markGenerationApplied(action.generation);
                 }
-                executed_action_ids_.emplace(action.action_id, true);
+                if (executed_action_ids_.find(action.action_id) == executed_action_ids_.end()) {
+                    executed_action_order_.push_back(action.action_id);
+                }
+                executed_action_ids_[action.action_id] = true;
+                persistExecutedAction(action.action_id, true);
                 LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
                          "已成功在后台调度 OTA 升级: " << action.action_id);
                 continue; // 跳过下方统一 queueActionResult，等待新版本拉起后回执
@@ -913,12 +1041,18 @@ void EdgeTelemetryExporter::applyPendingActions(const std::string& response_body
             }
             // 去重表只记录成功应用的 action：被拒动作允许重试，
             // 重放时重新走完整执行路径（会再次被拒并回执 REJECTED）。
-            // 容量上限防无界增长：超过 1024 条时清空最旧的一批（直接 clear，
-            // 重启都会清空，云端已终态的历史动作即便偶发漏判重做也受 generation 门禁守卫）。
-            if (executed_action_ids_.size() >= 1024) {
-                executed_action_ids_.clear();
+            //
+            // 容量上限防无界增长。**不能用 `clear()`**：整表清空后，最旧的
+            // 那批动作在一瞬间全部失去去重保护，下一次重放就会被真执行。
+            // 改为按配额淘汰最旧的一半，并同步压缩磁盘文件。
+            if (executed_action_ids_.size() >= kMaxExecutedActionIds) {
+                evictOldestExecutedActions();
             }
-            executed_action_ids_.emplace(action.action_id, true);
+            if (executed_action_ids_.find(action.action_id) == executed_action_ids_.end()) {
+                executed_action_order_.push_back(action.action_id);
+            }
+            executed_action_ids_[action.action_id] = true;
+            persistExecutedAction(action.action_id, true);
             LOG_INFO(weaknet_dbus::LogModule::SYSTEM,
                      "已应用服务端下发的配置: " << action.key << "=" << action.value
                      << " (action=" << action.action_id
@@ -1179,7 +1313,10 @@ void EdgeTelemetryExporter::checkAndEmitPendingOtaReceipt() {
 
     // 回执定稿后，把去重表里的"首次结果"纠正为真实终态——此后云端若重放该
     // action（回执丢失），重放出去的必须是终态而不是当初的"调度成功"。
-    executed_action_ids_[action_id] = (result == "SUCCEEDED");
+    // 同样落盘：这一条纠正若只存内存，重启后重放会退回"调度成功"的假象。
+    const bool final_ok = (result == "SUCCEEDED");
+    executed_action_ids_[action_id] = final_ok;
+    persistExecutedAction(action_id, final_ok);
 }
 
 bool EdgeTelemetryExporter::scheduleOtaUpgrade(const std::string& action_id,

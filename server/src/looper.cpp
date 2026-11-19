@@ -25,8 +25,11 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/eventfd.h>
 #include <memory>
 #include <cerrno>
+#include <exception>
+#include <utility>
 
 #include "server.hpp"
 #include "looper.hpp"
@@ -112,6 +115,78 @@ void Looper::attach(DBusConnection* conn) {
  *   - dbus_connection_read_write_dispatch 返回 false（连接丢失）
  *   - Logger::stopRequested()（timeout 模式下，signal handler 标记）
  */
+Looper::~Looper() {
+    // 关闭任务队列：此后 postToMainThread 一律拒绝，避免任务入队后无人消费。
+    {
+        std::lock_guard<std::mutex> lock(tasks_mutex_);
+        accepting_tasks_ = false;
+        tasks_.clear();
+    }
+    if (wake_fd_ >= 0) {
+        close(wake_fd_);
+        wake_fd_ = -1;
+    }
+}
+
+void Looper::wakeup() {
+    if (wake_fd_ < 0) return;
+    // eventfd 语义：write 一个 8 字节的 uint64 作为计数。写 1 即可让 poll
+    // 立刻返回；多个后台线程同时写也只会累加计数，不会丢失唤醒。
+    // 用 EFD_NONBLOCK 创建，管道满（计数值溢出）时返回 EAGAIN —— 那种情况
+    // 说明已经有大量未处理的唤醒，本就无需再加。
+    const uint64_t one = 1;
+    ssize_t n;
+    do {
+        n = write(wake_fd_, &one, sizeof(one));
+    } while (n < 0 && errno == EINTR);
+    (void)n;
+}
+
+int Looper::drainWakeups() {
+    if (wake_fd_ >= 0) {
+        uint64_t counter = 0;
+        // 一次 read 就把累计计数取出并清零，不需要循环（eventfd 的读是原子的）。
+        ssize_t n;
+        do {
+            n = read(wake_fd_, &counter, sizeof(counter));
+        } while (n < 0 && errno == EINTR);
+        (void)n;
+    }
+
+    // 把队列整体换出再执行：任务本身可能调用 postToMainThread（链式任务），
+    // 持锁执行会自锁。换出后新的任务进下一轮，天然有界。
+    std::deque<MainThreadTask> batch;
+    {
+        std::lock_guard<std::mutex> lock(tasks_mutex_);
+        batch.swap(tasks_);
+    }
+    int executed = 0;
+    for (auto& task : batch) {
+        if (!task) continue;
+        try {
+            task();
+        } catch (const std::exception& ex) {
+            // 一条坏任务不得让整个事件循环停止排空。
+            LOG_ERROR(LogModule::DBUS, "Looper: main-thread task threw: " << ex.what());
+        } catch (...) {
+            LOG_ERROR(LogModule::DBUS, "Looper: main-thread task threw unknown exception");
+        }
+        ++executed;
+    }
+    return executed;
+}
+
+bool Looper::postToMainThread(MainThreadTask task) {
+    if (!task) return false;
+    {
+        std::lock_guard<std::mutex> lock(tasks_mutex_);
+        if (!accepting_tasks_) return false;
+        tasks_.push_back(std::move(task));
+    }
+    wakeup();
+    return true;
+}
+
 void Looper::run(ServerContext* ctx) {
     // ---- 前置检查 ----
     if (!conn_) {
@@ -146,6 +221,18 @@ void Looper::run(ServerContext* ctx) {
     sigaction(SIGTERM, &sa, nullptr);
     sigaction(SIGINT, &sa, nullptr);
 
+    // ---- 创建 eventfd（后台线程唤醒通道） ----
+    // 失败不致命：退回"只靠 100ms 超时轮询"，代价是排队到主线程的回复最多
+    // 多等一个超时周期。可用性优先于延迟。
+    if (wake_fd_ < 0) {
+        wake_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        if (wake_fd_ < 0) {
+            LOG_ERROR(LogModule::DBUS,
+                      "Looper::run: eventfd() failed (errno=" << errno
+                      << "), falling back to timeout-only wakeups");
+        }
+    }
+
     // ---- 获取 D-Bus socket fd ----
     int dbus_fd = -1;
     dbus_connection_get_socket(conn_, &dbus_fd);
@@ -155,15 +242,18 @@ void Looper::run(ServerContext* ctx) {
     // ---- poll 模式（推荐） ----
     // 同时监听 D-Bus 消息 fd 和 signal pipe；100ms 超时快速响应状态变化
     if (s_stop_pipe[0] >= 0 && dbus_fd >= 0) {
-        struct pollfd fds[2];
+        struct pollfd fds[3];
         fds[0].fd = dbus_fd;          // 索引 0：D-Bus fd
         fds[0].events = POLLIN;
         fds[1].fd = s_stop_pipe[0];   // 索引 1：signal pipe 读端
         fds[1].events = POLLIN;
+        // 索引 2：后台工作线程唤醒（-1 时 poll 直接忽略该槽位）
+        fds[2].fd = wake_fd_;
+        fds[2].events = POLLIN;
 
         while (ctx->running.load()) {
             // 100ms 超时：既保证及时收到信号，又定期检查 ctx->running
-            int ret = poll(fds, 2, 100);
+            int ret = poll(fds, 3, 100);
             if (ret < 0) {
                 if (errno == EINTR) continue;  // 信号中断，重试
                 LOG_ERROR(LogModule::DBUS, "Looper::run: poll() error");
@@ -179,6 +269,13 @@ void Looper::run(ServerContext* ctx) {
                 ctx->running.store(false);
                 break;
             }
+
+            // 后台工作线程排队到主线程的动作（DB 查询回复等）。
+            // 必须排在 D-Bus 派发之前：这些任务本身就是"把算好的结果发出去"，
+            // 早一轮发出能让调用方少等一个 poll 周期。
+            // 不看 revents，每轮都排空——与下面 D-Bus 派发同理，唤醒计数
+            // 只是加速信号，不是执行前提。
+            drainWakeups();
 
             // D-Bus 派发
             //
@@ -232,6 +329,12 @@ void Looper::run(ServerContext* ctx) {
     }
 
     // ---- 清理 ----
+    // 先关任务队列：之后入队的任务会被拒绝，说明它们的主线程已不再服务。
+    {
+        std::lock_guard<std::mutex> lock(tasks_mutex_);
+        accepting_tasks_ = false;
+    }
+    // eventfd 由析构函数关闭（run 可能被重复调用，fd 生命周期与对象一致）。
     if (s_stop_pipe[0] >= 0) { close(s_stop_pipe[0]); s_stop_pipe[0] = -1; }
     if (s_stop_pipe[1] >= 0) { close(s_stop_pipe[1]); s_stop_pipe[1] = -1; }
 

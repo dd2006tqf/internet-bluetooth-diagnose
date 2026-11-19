@@ -24,9 +24,13 @@
 
 #pragma once
 
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -61,7 +65,38 @@ public:
      */
     explicit DbusService(ServerContext* ctx);
 
-    ~DbusService() = default;
+    /// 析构时停止查询 worker：它持有 ctx_ 的使用权，必须在 ctx_ 失效前退出。
+    ~DbusService();
+
+    /**
+     * @brief 停止查询 worker 并 join（幂等）。
+     *
+     * **必须由关停路径显式调用**，不能只依赖析构：ServerContext 的成员
+     * 析构顺序是声明逆序，`db_mgr`（靠后声明）会先于 `service` 被销毁，
+     * 而 worker 正在执行的查询恰恰解引用 `db_mgr`。若等到 ~DbusService
+     * 才 join，中间那段窗口就是 use-after-free。
+     *
+     * 调用点在 Looper::run() 返回之后、任何共享资源释放之前。
+     */
+    void stopSlowQueryWorker();
+
+    /**
+     * @brief 统一的慢查询入队入口；clamp/校验由各 handler 完成后调用。
+     *
+     * 队列满或已关停时**立即**回复错误并返回 true（调用已处理，只是结果是
+     * 拒绝），绝不无限排队——调用方等 10 秒才失败比立刻知道"服务端忙"更糟。
+     *
+     * 设为 public 方便单测直接构造受控 job（真实验证队列上限语义），
+     * 与 applyPendingActions / pendingActionResultCount 同一惯例。
+     */
+    bool enqueueSlowQuery(DBusConnection* conn, DBusMessage* msg,
+                          std::function<std::string()> run);
+
+    /// 当前未答复的查询数（排队 + 在途）。仅供测试与诊断，生产路径不消费。
+    size_t slowQueryQueueDepthForTest() const {
+        std::lock_guard<std::mutex> lock(slow_query_mutex_);
+        return slow_query_pending_;
+    }
 
     /**
      * @brief 注册方法分发器到 D-Bus 连接
@@ -191,6 +226,68 @@ private:
 
     /// 内部辅助：自动归还该 sender 上一次的租约（幂等；无租约时什么都不做）
     void releaseClientLeaseLocked(const std::string& sender);
+
+    // ---------- 慢查询卸载到工作线程 ----------
+    //
+    // ========================================================================
+    // 为什么这些查询不能留在派发线程上
+    // ========================================================================
+    //
+    // D-Bus 派发是**单线程串行**的：一条消息的回调执行期间，整个服务不响应
+    // 任何其它方法调用。历史测量（x86，10000 行满库）：queryHistory 的
+    // p50 = 118ms、p95 = 130ms，且返回 8.5MB JSON。开发板是 8 核 A55，
+    // 单核约为该数值的 3~5 倍。在现场终端选择 13h 窗口（恰好就是
+    // kMaxHistoryLimit = 10000）时，主线程会被独占数百毫秒。
+    //
+    // 后果不是"慢"，而是**连带**：同一窗口内的 HealthCheck、Ping、
+    // GetNetworkExperience 全部排队，看板上的"当前状态"跟着卡住。这与
+    // Looper 那三个派发坑（25s → 1.3ms）是同一类缺陷。
+    //
+    // 设计取舍：
+    //   - 只有 4 条**纯只读**查询走这条路径（GetHistory / QueryDeviceEvents /
+    //     QueryBtDataPath / QuerySiteIncidents）。写操作、配置变更、监控器
+    //     生命周期一律留在主线程——它们要修改跨线程共享状态，移走会把
+    //     线程模型搞乱，而它们的耗时本来就不随数据量增长。
+    //   - 单工作线程 + 有界队列。SQLite 侧已有 FULLMUTEX + busy_timeout，
+    //     但**串行执行**保证了并发查询不会互相抢锁把延迟叠起来。
+    //   - 队列满时立刻回 BUSY 错误，而不是无限排队：调用方等 10 秒才失败，
+    //     比立刻知道"服务端忙"更糟。
+    struct SlowQueryJob {
+        DBusMessage* msg{nullptr};   ///< 持有引用（已 dbus_message_ref）
+        DBusConnection* conn{nullptr};   ///< 回复所用的连接（注册时那条）
+        std::function<std::string()> run;  ///< 在 worker 线程执行，返回 JSON 文本
+    };
+
+    /// worker 线程主循环。
+    void slowQueryWorkerLoop();
+    /// 把回复送回主线程发送（可在 worker 线程调用）。
+    void replyOnMainThread(DBusConnection* conn, DBusMessage* msg, std::string result);
+    /// 启动/停止 worker（幂等）。
+    void startSlowQueryWorker();
+
+    /// 主线程的 Looper（构造时捕获）。回复必须经它排队回主线程发送。
+    /// 不能在工作线程里调 Looper::current()：那是 thread_local 懒构造，
+    /// 会凭空造出一个永远不被 run() 的新实例，任务入队后无人消费，
+    /// 表现为"查询成功但客户端永远收不到回复"。
+    class Looper* looper_{nullptr};
+
+    std::thread slow_query_thread_;
+    mutable std::mutex slow_query_mutex_;
+    std::condition_variable slow_query_cv_;
+    std::deque<SlowQueryJob> slow_query_queue_;
+    bool slow_query_stopping_{false};
+    /// 已受理但尚未答复调用方的查询数（排队 + 在途）。
+    /// 用"未答复"而不是"排队深度"做上限：后者会随 worker 取走动作漂移，
+    /// 无法表达"最多 N 条查询同时在内存里"这个真正要防的东西。
+    size_t slow_query_pending_{0};
+    /// 队列上限：4 条并发查询已足够（现场终端一次只发一条）。
+    static constexpr size_t kMaxSlowQueryQueue = 4;
+
+public:
+    /// 供单测断言上限语义（避免测试里重复写死 4 而与实现漂移）。
+    static constexpr size_t kMaxSlowQueryQueueForTest = kMaxSlowQueryQueue;
+
+private:
 };
 
 }  // namespace weaknet_dbus

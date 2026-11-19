@@ -69,6 +69,7 @@
 #include "serializer.hpp"
 #include "server.hpp"
 #include "dbus_service.hpp"
+#include "looper.hpp"
 #include "weak_netmgr.hpp"
 #include "net_info.hpp"
 #include "network_quality_result.hpp"
@@ -107,7 +108,223 @@
 
 namespace weaknet_dbus {
 
-DbusService::DbusService(ServerContext* ctx) : ctx_(ctx) {}
+DbusService::DbusService(ServerContext* ctx) : ctx_(ctx) {
+    // 在**主线程**捕获 Looper 指针，而不是让工作线程调 Looper::current()：
+    // 后者是 thread_local 懒构造，在工作线程里会凭空造出一个永远不 run()
+    // 的实例，任务入队后无人执行——现象是"查询成功但客户端永远收不到回复"。
+    looper_ = Looper::current();
+
+    // worker 在这里就启动，而不是等第一次查询再懒启动：懒启动需要
+    // double-checked locking，且第一条查询仍要付线程创建的开销
+    // （恰恰是最需要低延迟的那条）。
+    startSlowQueryWorker();
+}
+
+DbusService::~DbusService() {
+    // 兜底：正常关停路径已在 Looper::run() 返回后显式调用
+    // stopSlowQueryWorker()，那时 ctx_ 的共享资源仍然有效。
+    stopSlowQueryWorker();
+
+    // 队列里未执行的 job 持有 DBusMessage 引用，必须在这里释放——析构之后
+    // 不会再有任何主线程去发送它们。
+    std::deque<SlowQueryJob> leftover;
+    {
+        std::lock_guard<std::mutex> lock(slow_query_mutex_);
+        leftover.swap(slow_query_queue_);
+    }
+    for (auto& job : leftover) {
+        if (job.msg) dbus_message_unref(job.msg);
+    }
+}
+
+void DbusService::stopSlowQueryWorker() {
+    {
+        std::lock_guard<std::mutex> lock(slow_query_mutex_);
+        slow_query_stopping_ = true;
+    }
+    slow_query_cv_.notify_all();
+
+    // 在途的那条查询会算完才退出（无法中断 SQLite 调用），但**排队的
+    // 全部丢弃**：它们的回复已无处可发，算完只是拖长停服时间。
+    if (slow_query_thread_.joinable()) slow_query_thread_.join();
+
+    std::deque<SlowQueryJob> discarded;
+    {
+        std::lock_guard<std::mutex> lock(slow_query_mutex_);
+        discarded.swap(slow_query_queue_);
+        slow_query_pending_ = 0;
+    }
+    for (auto& job : discarded) {
+        if (job.msg) dbus_message_unref(job.msg);
+    }
+}
+
+void DbusService::startSlowQueryWorker() {
+    std::lock_guard<std::mutex> lock(slow_query_mutex_);
+    if (slow_query_thread_.joinable()) return;
+    slow_query_thread_ = std::thread([this]() { slowQueryWorkerLoop(); });
+}
+
+bool DbusService::enqueueSlowQuery(DBusConnection* conn, DBusMessage* msg,
+                                   std::function<std::string()> run) {
+    if (!msg) return false;
+
+    const auto replyError = [conn, msg](const char* name, const char* text) {
+        if (!conn) return;   // 单测用 null 连接验证队列语义，无回复可发
+        DBusMessage* err = dbus_message_new_error(msg, name, text);
+        if (err) {
+            dbus_connection_send(conn, err, nullptr);
+            dbus_connection_flush(conn);
+            dbus_message_unref(err);
+        }
+    };
+
+    if (!run) {
+        replyError("com.example.WeakNet.Error", "query not runnable");
+        return true;
+    }
+
+    bool accepted = false;
+    bool stopping = false;
+    size_t pending = 0;
+    {
+        std::lock_guard<std::mutex> lock(slow_query_mutex_);
+        if (slow_query_stopping_) {
+            stopping = true;
+        } else if (slow_query_pending_ >= kMaxSlowQueryQueue) {
+            pending = slow_query_pending_;
+        } else {
+            dbus_message_ref(msg);
+            slow_query_queue_.push_back(SlowQueryJob{msg, conn, std::move(run)});
+            ++slow_query_pending_;
+            accepted = true;
+        }
+    }
+
+    if (stopping) {
+        // 关停中：主线程已不再派发，任何回复都发不出去。如实报错比让它
+        // 悬在那里（客户端等到超时）更有信息量。
+        replyError(DBUS_ERROR_FAILED, "service is shutting down");
+        return true;
+    }
+    if (!accepted) {
+        // 满队列立刻拒，而不是让调用方无限排队：现场终端等 10 秒才失败
+        // 比"立刻知道服务端忙"更糟，而且排队期间 8.5MB 结果会堆在内存里。
+        LOG_WARNING(LogModule::DBUS, "慢查询队列已满(" << pending
+                    << ")，拒绝新查询并立即回 BUSY");
+        replyError("com.example.WeakNet.Error.Busy",
+                   "slow query queue is full, retry later");
+        return true;
+    }
+
+    slow_query_cv_.notify_one();
+    return true;
+}
+
+void DbusService::slowQueryWorkerLoop() {
+    for (;;) {
+        SlowQueryJob job;
+        {
+            std::unique_lock<std::mutex> lock(slow_query_mutex_);
+            slow_query_cv_.wait(lock, [this]() {
+                return slow_query_stopping_ || !slow_query_queue_.empty();
+            });
+            // 关停时**立刻退出，不排空队列**：队列里那些查询的回复已经
+            // 无处可发（Looper 已退出），继续算完只是把停服时间拖成
+            // "队列深度 × 单条查询耗时"。剩余条目由 stopSlowQueryWorker
+            // 统一 unref。
+            if (slow_query_stopping_) return;
+            job = std::move(slow_query_queue_.front());
+            slow_query_queue_.pop_front();
+        }
+
+        // 查询本身可能抛（SQLite OOM、std::bad_alloc for 8.5MB 字符串等）。
+        // 抛出去会让 worker 线程静默终止，此后所有查询永远挂起——比返回错误更糟。
+        std::string result;
+        try {
+            result = job.run();
+        } catch (const std::exception& ex) {
+            LOG_ERROR(LogModule::DBUS, "慢查询执行失败: " << ex.what());
+            result = "{\"error\":\"query_failed\"}";
+        } catch (...) {
+            LOG_ERROR(LogModule::DBUS, "慢查询执行失败: unknown exception");
+            result = "{\"error\":\"query_failed\"}";
+        }
+
+        replyOnMainThread(job.conn, job.msg, std::move(result));
+    }
+}
+
+void DbusService::replyOnMainThread(DBusConnection* conn, DBusMessage* msg,
+                                    std::string result) {
+    if (!msg) return;
+
+    // serial == 0 的消息**无法被回复**：libdbus 的
+    // dbus_message_new_method_return/error 对 reply_serial==0 会直接
+    // 断言失败并 abort 整个进程（不是返回 NULL，无法用返回值检查兜住）。
+    //
+    // 生产路径不可达（handler 收到的消息必然来自总线、serial 非零），但
+    // 把"一条构造不合法的消息"升级成"服务进程 core dump"是不划算的：
+    // 这里显式丢弃并记账，代价是一行日志。
+    if (dbus_message_get_serial(msg) == 0) {
+        LOG_ERROR(LogModule::DBUS,
+                  "慢查询完成但消息 serial==0，无法构造回复，已丢弃");
+        dbus_message_unref(msg);
+        std::lock_guard<std::mutex> lock(slow_query_mutex_);
+        if (slow_query_pending_ > 0) --slow_query_pending_;
+        return;
+    }
+
+    // 交给 Looper 在主线程执行：libdbus 的收发历来只在派发线程发生，
+    // 让 worker 直接 dbus_connection_send 会打破这个前提。
+    if (!looper_) {
+        LOG_ERROR(LogModule::DBUS, "慢查询完成但无 Looper 可投递回复");
+        dbus_message_unref(msg);
+        return;
+    }
+    auto shared_result = std::make_shared<std::string>(std::move(result));
+
+    // 用 shared_ptr 持有消息引用，删除器负责 unref。这样即便任务最终**没有
+    // 被执行**（Looper 已退出，tasks_ 被整体清空），引用也会被释放——裸指针
+    // 捕获在那种路径上会静默泄漏一条 DBusMessage。
+    std::shared_ptr<DBusMessage> held(msg, [](DBusMessage* m) {
+        if (m) dbus_message_unref(m);
+    });
+
+    // 额度归还必须在**回复真正送出之后**：若在 worker 里 post 完就自减，
+    // 上限就退化成"排队深度"，而排队中的 8.5MB 结果会一直堆在 Looper 的
+    // 任务队列里——背压失效，正是这个上限要防的东西。
+    //
+    // 捕获 this 的生命周期论证：本 lambda 只可能在主线程 drainWakeups() 里
+    // 执行，而 run() 返回后就不再有 drainWakeups()；~DbusService 在 Looper
+    // 停止之后（线程退出前的 ~Looper 只是清空 tasks_ 不执行），因此不存在
+    // "DbusService 已析构但 lambda 仍被执行"的窗口。
+    auto* self = this;
+    const bool queued = looper_->postToMainThread([self, conn, msg, held, shared_result]() {
+        DBusMessage* reply = dbus_message_new_method_return(msg);
+        if (reply) {
+            DBusMessageIter args;
+            dbus_message_iter_init_append(reply, &args);
+            const char* s = shared_result->c_str();
+            if (dbus_message_iter_append_basic(&args, DBUS_TYPE_STRING, &s) && conn) {
+                dbus_connection_send(conn, reply, nullptr);
+                dbus_connection_flush(conn);
+            }
+            dbus_message_unref(reply);
+        }
+        // held 在本 lambda 销毁时自动 unref，不需要手动处理。
+        (void)held;
+        {
+            std::lock_guard<std::mutex> lock(self->slow_query_mutex_);
+            if (self->slow_query_pending_ > 0) --self->slow_query_pending_;
+        }
+    });
+    if (!queued) {
+        LOG_ERROR(LogModule::DBUS, "慢查询完成但主线程已停止投递，回复被丢弃");
+        std::lock_guard<std::mutex> lock(slow_query_mutex_);
+        if (slow_query_pending_ > 0) --slow_query_pending_;
+    }
+}
 
 /**
  * @brief libdbus C 回调入口 → 转调到具体成员方法
@@ -1902,24 +2119,13 @@ bool DbusService::handleGetHistory(DBusConnection* conn, DBusMessage* msg) {
         limit = kMaxHistoryLimit;
     }
 
-    std::string result = "[]";
-    if (ctx_ && ctx_->db_mgr && ctx_->db_mgr->isOpen()) {
-        result = ctx_->db_mgr->queryHistory(iface_filter, start_time, end_time, limit);
-    } else {
-        result = "{\"error\":\"database not available\"}";
-    }
-
-    DBusMessage* reply = dbus_message_new_method_return(msg);
-    if (!reply) return false;
-
-    DBusMessageIter reply_args;
-    dbus_message_iter_init_append(reply, &reply_args);
-    const char* s = result.c_str();
-    dbus_message_iter_append_basic(&reply_args, DBUS_TYPE_STRING, &s);
-    dbus_connection_send(conn, reply, nullptr);
-    dbus_connection_flush(conn);
-    dbus_message_unref(reply);
-    return true;
+    // 参数解析与 clamp 留在主线程（耗时与数据量无关），只有真正吃
+    // SQLite 时间的那一步进 worker。见 dbus_service.hpp 的慢查询说明。
+    auto* db = (ctx_ && ctx_->db_mgr && ctx_->db_mgr->isOpen()) ? ctx_->db_mgr.get() : nullptr;
+    return enqueueSlowQuery(conn, msg, [db, iface_filter, start_time, end_time, limit]() {
+        if (!db) return std::string("{\"error\":\"database not available\"}");
+        return db->queryHistory(iface_filter, start_time, end_time, limit);
+    });
 }
 
 // ============================================================================
@@ -1982,30 +2188,21 @@ bool DbusService::handleQueryDeviceEvents(DBusConnection* conn, DBusMessage* msg
         std::swap(start_ms, end_ms);
     }
 
-    std::string result = "[]";
-    if (ctx_) {
-        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
-        if (ctx_->wireless_event_store) {
-            result = ctx_->wireless_event_store->queryPersisted(
-                device_address, event_type, start_ms, end_ms, limit);
-        } else {
-            result = "{\"error\":\"event store not available\"}";
+    // 读锁与指针解引用必须在 worker 内成对完成：worker 是独立线程，
+    // 插件生命周期线程可能在任何时刻持写锁销毁 store，主线程提前取用
+    // 指针而其生命周期由读锁保护——读锁一旦在主线程释放，worker 手里的
+    // 裸指针就重新暴露在 UAF 之下。
+    auto* ctx = ctx_;
+    return enqueueSlowQuery(conn, msg,
+        [ctx, device_address, event_type, start_ms, end_ms, limit]() {
+        if (!ctx) return std::string("[]");
+        std::shared_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+        if (!ctx->wireless_event_store) {
+            return std::string("{\"error\":\"event store not available\"}");
         }
-    } else {
-        result = "{\"error\":\"event store not available\"}";
-    }
-
-    DBusMessage* reply = dbus_message_new_method_return(msg);
-    if (!reply) return false;
-
-    DBusMessageIter reply_args;
-    dbus_message_iter_init_append(reply, &reply_args);
-    const char* s = result.c_str();
-    dbus_message_iter_append_basic(&reply_args, DBUS_TYPE_STRING, &s);
-    dbus_connection_send(conn, reply, nullptr);
-    dbus_connection_flush(conn);
-    dbus_message_unref(reply);
-    return true;
+        return ctx->wireless_event_store->queryPersisted(
+            device_address, event_type, start_ms, end_ms, limit);
+    });
 }
 
 bool DbusService::handleQueryBtDataPath(DBusConnection* conn, DBusMessage* msg) {
@@ -2047,28 +2244,12 @@ bool DbusService::handleQueryBtDataPath(DBusConnection* conn, DBusMessage* msg) 
         std::swap(start_ms, end_ms);
     }
 
-    std::string result = "[]";
-    if (ctx_ && ctx_->db_mgr) {
-        result = ctx_->db_mgr->queryBtDataPathMetrics(device_address, start_ms, end_ms, limit);
-    } else {
-        result = "{\"error\":\"database not available\"}";
-    }
-
-    DBusMessage* reply = dbus_message_new_method_return(msg);
-    if (!reply) return false;
-
-    DBusMessageIter out_args;
-    dbus_message_iter_init_append(reply, &out_args);
-    const char* str = result.c_str();
-    if (!dbus_message_iter_append_basic(&out_args, DBUS_TYPE_STRING, &str)) {
-        dbus_message_unref(reply);
-        return false;
-    }
-
-    dbus_connection_send(conn, reply, nullptr);
-    dbus_connection_flush(conn);
-    dbus_message_unref(reply);
-    return true;
+    auto* db = (ctx_ && ctx_->db_mgr) ? ctx_->db_mgr.get() : nullptr;
+    return enqueueSlowQuery(conn, msg,
+        [db, device_address, start_ms, end_ms, limit]() {
+        if (!db) return std::string("{\"error\":\"database not available\"}");
+        return db->queryBtDataPathMetrics(device_address, start_ms, end_ms, limit);
+    });
 }
 
 // ============================================================================
@@ -2125,29 +2306,13 @@ bool DbusService::handleQuerySiteIncidents(DBusConnection* conn, DBusMessage* ms
         std::swap(start_ms, end_ms);
     }
 
-    std::string result = "[]";
-    if (ctx_) {
-        std::shared_lock<std::shared_mutex> lock(ctx_->monitor_pointers_mutex);
-        if (ctx_->wireless_event_store) {
-            result = ctx_->wireless_event_store->querySiteIncidents(state, start_ms, end_ms, limit);
-        } else {
-            result = "[]";
-        }
-    } else {
-        result = "[]";
-    }
-
-    DBusMessage* reply = dbus_message_new_method_return(msg);
-    if (!reply) return false;
-
-    DBusMessageIter reply_args;
-    dbus_message_iter_init_append(reply, &reply_args);
-    const char* s = result.c_str();
-    dbus_message_iter_append_basic(&reply_args, DBUS_TYPE_STRING, &s);
-    dbus_connection_send(conn, reply, nullptr);
-    dbus_connection_flush(conn);
-    dbus_message_unref(reply);
-    return true;
+    auto* ctx = ctx_;
+    return enqueueSlowQuery(conn, msg, [ctx, state, start_ms, end_ms, limit]() {
+        if (!ctx) return std::string("[]");
+        std::shared_lock<std::shared_mutex> lock(ctx->monitor_pointers_mutex);
+        if (!ctx->wireless_event_store) return std::string("[]");
+        return ctx->wireless_event_store->querySiteIncidents(state, start_ms, end_ms, limit);
+    });
 }
 
 // ============================================================================

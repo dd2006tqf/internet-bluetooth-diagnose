@@ -507,11 +507,24 @@ public:
     /// 当前已应用过的最高 action generation（拒绝 stale 重放）。
     uint64_t lastAppliedGeneration() const { return last_applied_generation_.load(); }
 
-    /// 把 action generation 记入 last_applied（在动作完成回执后调用）。
+    /**
+     * @brief 把 action generation 记入 last_applied（在动作完成回执后调用）
+     *
+     * **会同步落盘**：generation 高水位是防重放的唯一主防线，而云端重放
+     * 最常见的触发条件恰好是「回执丢失 + 板端重启」——只存内存的话，重启
+     * 后高水位归零，云端重放同一代次会被当成新动作重新执行（重置 TRIAL
+     * 看门狗、二次泛洪回执）。落盘失败只记日志不阻断：宁可在崩溃恢复上
+     * 退化，也不要让一次写盘失败卡住动作执行。
+     *
+     * 落盘是单调的：只在 generation 真的推进时写，回退永不写。
+     */
     void markGenerationApplied(uint64_t generation) {
         uint64_t cur = last_applied_generation_.load();
-        while (generation > cur &&
-               !last_applied_generation_.compare_exchange_weak(cur, generation)) {
+        while (generation > cur) {
+            if (last_applied_generation_.compare_exchange_weak(cur, generation)) {
+                persistGenerationAppliedLocked(generation);
+                return;
+            }
         }
     }
 
@@ -520,11 +533,17 @@ private:
     bool persistPriorValues() const;
     /// 从 state_path_ 读 prior_values。
     bool loadPriorValues(std::map<std::string, std::string>* out) const;
+    /// 把 generation 高水位原子写盘（tmp + rename）。失败只影响崩溃恢复。
+    void persistGenerationAppliedLocked(uint64_t generation) const;
+    /// 启动时读回 generation 高水位；无文件返回 0。
+    uint64_t loadGenerationApplied() const;
 
     mutable std::mutex mutex_;
     ConfigState state_{ConfigState::STABLE};
     TrialWindow trial_;
     std::string state_path_;
+    /// generation 高水位落盘路径；为空则只存内存（测试/未配置 data_dir）。
+    std::string generation_path_;
     std::chrono::seconds window_{kDefaultWindow};
     std::atomic<uint64_t> last_applied_generation_{0};
 };

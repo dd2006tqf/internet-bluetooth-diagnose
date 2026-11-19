@@ -7,7 +7,8 @@
  *   - 自动建表 ensureSchema()，创建 network_history 表 + 时间戳/接口索引
  *   - insertSnapshot() 将 NetInfo + 综合评分落库（参数绑定防 SQL 注入）
  *   - queryHistory() 支持按接口、时间范围、数量限制查询，返回 JSON 数组
- *   - cleanup() 按保留天数过期清理旧记录
+ *   - cleanup() 按保留天数过期清理旧记录（含引用闭合：仍被存活事故引用的
+ *     证据事件不删，见函数内注释）
  *   - getDbInfo() 返回数据库元信息（记录数/大小/时间范围）
  *
  * 表结构（network_history）：
@@ -31,7 +32,11 @@
  *
  * 写入频率与清理策略：
  *   - 写入频率：由 Server 主循环控制（通常 3~10 秒/次，每次一行 per 活跃接口）
- *   - 清理策略：cleanup(retention_days) 按 ts < datetime('now', '-N days') DELETE
+ *   - 清理策略：cleanup(retention_days) 按时间截止点 DELETE，**带引用闭合**：
+ *     device_events 只要仍被任一存活 site_incident 通过 site_incident_events
+ *     引用，即使自身 ts 已过期也保留。否则事故的 affected_device_ids 会在
+ *     清理后静默变短（它是 JOIN device_events 派生出来的），现场只剩一条
+ *     "影响 1 台设备" 的记录，而真实影响早被删掉了。
  *     仅由显式调用方（如 history_query_tool --cleanup）触发；服务端不会自动删除历史数据
  *
  * SQLite 连接配置：
@@ -803,89 +808,130 @@ std::string DatabaseManager::getQualityReport() {
 }
 int DatabaseManager::cleanup(int retention_days) {
     if (!db_) return -1;
-
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    std::ostringstream sql;
-    sql << "DELETE FROM network_history WHERE ts < datetime('now', '-"
-        << retention_days << " days')";
-
-    char* err = nullptr;
-    int rc = sqlite3_exec(db_, sql.str().c_str(), nullptr, nullptr, &err);
-    if (rc != SQLITE_OK) {
-        LOG_ERROR(LogModule::SYSTEM, "DatabaseManager::cleanup error: " << (err ? err : "unknown"));
-        sqlite3_free(err);
+    // 负数保留期会让 cutoff 落到未来，一次误传就清空整库。
+    // 宁可直接拒绝，也不要把"清空所有历史"当成一次正常清理。
+    if (retention_days < 0) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::cleanup rejected negative retention_days=" << retention_days);
         return -1;
     }
 
-    int deleted = sqlite3_changes(db_);
-    if (deleted > 0) {
-        LOG_INFO(LogModule::SYSTEM, "DatabaseManager::cleanup deleted " << deleted << " rows older than " << retention_days << " days");
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // 清理必须是原子的：六张表要么一起老化，要么一动不动。
+    // 逐条 DELETE 不加事务时，中途一条失败会留下"事故行已删、回链还在"
+    // 或"事件已删、事故仍在"的半清理状态——比不清理更坏，因为追溯查询
+    // 会返回一个看起来完整、实际缺证据的空壳。
+    if (!exec("BEGIN IMMEDIATE")) {
+        return -1;
     }
 
-    // 同时清理过期的蓝牙历史记录
-    std::ostringstream bt_sql;
-    bt_sql << "DELETE FROM bt_history WHERE ts < datetime('now', '-"
-           << retention_days << " days')";
-    char* bt_err = nullptr;
-    sqlite3_exec(db_, bt_sql.str().c_str(), nullptr, nullptr, &bt_err);
-    if (bt_err) {
-        sqlite3_free(bt_err);
+    // 成功返回受影响行数；失败返回 -1 并写明是哪张表。
+    // 原实现丢弃了后 5 条语句的返回码，任何一条失败都被静默当成成功。
+    auto runDelete = [&](const char* what, const std::string& sql) -> int64_t {
+        char* err = nullptr;
+        int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err);
+        if (rc != SQLITE_OK) {
+            LOG_ERROR(LogModule::SYSTEM,
+                      "DatabaseManager::cleanup failed on " << what << ": "
+                                                            << (err ? err : "unknown"));
+            sqlite3_free(err);
+            return -1;
+        }
+        return static_cast<int64_t>(sqlite3_changes(db_));
+    };
+
+    auto abort = [&](const char* what) -> int {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::cleanup rolled back, failing statement: " << what);
+        exec("ROLLBACK");
+        return -1;
+    };
+
+    // device_events / site_incidents / bt_data_path_metrics 共用毫秒整数时间轴。
+    // cutoff 在此刻算一次并复用于全部语句：若每条语句各自调 strftime('now')，
+    // 跨秒执行会让"回链是否已删"与"事件是否过期"用上不同的边界。
+    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::system_clock::now().time_since_epoch())
+                               .count();
+    const int64_t cutoff_ms =
+        now_ms - static_cast<int64_t>(retention_days) * 86400LL * 1000LL;
+    const std::string cutoff = std::to_string(cutoff_ms);
+
+    // 顺序即语义，不可调换：
+    //   1) 先删"过期事故"的回链表，2) 再删事故本体，
+    //   3) 最后删 device_events —— 此时回链表里只剩**幸存事故**的证据指针，
+    //      用它做引用闭包，才不会把仍在保留期内的事故证据删掉。
+    //   反向顺序（先删事件）会让跨保留期边界的事故永久丢失早期证据。
+    const std::string expired_incidents =
+        "(SELECT incident_id FROM site_incidents WHERE last_event_ms < " + cutoff + ")";
+
+    // 1) 回链表：只删属于过期事故的行。留下指向已消失 incident 的回链，
+    //    "某事件曾属于哪起事故"的追溯查询会返回空壳。
+    int64_t links_deleted =
+        runDelete("site_incident_events",
+                  "DELETE FROM site_incident_events WHERE incident_id IN " + expired_incidents);
+    if (links_deleted < 0) return abort("site_incident_events");
+
+    // 2) 事故本体
+    int64_t incidents_deleted = runDelete(
+        "site_incidents", "DELETE FROM site_incidents WHERE last_event_ms < " + cutoff);
+    if (incidents_deleted < 0) return abort("site_incidents");
+
+    // 3) 设备事件：保留期老化 + **引用闭包**。
+    //    两张表刻意没有 FOREIGN KEY（见 ensureSchema 的说明），所以"不许删掉
+    //    仍被事故引用的证据"必须由这条 NOT EXISTS 显式保证。
+    //    典型危险组合：事故 last_event_ms 还在保留期内，而它的早期证据 ts 早已
+    //    越过 cutoff。原实现会把那些早期证据删光，事故的 affected_device_ids
+    //    随之静默变短——用户问"凌晨 3 点影响了哪些设备"得到的是残缺答案。
+    //    用 NOT EXISTS 而不是 NOT IN：event_id 理论上可为 NULL，NOT IN 遇 NULL
+    //    会整体退化为"什么都不删"，NOT EXISTS 语义与性能都更稳。
+    int64_t events_deleted = runDelete(
+        "device_events",
+        "DELETE FROM device_events WHERE ts < " + cutoff +
+            " AND NOT EXISTS (SELECT 1 FROM site_incident_events e "
+            "WHERE e.event_id = device_events.event_id)");
+    if (events_deleted < 0) return abort("device_events");
+
+    // 4) 网络质量快照：`ts` 是 ISO8601 文本，与上面两张表的毫秒整数不同，
+    //    因此仍用 datetime('now', ...) 比较。
+    const std::string history_cutoff =
+        "datetime('now', '-" + std::to_string(retention_days) + " days')";
+    int64_t history_deleted = runDelete(
+        "network_history", "DELETE FROM network_history WHERE ts < " + history_cutoff);
+    if (history_deleted < 0) return abort("network_history");
+
+    // 5) 蓝牙历史快照：同样是 ISO8601 文本
+    int64_t bt_history_deleted = runDelete(
+        "bt_history", "DELETE FROM bt_history WHERE ts < " + history_cutoff);
+    if (bt_history_deleted < 0) return abort("bt_history");
+
+    // 6) 工业蓝牙 HCI ACL 数据通道指标（毫秒整数）
+    int64_t bt_metrics_deleted = runDelete(
+        "bt_data_path_metrics", "DELETE FROM bt_data_path_metrics WHERE ts < " + cutoff);
+    if (bt_metrics_deleted < 0) return abort("bt_data_path_metrics");
+
+    if (!exec("COMMIT")) {
+        exec("ROLLBACK");
+        return -1;
     }
 
-    // 同时清理过期的无线设备事件。
-    // 注意：device_events.ts 是 Unix 毫秒整数，与上面两张表的 ISO 文本不同，
-    // 因此不能用 datetime('now', ...) 直接比较，改用 strftime('%s') 转秒再乘 1000。
-    std::ostringstream ev_sql;
-    ev_sql << "DELETE FROM device_events WHERE ts < "
-           << "(CAST(strftime('%s','now') AS INTEGER) - "
-           << retention_days << " * 86400) * 1000";
-    char* ev_err = nullptr;
-    sqlite3_exec(db_, ev_sql.str().c_str(), nullptr, nullptr, &ev_err);
-    if (ev_err) {
-        sqlite3_free(ev_err);
+    if (history_deleted + bt_history_deleted + events_deleted + links_deleted +
+            incidents_deleted + bt_metrics_deleted >
+        0) {
+        LOG_INFO(LogModule::SYSTEM,
+                 "DatabaseManager::cleanup(" << retention_days << "d) removed "
+                                            << "network_history=" << history_deleted
+                                            << " bt_history=" << bt_history_deleted
+                                            << " device_events=" << events_deleted
+                                            << " site_incident_events=" << links_deleted
+                                            << " site_incidents=" << incidents_deleted
+                                            << " bt_data_path_metrics=" << bt_metrics_deleted);
     }
 
-    // 同时清理过期的区域级异常事件。与 device_events 同一毫秒时间轴，
-    // 因此复用同一条换算表达式（strftime('%s') 转秒再乘 1000）。
-    //
-    // 先删回链表再删 incident 本体：反向顺序会留下指向已消失 incident 的回链行，
-    // 让"某事件曾属于哪起事故"的追溯查询返回空壳。清理本身是有意为之的
-    // 数据老化，但不该制造悬垂关系（这两张表刻意没有 FOREIGN KEY，
-    // 见 ensureSchema 的说明，所以顺序必须由代码保证）。
-    std::ostringstream incident_link_sql;
-    incident_link_sql
-        << "DELETE FROM site_incident_events WHERE incident_id IN ("
-        << "SELECT incident_id FROM site_incidents WHERE last_event_ms < "
-        << "(CAST(strftime('%s','now') AS INTEGER) - " << retention_days << " * 86400) * 1000)";
-    char* link_err = nullptr;
-    sqlite3_exec(db_, incident_link_sql.str().c_str(), nullptr, nullptr, &link_err);
-    if (link_err) {
-        sqlite3_free(link_err);
-    }
-
-    std::ostringstream incident_sql;
-    incident_sql << "DELETE FROM site_incidents WHERE last_event_ms < "
-                 << "(CAST(strftime('%s','now') AS INTEGER) - "
-                 << retention_days << " * 86400) * 1000";
-    char* incident_err = nullptr;
-    sqlite3_exec(db_, incident_sql.str().c_str(), nullptr, nullptr, &incident_err);
-    if (incident_err) {
-        sqlite3_free(incident_err);
-    }
-
-    // 清理过期的工业蓝牙 HCI ACL 数据通道指标记录（Phase 1b）
-    std::ostringstream bt_metrics_sql;
-    bt_metrics_sql << "DELETE FROM bt_data_path_metrics WHERE ts < "
-                   << "(CAST(strftime('%s','now') AS INTEGER) - "
-                   << retention_days << " * 86400) * 1000";
-    char* bt_metrics_err = nullptr;
-    sqlite3_exec(db_, bt_metrics_sql.str().c_str(), nullptr, nullptr, &bt_metrics_err);
-    if (bt_metrics_err) {
-        sqlite3_free(bt_metrics_err);
-    }
-
-    return deleted;
+    // 返回值沿用既有契约：只报 network_history 的删除行数。
+    // 其余五张表的删除量见上面这条日志（调用方 history_query_tool 打印的是它）。
+    return static_cast<int>(history_deleted);
 }
 
 bool DatabaseManager::insertBtSnapshot(const std::string& adapter_mac,

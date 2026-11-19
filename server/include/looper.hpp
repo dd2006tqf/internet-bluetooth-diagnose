@@ -23,7 +23,10 @@
 
 #pragma once
 
+#include <deque>
+#include <functional>
 #include <memory>
+#include <mutex>
 
 struct DBusConnection;
 
@@ -112,9 +115,61 @@ public:
         return std::unique_ptr<Looper>(new Looper());
     }
 
+    /**
+     * @brief 唤醒事件循环（线程安全，可从任意线程调用）
+     *
+     * 用途：把**只有主线程能做**的收尾工作（典型是 D-Bus 回复的构造与
+     * 发送）排队回主线程。后台工作线程算完结果后调用本函数，poll 立即
+     * 返回并执行 drainWakeups()。
+     *
+     * 为什么必须回主线程发回复：libdbus 并非在所有路径上都线程安全，
+     * 而本项目的全部 D-Bus 收发历来只发生在主派发线程上。让工作线程
+     * 直接 dbus_connection_send 会把这个前提打破，且出问题时表现为
+     * 随机崩溃而非错误码。回复的构造与发送必须留在主线程。
+     *
+     * 实现用 eventfd：可写可 poll、自带计数、不需要 pipe 的读写两端。
+     */
+    void wakeup();
+
+    /**
+     * @brief 排空唤醒计数并执行排队的主线程任务
+     *
+     * 由 run() 在每轮 poll 返回后调用。任务按 FIFO 执行，单个任务抛异常
+     * 不会中断其余任务（否则一条坏任务会让整个事件循环停止排空）。
+     *
+     * @return 执行的任务数（0 表示本轮没有排队任务）
+     */
+    int drainWakeups();
+
+    /// 主线程任务队列类型。shared_ptr 而非 unique_ptr：允许任务在
+    /// 入队方已销毁后仍被执行（析构顺序不可控）。
+    using MainThreadTask = std::function<void()>;
+
+    /**
+     * @brief 把一个任务排到主线程执行；可从任意线程调用。
+     * @return false 表示队列已关闭（Looper 正在退出），任务未入队
+     */
+    bool postToMainThread(MainThreadTask task);
+
+    /// 析构必须公开：`std::unique_ptr<Looper>` 的默认删除器要访问它
+    /// （默认删除器不是 Looper 的友元，私有析构会直接编译失败）。
+    /// 这不会泄漏构造入口——默认构造仍为私有，唯一创建路径是 create()。
+    ~Looper();
+
 private:
     Looper() = default;    ///< 私有构造：仅通过 create() 创建
+    Looper(const Looper&) = delete;
+    Looper& operator=(const Looper&) = delete;
+
     DBusConnection* conn_ = nullptr;  ///< 绑定的 D-Bus 连接（弱引用，不负责生命周期）
+
+    /// eventfd：后台线程写 1 即可唤醒 poll。（-1 = 创建失败，退回纯超时）
+    int wake_fd_ = -1;
+    /// 主线程任务队列。mutex 保护 queue_ 与 accepting_tasks_。
+    std::mutex tasks_mutex_;
+    std::deque<MainThreadTask> tasks_;
+    /// run() 退出后置 false：之后入队的任务会被拒绝，避免队列永不消费。
+    bool accepting_tasks_ = true;
 };
 
 }  // namespace weaknet_dbus

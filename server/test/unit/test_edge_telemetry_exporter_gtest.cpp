@@ -19,6 +19,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <ctime>
 #include <fstream>
 #include <string>
@@ -337,6 +338,98 @@ TEST(EdgeTelemetryPendingActions, RejectsStaleGeneration) {
     EXPECT_EQ(cfg.rtt.interval_ms.load(), 10000u);
     EXPECT_EQ(txn->state(), weaknet_dbus::ConfigState::STABLE);
     EXPECT_EQ(exporter.stats().actions_rejected, 1u);
+}
+
+TEST(EdgeTelemetryPendingActions, ExecutedActionIdsSurviveRestart) {
+    // 云端重放 pending_actions 的两大触发条件恰是「回执丢失」与「板端重启」。
+    // 去重表只存内存时，重启后的第一轮上行就是重放窗口：动作被重新执行，
+    // TRIAL 看门狗被重置、action-results 泛洪。对非幂等动作（OTA）更严重——
+    // 会被重复调度。这条测试钉死"重启后仍然认得这条 action"。
+    char dir_template[] = "/tmp/weaknet_dedup_test_XXXXXX";
+    char* dir = mkdtemp(dir_template);
+    ASSERT_NE(dir, nullptr);
+    const std::string data_dir = dir;
+
+    const std::string body =
+        "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
+        "\"action_id\":\"nact-once\","
+        "\"key\":\"rtt.interval_ms\","
+        "\"value\":\"2000\","
+        "\"generation\":7,"
+        "\"nonce\":\"n\","
+        "\"claim_token\":\"t\""
+        "}]}";
+
+    {
+        // 第一次执行
+        weaknet_dbus::WeakNetConfig cfg;
+        cfg.rtt.interval_ms.store(10000);
+        cfg.data_dir.set(data_dir);
+        auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
+        weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+        exporter.applyPendingActions(body);
+        EXPECT_EQ(cfg.rtt.interval_ms.load(), 2000u);
+        EXPECT_EQ(exporter.stats().actions_applied, 1u);
+    }  // 析构 = 进程重启
+
+    {
+        // 重启后云端重放同一条 action：必须被识别为已执行，不重新执行。
+        weaknet_dbus::WeakNetConfig cfg;
+        cfg.rtt.interval_ms.store(10000);  // 重启后回到配置文件的值
+        cfg.data_dir.set(data_dir);
+        auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
+        weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+        exporter.applyPendingActions(body);
+        // 关键断言：值没有被再次应用
+        EXPECT_EQ(cfg.rtt.interval_ms.load(), 10000u)
+            << "重启后重放的 action 被重新执行了——去重表没有跨重启存活";
+        EXPECT_EQ(exporter.stats().actions_applied, 0u);
+    }
+
+    std::filesystem::remove_all(data_dir);
+}
+
+TEST(EdgeTelemetryPendingActions, EvictionKeepsRecentActionsInsteadOfClearingAll) {
+    // 原实现到 1024 条时 clear()，整表瞬间失忆——最旧那批（回执最容易丢的）
+    // 全部失去去重保护，下一次重放就会被真执行。改为淘汰一半并保留最近的。
+    char dir_template[] = "/tmp/weaknet_dedup_evict_XXXXXX";
+    char* dir = mkdtemp(dir_template);
+    ASSERT_NE(dir, nullptr);
+    const std::string data_dir = dir;
+
+    weaknet_dbus::WeakNetConfig cfg;
+    cfg.data_dir.set(data_dir);
+    auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
+    weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
+
+    // 用直通道 key（非 trialable）灌满去重表，避免 TRIAL 状态互相干扰
+    auto applyGen = [&](uint64_t gen) {
+        const std::string body =
+            "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
+            "\"action_id\":\"nact-" + std::to_string(gen) + "\","
+            "\"key\":\"dns.assessment_profile\","
+            "\"value\":\"NETWORK_ONLY\","
+            "\"generation\":" + std::to_string(gen) + ","
+            "\"nonce\":\"n\",\"claim_token\":\"t\"}]}";
+        exporter.applyPendingActions(body);
+    };
+
+    for (uint64_t g = 1; g <= 1100; ++g) applyGen(g);
+
+    // 最新的那条仍被记住：重放不得再次应用
+    {
+        const std::string latest =
+            "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
+            "\"action_id\":\"nact-1100\",\"key\":\"dns.assessment_profile\","
+            "\"value\":\"NETWORK_ONLY\",\"generation\":1100,"
+            "\"nonce\":\"n\",\"claim_token\":\"t\"}]}";
+        const auto before = exporter.stats().actions_applied;
+        exporter.applyPendingActions(latest);
+        EXPECT_EQ(exporter.stats().actions_applied, before)
+            << "最近执行的 action 在淘汰后丢失了去重保护";
+    }
+
+    std::filesystem::remove_all(data_dir);
 }
 
 TEST(EdgeTelemetryPendingActions, EmitsRollbackReceiptOnWatchdogTimeout) {

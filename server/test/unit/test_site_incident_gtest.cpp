@@ -531,6 +531,25 @@ size_t countIncidentLinks(const std::string& db_path) {
     return rows;
 }
 
+/// 直接查 device_events 行数（测试专用；生产查询不经过这里）
+size_t countDeviceEvents(const std::string& db_path) {
+    sqlite3* raw = nullptr;
+    if (sqlite3_open_v2(db_path.c_str(), &raw, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        if (raw) sqlite3_close(raw);
+        return static_cast<size_t>(-1);
+    }
+    size_t rows = static_cast<size_t>(-1);
+    const char* sql = "SELECT COUNT(*) FROM device_events";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(raw, sql, -1, &stmt, nullptr) == SQLITE_OK &&
+        sqlite3_step(stmt) == SQLITE_ROW) {
+        rows = static_cast<size_t>(sqlite3_column_int64(stmt, 0));
+    }
+    if (stmt) sqlite3_finalize(stmt);
+    sqlite3_close(raw);
+    return rows;
+}
+
 }  // namespace
 
 TEST_F(SiteIncidentPersistenceTest, CleanupRemovesBacklinksBeforeIncidentRows) {
@@ -580,6 +599,74 @@ TEST_F(SiteIncidentPersistenceTest, CleanupKeepsRecentIncidentsAndTheirBacklinks
     EXPECT_EQ(countIncidentLinks(dbPath_), 2u);
     // 设备清单仍能回链出来
     EXPECT_NE(json.find("AA:BB:CC:DD:EE:01"), std::string::npos);
+}
+
+TEST_F(SiteIncidentPersistenceTest, CleanupKeepsEvidenceEventsStillReferencedByLiveIncident) {
+    // 这是保留期老化最容易砸掉可追溯性的组合：
+    //   事故本身仍在保留期内（last_event_ms = 现在），
+    //   但它的**早期证据** ts 已经越过 cutoff（30 天前，retention=7 天）。
+    // 若 device_events 的 DELETE 只看 ts 不看引用，早期证据会被删光，
+    // 事故的 affected_device_ids 随之静默变短——用户问"影响了哪些设备"
+    // 得到残缺答案，且没有任何错误提示。
+    const int64_t now_ms = static_cast<int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    const int64_t old_ms = now_ms - 30LL * 86400LL * 1000LL;
+
+    const auto early1 = disconnectEvent("AA:BB:CC:DD:EE:01", static_cast<uint64_t>(old_ms), "early_e1");
+    const auto early2 = disconnectEvent("AA:BB:CC:DD:EE:02", static_cast<uint64_t>(old_ms), "early_e2");
+    const auto stale = disconnectEvent("AA:BB:CC:DD:EE:03", static_cast<uint64_t>(old_ms), "stale_e3");
+    persistEvent(early1);
+    persistEvent(early2);
+    persistEvent(stale);  // 同样过期，但不被任何事故引用 → 应当被删
+    ASSERT_EQ(countDeviceEvents(dbPath_), 3u);
+
+    // 跨保留期边界的事故：起于 30 天前，最近证据就在刚刚
+    ASSERT_TRUE(db_->upsertSiteIncident("sitinc_spanning", "site-test", "gw-test",
+                                        old_ms, now_ms, std::nullopt, 2, "ONGOING", std::nullopt));
+    ASSERT_TRUE(db_->insertSiteIncidentEvent("sitinc_spanning", "early_e1"));
+    ASSERT_TRUE(db_->insertSiteIncidentEvent("sitinc_spanning", "early_e2"));
+
+    ASSERT_GE(db_->cleanup(7), 0);
+
+    // 事故仍在
+    const std::string json = db_->querySiteIncidents("", 0, 0, 100, true);
+    EXPECT_EQ(countOccurrences(json, "sitinc_spanning"), 1u);
+    // 被引用的过期证据必须保留，且设备清单完整
+    EXPECT_NE(json.find("AA:BB:CC:DD:EE:01"), std::string::npos);
+    EXPECT_NE(json.find("AA:BB:CC:DD:EE:02"), std::string::npos);
+    // 未被引用的过期证据照常老化，否则保留期形同虚设
+    EXPECT_EQ(json.find("AA:BB:CC:DD:EE:03"), std::string::npos);
+    EXPECT_EQ(countDeviceEvents(dbPath_), 2u);
+}
+
+TEST_F(SiteIncidentPersistenceTest, CleanupRemovesEvidenceOnceItsIncidentExpires) {
+    // 引用闭包不得变成"永久钉住"：事故一旦过期，回链表被删，
+    // 它的证据也就失去保护，必须能在同一次 cleanup 中一起老化。
+    // 否则 database 会随每次跨期事故永久膨胀。
+    const int64_t old_ms = 1000 * kSecond;
+    persistEvent(disconnectEvent("AA:BB:CC:DD:EE:01", old_ms, "gone_e1"));
+    persistEvent(disconnectEvent("AA:BB:CC:DD:EE:02", old_ms, "gone_e2"));
+    ASSERT_TRUE(db_->upsertSiteIncident("sitinc_gone", "site-test", "gw-test",
+                                        old_ms, old_ms, std::nullopt, 2, "RESOLVED", std::nullopt));
+    ASSERT_TRUE(db_->insertSiteIncidentEvent("sitinc_gone", "gone_e1"));
+    ASSERT_TRUE(db_->insertSiteIncidentEvent("sitinc_gone", "gone_e2"));
+    ASSERT_EQ(countDeviceEvents(dbPath_), 2u);
+
+    ASSERT_GE(db_->cleanup(7), 0);
+
+    EXPECT_EQ(countOccurrences(db_->querySiteIncidents("", 0, 0, 100, true),
+                               "sitinc_gone"), 0u);
+    EXPECT_EQ(countIncidentLinks(dbPath_), 0u);
+    EXPECT_EQ(countDeviceEvents(dbPath_), 0u);
+}
+
+TEST_F(SiteIncidentPersistenceTest, CleanupRejectsNegativeRetention) {
+    // 负保留期会让 cutoff 落到未来，一条语句就能清空整库。
+    // 这是误传参数的后果，不是一次「清理」。
+    persistEvent(disconnectEvent("AA:BB:CC:DD:EE:01", 1000 * kSecond, "keep_e1"));
+    EXPECT_EQ(db_->cleanup(-1), -1);
+    EXPECT_EQ(countDeviceEvents(dbPath_), 1u);
 }
 
 // ============================================================================

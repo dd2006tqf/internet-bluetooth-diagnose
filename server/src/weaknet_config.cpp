@@ -15,8 +15,12 @@
 
 #include "weaknet_config.hpp"
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -1114,7 +1118,16 @@ bool snapshotMonitorParam(const WeakNetConfig& cfg, const std::string& key,
 }
 
 ConfigTransaction::ConfigTransaction(std::string state_path, std::chrono::seconds window)
-    : state_path_(std::move(state_path)), window_(window) {}
+    : state_path_(std::move(state_path)), window_(window) {
+    // generation 高水位与 prior_values 分文件存放：
+    //   - state_path_ 是**崩溃残留哨兵**，confirmStable/rollback 后必须消失；
+    //   - generation 高水位必须跨重启存活，绝不能跟着 trial 一起被清掉。
+    // 共用同一个文件会让 hasCrashRecoveryFile() 永远为真（启动即误判崩溃残留）。
+    if (!state_path_.empty()) {
+        generation_path_ = state_path_ + ".generation";
+        last_applied_generation_.store(loadGenerationApplied());
+    }
+}
 
 ConfigState ConfigTransaction::state() const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1283,6 +1296,75 @@ bool ConfigTransaction::hasCrashRecoveryFile() const {
 void ConfigTransaction::clearPersistedState() {
     if (state_path_.empty()) return;
     std::remove(state_path_.c_str());
+}
+
+void ConfigTransaction::persistGenerationAppliedLocked(uint64_t generation) const {
+    if (generation_path_.empty()) return;
+
+    // 这里的持久化强度要求高于 prior_values：它是防重放高水位，而重放最常
+    // 发生在"回执丢失 + 板端重启/掉电"之后。走 open → write → fsync → rename
+    // → fsync(dir)：只 rename 不 fsync 时，掉电可能让目录项指向一个内容为空的
+    // 新文件，高水位就退化成 0——恰好退化成本函数要防的场景。
+    const std::string tmp = generation_path_ + ".tmp";
+    const std::string payload = std::to_string(generation) + "\n";
+
+    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "ConfigTransaction: 无法写入 generation 高水位 " << tmp
+                                                                  << "（errno=" << errno << "）");
+        return;
+    }
+    size_t written = 0;
+    bool write_ok = true;
+    while (written < payload.size()) {
+        const ssize_t n = ::write(fd, payload.data() + written, payload.size() - written);
+        if (n <= 0) {
+            if (errno == EINTR) continue;
+            write_ok = false;
+            break;
+        }
+        written += static_cast<size_t>(n);
+    }
+    if (write_ok && ::fsync(fd) != 0) write_ok = false;
+    ::close(fd);
+    if (!write_ok) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "ConfigTransaction: generation 高水位落盘失败 " << tmp);
+        std::remove(tmp.c_str());
+        return;
+    }
+    if (std::rename(tmp.c_str(), generation_path_.c_str()) != 0) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "ConfigTransaction: generation 高水位 rename 失败 " << generation_path_);
+        std::remove(tmp.c_str());
+        return;
+    }
+
+    // 目录 fsync：让 rename 本身也落地。失败常见于不支持的 FS，
+    // 只影响掉电场景，不阻断流程。
+    const auto slash = generation_path_.find_last_of('/');
+    const std::string dir = slash == std::string::npos ? "." : generation_path_.substr(0, slash);
+    const int dir_fd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir_fd >= 0) {
+        ::fsync(dir_fd);
+        ::close(dir_fd);
+    }
+}
+
+uint64_t ConfigTransaction::loadGenerationApplied() const {
+    if (generation_path_.empty()) return 0;
+    std::ifstream in(generation_path_);
+    if (!in.is_open()) return 0;
+    uint64_t value = 0;
+    if (!(in >> value)) {
+        // 文件存在但内容损坏：不能静默当成 0（那等于把防重放关卡拆掉）。
+        // 保留 0 的返回值，但把异常显式打出来，便于运维判断要不要人工介入。
+        LOG_ERROR(LogModule::SYSTEM,
+                  "ConfigTransaction: generation 高水位文件损坏 " << generation_path_);
+        return 0;
+    }
+    return value;
 }
 
 bool ConfigTransaction::persistPriorValues() const {

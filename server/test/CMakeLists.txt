@@ -208,6 +208,13 @@ add_executable(test_video_frame_dbus_gtest
     unit/mock_dbus_service.cpp)
 target_link_libraries(test_video_frame_dbus_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+# 慢查询卸载：查询在途时派发线程必须仍能答复别的方法。
+# 走真实 dbus-daemon —— "回调立刻返回"这个性质只在真实派发路径上可验证。
+add_executable(test_slow_query_dbusservice_gtest
+    unit/test_slow_query_dbusservice_gtest.cpp
+    unit/mock_dbus_service.cpp)
+target_link_libraries(test_slow_query_dbusservice_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # 视频 QoE L4 归因：五行真值表 + 三条拒绝归因的前置检查。
 # 纯函数，无状态，无硬件依赖。
 add_executable(test_video_qoe_attribution_gtest
@@ -420,6 +427,7 @@ foreach(test_target
     test_bt_events_lifecycle_gtest
     test_looper_dispatch_gtest
     test_top_n_recent_gtest
+    test_slow_query_dbusservice_gtest
     test_client_cli_contract_gtest)
     add_test(NAME ${test_target} COMMAND ${test_target})
 endforeach()

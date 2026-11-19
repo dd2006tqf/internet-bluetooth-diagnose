@@ -109,6 +109,17 @@ ServerContext::~ServerContext() {
     // 注意：所有捕获 ctx* 的监控线程必须在调用此析构函数前已完成 join。
     // start_server() 通过 join_all → ctx 离开作用域的顺序保证这一点。
 
+    // 防御性收尾：慢查询 worker 必须最先停下。
+    //
+    // 成员析构是声明逆序，`db_mgr`（第 149 行）会先于 `service`（第 97 行）
+    // 销毁，而 worker 的查询恰恰解引用 db_mgr。正常情况下 start_server 的
+    // 关停段已经调过 stopSlowQueryWorker()（joinable 变 false，这里是空操作）；
+    // 但**启动中途失败提前 return** 的路径不会走到那里，此时 service 里仍有
+    // 一条活线程，等到 ~service 才 join 就已经在 UAF 窗口里了。
+    if (service) {
+        service->stopSlowQueryWorker();
+    }
+
     // 防御性收尾：编码消费者线程若因启动中途失败而没走到 start_server 的
     // 关停段，这里必须 join。`std::thread` 析构时仍 joinable 会直接
     // std::terminate——那会把「某一步初始化失败」变成「进程被 abort」，
@@ -2258,6 +2269,20 @@ int start_server(int argc, char** argv) {
     auto* lp = Looper::current();
     lp->attach(ctx.connection);
     lp->run(&ctx);
+
+    // 慢查询 worker 必须在**任何共享资源释放之前**停下并 join。
+    //
+    // 它是最特殊的一条线程：既不属于 MonitorManager 管，也不是服务级线程，
+    // 却直接解引用 ctx.db_mgr / ctx.wireless_event_store 做 SQLite 读。
+    // 若留到 ~ServerContext 才收尾，`db_mgr`（声明顺序靠后）会先于
+    // `service` 析构，中间那段窗口就是真 UAF。
+    //
+    // 放在这里而不放在更后面：此时 ctx 的共享资源全都还活着，在途查询
+    // 能正常算完（结果因 Looper 已退出而被丢弃并记日志），不会读到半销毁对象。
+    if (ctx.service) {
+        ctx.service->stopSlowQueryWorker();
+    }
+
     // Looper::run() 退出后，按顺序收尾：
     // 1) 先置 running=false 让所有监控线程退出循环
     // 2) MonitorManager 逐插件请求停止并 join worker，确保不再访问 ctx

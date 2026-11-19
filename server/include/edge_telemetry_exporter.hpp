@@ -324,9 +324,33 @@ private:
     /// 已执行过的云端 action_id → 首次执行结果（成功/失败）。
     /// 去重表存结果而不仅是存在性：首次被拒的动作在回执丢失后被云端重放时，
     /// 必须回执真实结果而不是谎报 APPLIED。
-    /// 进程内即可：重启后服务端会把 action 重新标记为 DELIVERED 并等待回执，
-    /// 此时重建执行是正确行为。
+    ///
+    /// **为什么必须落盘**：云端重放 pending_actions 的两大触发条件恰是
+    /// 「回执丢失」与「板端重启」。只存内存时，重启后的第一轮上行就是
+    /// 重放窗口——去重表空，动作被重新执行，TRIAL 看门狗被重置、action-results
+    /// 泛洪。comment 里"重启后重建执行是正确行为"在**非幂等动作**上不成立
+    /// （OTA 会被重复调度）。
+    ///
+    /// 落盘路径 = data_dir/executed_actions.jsonl，一行一条
+    /// `action_id\tfirst_ok`。写入失败只记日志不阻断执行。
     std::unordered_map<std::string, bool> executed_action_ids_;
+    /// 去重表落盘路径；为空则只存内存（未配置 data_dir / 单测）。
+    std::string executed_actions_path_;
+    /// 去重表的插入顺序（淘汰时按 FIFO 砍最旧的一半）。
+    /// 单独维护而不是遍历 unordered_map：后者的顺序不稳定，
+    /// "淘汰最旧"会退化成"随机淘汰"。
+    std::deque<std::string> executed_action_order_;
+    /// 启动时从磁盘恢复去重表；损坏的行跳过（宁可多执行一次，也不要启动失败）。
+    void loadExecutedActions();
+    /// 把一条 action 结果追加落盘（O_APPEND + fsync）。
+    void persistExecutedAction(const std::string& action_id, bool first_ok) const;
+    /// 压缩去重表：按保留上限重写全量文件。仅在条目超限时调用。
+    void compactExecutedActions();
+    /// 按配额淘汰最旧的一半条目，并压缩磁盘文件。
+    void evictOldestExecutedActions();
+
+    /// 去重表条目上限。超过即淘汰最旧的一半（不是 clear）。
+    static constexpr size_t kMaxExecutedActionIds = 1024;
 
     /// S1：云端下行验签。edge.cloud_public_key_path 非空时按需加载 Ed25519
     /// 公钥（void* 保存 EVP_PKEY*，不把 OpenSSL 头暴露进本头文件）；

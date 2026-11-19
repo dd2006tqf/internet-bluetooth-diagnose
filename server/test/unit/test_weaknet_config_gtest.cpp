@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -441,8 +442,20 @@ namespace {
 
 /// 给 ConfigTransaction 一个独立 state_path，避免测试间互相覆盖。
 std::string makeTxnStatePath() {
+    // 用单调递增计数器而不是 `new int{0}` 取地址：
+    // 后者每次调用都泄漏一块内存，且地址可能被复用导致两个用例撞名。
+    static std::atomic<uint64_t> counter{0};
     return "./test_txn_" + std::to_string(::getpid()) + "_" +
-           std::to_string(reinterpret_cast<uintptr_t>(new int{0})) + ".state";
+           std::to_string(counter.fetch_add(1)) + ".state";
+}
+
+/// 清掉 state_path 及其派生的 generation/tmp 文件。
+bool cleanupTxnFiles(const std::string& path) {
+    std::filesystem::remove(path);
+    std::filesystem::remove(path + ".generation");
+    std::filesystem::remove(path + ".generation.tmp");
+    std::filesystem::remove(path + ".tmp");
+    return true;
 }
 
 }  // namespace
@@ -558,6 +571,7 @@ TEST(ConfigTransactionTest, DeadlineExpiresAfterWindow) {
 
 TEST(ConfigTransactionTest, CrashRecoveryFileDetectsPersistedPriorValues) {
     const std::string path = makeTxnStatePath();
+    ASSERT_TRUE(cleanupTxnFiles(path));  // 清掉可能残留的派生文件
     {
         // 模拟崩溃前已写入 prior_values
         std::ofstream out(path);
@@ -565,11 +579,14 @@ TEST(ConfigTransactionTest, CrashRecoveryFileDetectsPersistedPriorValues) {
     }
     ConfigTransaction txn(path);
     EXPECT_TRUE(txn.hasCrashRecoveryFile());
-    std::filesystem::remove(path);
+    // 必须清派生文件：confirmsStable 之外，.generation 也可能被写入。
+    // 只用 remove(path) 会在仓库根目录留下 test_txn_*.state.generation。
+    ASSERT_TRUE(cleanupTxnFiles(path));
 }
 
 TEST(ConfigTransactionTest, PersistedFileClearedOnStable) {
     const std::string path = makeTxnStatePath();
+    ASSERT_TRUE(cleanupTxnFiles(path));  // 清掉可能残留的派生文件
     WeakNetConfig cfg;
     ConfigTransaction txn(path);
     std::string err;
@@ -577,6 +594,85 @@ TEST(ConfigTransactionTest, PersistedFileClearedOnStable) {
     ASSERT_TRUE(std::filesystem::exists(path));
     ASSERT_TRUE(txn.confirmStable(1, &err)) << err;
     EXPECT_FALSE(std::filesystem::exists(path));
+    // confirmStable 会推进代次高水位并落盘，这个派生文件同样要清：
+    // 断言只检查了 state_path，漏掉 .generation 就会污染工作区。
+    EXPECT_TRUE(std::filesystem::exists(path + ".generation"))
+        << "confirmStable 应已落盘代次高水位（验证 T2 持久化确实生效）";
+    ASSERT_TRUE(cleanupTxnFiles(path));
+}
+
+TEST(ConfigTransactionTest, GenerationHighWatermarkSurvivesRestart) {
+    // 云端重放 pending_actions 的两大触发条件恰是「回执丢失」与「板端重启」。
+    // 若高水位只存内存，重启后归零，重放同一代次会被当成新动作重新执行
+    // （重置 TRIAL 看门狗、二次泛洪回执）。这条测试钉死跨重启的单调性。
+    const std::string path = makeTxnStatePath();
+    ASSERT_TRUE(cleanupTxnFiles(path));
+
+    {
+        ConfigTransaction txn(path);
+        EXPECT_EQ(txn.lastAppliedGeneration(), 0u);
+        txn.markGenerationApplied(42);
+        EXPECT_EQ(txn.lastAppliedGeneration(), 42u);
+    }  // 析构 = 进程重启
+
+    {
+        ConfigTransaction txn(path);
+        EXPECT_EQ(txn.lastAppliedGeneration(), 42u);  // 必须还是 42，不是 0
+        // 且 stale 判定依然生效
+        WeakNetConfig cfg;
+        std::string err;
+        EXPECT_FALSE(txn.startTrial(cfg, "rtt.interval_ms", "5000", "act-old", 41, &err));
+        EXPECT_EQ(err, "stale_generation");
+        // 更新的代次仍然可以进
+        EXPECT_TRUE(txn.startTrial(cfg, "rtt.interval_ms", "5000", "act-new", 43, &err)) << err;
+    }
+
+    ASSERT_TRUE(cleanupTxnFiles(path));
+}
+
+TEST(ConfigTransactionTest, GenerationHighWatermarkIsMonotonic) {
+    const std::string path = makeTxnStatePath();
+    ASSERT_TRUE(cleanupTxnFiles(path));
+
+    ConfigTransaction txn(path);
+    txn.markGenerationApplied(10);
+    txn.markGenerationApplied(5);   // 回退请求必须被忽略
+    EXPECT_EQ(txn.lastAppliedGeneration(), 10u);
+    txn.markGenerationApplied(11);
+    EXPECT_EQ(txn.lastAppliedGeneration(), 11u);
+
+    ASSERT_TRUE(cleanupTxnFiles(path));
+}
+
+TEST(ConfigTransactionTest, GenerationFileDoesNotLookLikeCrashResidue) {
+    // generation 高水位必须与 prior_values 分文件。若共用 state_path_，
+    // hasCrashRecoveryFile() 会在**每次**启动都返回真，触发无意义的回滚。
+    const std::string path = makeTxnStatePath();
+    ASSERT_TRUE(cleanupTxnFiles(path));
+
+    ConfigTransaction txn(path);
+    txn.markGenerationApplied(7);
+    EXPECT_FALSE(txn.hasCrashRecoveryFile()) << "generation 落盘不得被误判为崩溃残留";
+
+    ASSERT_TRUE(cleanupTxnFiles(path));
+}
+
+TEST(ConfigTransactionTest, CorruptGenerationFileDoesNotCrashOrSilentlyZero) {
+    const std::string path = makeTxnStatePath();
+    ASSERT_TRUE(cleanupTxnFiles(path));
+    {
+        std::ofstream out(path + ".generation");
+        out << "not-a-number\n";
+    }
+    // 损坏文件不得让服务启动失败；退回 0（宁可重放被执行一次，也不要起不来）
+    ConfigTransaction txn(path);
+    EXPECT_EQ(txn.lastAppliedGeneration(), 0u);
+    // 且后续写入能把它修好
+    txn.markGenerationApplied(3);
+    ConfigTransaction reloaded(path);
+    EXPECT_EQ(reloaded.lastAppliedGeneration(), 3u);
+
+    ASSERT_TRUE(cleanupTxnFiles(path));
 }
 
 TEST(ConfigTransactionTest, IsTrialableKeyWhitelist) {
