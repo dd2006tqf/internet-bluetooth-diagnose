@@ -46,6 +46,47 @@ namespace {
 
 using namespace weaknet;
 
+// ---------------------------------------------------------------------------
+// 临时 data_dir：**任何**调用 applyPendingActions 的用例都必须用它
+// ---------------------------------------------------------------------------
+//
+// 为什么必须有这东西：
+//   `getExecutedActionsPath()` 在 `cfg.data_dir` 为空时退回**硬编码的生产
+//   路径** `/home/radxa/weaknet/data/executed_actions.jsonl`（见
+//   edge_telemetry_exporter.cpp:142）。这在真机上意味着「跑一次单元测试
+//   就往生产动作去重表里写测试 ID」，后果是这些 ID 在生产里被永久去重——
+//   若撞上真实 action_id，该动作再也不会被执行，且没有任何报错。
+//
+//   2026-11-19 实测已发生：在开发板跑 test_edge_telemetry_exporter_gtest
+//   之后，生产 executed_actions.jsonl 多出 3 条 `nact-1234567890abcdef` /
+//   `nact-replay-test-1` / `nact-unsigned-1`。已清理。
+//
+// 用法：用例里声明一个 `ScopedDataDir dir;`，然后 `cfg.data_dir.set(dir.path())`。
+// 不设 `data_dir` 就等于允许写生产文件，这一点靠 review + 本注释约束。
+class ScopedDataDir {
+public:
+    ScopedDataDir() {
+        char tmpl[] = "/tmp/weaknet_gtest_datadir_XXXXXX";
+        if (char* d = ::mkdtemp(tmpl)) {
+            path_ = d;
+        }
+    }
+    ~ScopedDataDir() {
+        if (!path_.empty()) {
+            std::error_code ec;
+            std::filesystem::remove_all(path_, ec);
+        }
+    }
+    ScopedDataDir(const ScopedDataDir&) = delete;
+    ScopedDataDir& operator=(const ScopedDataDir&) = delete;
+
+    bool ok() const { return !path_.empty(); }
+    const std::string& path() const { return path_; }
+
+private:
+    std::string path_;
+};
+
 /// 构造一份典型的降级快照（DNS BAD，携带主机级能力否决）。
 AssessmentSnapshot makeDegradedSnapshot() {
     AssessmentSnapshot snap;    snap.sequence_id = 7;
@@ -289,6 +330,8 @@ TEST(EdgeTelemetrySerializer, EmitsExpectedServiceHealthKeys) {
 // ---------------------------------------------------------------------------
 
 TEST(EdgeTelemetryPendingActions, ParsesV2Metadata) {
+    ScopedDataDir dir;
+    ASSERT_TRUE(dir.ok()) << "无法创建临时 data_dir";
     // 构造带 v2 元数据的 response JSON
     const std::string response_body =
         "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
@@ -301,6 +344,7 @@ TEST(EdgeTelemetryPendingActions, ParsesV2Metadata) {
         "}]}";
 
     weaknet_dbus::WeakNetConfig cfg;
+    cfg.data_dir.set(dir.path());
     auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
     weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
 
@@ -316,6 +360,8 @@ TEST(EdgeTelemetryPendingActions, ParsesV2Metadata) {
 }
 
 TEST(EdgeTelemetryPendingActions, RejectsStaleGeneration) {
+    ScopedDataDir dir;
+    ASSERT_TRUE(dir.ok()) << "无法创建临时 data_dir";
     const std::string response_stale =
         "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
         "\"action_id\":\"nact-stale\","
@@ -327,6 +373,7 @@ TEST(EdgeTelemetryPendingActions, RejectsStaleGeneration) {
         "}]}";
 
     weaknet_dbus::WeakNetConfig cfg;
+    cfg.data_dir.set(dir.path());
     cfg.rtt.interval_ms.store(10000);
     auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
     txn->markGenerationApplied(10);  // 当前已落到 gen=10
@@ -433,7 +480,10 @@ TEST(EdgeTelemetryPendingActions, EvictionKeepsRecentActionsInsteadOfClearingAll
 }
 
 TEST(EdgeTelemetryPendingActions, EmitsRollbackReceiptOnWatchdogTimeout) {
+    ScopedDataDir dir;
+    ASSERT_TRUE(dir.ok()) << "无法创建临时 data_dir";
     weaknet_dbus::WeakNetConfig cfg;
+    cfg.data_dir.set(dir.path());
     cfg.rtt.interval_ms.store(10000);
     auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
     weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
@@ -503,6 +553,8 @@ TEST(EdgeTelemetrySnapshotOwnership, InjectedSnapshotOutlivesCallerReference) {
 // ============================================================================
 
 TEST(EdgeTelemetryPendingActions, ReplayedActionIsNotReExecuted) {
+    ScopedDataDir dir;
+    ASSERT_TRUE(dir.ok()) << "无法创建临时 data_dir";
     const std::string response_body =
         "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
         "\"action_id\":\"nact-replay-test-1\","
@@ -514,6 +566,7 @@ TEST(EdgeTelemetryPendingActions, ReplayedActionIsNotReExecuted) {
         "}]}";
 
     weaknet_dbus::WeakNetConfig cfg;
+    cfg.data_dir.set(dir.path());
     cfg.rtt.interval_ms.store(10000);
     auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
     weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
@@ -534,6 +587,8 @@ TEST(EdgeTelemetryPendingActions, ReplayedActionIsNotReExecuted) {
 }
 
 TEST(EdgeTelemetryPendingActions, MissingGenerationFailsClosed) {
+    ScopedDataDir dir;
+    ASSERT_TRUE(dir.ok()) << "无法创建临时 data_dir";
     const std::string response_no_gen =
         "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
         "\"action_id\":\"nact-no-gen\","
@@ -543,6 +598,7 @@ TEST(EdgeTelemetryPendingActions, MissingGenerationFailsClosed) {
         "}]}";
 
     weaknet_dbus::WeakNetConfig cfg;
+    cfg.data_dir.set(dir.path());
     cfg.rtt.interval_ms.store(10000);
     auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
     weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
@@ -664,6 +720,8 @@ TEST(EdgeTelemetryPendingActions, LocalConfigChangeReissueCreatesDistinctReceipt
 // ---------------------------------------------------------------------------
 
 TEST(EdgeTelemetryPendingActions, NonTrialableMissingGenerationFailsClosed) {
+    ScopedDataDir dir;
+    ASSERT_TRUE(dir.ok()) << "无法创建临时 data_dir";
     const std::string response =
         "{\"accepted\":1,\"duplicates\":0,\"pending_actions\":[{"
         "\"action_id\":\"nact-plain-no-gen\","
@@ -672,6 +730,7 @@ TEST(EdgeTelemetryPendingActions, NonTrialableMissingGenerationFailsClosed) {
         "}]}";
 
     weaknet_dbus::WeakNetConfig cfg;
+    cfg.data_dir.set(dir.path());
     cfg.edge.enabled.store(false);
     auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
     weaknet::EdgeTelemetryExporter exporter(cfg, "test-node", txn);
@@ -796,12 +855,15 @@ std::string extractActionsArray(const std::string& body) {
 }  // namespace
 
 TEST(EdgeTelemetryPendingActions, RejectsUnsignedResponseWhenCloudKeyConfigured) {
+    ScopedDataDir dir;
+    ASSERT_TRUE(dir.ok()) << "无法创建临时 data_dir";
     auto keys = makeScopedKeyPair();
     if (keys.private_path.empty()) {
         GTEST_SKIP() << "无法生成临时 Ed25519 密钥（测试环境缺 OpenSSL）";
     }
 
     weaknet_dbus::WeakNetConfig cfg;
+    cfg.data_dir.set(dir.path());
     cfg.rtt.interval_ms.store(10000);
     cfg.edge.cloud_public_key_path.set(keys.public_path);
     auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
@@ -838,12 +900,15 @@ TEST(EdgeTelemetryPendingActions, RejectsUnsignedResponseWhenCloudKeyConfigured)
 }
 
 TEST(EdgeTelemetryPendingActions, TamperedActionsFailSignature) {
+    ScopedDataDir dir;
+    ASSERT_TRUE(dir.ok()) << "无法创建临时 data_dir";
     auto keys = makeScopedKeyPair();
     if (keys.private_path.empty()) {
         GTEST_SKIP() << "无法生成临时 Ed25519 密钥（测试环境缺 OpenSSL）";
     }
 
     weaknet_dbus::WeakNetConfig cfg;
+    cfg.data_dir.set(dir.path());
     cfg.rtt.interval_ms.store(10000);
     cfg.edge.cloud_public_key_path.set(keys.public_path);
     auto txn = std::make_shared<weaknet_dbus::ConfigTransaction>();
