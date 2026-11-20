@@ -139,6 +139,23 @@ BTF 静默丢失，编出来的内核没有 BTF —— 而且编译过程**不�
 > ⚠️ 网上流传的 DT 示例 `rproc_fw@48000000`（1 MiB）**正好压在 BL31 上**，
 > 直接抄会开机即死。
 
+> **2026-11-19 修正：2.1 表里有两行已经过期。** 新内核 `5.15.147-100btf1amp-a733`
+> （构建于 2026-11-17 18:43）的实测结果变了：
+>
+> | 项 | 2.1 原记录（99btf1） | 当前实测（100btf1amp） |
+> | --- | --- | --- |
+> | `CONFIG_MAILBOX` | `is not set` | **`=y`** |
+> | `CONFIG_AW_MSGBOX` | `is not set` | **`=y`**（驱动已绑定 `3004000.msgbox`，中断 432/433 已注册，计数 0/0） |
+> | `CONFIG_SUN6I_MSGBOX` | — | **`=y`** |
+> | `CONFIG_REMOTEPROC` / `RPMSG_VIRTIO` / `AW_REMOTEPROC` / `AW_RPBUF_*` / `AW_RPMSG_*` | 均 not set | **仍然均 not set**（未变） |
+>
+> 也就是说：**传输层（msgbox 驱动）已就绪，生命周期与通信层（rproc/rpmsg/rpbuf）仍然全空。**
+> 中断计数 0/0 说明驱动初始化完成但一次中断都没收到——对端始终不存在。
+>
+> 另：`cpu` 一行是对的。实测 MIDR 确认 `cpu0-5` = `0xd05`(A55, capacity 385)、
+> `cpu6-7` = `0xd0b`(A76, capacity 1024)。`lscpu` 的 "Model name" 只显示 cpu0，
+> 容易误读成「8×A55」。
+
 ### 2.3 源码与打包（`radxa-pkg/linux-a733`，已核验）
 
 真正的配方仓库是 `radxa-pkg/linux-a733`，不是 `radxa-build/radxa-a733`

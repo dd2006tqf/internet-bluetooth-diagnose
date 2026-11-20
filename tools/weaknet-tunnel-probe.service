@@ -1,0 +1,53 @@
+# =============================================================================
+# weaknet-tunnel-probe.service / .timer —— 板端反向隧道转发层兜底
+# =============================================================================
+#
+# 为什么需要这一对单元
+# --------------------
+# tools/weaknet-tunnel.service 的 `Restart=always` 只保证「ssh 进程退出就
+# 重启」，保证不了「ssh 进程还在、TCP 还 ESTAB、但 22222 转发通道已经死了」
+# 这种半死状态。`ServerAliveInterval` 只覆盖 SSH 层，也发现不了转发层。
+#
+# 云端 tools/tunnel_guard.sh 只能从云端视角发现「端口在听但握手超时」，
+# 处置是杀掉会话、指望板端重连。实测（2026-11-18，7 天数据）云端杀完会话后
+# **37 次在 30s 内没等到板端重连**，只能报「需人工介入」。板端没有任何机制
+# 去发现问题或自我修复。
+#
+# 这一对单元补的就是板端这一半：每 2 分钟从板子自己出发，走完整条
+# 「板端 → 公网 → 云端 sshd → -R 转发 → 板端 22」链路，读到**板端自己** sshd
+# 的 banner 才算健康；失败就重启隧道单元。
+#
+# 为什么不用 OnCalendar
+# ---------------------
+# 这块板**没有 RTC**（见 CLAUDE.md 与看门狗相关记录），启动时间可能大幅跳变，
+# `OnCalendar=*:0/2` 这类墙钟触发器在时间跳变后会错乱。改用单调时钟语义的
+# `OnBootSec` + `OnUnitActiveSec`，与墙钟无关。
+#
+# 为什么 Persistent=false
+# ----------------------
+# 探测是「现在是否健康」的瞬时判定，补跑历史没有意义。`Persistent=true` 会在
+# 开机后立刻补跑一次错过的触发，但 `OnBootSec` 已经保证开机后跑一次了。
+#
+# 部署
+# ----
+#   sudo install -m 0755 tools/tunnel_probe.sh /usr/local/bin/weaknet-tunnel-probe
+#   sudo cp tools/weaknet-tunnel-probe.service /etc/systemd/system/
+#   sudo cp tools/weaknet-tunnel-probe.timer   /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now weaknet-tunnel-probe.timer
+#
+# 注意：unit 里用 /usr/local/bin 的副本，不直接引用仓库路径 —— 仓库目录名含
+# 中文且在用户家目录下，systemd 引用它既脆弱又会让仓库移动/重命名直接打挂。
+
+[Unit]
+Description=WeakNet Reverse Tunnel Forward-Layer Probe (board side)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/weaknet-tunnel-probe
+# 探测 + 自愈（含最多 60s 恢复等待）本身可能跑 80s 以上，给足超时。
+TimeoutStartSec=180
+
+# 失败不是「服务坏了」，而是「隧道当前不可用」——这是它要报告的结论，
+# 不是需要 systemd 反复重启的错误。由 timer 下一轮继续判定。
+Restart=no

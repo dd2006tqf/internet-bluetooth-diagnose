@@ -398,6 +398,27 @@ if [ "$SKIP_DEPLOY" = false ]; then
         pass "反向隧道单元已落盘（cloud-tunnel 历史单元已清理）"
     fi
 
+    # 板端转发层探针：`Restart=always` 只覆盖"进程退出"，覆盖不了
+    # "进程在、TCP ESTAB、但 -R 转发通道已死"。云端 tunnel_guard 只能从
+    # 云端视角发现，且实测杀掉会话后有大量情况下板端不会自行重连。
+    # 这一对 timer+service 补的就是板端视角的那一半，见
+    # tools/weaknet-tunnel-probe.service 头部说明。
+    #
+    # 探针脚本装到 /usr/local/bin（不引用仓库路径：仓库目录名含中文且在
+    # 用户家目录下，systemd 引用它会在仓库移动/重命名时直接打挂）。
+    if [ -f "${ROOT}/tools/tunnel_probe.sh" ]; then
+        scp "${ROOT}/tools/tunnel_probe.sh" "${BOARD}:/tmp/weaknet-tunnel-probe" 2>/dev/null
+        scp "${ROOT}/tools/weaknet-tunnel-probe.service" "${BOARD}:/tmp/weaknet-tunnel-probe.service" 2>/dev/null
+        scp "${ROOT}/tools/weaknet-tunnel-probe.timer" "${BOARD}:/tmp/weaknet-tunnel-probe.timer" 2>/dev/null
+        ssh "${BOARD}" "sudo install -m 0755 /tmp/weaknet-tunnel-probe /usr/local/bin/weaknet-tunnel-probe && \
+            sudo install -m 0644 /tmp/weaknet-tunnel-probe.service /etc/systemd/system/weaknet-tunnel-probe.service && \
+            sudo install -m 0644 /tmp/weaknet-tunnel-probe.timer /etc/systemd/system/weaknet-tunnel-probe.timer && \
+            sudo systemctl daemon-reload && \
+            sudo systemctl enable --now weaknet-tunnel-probe.timer" \
+            || warn "板端转发层探针落盘失败（隧道半死时板端将无法自救）"
+        pass "板端转发层探针已落盘（每 2 分钟自检 -R 通道）"
+    fi
+
     # OTA 事务控制器（P0-A）：装在 $ROOT 之外的系统路径。
     #
     # 为什么不能随 release 走：事务 schema 由它写入，若它随版本升级，

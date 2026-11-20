@@ -1,0 +1,19 @@
+[Unit]
+Description=WeakNet Reverse Tunnel Forward-Layer Probe (board side, timer)
+
+[Timer]
+# 开机 90s 后跑第一次：给 WiFi 关联、DHCP、隧道首次建连留出时间。
+# 这比 OnCalendar 可靠——本板无 RTC，墙钟触发器在时间跳变后会错乱。
+OnBootSec=90s
+
+# 之后每 2 分钟一次。用 OnUnitActiveSec 而非 OnCalendar，与墙钟无关。
+OnUnitActiveSec=2min
+
+# 探测是瞬时判定，补跑历史无意义（OnBootSec 已覆盖开机那一次）。
+Persistent=false
+
+# 不需要精确对齐，允许 systemd 合并唤醒以省电。
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

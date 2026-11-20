@@ -74,6 +74,10 @@
 | [lsof-v4l2-kills-board.md](lsof-v4l2-kills-board.md) | `lsof /dev/video0` 看起来完全无害，实际两次导致整板失联，只能物理重启 |
 | [register-value-semantics-not-verified.md](register-value-semantics-not-verified.md) | 不知道寄存器/时钟值的语义就当判据，一天内错 7 次且全部静默通过 |
 | [two-similarly-named-reset-functions.md](two-similarly-named-reset-functions.md) | `grep` 给的是行号不是作用域——拿 A 行的 `if` 去解释 B 行的打印，把 `work_mode` 判反，方向整个反了 |
+| [tunnel-probe-gatewayports-no.md](tunnel-probe-gatewayports-no.md) | `-R` 在 `GatewayPorts no` 下只绑云端回环，探测直连公网地址时**隧道健康也超时**，判据两边输出相同 |
+| [empty-dir-grep-false-negative.md](empty-dir-grep-false-negative.md) | `grep -r` 一个**空目录**同样返回 0 命中，「我搜了没有」与「那里根本没东西」输出完全一致 |
+| [ssh-n-silent-so-logs-are-not-a-criterion.md](ssh-n-silent-so-logs-are-not-a-criterion.md) | `ssh -N` 成功时零日志，「日志静默」同时兼容健康/半死/卡在建连，把缺席当成了证据 |
+| [journald-cr-message-blob.md](journald-cr-message-blob.md) | 含 CR 的日志被 journald 存成字节数组，`grep 健康` 得到 0 条，差点据此得出「隧道从未健康」的反向结论 |
 
 ### 帧统计与 V4L2
 

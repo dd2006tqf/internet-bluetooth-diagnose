@@ -106,11 +106,61 @@ ss -tlnp | grep 22222     → 只有 pid 1970210（当前活跃隧道）
 
 ## 结果
 
-- **诊断完成**，根因是「板端缺转发层健康判据 + 无兜底自救」，不是云端占端口。
-- 云端侧 `ClientAliveInterval` 根因修法与 `tunnel_guard` 兜底**均已生效**，
-  不应回退。
-- **修复方案未实施**，等用户批准。涉及板端 unit 与新增 timer，
-  属于生产配置变更，按仓库规则需用户明确授权。
-- 遗留边界：板端 journal 已达 960MB 上限且无 `SystemMaxUse` 配置，
-  早期故障现场已被 vacuum。**继续排查前应先确认该容量策略是否符合预期**
-  （当前 `#Storage=auto` + `/var/log/journal` 存在 ⇒ 持久化生效，但会持续增长）。
+### 已实施并验证（2026-11-18）
+
+| # | 位置 | 实际改动 | 状态 |
+| --- | --- | --- | --- |
+| 1 | `tools/weaknet-tunnel.service` `[Unit]` | 加 `StartLimitIntervalSec=0` | ✅ 已部署，`systemctl show` 确认 `StartLimitIntervalUSec=0` |
+| 2 | `tools/weaknet-tunnel.service` `ExecStart` | 加 `-o ConnectTimeout=10` | ✅ 已部署 |
+| 3 | **新增** `tools/tunnel_probe.sh` + `.service` + `.timer` | 板端每 2 分钟走完整链路读回自己的 banner，失败则 restart | ✅ 已部署，timer active/enabled |
+| 4 | `tools/tunnel_guard.sh` | 恢复等待 30s → 60s，中途再清一次残留会话 | ✅ 已改（云端需重新 install 才生效） |
+| 5 | 可观测性 | 由第 3 项取代（探针每轮落一行判定） | ✅ |
+
+### 验证记录：判据的双向对照
+
+按仓库元教训，「判据在成功与失败时输出相同就不是判据」，实施后做了正反两向实测：
+
+| 状态 | 探针输出 | rc |
+| --- | --- | --- |
+| 隧道正常 | `健康（banner: SSH-2.0-OpenSSH_8.4p1 Debian-5+deb11u6）` | 0 |
+| `systemctl stop weaknet-tunnel` | `ssh 失败：stdio forwarding failed` | 1 |
+| 重新拉起 | `健康（…Debian…）`，**7s 内恢复** | 0 |
+
+三种状态输出互不相同。
+
+### 部署一致性
+
+板端与仓库四个文件 md5 逐一相同：
+
+| 文件 | md5 |
+| --- | --- |
+| `tools/tunnel_probe.sh` = `/usr/local/bin/weaknet-tunnel-probe` | `c90f3aab3906f8099645dd28d829141b` |
+| `tools/weaknet-tunnel.service` = `/etc/systemd/system/weaknet-tunnel.service` | `2221ce36b25dca84561d36a5999a0800` |
+| `tools/weaknet-tunnel-probe.service` | `9c8339d44501f439bf0806803e25bef0` |
+| `tools/weaknet-tunnel-probe.timer` | `fade8e23295e9d9ac069cf36ec7b3f99` |
+
+`systemd-analyze verify weaknet-tunnel.service` 无告警。
+
+### 实施中发现的第二个假判据（已单独立篇）
+
+探针第一版写成直连 `81.71.76.133:22222`。因为云端 sshd `GatewayPorts` 默认 `no`，
+`-R` 只绑**回环**，公网网卡上没有监听者——**隧道完全健康时这条判据也必然超时**。
+实测 `rc=124`，而同一时刻我自己那条 `ssh board` 正跑在这条隧道上。
+
+改为 `ssh -W 127.0.0.1:22222`（让云端 sshd 代连自己的回环），2.1s 读回板端 banner。
+详见 `openspec/pitfalls/tunnel-probe-gatewayports-no.md`。
+
+第二处：第一版用 `... | head -1` 取 banner，`$?` 变成 `head` 的状态而不是
+`timeout`/`ssh` 的状态——一条永远返回 0 的判据。改为先落临时文件再取首行。
+
+### 遗留边界
+
+- 云端 `tunnel_guard.sh` 的 60s 改动**需要重新 install 到云端**才生效
+  （`sudo install -m 0755 tools/tunnel_guard.sh /usr/local/bin/weaknet-tunnel-guard`
+  + `systemctl restart weaknet-tunnel-guard`）。本次只改了仓库里的文件。
+- 板端 journal 已达 960MB 上限且无 `SystemMaxUse` 配置，早期故障现场已被 vacuum。
+  **该容量策略是否符合预期仍需确认**（当前 `#Storage=auto` + `/var/log/journal`
+  存在 ⇒ 持久化生效，但会持续增长）。
+- 探针周期 2 分钟 ⇒ 最坏情况下隧道有约 2 分钟不可用窗口。对运维通道可接受。
+- 板子断电期间 timer 不跑；重新上电且网络不通时会每 2 分钟 restart 一次隧道，
+  该动作本身无害（隧道本来也连不上），网络恢复后自动转绿。

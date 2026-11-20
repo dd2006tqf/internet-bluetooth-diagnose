@@ -3,6 +3,20 @@ Description=WeakNet Reverse SSH Tunnel to Cloud Server
 After=network-online.target
 Wants=network-online.target
 
+# ---------------------------------------------------------------------------
+# StartLimitIntervalSec=0 —— 让 `Restart=always` 名副其实
+#
+# systemd 默认 StartLimitBurst=5 / StartLimitIntervalSec=10s，凑满 5 次重启
+# 就永久放弃（`start request repeated too quickly`）。本单元 RestartSec=3，
+# 理论上 10s 窗口里最多只有 3 次，凑不满 5 次——但这只是**恰好**成立：
+# 一旦有人调整 RestartSec，或者 systemd 版本改变限流实现，隧道就会在
+# 「网络刚恢复时正是最需要重连」的时刻被 systemd 判死，而且只留一行日志。
+#
+# 隧道是运维通道本身，它的失败没法靠隧道以外的手段被及时发现。
+# 因此显式关闭启动限流：网络恢复多久，就重试多久。
+# ---------------------------------------------------------------------------
+StartLimitIntervalSec=0
+
 [Service]
 Type=simple
 User=radxa
@@ -36,7 +50,13 @@ User=radxa
 # 端口是 22222 而不是默认的 2222：2026-11-10 事故中 2222 上堆积了 4 小时
 # 未清理的僵尸会话（见下方 KillMode 注释），换端口绕开了当时无法及时回收的
 # 那一批连接。云端 ~/.ssh/config 的 `Host board` 必须同步写成 Port 22222。
-ExecStart=/usr/bin/ssh -i /home/radxa/.ssh/id_cloud_tunnel -N -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -o TCPKeepAlive=yes -R 22222:127.0.0.1:22 ubuntu@81.71.76.133
+#
+# ConnectTimeout=10：没有它，WiFi 处于「关联上了但上行黑洞」状态时，ssh 会
+# 挂在**内核** TCP 建连超时上（tcp_retries2=15，实测可达数分钟）。这段时间
+# 里单元一直是 activating，`Restart=always` 帮不上忙，板端日志也没有任何
+# 输出——正是本次排查中最难区分的「静默」形态。10s 内失败并重试，
+# 让重连周期与 RestartSec=3 保持同一量级。
+ExecStart=/usr/bin/ssh -i /home/radxa/.ssh/id_cloud_tunnel -N -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new -o TCPKeepAlive=yes -R 22222:127.0.0.1:22 ubuntu@81.71.76.133
 Restart=always
 RestartSec=3
 
@@ -57,12 +77,19 @@ RestartSec=3
 # 清掉这一个 unit 拉起的全部进程，让下一次启动从零开始。
 KillMode=control-group
 
-# 转发层存活探测的边界（见 README / PLATFORM_OPERATION_GUIDE）：
+# 转发层存活探测的边界：
 # `ServerAliveInterval` 只能发现"到云端的 SSH 连接断了"，**发现不了**
 # "SSH 连接还在、但 22222 转发通道卡死"这种半死状态。后者在 2026-11-10
 # 出现过三次：端口在 listen、TCP 能建连、但握手无响应，客户端探测一切正常。
-# 该场景无法在板端自行识别，需要云端侧对 22222 做可用性探测并在失败时主动
-# 断开对应会话，迫使本 unit 重连。云端侧脚本见 tools/tunnel_guard.sh。
+#
+# 该半死状态**本 unit 自己无法发现**（`-N` 成功时零日志，进程和 TCP 都正常），
+# 所以两侧各补一半，都不在本文件里：
+#   - 板端：tools/weaknet-tunnel-probe.{service,timer}，每 2 分钟从板子自己
+#     出发走完整条链路读回**板端** sshd 的 banner，失败则 restart 本 unit。
+#     这是板端唯一的自救手段——云端杀会话后板端 43s 内没重连的 37 次记录
+#     （2026-11-18 统计）就是缺了这半边。
+#   - 云端：tools/tunnel_guard.sh，从云端视角发现"端口在听但握手超时"，
+#     杀掉承载转发的 sshd 迫使本 unit 重连。
 
 [Install]
 WantedBy=multi-user.target

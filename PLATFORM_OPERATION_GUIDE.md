@@ -72,11 +72,18 @@
 Description=WeakNet Reverse SSH Tunnel to Cloud Server
 After=network-online.target
 Wants=network-online.target
+# 关闭启动限流：隧道是运维通道本身，它断了我没法用隧道以外的手段及时发现。
+# 网络恢复多久就重试多久，不靠「10s 窗口内恰好凑不满 5 次」这种脆弱推论。
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=radxa
+# ConnectTimeout=10：WiFi「关联上了但上行黑洞」时，没有它 ssh 会挂在内核
+# TCP 建连超时上（tcp_retries2=15，可达数分钟），期间单元一直是 activating，
+# Restart=always 帮不上忙，且日志零输出。
 ExecStart=/usr/bin/ssh -i /home/radxa/.ssh/id_cloud_tunnel -N \
+    -o ConnectTimeout=10 \
     -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
     -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
     -o TCPKeepAlive=yes \
@@ -103,8 +110,69 @@ ssh board 'sudo systemctl restart weaknet-tunnel.service'  # 重启隧道
 
 > **隧道健康判定**：不要用「端口在 listen」或「`ssh` 能登录」当判据。
 > 2026-11-10 出现过三次「端口在听、TCP 能建连、但等不到 SSH banner」的半死态，
-> 此时客户端侧一切探测都正常。正确判据是**读到板端 sshd 的 banner**，
-> 实现见 `tools/tunnel_guard.sh`（`--check` 只报告不自愈，`--watch` 周期自愈）。
+> 此时客户端侧一切探测都正常。正确判据是**读到板端 sshd 的 banner**。
+>
+> ⚠️ **探测必须走云端回环，不能直连公网地址。** sshd 的 `GatewayPorts`
+> 默认是 `no`，于是 `-R 22222:127.0.0.1:22` 只把端口绑在**云端回环**上：
+>
+> ```
+> LISTEN 0 128  127.0.0.1:22222  0.0.0.0:*
+> LISTEN 0 128      [::1]:22222     [::]:*
+> ```
+>
+> 公网网卡上没有监听者，**板端连 `81.71.76.133:22222` 在隧道完全健康时
+> 也必然超时**。2026-11-18 板端探针第一版就是这样写的，把一条好隧道判成了
+> 不健康 —— 又是一次「判据在两种状态下输出相同」。
+>
+> 正确形式是 `ssh -W 127.0.0.1:22222`：让云端 sshd 代连它自己的回环端口，
+> 那条连接正好落在 `-R` 的监听 socket 上，一路转发回板端 22：
+>
+> ```
+> 板端 ssh 客户端 → 云端 :22 → cloud sshd direct-tcpip 通道
+>   → 云端 127.0.0.1:22222（-R 的监听点）→ 反向通道
+>   → 板端 127.0.0.1:22 → 板端 sshd 的 banner
+> ```
+
+### 隧道健康的双向守护（云端 + 板端各一半）
+
+半死状态**两侧都无法单靠自己发现**，必须各补一半：
+
+| 侧 | 脚本 | 判据 | 处置 |
+| --- | --- | --- | --- |
+| 云端 | `tools/tunnel_guard.sh` | 云端视角读 22222 的 banner | 杀承载会话，迫使板端重连 |
+| **板端** | `tools/tunnel_probe.sh` | **板端视角**走完整条链路读回自己的 banner | `systemctl restart weaknet-tunnel` |
+
+板端这一半是 2026-11-18 补的。此前只有云端一半，实测 7 天数据表明不够：
+**45 次判定半死、45 次清理，只有 8 次在 30s 内恢复，37 次落到「需人工介入」**。
+根本原因是 `Restart=always` 只覆盖「进程退出」，
+`ServerAliveInterval` 只覆盖「SSH 层断开」，两者都覆盖不了「进程在、
+TCP ESTAB、但 `-R` 转发通道已死」；而 `ssh -N` 成功时**零日志**，
+所以「日志静默」既可能是健康也可能是已死，板端无法区分。
+
+板端部署：
+
+```bash
+sudo install -m 0755 tools/tunnel_probe.sh /usr/local/bin/weaknet-tunnel-probe
+sudo cp tools/weaknet-tunnel-probe.service /etc/systemd/system/
+sudo cp tools/weaknet-tunnel-probe.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now weaknet-tunnel-probe.timer
+
+# 只探测不处置（排查用）
+/usr/local/bin/weaknet-tunnel-probe --check
+
+# 确认 timer 周期
+systemctl list-timers weaknet-tunnel-probe.timer --no-pager
+sudo journalctl -u weaknet-tunnel-probe.service -n 20 --no-pager -o cat
+```
+
+周期用 `OnBootSec=90s` + `OnUnitActiveSec=2min`（**不是 `OnCalendar`**）——
+本板无 RTC，墙钟触发器在时间跳变后会错乱。
+
+> **判据必须先做双向对照再信它。** 2026-11-18 部署时的自测：
+> 隧道正常 → `健康（banner: SSH-2.0-OpenSSH_8.4p1 Debian…）` rc=0；
+> `systemctl stop weaknet-tunnel` → `ssh 失败：stdio forwarding failed` rc=1；
+> 重新拉起 → 7s 内恢复 rc=0。**两种状态输出不同**，才算判据。
 
 ### 云端 sshd 必须回收僵死会话（否则隧道永久自锁）
 
@@ -150,7 +218,8 @@ keepalive 只能验证 **SSH 层**存活，验证不了**转发层**。两者分
 | 层 | 覆盖的故障 | 手段 |
 | --- | --- | --- |
 | `60-tunnel-keepalive.conf` | SSH 会话整体僵死 | `ClientAlive` 90s 回收 |
-| `weaknet-tunnel-guard` | 会话活着但转发层死了 | 读 banner 判定 + TERM 承载会话 |
+| `weaknet-tunnel-guard`（云端） | 会话活着但转发层死了 | 读 banner 判定 + TERM 承载会话 |
+| `weaknet-tunnel-probe`（板端） | 同上，但板端视角 | 走完整链路读回自己的 banner + restart |
 
 部署（云端）：
 
@@ -166,6 +235,13 @@ sudo journalctl -u weaknet-tunnel-guard -f     # 每 60s 一行判定
 
 > unit 引用 `/usr/local/bin` 的副本而**不直接引用仓库路径**——仓库目录名含中文
 > 且位于用户家目录下，systemd 引用它既脆弱又会在仓库移动时直接打挂守护。
+
+> **云端 guard 杀完会话后的等待窗口：2026-11-18 起 30s → 60s。**
+> 7 天记录里 45 次清理只有 8 次在 30s 内恢复，37 次落到「需人工介入」。
+> 那 37 次大多不是真坏了，而是 30s 不够：板端 `RestartSec=3` + WiFi 重关联
+> + TCP 握手 + 新 sshd 绑端口，热点链路上经常 40~60s。
+> 现在分两段：30s 后若端口仍被占则**再清理一次**（防旧会话没杀干净的 D 状态
+> sshd），然后继续等 30s；总计 60s 后才报「需人工」。
 
 **自愈验证手法**（可复用）：
 

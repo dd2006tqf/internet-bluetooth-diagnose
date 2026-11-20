@@ -216,17 +216,49 @@ heal() {
     done
     [ "${killed}" -eq 1 ] || return 1
 
-    # 板端 `Restart=always` 会在 3 秒后重连并重新申请端口。给足 30s。
-    local i=0
-    while [ "${i}" -lt 30 ]; do
-        sleep 3
-        i=$((i + 3))
-        if one_round_probe_only; then
-            log "已自愈：${i}s 后转发通道恢复"
-            return 0
+    # ---------------------------------------------------------------------
+    # 杀完之后的两段等待：30s 正常窗口 + 30s 重杀窗口。
+    #
+    # 2026-11-18 统计 7 天记录：45 次判定半死、45 次清理，只有 8 次在 30s
+    # 内恢复，**37 次落到「30s 内仍未恢复，需人工」**。这 37 次大多不是
+    # 真的坏了，而是 30s 不够：板端 `RestartSec=3` + WiFi 重关联 + TCP 握手
+    # + 新 sshd 绑定端口，热点链路上经常 40~60s。
+    #
+    # 所以放宽到 60s。但单纯延长等待会遇到另一种情形：旧会话其实没被杀
+    # 干净（sshd 卡在 D 状态或 TERM 被忽略），新会话永远抢不到端口。这种
+    # 情况下等 120s 也是白等，必须再杀一次。因此第二段窗口前重新执行一次
+    # 清理，只有「清理动作确实又命中过进程」才继续等，避免无脑延长时间。
+    # ---------------------------------------------------------------------
+    local round i
+    for round in 1 2; do
+        i=0
+        while [ "${i}" -lt 30 ]; do
+            sleep 3
+            i=$((i + 3))
+            if one_round_probe_only; then
+                log "已自愈：第 ${round} 段 ${i}s 后转发通道恢复"
+                return 0
+            fi
+        done
+
+        [ "${round}" -eq 1 ] || break
+
+        # 第一段 30s 没恢复：再确认一次是不是还有残留会话在占端口。
+        # `collect_forward_pids` 为空 = 端口已释放、纯粹是板端还没连上来，
+        # 那就没必要重杀，直接进第二段等待。
+        pids=$(collect_forward_pids)
+        if [ -n "${pids}" ]; then
+            log "30s 未恢复且端口仍被占用，重新清理残留会话: pid=$(echo ${pids})"
+            for p in ${pids}; do
+                is_sshd "${p}" || continue
+                ${SUDO} kill -TERM "${p}" 2>/dev/null || ${SUDO} kill -9 "${p}" 2>/dev/null || true
+            done
+        else
+            log "30s 未恢复但端口已释放，板端尚未重连，继续等待"
         fi
     done
-    log "清理后 30s 内仍未恢复，需要人工介入"
+
+    log "清理后 60s 内仍未恢复，需要人工介入"
     return 1
 }
 
