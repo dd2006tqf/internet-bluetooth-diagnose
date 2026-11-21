@@ -63,9 +63,11 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 
-from industrial_ops_agent.object_store.keys import tenant_object_key_from_value
+from industrial_ops_agent.network_assurance.snapshot_deletion import (
+    delete_snapshot_rows_and_objects,
+)
 from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.models import NetworkSnapshotImageRecord
 from industrial_ops_agent.persistence.tenant import TenantContext
@@ -168,10 +170,16 @@ class SnapshotRetentionService:
             expired_total,
         )
 
-        image_ids = [row.image_id for row in rows]
-        object_keys = [(row.image_id, row.object_key) for row in rows]
-        deleted = self._delete_rows(context, image_ids)
-        orphaned = await self._delete_objects(context, object_store, object_keys)
+        # 顺序只写一次：见 ``snapshot_deletion`` 模块头。任何需要删除静帧证据的
+        # 路径（保留期、配额、将来的手工清理）都必须走这个入口，否则「先删行
+        # 再删对象」这条不变量会出现第二份、可能写反的实现。
+        deleted, orphaned = await delete_snapshot_rows_and_objects(
+            self._database,
+            context,
+            object_store,
+            rows,
+            reason="retention",
+        )
 
         remaining = self._count_expired(context, cutoff)
         LOGGER.info(
@@ -226,49 +234,10 @@ class SnapshotRetentionService:
 
     # ------------------------------------------------------------------
     # 删除
+    #
+    # 这里**不实现**删除顺序。`_delete_rows` / `_delete_objects` 曾经在
+    # 本文件中各有一份，而配额实现需要完全相同的一对。复制一份的代价不是
+    # 代码量，是顺序可能被写反——而反着写不会报错（见模块头与
+    # `snapshot_deletion` 模块说明）。现在唯一的入口是
+    # `delete_snapshot_rows_and_objects()`。
     # ------------------------------------------------------------------
-
-    def _delete_rows(self, context: TenantContext, image_ids: list[str]) -> int:
-        """先删行。这一步成功之后才动对象——理由见模块头「删除顺序」。"""
-
-        with self._database.transaction(context) as session:
-            result = session.execute(
-                delete(NetworkSnapshotImageRecord).where(
-                    NetworkSnapshotImageRecord.tenant_id == context.tenant_id,
-                    NetworkSnapshotImageRecord.image_id.in_(image_ids),
-                )
-            )
-            return int(result.rowcount or 0)
-
-    async def _delete_objects(
-        self,
-        context: TenantContext,
-        object_store,
-        object_keys: list[tuple[str, str]],
-    ) -> int:
-        """尽力删除对象，返回失败数。
-
-        失败**不回滚行**：行已经删了，回滚它只会得到一个指向缺失对象的行，
-        也就是整个删除顺序设计在避免的谎报行。失败留成孤儿对象并计数报出。
-
-        写成 ``async`` 而不是同步 + ``asyncio.run``：仓库里已有的对象删除
-        （``knowledge/deletion.py``）就是这个形状，而且 ``asyncio.run`` 在
-        已有事件循环的调用方里会直接报错——一个「在 FastAPI 上下文里调用就
-        炸」的清理函数，早晚会被踩到。
-        """
-
-        failures = 0
-        for image_id, raw_value in object_keys:
-            try:
-                key = tenant_object_key_from_value(context, raw_value)
-                await object_store.delete(context, key)
-            except Exception:  # noqa: BLE001 - 单个对象失败不该中断整轮回收
-                failures += 1
-                # 只记 image_id 与 traceback，不把异常正文拼进消息：这一行会在
-                # 存储故障时连续刷屏，而排查只需要知道「哪个对象没删掉」。
-                LOGGER.warning(
-                    "snapshot retention object delete failed: image_id=%s",
-                    image_id,
-                    exc_info=True,
-                )
-        return failures

@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from industrial_ops_agent.api.dependencies import (
     get_authorizer,
+    get_database,
     get_edge_downlink_signer,
     get_edge_telemetry_verifier,
     get_identity,
@@ -91,6 +92,7 @@ from industrial_ops_agent.network_assurance.snapshot_contracts import (
     SnapshotImageItem,
     SnapshotImageResult,
 )
+from industrial_ops_agent.network_assurance.snapshot_quota import SnapshotQuotaService
 from industrial_ops_agent.network_assurance.video_contracts import (
     VideoClipChunk,
     VideoClipChunkResult,
@@ -112,6 +114,7 @@ from industrial_ops_agent.object_store.keys import (
     edge_video_chunk_object_key,
     tenant_object_key_from_value,
 )
+from industrial_ops_agent.persistence.database import Database
 from industrial_ops_agent.persistence.tenant import TenantContext, validate_boundary_identifier
 
 router = APIRouter(prefix="/network", tags=["network-assurance"])
@@ -674,6 +677,7 @@ async def upload_edge_snapshot_image(
     verifier: Annotated[EdgeTelemetryVerifier, Depends(get_edge_telemetry_verifier)],
     service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
     object_store: Annotated[TenantObjectStore, Depends(get_object_store)],
+    database: Annotated[Database, Depends(get_database)],
 ) -> SnapshotImageResult:
     """接收一张事故静帧。
 
@@ -753,7 +757,7 @@ async def upload_edge_snapshot_image(
     await object_store.put(context, key, payload)
 
     try:
-        return service.register_snapshot_image(
+        result = service.register_snapshot_image(
             context, image, object_key=key.value, key_id=verifier.key_id
         )
     except NetworkAssuranceConflict as exc:
@@ -763,6 +767,60 @@ async def upload_edge_snapshot_image(
             category="conflict",
             message="Snapshot image conflicts with an existing upload",
         ) from exc
+
+    if result.accepted:
+        # 配额淘汰**只在真的写入之后**跑，理由见
+        # ``network_assurance/snapshot_quota.py`` 模块头：先淘汰再写，
+        # 一旦写失败就是白删。重放（duplicate）不触发——没有新字节。
+        await _enforce_snapshot_quota(
+            request, database, context, object_store, image.image_id
+        )
+    return result
+
+
+async def _enforce_snapshot_quota(
+    request: Request,
+    database: Database,
+    context: TenantContext,
+    object_store: TenantObjectStore,
+    image_id: str,
+) -> None:
+    """把租户静帧总量压回配额。**失败绝不影响上传结果。**
+
+    图已经落盘、行也登记了。这时候让请求失败，板端会重试，而重试会撞上
+    ``image_id`` 冲突被拒——把「配额这一轮没算干净」放大成「这张证据永远
+    存不进去」。所以这里吞掉所有异常只记日志：下一张图、下一次保留期回收
+    都会接着收拾。
+
+    配额为 ``None``（默认）时直接返回，连一次 ``SUM`` 都不做。
+    """
+
+    quota = getattr(request.app.state.settings, "network_snapshot_quota_bytes", None)
+    if not quota:
+        return
+    try:
+        plan = await SnapshotQuotaService(database).enforce(
+            context,
+            object_store,
+            quota_bytes=quota,
+            keep_image_id=image_id,
+        )
+    except Exception:  # noqa: BLE001 - 配额失败不能让一张已经存下的证据变成重试冲突
+        logging.getLogger("uvicorn.error").exception(
+            "snapshot quota enforcement failed: tenant=%s image_id=%s",
+            context.tenant_id,
+            image_id,
+        )
+        return
+    if plan.evicted:
+        logging.getLogger("uvicorn.error").info(
+            "snapshot quota evicted oldest images: tenant=%s evicted=%d freed_bytes=%d "
+            "over_quota=%s",
+            context.tenant_id,
+            plan.evicted,
+            plan.evicted_bytes,
+            plan.over_quota,
+        )
 
 
 # ----------------------------------------------------------------------

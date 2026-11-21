@@ -1,0 +1,21 @@
+[Unit]
+Description=WeakNet Snapshot Retention (cloud side, daily timer)
+
+[Timer]
+# 开机 10 分钟后跑第一次：给数据库、对象存储、API 服务留出启动时间。
+# 与 weaknet-tunnel-probe.timer 同一个理由——不用 OnCalendar，因为本机存在
+# 时间跳变风险（容器/宿主机时钟同步），墙钟触发器会错乱。
+OnBootSec=10min
+
+# 之后每 24 小时一次。单调时钟语义，与墙钟无关。
+OnUnitActiveSec=24h
+
+# 回收是「删掉已过期的」，补跑历史触发没有额外收益：下一次触发照样会删。
+# Persistent=true 只会在关机期间积压多次触发，开机后连跑几轮做同样的事。
+Persistent=false
+
+# 允许 systemd 合并唤醒以省资源，不需要精确到秒。
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

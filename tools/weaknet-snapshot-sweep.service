@@ -1,0 +1,95 @@
+# =============================================================================
+# weaknet-snapshot-sweep.service / .timer —— 云端孤儿静帧对象清扫
+# =============================================================================
+#
+# 为什么需要这一对单元（而不是靠 weaknet-snapshot-retention 顺手删）
+# ------------------------------------------------------------------
+# 两者删的是**不相交的集合**，谁也替代不了谁：
+#
+#   回收器 `weaknet-snapshot-retention`：对象**有行**，但行太老了
+#   清扫器 `weaknet-snapshot-sweep`    ：对象**没有行**，但对象太老了
+#
+# 孤儿对象根本没有行，回收器看不见它们（它按行查询、再删对象）。所以只跑
+# 回收器时，孤儿的磁盘占用会单调增长且**永远**不会被回收——每一张都不是
+# 「过期了」，是「从没被承认过」。
+#
+# 孤儿从哪来（三个真实来源）
+# --------------------------
+#   1. 上传崩在 put 与 insert 之间（进程被杀、断电、库连接断）
+#   2. 行已删、对象删失败——`delete_snapshot_objects` 吞掉异常后留下的
+#   3. 上一条的重复尝试：幂等键会让重传覆盖同一份字节，对象仍在
+#
+# 为什么这里的时间窗是 24 小时，而回收器是 90 天
+# ---------------------------------------------
+# 这两个数字不是同一类参数。回收器的时间是**产品定义**（证据留多久）；
+# 清扫器的时间是**安全边际**：它要大于任何一次上传的最长可能耗时。上传是
+# 「签名校验 → put → insert」，实测量级毫秒到秒；24 小时留了四个数量级余量。
+#
+# 窗口设短的后果不是「删得激进一点」，是**谎报行**：删掉一张正在上传的图，
+# 上传方随后插入一行指向不存在的对象——声称证据已送达、取回 500、且没有任何
+# 一处会报错。所以这个值宁可大得离谱，也不能「优化」到分钟级。
+#
+# 为什么每天只跑一次
+# ------------------
+# 孤儿是崩溃残留，不是流量。产生速度取决于「多久崩一次」，而不是「多久上传
+# 一次」，每天一次完全够。跑得更频只会反复枚举同一个前缀。
+#
+# 为什么用 OnBootSec + OnUnitActiveSec 而不是 OnCalendar
+# -----------------------------------------------------
+# 与 weaknet-snapshot-retention.timer、weaknet-tunnel-probe.timer 同一个
+# 理由：本机存在时间跳变风险，墙钟触发器会错乱。单调时钟语义与墙钟无关。
+#
+# 为什么 Persistent=false
+# ----------------------
+# 清扫是「现在删掉已经足够老的孤儿」。补跑历史触发没有额外收益——下一次
+# 触发照样会把它们删掉。OnBootSec 已经保证开机后会跑一次。
+#
+# 与回收器错开时间
+# ----------------
+# 回收器 OnBootSec=10min，清扫器 20min。错开不是为了性能，是为了让日志里
+# 两件事不混在一起：回收器删「过期的」，清扫器删「没主的」，运维看日志时
+# 需要能分清这次删的是哪一类。
+#
+# 部署
+# ----
+#   sudo install -m 0755 tools/snapshot_orphan_sweep.sh /usr/local/bin/weaknet-snapshot-sweep
+#   sudo cp tools/weaknet-snapshot-sweep.service /etc/systemd/system/
+#   sudo cp tools/weaknet-snapshot-sweep.timer   /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now weaknet-snapshot-sweep.timer
+#
+# 部署前**必须**先用 dry-run 手工跑一次，确认 orphans 数量符合预期：
+#
+#   sudo -u ubuntu IOAP_DATABASE_URL=... REHEARSAL_OBJECT_STORE_DIR=... \
+#     industrial-ops-snapshot-sweep --tenant-id <tid>
+#
+# 注意：unit 里用 /usr/local/bin 的副本，不直接引用仓库路径 —— 仓库目录名含
+# 中文且在用户家目录下，systemd 引用它既脆弱又会让仓库移动/重命名直接打挂。
+
+[Unit]
+Description=Sweep orphan incident snapshot objects (no database row, cloud side)
+
+[Service]
+Type=oneshot
+# 包装脚本负责：注入 DSN 与对象存储目录、按租户逐个跑、把退出码翻译成
+# systemd 能理解的结论（见 tools/snapshot_orphan_sweep.sh）。
+ExecStart=/usr/local/bin/weaknet-snapshot-sweep
+
+# 单轮最多 1000 个对象，脚本内部循环到 `remaining == 0` 或轮数上限，
+# 所以这里给足时间。
+TimeoutStartSec=900
+
+# 退出码 1（参数被拒绝）与 2（用法错误）都是**配置问题**，重试一万次也一样，
+# 让它红着等人看；退出码 3（还有剩余）由脚本自己继续循环，不该冒到这里。
+Restart=no
+
+# 清扫只需要读库、枚举并删除对象，不需要任何硬件能力，也不该写 /usr。
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# 落盘对象存储目录必须可写，否则孤儿删不掉。
+ReadWritePaths=/var/lib/weaknet-cloud/objects
+
+[Install]
+WantedBy=multi-user.target

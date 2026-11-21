@@ -21,6 +21,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { CouncilPanel } from "@/components/network/CouncilPanel";
 import { RiskPredictionPanel } from "@/components/network/RiskPredictionPanel";
+import { SnapshotPanel } from "@/components/network/SnapshotPanel";
 import { apiClient } from "@/lib/api/network";
 import type {
   PredictionResult,
@@ -278,6 +279,11 @@ export default function IncidentDetailPage() {
             ]}
           />
         </Card>
+
+        {/* 3b. 现场静帧 —— 与「③ 证据」同层：这是事故当时拍摄的画面本身，
+            不是对事故的解释。按 incident_id 过滤，所以这里看到的就是这次
+            事故的图，而不是这台设备历史上所有图。 */}
+        <SnapshotPanel assetId={assetId} incidentId={incidentId} />
 
         {/* 4. AI 解释 —— 排在事实与证据之后 */}
         <Card

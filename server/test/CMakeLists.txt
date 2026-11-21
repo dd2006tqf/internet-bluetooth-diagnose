@@ -241,6 +241,13 @@ add_executable(test_snapshot_service_gtest
     unit/test_snapshot_service_gtest.cpp)
 target_link_libraries(test_snapshot_service_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+# 板端容量回收：本地证据销毁是**不可逆**的，所以断言的几乎全是「什么时候
+# 不该删」——默认关闭、等于上限不算超、绝不删刚写的那张、时钟跳变不会全删。
+# 全部在 mkdtemp 里跑，不碰真实数据，也不需要摄像头/VE/网络。
+add_executable(test_snapshot_retention_gtest
+    unit/test_snapshot_retention_gtest.cpp)
+target_link_libraries(test_snapshot_retention_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # 留证上行器契约：URL 派生、分片规划、清单/分片报文形状、
 # base64 与 sha256 正确性、队列丢弃语义。**不需要网络也不需要开发板**——
 # 网络失败路径由「地址不可达」覆盖，云端契约由字段断言覆盖。
@@ -403,6 +410,7 @@ foreach(test_target
     test_video_encoder_gtest
     test_snapshot_encoder_gtest
     test_snapshot_service_gtest
+    test_snapshot_retention_gtest
     test_video_clip_exporter_gtest
     test_video_clip_muxer_gtest
     test_thermal_monitor_gtest

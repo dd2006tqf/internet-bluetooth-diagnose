@@ -531,6 +531,112 @@ TEST(SnapshotServiceStats, DescribeCarriesActionableState) {
 }
 
 // ===========================================================================
+// 容量回收的**接线**（`pruneSnapshotDir` 自身的行为由
+// `test_snapshot_retention_gtest` 覆盖）
+//
+// 这一组存在的理由：把 `handleOne` 里那三行
+// `if (m_config.max_total_bytes > 0) pruneSnapshots(path);` 整段删掉，
+// 保留模块的 21 个用例**依然全绿**——它们只测了函数本身，没人测「服务有没有
+// 调用它、有没有把刚写的那张传成 keep」。而这里错了不会报任何错，只表现为
+// 「磁盘慢慢满了，或者刚拍的图不见了」。
+//
+// 桩编码器每张产出 10 字节，所以下面用 15 字节 / 1 字节这种小上限就能把
+// 「装得下一张」「装不下一张」两种边界都覆盖到。
+// ===========================================================================
+
+TEST(SnapshotServicePrune, DisabledByDefaultKeepsEveryImage) {
+    // 默认 max_total_bytes = 0（不回收）。没人复核过的数字不该开始删证据，
+    // 所以默认路径必须连扫描都不做。
+    auto frames = std::make_unique<FakeFrameSource>();
+    TempDir dir;
+    SnapshotServiceConfig cfg;  // max_total_bytes 保持 0
+    cfg.output_dir = dir.path();
+
+    SnapshotService svc(std::move(frames), createFakeSnapshotEncoder(), cfg);
+    ASSERT_TRUE(svc.start());
+    svc.request("inc-a");
+    svc.request("inc-b");
+    ASSERT_TRUE(waitFor([&]() { return svc.stats().written >= 2; }));
+    svc.stop();
+
+    EXPECT_EQ(dir.files().size(), 2u) << "默认关闭时一张都不该删";
+    EXPECT_EQ(svc.stats().prune_runs, 0u) << "关闭时连扫描都不该发生";
+    EXPECT_EQ(svc.stats().pruned, 0u);
+}
+
+TEST(SnapshotServicePrune, OverCapDeletesTheOlderImage) {
+    auto frames = std::make_unique<FakeFrameSource>();
+    TempDir dir;
+    SnapshotServiceConfig cfg;
+    cfg.output_dir = dir.path();
+    cfg.max_total_bytes = 15;  // 只装得下一张 10 字节的图
+
+    SnapshotService svc(std::move(frames), createFakeSnapshotEncoder(), cfg);
+    ASSERT_TRUE(svc.start());
+    svc.request("inc-a");
+    ASSERT_TRUE(waitFor([&]() { return svc.stats().written >= 1; }));
+    svc.request("inc-b");
+    ASSERT_TRUE(waitFor([&]() { return svc.stats().written >= 2; }));
+    ASSERT_TRUE(waitFor([&]() { return svc.stats().pruned >= 1; }));
+    svc.stop();
+
+    EXPECT_EQ(dir.files().size(), 1u) << "超上限后必须真的删到装得下";
+    EXPECT_EQ(svc.stats().pruned, 1u);
+    EXPECT_GT(svc.stats().prune_runs, 0u) << "一次都没扫描，说明接线断了";
+    EXPECT_EQ(svc.stats().prune_still_over, 0u) << "上限装得下一张时不该报仍超限";
+}
+
+TEST(SnapshotServicePrune, NeverDeletesTheImageItJustWrote) {
+    // **接线里最关键的一条。** 上限比一张图还小时，「删到装得下」的唯一解法
+    // 是删掉刚拍的这张——设备刚上报「已留证」，文件却立刻消失。
+    //
+    // 若 `pruneSnapshots(path)` 忘记传 keep（或传错变量），这个用例会让目录
+    // 变空；只看 `pruned` 计数是看不出来的。
+    auto frames = std::make_unique<FakeFrameSource>();
+    TempDir dir;
+    SnapshotServiceConfig cfg;
+    cfg.output_dir = dir.path();
+    cfg.max_total_bytes = 1;  // 比一张图还小
+
+    SnapshotService svc(std::move(frames), createFakeSnapshotEncoder(), cfg);
+    ASSERT_TRUE(svc.start());
+    ASSERT_TRUE(svc.request("inc-only"));
+    ASSERT_TRUE(waitFor([&]() { return svc.stats().written >= 1; }));
+    ASSERT_TRUE(waitFor([&]() { return svc.stats().prune_still_over >= 1; }));
+    svc.stop();
+
+    EXPECT_EQ(dir.files().size(), 1u)
+        << "刚写的那张被回收删掉了：留证等于没留";
+    EXPECT_EQ(svc.stats().pruned, 0u) << "唯一一张必须被保护，一张都不该删";
+    EXPECT_EQ(svc.stats().prune_still_over, 1u) << "删不干净必须可见（上限配错了要有人看见）";
+}
+
+TEST(SnapshotServicePrune, DescribeSurfacesTheCap) {
+    // describe() 进日志与证据。上限关着时也必须能读出来——「为什么磁盘在涨」
+    // 的第一个问题就是「回收开没开」。
+    auto frames = std::make_unique<FakeFrameSource>();
+    TempDir dir;
+    SnapshotServiceConfig cfg;
+    cfg.output_dir = dir.path();
+
+    SnapshotService off(std::move(frames), createFakeSnapshotEncoder(), cfg);
+    ASSERT_TRUE(off.start());
+    EXPECT_NE(off.describe().find("quota=off"), std::string::npos)
+        << "实际: " << off.describe();
+    off.stop();
+
+    auto frames2 = std::make_unique<FakeFrameSource>();
+    SnapshotServiceConfig cfg2;
+    cfg2.output_dir = dir.path();
+    cfg2.max_total_bytes = 4096;
+    SnapshotService on(std::move(frames2), createFakeSnapshotEncoder(), cfg2);
+    ASSERT_TRUE(on.start());
+    EXPECT_NE(on.describe().find("quota=4096"), std::string::npos)
+        << "实际: " << on.describe();
+    on.stop();
+}
+
+// ===========================================================================
 // 记忆表裁剪：这段逻辑错了不会报错，只能靠断言钉死
 //
 // 两种坏法都很隐蔽：

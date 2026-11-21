@@ -38,6 +38,22 @@ RestartSec=5
 Environment=LD_LIBRARY_PATH=/usr/local/lib
 Environment=WEAKNET_DATA_DIR=/home/radxa/weaknet/data
 Environment=WEAKNET_ROOT=/home/radxa/weaknet
+# 事故静帧目录 data/snapshots 的总字节上限（超出后从最旧的事故图开始删）。
+#
+# 为什么必须给它一个值，而不是留空默认关闭：这个目录的增长**没有上界**——
+# 每来一次区域事故就多一张 ~120 KB 的图，永不回收。而它和 history.db 在
+# 同一个分区上，写满之后先坏掉的是数据库（丢的是全部历史与事件），图反而是
+# 次要的。设一个远高于真实用量的上限，是把「磁盘写满」这个不可逆故障换成
+# 「删掉最旧的几张图」这个可承受的损失。
+#
+# 2 GiB 的依据：单张实测 118~128 KB，约合 1.6 万张；本板 /home 共 117 GB，
+# 占 1.7%。按目前的事故频率，用满它需要上万个**不同**的事故 ID——真到那一步，
+# 说明事故判定本身出了问题，那时删旧图正是应该做的。
+#
+# 为什么是环境变量而不是 config.yaml：见 server/include/common.hpp 的
+# resolveSnapshotMaxBytes() 注释（部署事实、不可实时改小、不可事务回滚）。
+# 写成 0 或不设即恢复「不回收」。
+Environment=WEAKNET_SNAPSHOT_MAX_BYTES=2147483648
 User=root
 Group=root
 # eBPF 探针加载/挂载需要 CAP_BPF + CAP_PERFMON（内核 5.8+），

@@ -231,6 +231,20 @@ class Settings(BaseSettings):
     #: the loop the platform would have to manufacture that evidence, which
     #: this integration deliberately refuses to do.
     network_auto_incident_draft_enabled: bool = True
+    #: 单租户静帧总量的软上限（字节）。``None`` = 不设上限，只靠保留期回收。
+    #:
+    #: 保留期约束「多久以后删」，约束不了「写得多快」：一次采集风暴可以在
+    #: 一个保留期内把磁盘写满，而回收只在过期之后才动手。所以需要第二个旋钮。
+    #:
+    #: **不是硬上限**：超过时删最旧的，而不是拒绝新的。拒绝会把「这次事故
+    #: 没有图」写进证据链，而事故图往往正是最该留下的那一张；删最旧的至少
+    #: 保留时间上最近、也最可能正在被看的那批。代价是并发上传时可能短暂
+    #: 超出 1~2 张图（≤ 640 KB × 并发数），这在「上限是配额而非磁盘容量」
+    #: 的前提下是可接受的。
+    #:
+    #: 默认 ``None`` 而不是一个数字，与 ``SNAPSHOT_RETENTION_DAYS`` 不给默认值
+    #: 同一个理由：没人复核过的数字不该开始删证据。
+    network_snapshot_quota_bytes: int | None = Field(default=None, ge=1)
     #: 生成知识案例 source_uri 所需的平台对外基址（https，无路径尾斜杠），
     #: 例如 ``https://ops.example.com``。source_uri 必须是 https（平台校验
     #: 强制 scheme ∈ {https, s3, minio}），因此这里只接受 https。

@@ -81,6 +81,34 @@ type CopilotAnswer = {
 };
 
 // ---------------------------------------------------------------------------
+// 事故静帧（network_snapshot_images）
+// ---------------------------------------------------------------------------
+
+// 运营端读到的一张静帧摘要（只读事实，不含载荷）。
+//
+// 字段与视频片段**刻意不对齐**：那边有 fps / expected_chunks / received_chunks
+// / state，描述「一段码流收齐了没有」。一张图没有时长、没有分片、也没有中间
+// 状态——行存在就代表内容已落对象存储。所以这里没有 state 可显示，也不需要
+// 显示：能列出这张图，就说明内容在。
+type SnapshotImageItem = {
+  image_id: string;
+  asset_id: string;
+  site_id: string;
+  gateway_id: string;
+  //: 关联的区域事故；空串表示「没有关联事故」，不是「关联到空事故」。
+  incident_id: string;
+  codec: string;
+  width: number;
+  height: number;
+  //: 板端自述的拍摄时刻（墙钟毫秒）。**不是**云端收到的时刻。
+  captured_at_ms: number;
+  size_bytes: number;
+  content_sha256: string;
+  //: 云端收到图片的时刻（≠ captured_at_ms）。
+  received_at: string;
+};
+
+// ---------------------------------------------------------------------------
 // Phase 4b & 无线可视化类型定义
 // ---------------------------------------------------------------------------
 
@@ -515,6 +543,44 @@ export const apiClient = {
       `/api/v1/network/assurance/proposals/${encodeURIComponent(proposalId)}/runbook`,
     );
   },
+
+  // ---- 事故静帧 ----
+  listAssetSnapshotImages(
+    assetId: string,
+    opts?: { incidentId?: string; limit?: number },
+  ): Promise<SnapshotImageItem[]> {
+    const search = new URLSearchParams();
+    // 空串必须**不发**：`incident_id=` 在服务端会被当成「筛选空事故」而不是
+    // 「不筛选」，于是列表永远为空，而且看起来像「这台设备没有静帧」。
+    if (opts?.incidentId) search.set("incident_id", opts.incidentId);
+    if (opts?.limit !== undefined) search.set("limit", String(opts.limit));
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    return request<SnapshotImageItem[]>(
+      `/api/v1/network/assets/${encodeURIComponent(assetId)}/snapshot-images${suffix}`,
+    );
+  },
+  /**
+   * 取回一张静帧的 JPEG 字节，返回可直接塞进 `<img src>` 的 blob URL。
+   *
+   * 为什么不能复用 ``request()``：那个helper 固定 ``response.json()``，而这条
+   * 接口返回的是 ``image/jpeg``。用它会得到「Unexpected token 'ÿ'」——一个
+   * 看起来像前端 bug、实际是拿 JSON 解析器读二进制的错误。
+   *
+   * 为什么返回 blob URL 而不是 ``<img src="/api/backend/...">``：那条接口要求
+   * 带认证头，``<img>`` 的请求带不上；而且它的 500（证据丢了）在 ``<img>``
+   * 里只会显示成一个破图标，运营端看不出"这是已登记的证据取不回来"，而那正是
+   * 必须被看见的一件事。走 fetch 才能把 500 转成一句人能读的话。
+   */
+  async getSnapshotImageObjectUrl(assetId: string, imageId: string): Promise<string> {
+    const path =
+      `/api/v1/network/assets/${encodeURIComponent(assetId)}` +
+      `/snapshot-images/${encodeURIComponent(imageId)}/content`;
+    const response = await fetch(`${BASE_URL}${path}`, { credentials: "include" });
+    if (!response.ok) {
+      throw new Error(`snapshot image ${response.status}: ${imageId}`);
+    }
+    return URL.createObjectURL(await response.blob());
+  },
 };
 
 export type {
@@ -547,5 +613,6 @@ export type {
   CouncilProposalState,
   ManualRunbook,
   ExecuteResult,
+  SnapshotImageItem,
 };
 

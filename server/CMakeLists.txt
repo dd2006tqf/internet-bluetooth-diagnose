@@ -71,6 +71,7 @@ set(SERVER_SOURCES
     src/video_frame_hub.cpp
     src/video_encoder.cpp
     src/snapshot_service.cpp
+    src/snapshot_retention.cpp
     src/video_clip_exporter.cpp
     src/video_clip_muxer.cpp
     src/video_qoe_attribution.cpp

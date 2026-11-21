@@ -46,6 +46,7 @@ import {
   isRiskWindow,
   riskLevelColor,
 } from "@/components/network/RiskPredictionPanel";
+import { SnapshotPanel } from "@/components/network/SnapshotPanel";
 
 function healthColor(state: string) {
   if (state === "GOOD") return "green";
@@ -716,6 +717,11 @@ export default function NetworkAssetDetailPage() {
                     />
                   </div>
                 ),
+              },
+              {
+                key: "snapshots",
+                label: "事故静帧留证",
+                children: <SnapshotPanel assetId={assetId} />,
               },
             ]}
           />

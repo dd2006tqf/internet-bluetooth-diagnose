@@ -375,7 +375,9 @@ def test_row_without_object_still_gets_deleted(
     assert _count(db) == 0
 
 
-def test_row_delete_failure_leaves_object_untouched(db: Database, store):
+def test_row_delete_failure_leaves_object_untouched(
+    db: Database, store, monkeypatch: pytest.MonkeyPatch
+):
     """**这条才是真的在测删除顺序**，上面那条不是。
 
     上一版我把「对象删失败 → 行仍被删」的用例写成能抓顺序错误，那是错的：
@@ -394,22 +396,23 @@ def test_row_delete_failure_leaves_object_untouched(db: Database, store):
     """
     from sqlalchemy.exc import OperationalError
 
+    from industrial_ops_agent.network_assurance import snapshot_deletion
+
     object_key = _seed(db, store, "snap-old", age_days=30)
     assert _object_exists(store, object_key)
 
-    service = SnapshotRetentionService(db)
-    original = service._delete_rows
-
-    def _explode(context, image_ids):
+    def _explode(database, context, image_ids):
         raise OperationalError("simulated crash in row deletion", None, Exception())
 
-    service._delete_rows = _explode  # type: ignore[method-assign]
+    # 注入点在新抽出的公共删除入口里，而不是服务自己的私有方法上：删行与
+    # 删对象现在已经不在这个类里了。打在 `snapshot_deletion.delete_snapshot_rows`
+    # 上仍然有效，因为 `delete_snapshot_rows_and_objects` 是在模块全局名字空间
+    # 里查它的——同模块内按名字调用，monkeypatch 模块属性就能替换掉。
+    monkeypatch.setattr(snapshot_deletion, "delete_snapshot_rows", _explode)
 
-    try:
-        with pytest.raises(OperationalError):
-            _run(service, store, retention_days=7, apply=True)
-    finally:
-        service._delete_rows = original  # type: ignore[method-assign]
+    service = SnapshotRetentionService(db)
+    with pytest.raises(OperationalError):
+        _run(service, store, retention_days=7, apply=True)
 
     # 行还在（删行本身就失败了），这是预期内的。
     assert _count(db) == 1

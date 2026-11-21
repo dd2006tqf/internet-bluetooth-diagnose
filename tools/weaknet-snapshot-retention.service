@@ -1,0 +1,82 @@
+# =============================================================================
+# weaknet-snapshot-retention.service / .timer —— 云端事故静帧回收
+# =============================================================================
+#
+# 为什么需要这一对单元
+# --------------------
+# `industrial-ops-snapshot-retention` 只是一个**命令**：不接调度器它永远
+# 不会跑一次，落盘对象存储的磁盘占用就单调增长，直到 `put` 抛 OSError、
+# 上传端 500、运营端看到「这次事故没有图」。写进任务文档说「需要调度」不算
+# 解决——磁盘不会因为文档写了就变干净。
+#
+# 为什么默认 --apply 而不停在 dry-run
+# -----------------------------------
+# dry-run 是**给人看的**，它的正确用法是「上线前先跑一次确认要删什么」。
+# 定时器如果只跑 dry-run，它每轮都输出同样一份报告，磁盘一个字节都不会
+# 少——那比没有定时器更糟，因为 `systemctl status` 会一直是绿的。
+#
+# 但 `--apply` 是不可逆的证据销毁，所以这条定时器的**安全阀不在命令行，
+# 而在参数**：`--retention-days` 是一个明确的数字，写死在 unit 里，改动
+# 必须走一次配置变更（可审计），不会因为某次手工试验顺手带进生产。
+#
+# 为什么用 OnBootSec + OnUnitActiveSec 而不是 OnCalendar
+# -----------------------------------------------------
+# 与 weaknet-tunnel-probe.timer 同一个理由：本机存在时间跳变风险，
+# `OnCalendar=*-*-* 04:00:00` 这类墙钟触发器在跳变后会错乱，可能当天跑两次
+# 或一次都不跑。单调时钟语义的 OnBootSec/OnUnitActiveSec 与墙钟无关。
+#
+# 为什么每天只跑一次
+# ------------------
+# 静帧是低频流（一次事故一张）。每天一次的回收频率足以跟上产生速度；而
+# 每 2 分钟跑一次会让同一个 `cutoff` 被反复计算几百次，每次都是一次全表
+# count，没有收益。
+#
+# 为什么 Persistent=false
+# ----------------------
+# 回收是「现在删掉已经过期的」，补跑历史触发没有额外收益——下一次触发照样
+# 会把它们删掉。`Persistent=true` 只会在关机期间积压多次触发，开机后连跑
+# 几轮做同样的事。OnBootSec 已经保证开机后会跑一次。
+#
+# 部署
+# ----
+#   sudo install -m 0755 tools/snapshot_retention.sh /usr/local/bin/weaknet-snapshot-retention
+#   sudo cp tools/weaknet-snapshot-retention.service /etc/systemd/system/
+#   sudo cp tools/weaknet-snapshot-retention.timer   /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now weaknet-snapshot-retention.timer
+#
+# 部署前**必须**先用 dry-run 手工跑一次，确认 expired 数量符合预期：
+#
+#   sudo -u ubuntu IOAP_DATABASE_URL=... REHEARSAL_OBJECT_STORE_DIR=... \
+#     industrial-ops-snapshot-retention --tenant-id <tid> --retention-days 90
+#
+# 注意：unit 里用 /usr/local/bin 的副本，不直接引用仓库路径 —— 仓库目录名含
+# 中文且在用户家目录下，systemd 引用它既脆弱又会让仓库移动/重命名直接打挂。
+
+[Unit]
+Description=Reclaim expired incident snapshot images (cloud side)
+
+[Service]
+Type=oneshot
+# 包装脚本负责：注入 DSN 与对象存储目录、按租户逐个跑、把退出码翻译成
+# systemd 能理解的结论（见 tools/snapshot_retention.sh）。
+ExecStart=/usr/local/bin/weaknet-snapshot-retention
+
+# 分批回收的默认 batch=200；一个租户攒了几万张时需要多轮。脚本内部循环到
+# `remaining == 0` 或达到轮数上限，所以这里给足时间。
+TimeoutStartSec=900
+
+# 退出码 1（参数被拒绝）与 2（用法错误）都是**配置问题**，重试一万次也一样，
+# 让它红着等人看；退出码 3（还有剩余）由脚本自己继续循环，不该冒到这里。
+Restart=no
+
+# 回收不需要任何硬件能力，也不该写 /usr。
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+# 落盘对象存储目录必须可写，否则对象删不掉、只会留下一堆孤儿。
+ReadWritePaths=/var/lib/weaknet-cloud/objects
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+[Unit]
+Description=WeakNet Snapshot Orphan Sweep (cloud side, daily timer)
+
+[Timer]
+# 开机 20 分钟后跑第一次：比回收器（10 分钟）晚 10 分钟，让日志里「删过期的」
+# 与「删没主的」两件事不混在一起。
+#
+# 用 OnBootSec/OnUnitActiveSec 而不是 OnCalendar，与 weaknet-snapshot-retention
+# 同一个理由：本机存在时间跳变风险，墙钟触发器会错乱。
+OnBootSec=20min
+
+# 之后每 24 小时一次。单调时钟语义，与墙钟无关。
+OnUnitActiveSec=24h
+
+# 清扫是「删掉已经足够老的孤儿」。补跑历史触发没有额外收益：下一次触发照样
+# 会删。Persistent=true 只会在关机期间积压多次触发，开机后连跑几轮做同样的
+# 事。OnBootSec 已经保证开机后会跑一次。
+Persistent=false
+
+# 允许 systemd 合并唤醒以省资源，不需要精确到秒。
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

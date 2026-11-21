@@ -1773,6 +1773,18 @@ int start_server(int argc, char** argv) {
             ctx.snapshot_dir = resolveSnapshotDir(ctx.cfg.data_dir.get());
             weaknet::SnapshotServiceConfig scfg;
             scfg.output_dir = ctx.snapshot_dir;
+            // 容量上限。默认 0 = 不回收；生产启用见
+            // `resolveSnapshotMaxBytes()` 头注释（环境变量而不是 config.yaml，
+            // 因为「这块盘还剩多少」是部署事实，不该被实时调参改小）。
+            scfg.max_total_bytes = resolveSnapshotMaxBytes();
+            if (scfg.max_total_bytes > 0) {
+                LOG_INFO(LogModule::VIDEO,
+                         "事故静帧容量上限: " << scfg.max_total_bytes << " bytes（从旧到新回收）");
+            } else {
+                LOG_WARNING(LogModule::VIDEO,
+                            "事故静帧容量回收未启用（WEAKNET_SNAPSHOT_MAX_BYTES 未设或为 0）："
+                            "data/snapshots 会随事故数无限增长，直到磁盘写满");
+            }
 
             ctx.snapshot_service = std::make_unique<weaknet::SnapshotService>(
                 weaknet::createHubFrameSource(ctx.video_hub.get()),

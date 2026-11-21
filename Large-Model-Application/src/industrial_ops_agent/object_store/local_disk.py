@@ -51,6 +51,7 @@ import asyncio
 import contextlib
 import os
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 from industrial_ops_agent.object_store.integrity import (
@@ -104,6 +105,69 @@ class LocalDiskTenantObjectStore:
         key.assert_owned_by(context)
         path = self._path_for(key)
         await asyncio.to_thread(self._unlink, path)
+
+    async def list_prefix(
+        self, context: TenantContext, prefix: str
+    ) -> list[tuple[str, datetime]]:
+        """按字面前缀枚举对象，返回 ``[(对象键, mtime)]``。
+
+        只给孤儿清扫器用，所以刻意**不**在 ``TenantObjectStore`` 协议里：
+        上传/取回/删除三条主路径都不需要枚举，把它们被迫实现一遍没有收益。
+
+        安全性：``prefix`` 来自 ``snapshot_images_prefix()``，总是以
+        ``tenant/<tid>/.../`` 开头并以 ``/`` 结尾。但这里不信任调用方——
+        前缀先经 ``_path_for`` 同款逐段校验，再 ``resolve()`` 后确认仍在根目录
+        内。前缀写宽了（少了结尾斜杠、写错租户）会让清扫器枚举到别人的对象
+        并删掉，那是不可逆的跨租户证据销毁。
+
+        mtime 用文件系统的修改时间，不用内容或键里的任何时刻：键里的时刻是
+        上传方自述的（与 ``captured_at_ms`` 同一个问题），文件系统的 mtime 才
+        是「这个对象什么时候落到这块盘上」的事实。
+        """
+
+        prefix = prefix.strip()
+        if not prefix or not prefix.endswith("/"):
+            raise ValueError("object prefix must be non-empty and end with '/'")
+        if prefix.startswith("/") or "\\" in prefix:
+            raise ValueError("object prefix must be a relative POSIX path")
+
+        segments = prefix.rstrip("/").split("/")
+        for segment in segments:
+            if segment in {"", ".", ".."} or "\\" in segment:
+                raise ValueError("object prefix contains an unsafe path segment")
+
+        # 前缀本身必须落在本租户下。这一条与 ``assert_owned_by`` 同一个语义，
+        # 但前者只认键对象，而这里拿到的是裸字符串。
+        tenant_prefix = f"tenant/{context.tenant_id}/"
+        if not prefix.startswith(tenant_prefix):
+            raise ValueError("object prefix is outside the active tenant")
+
+        return await asyncio.to_thread(self._list_prefix_sync, prefix)
+
+    def _list_prefix_sync(self, prefix: str) -> list[tuple[str, datetime]]:
+        root = self._root
+        directory = root.joinpath(*prefix.rstrip("/").split("/")).resolve()
+        if not directory.is_relative_to(root):
+            raise ValueError("object prefix escapes the object-store root")
+        if not directory.is_dir():
+            # 前缀目录不存在 = 这个租户还没有任何静帧对象。不是错误。
+            return []
+
+        out: list[tuple[str, datetime]] = []
+        # 静帧是一层目录一个对象（``.../snapshot-images/<image_id>``），所以
+        # 只扫一层。递归会让「某个 image_id 恰好是个目录」这种脏数据变成
+        # 一串谁也说不清来历的键。
+        for entry in sorted(directory.iterdir()):
+            try:
+                stat = entry.stat()
+            except OSError:
+                # 枚举与删除并发时条目可能已经消失。跳过，不是错误。
+                continue
+            if not entry.is_file():
+                continue
+            key_value = f"{prefix}{entry.name}"
+            out.append((key_value, datetime.fromtimestamp(stat.st_mtime, tz=UTC)))
+        return out
 
     # ------------------------------------------------------------------
     # 路径解析：安全边界全在这里

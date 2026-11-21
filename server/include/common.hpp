@@ -12,6 +12,8 @@
 
 #pragma once
 
+#include <cstdint>
+#include <cstdlib>
 #include <string>
 
 namespace weaknet_dbus {
@@ -108,6 +110,34 @@ inline std::string resolveSnapshotDir(const std::string& cfg_data_dir) {
     return resolveDatabasePath(cfg_data_dir).substr(
                0, resolveDatabasePath(cfg_data_dir).size() - std::string("history.db").size()) +
            "snapshots";
+}
+
+/// 事故静帧目录的总字节上限。0 = 不回收。
+///
+/// 为什么是环境变量而不是 config.yaml 键：上限的语义是「这块盘还剩多少」，
+/// 是**部署事实**而不是运行期可调参数。它不该出现在 `weaknet-cli set` 的
+/// 白名单里被实时改小——那会让一次误操作开始删本机唯一的证据副本；也不该
+/// 进 D-Bus 事务回滚（回滚一个已经删掉的文件是不可能的）。
+///
+/// 默认 0（关闭）而不是一个数字：没人复核过的数字不该开始删证据。与云端
+/// `SNAPSHOT_RETENTION_DAYS` 没有默认值是同一个理由。
+///
+/// 默认建议值是 2 GiB —— 单张 JPEG 实测 118~128 KB，2 GiB 约合 1.6 万张；
+/// 而本板 `/home` 有 117 GB，2 GiB 只占 1.7%，不会因为「拍证」把盘写满。
+/// 但它**不是默认值**，只是注释里的建议，部署时必须显式给出。
+inline uint64_t resolveSnapshotMaxBytes() {
+    const char* env = std::getenv("WEAKNET_SNAPSHOT_MAX_BYTES");
+    if (!env || !*env) return 0;
+    // 只接受纯十进制数字。带单位的字符串（"2G"）需要一套解析规则与边界
+    // 校验，而这条路径删的是证据——宁可让人写成 2147483648 这个明确的数字，
+    // 也不要在这里猜 unit 后缀。
+    uint64_t value = 0;
+    for (const char* p = env; *p; ++p) {
+        if (*p < '0' || *p > '9') return 0;
+        if (value > (UINT64_MAX - 9) / 10) return 0;  // 溢出
+        value = value * 10 + static_cast<uint64_t>(*p - '0');
+    }
+    return value;
 }
 
 /// 默认流量分析接口名。空字符串 "" 表示自动选择当前活动接口

@@ -280,6 +280,33 @@ quick_brief: 严格按 OpenSpec 三阶段（Planner → Generator → Evaluator�
 >
 > 判定、聚合、持久化、触发留证全部走生产代码，工具只往 `device_events` 写事实。构造事件带 `forge_` 前缀与 `INCIDENT_FORGE` 来源标记，可与真实采集甄别。
 
+### 事故静帧留证（板端容量回收 + 云端保留期/配额/孤儿清扫）
+
+一张静帧从板端到运营端是一条链：**板端拍 → 上传到对象存储 → 插行 → 云端可查/可取回**。
+这条链有三处会失效，三处都必须有人管，缺一处就是不可逆的证据损失或磁盘写满。
+
+| 用户意图 | 执行命令 | 说明 |
+|---------|---------|------|
+| "板端静帧占了多少盘" | `ssh board 'du -sb /home/radxa/weaknet/data/snapshots'` | 板端静帧目录总字节（对照 `WEAKNET_SNAPSHOT_MAX_BYTES`） |
+| "板端回收上限是多少" | `ssh board 'systemctl show weaknet-server -p Environment'` | 看 `WEAKNET_SNAPSHOT_MAX_BYTES`；不设或 0 = 不回收 |
+| "云端待回收（干跑）" | `industrial-ops-snapshot-retention --tenant-id <tid> --retention-days 90` | 只报告不删。**上线前必须先跑这个** |
+| "云端真删过期" | `industrial-ops-snapshot-retention --tenant-id <tid> --retention-days 90 --apply` | 不可逆。退出码 3 = 还有剩余，可再跑一轮 |
+| "云端孤儿（干跑）" | `industrial-ops-snapshot-sweep --tenant-id <tid>` | 库里没有行、且对象足够老的那些 |
+| "云端真删孤儿" | `industrial-ops-snapshot-sweep --tenant-id <tid> --apply` | 默认窗口 3600s；**不要调小**（见下） |
+| "查配额" | `IOAP_NETWORK_SNAPSHOT_QUOTA_BYTES=<bytes>` | 写入侧上限，超了先淘汰最旧的；不设 = 无上限 |
+
+> **两个判据不一样，谁也替代不了谁。**
+> 回收器删「**有行**但太老」；清扫器删「**没有行**但对象太老」。孤儿对象没有行，
+> 回收器根本看不见——只跑回收器，孤儿会永久占盘。
+>
+> **板端按字节、云端按时间。** 板子没有 RTC，按墙钟年龄判会在一开机就把所有图
+> 全删；所以板端只看目录总字节，顺序用文件名里的毫秒（相对顺序不受全局偏移影响）。
+>
+> **清扫器的时间窗不能调小。** 上传是 `put(对象) → insert(行)`，两者之间对象
+> 没有行、长得和孤儿一模一样。窗口内删掉它，上传方随后会插入一行指向不存在的
+> 对象——**谎报行**：声称证据已送达、取回 500、且没有任何一处报错。默认 3600s
+> 比真实上传耗时大三个数量级；包装脚本硬拒绝 < 60s。
+
 ### Harness 工作流
 
 | 用户意图 | 执行命令 | 说明 |

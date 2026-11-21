@@ -123,6 +123,20 @@ struct SnapshotServiceConfig {
 
     /// 启动时是否要求硬件后端。false 用于「链路验证」场景。
     bool prefer_hardware{true};
+
+    /// `output_dir` 的总字节上限。0 = 不回收（默认）。
+    ///
+    /// 为什么默认关闭，而云端保留策略默认也是「只报告不删除」：这条路径删的是
+    /// **本机上唯一的那份证据**（板子离线时云端还没有）。一个没人复核过的
+    /// 数字不该开始删它。生产启用时由 `server.cpp` 按配置打开。
+    ///
+    /// 为什么是「总字节」而不是「保留天数」：板子没有 RTC，重启后墙钟可能是
+    /// 1970 或任何值，而文件名用的是墙钟毫秒。按天数判会让时钟跳错的板子把
+    /// 所有图一次性判成过期。详见 `snapshot_retention.hpp`。
+    uint64_t max_total_bytes{0};
+
+    /// 单次回收最多删多少个文件（防止上限误配成 1 字节时一次扫空）。
+    size_t max_prune_files_per_run{32};
 };
 /**
  * @brief 单个事故的拍证进度
@@ -215,6 +229,17 @@ public:
         /// 两者必须分开：「发出去了」与「送到了」混成一个数，会让上行链路
         /// 故障表现为「静帧还在拍」，而那正是最需要它工作的时候。
         uint64_t uploaded_handoff{0};
+        /// 被回收策略删掉的张数（磁盘容量回收，不是上传失败）。
+        /// 与 `failed` 分开：混在一起会让「磁盘满了在删旧图」看起来像
+        /// 「拍照在失败」，排查方向完全相反。
+        uint64_t pruned{0};
+        /// 回收删掉的字节数
+        uint64_t pruned_bytes{0};
+        /// 回收尝试过的次数（含无事可做的空转）
+        uint64_t prune_runs{0};
+        /// 回收后仍超上限的次数。持续增长说明上限配得比单张还小，
+        /// 或磁盘已经装不下当前证据量了。
+        uint64_t prune_still_over{0};
     };
     Stats stats() const;
 
@@ -224,6 +249,16 @@ public:
 private:
     void run();
     bool handleOne(const std::string& incident_id);
+
+    /**
+     * @brief 容量回收：删最旧的事故图，直到总字节回到上限内
+     *
+     * 只从工作线程调用（`handleOne` 里），因此不需要额外加锁——目录操作与
+     * `m_pending` / `m_attempts` 无关，而文件本身只有本线程写。
+     *
+     * @param just_written 刚写成功的文件路径，**一定不会被删**
+     */
+    void pruneSnapshots(const std::string& just_written);
 
     std::unique_ptr<ISnapshotFrameSource> m_frames;
     std::unique_ptr<ISnapshotEncoder> m_encoder;

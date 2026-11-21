@@ -27,6 +27,7 @@
 #include <unistd.h>
 
 #include "logger.hpp"
+#include "snapshot_retention.hpp"
 #include "video_frame_hub.hpp"
 
 namespace weaknet {
@@ -498,6 +499,21 @@ bool SnapshotService::handleOne(const std::string& incident_id) {
              << " seq=" << img.sequence << " encode_ms=" << img.encode_ms
              << (img.fitsSingleChunk() ? "" : "（超单分片上限）"));
 
+    // ---- 4.5 容量回收 ----
+    //
+    // 位置在「写成功之后、上行之前」，三个理由：
+    //   - **写之后**：新图已经在盘上了，回收不可能删掉它（keep_path 保护），
+    //     所以不会出现「先删旧的、新的又没写成功」的净损失；
+    //   - **上行之前**：上传用的是内存里的 `img.bytes`，不是按 `path` 重读，
+    //     所以即使这一轮回收把某些老图删了，正在上传的这张也不受影响；
+    //   - **在工作线程里**：扫描目录是 O(文件数) 的 syscall，放在事故线程里
+    //     会让 `request()` 变慢，而它的契约是「不阻塞」。
+    //
+    // 失败只记日志：图已经存下了，回收失败不能让一次成功的落盘变成失败。
+    if (m_config.max_total_bytes > 0) {
+        pruneSnapshots(path);
+    }
+
     // ---- 5. 上行 ----
     //
     // 顺序是**先落盘、后上传**，不可颠倒：
@@ -539,6 +555,52 @@ bool SnapshotService::handleOne(const std::string& incident_id) {
     }
 
     return true;
+}
+
+void SnapshotService::pruneSnapshots(const std::string& just_written) {
+    SnapshotRetentionConfig config;
+    config.max_total_bytes = m_config.max_total_bytes;
+    config.max_files_per_run = m_config.max_prune_files_per_run;
+
+    SnapshotRetentionResult result;
+    pruneSnapshotDir(m_config.output_dir, config, just_written, &result);
+
+    if (result.files_deleted == 0 && result.delete_failures == 0 &&
+        !result.still_over_limit) {
+        // 无事的常态：一张都不需要删。只记次数，不写每轮日志——否则
+        // 每拍一张图就多一行 INFO，把真正有事的那次淹没掉。
+        std::lock_guard<std::mutex> lk(m_mutex);
+        ++m_stats.prune_runs;
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(m_mutex);
+        ++m_stats.prune_runs;
+        m_stats.pruned += result.files_deleted;
+        m_stats.pruned_bytes += result.bytes_freed;
+        if (result.still_over_limit) ++m_stats.prune_still_over;
+    }
+
+    LOG_INFO(weaknet_dbus::LogModule::VIDEO,
+             "静帧容量回收 limit=" << m_config.max_total_bytes
+             << " before=" << result.bytes_before
+             << " after=" << result.bytes_after
+             << " deleted=" << result.files_deleted
+             << " freed=" << result.bytes_freed
+             << " dirs_removed=" << result.dirs_removed
+             << (result.delete_failures ? " failures=" : "")
+             << (result.delete_failures ? std::to_string(result.delete_failures) : ""));
+
+    // 删不干净必须**警告**而不是 INFO：它可能意味着磁盘真的快满了，或者
+    // 上限配得比一张图还小。两种都需要人看一眼，而 INFO 通常没人看。
+    if (result.still_over_limit) {
+        LOG_WARNING(weaknet_dbus::LogModule::VIDEO,
+                    "静帧容量回收后仍超上限 limit=" << m_config.max_total_bytes
+                    << " after=" << result.bytes_after
+                    << "（上限比单张图还小，或单次回收预算已用尽；"
+                    << "下一次落盘会继续回收）");
+    }
 }
 
 std::string SnapshotService::makeImageId(uint64_t wall_ms, uint64_t sequence) const {
@@ -587,6 +649,16 @@ std::string SnapshotService::describe() const {
     if (m_uploader != nullptr) os << " handed_off=" << m_stats.uploaded_handoff;
     if (!m_config.output_dir.empty()) {
         os << " dir=" << m_config.output_dir;
+    }
+    // 容量上限与回收计数。没有这一段，运维看到「written 一直在涨」会以为
+    // 磁盘占用也在涨——而实际可能一直在删旧图。两者必须同时可见。
+    os << " quota=" << (m_config.max_total_bytes > 0
+                            ? std::to_string(m_config.max_total_bytes)
+                            : std::string("off"));
+    os << " pruned=" << m_stats.pruned
+       << " pruned_bytes=" << m_stats.pruned_bytes;
+    if (m_stats.prune_still_over > 0) {
+        os << " prune_over=" << m_stats.prune_still_over << "(需人工检查上限)";
     }
     if (!m_last_error.empty()) os << " | last_error: " << m_last_error;
     return os.str();
