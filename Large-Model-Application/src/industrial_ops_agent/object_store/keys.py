@@ -94,6 +94,28 @@ def edge_video_chunk_object_key(
     return TenantObjectKey(tenant_id=context.tenant_id, zone=ObjectZone.QUARANTINE, value=value)
 
 
+def edge_snapshot_image_object_key(
+    context: TenantContext,
+    image_id: str,
+) -> TenantObjectKey:
+    """Edge-uploaded evidence still image.
+
+    ``video-clips`` 与 ``snapshot-images`` 必须是两个不同的中间段，理由与
+    ``edge_video_chunk_object_key`` 不重用 ``quarantine_object_key`` 相同：
+    任何按前缀枚举的代码都会把另一个命名空间的对象当成自己的成员。
+
+    一张图只有一个对象，键里没有分片号——静帧本来就是单张的，给它编一个
+    ``chunk-00000`` 只会让后续读回逻辑要去猜「图片是不是也能有多片」。
+    """
+
+    image_id = validate_boundary_identifier(image_id, field="image_id")
+    value = (
+        f"tenant/{context.tenant_id}/{ObjectZone.QUARANTINE.value}/"
+        f"snapshot-images/{image_id}"
+    )
+    return TenantObjectKey(tenant_id=context.tenant_id, zone=ObjectZone.QUARANTINE, value=value)
+
+
 def tenant_object_key_from_value(
     context: TenantContext,
     value: str,

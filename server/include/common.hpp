@@ -99,6 +99,17 @@ inline std::string resolveNetworkEpochPath(const std::string& cfg_data_dir) {
            "network-epoch";
 }
 
+/// 事故静帧留证目录。与 history.db 同目录 —— 事故图是取证材料，必须和
+/// 事故记录（device_events / site_incidents）待在一起，否则现场拷走一半。
+///
+/// 落在持久分区而不是 /tmp：/tmp 在板端是 tmpfs，重启即失；而事故恰恰
+/// 经常伴随重启（看门狗复位、掉电），最需要留下的那几张图会正好丢掉。
+inline std::string resolveSnapshotDir(const std::string& cfg_data_dir) {
+    return resolveDatabasePath(cfg_data_dir).substr(
+               0, resolveDatabasePath(cfg_data_dir).size() - std::string("history.db").size()) +
+           "snapshots";
+}
+
 /// 默认流量分析接口名。空字符串 "" 表示自动选择当前活动接口
 /// 可通过 WEAKNET_TRAFFIC_IFACE 覆盖（如 WEAKNET_TRAFFIC_IFACE=eth1 强制分析指定网卡）
 inline const std::string kDefaultTrafficInterface = []() {

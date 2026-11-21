@@ -35,6 +35,7 @@
 #include "assurance/edge_ai_scheduler.hpp"
 #include "video_frame_hub.hpp"
 #include "video_clip_exporter.hpp"
+#include "snapshot_service.hpp"
 // 为什么是完整 include 而不是前向声明：
 //   ServerContext 用 `unique_ptr<V4l2FrameSource>` 持有帧源。unique_ptr 的
 //   析构需要完整类型——只用前向声明时，任何包含 server.hpp 却不包含本头的
@@ -253,6 +254,27 @@ struct ServerContext {
     std::mutex video_pending_clip_mutex;
     /// 空串 = 无待办请求（incident_id 永不为空，见关联器的生成规则）。
     std::string video_pending_clip_incident;
+
+    // ---------- 事故留证快照（JPEG 静帧） ----------
+    //
+    // 与上面的「视频片段」是两条**互补**的留证线路，而不是替代关系：
+    //
+    //   - 片段回答「事故前后那几十秒到底怎么变化的」——需要 22 MB 与几十秒上传；
+    //   - 静帧回答「现场画面长什么样」——一张 600 KB，秒级可得，即使上行
+    //     全断也能落在本地盘上。
+    //
+    // 为什么独立于编码线程：JPEG 走的是 VE 的 JPEG 通道（`VENC_CODEC_TYPE`
+    // 的 JPEG=1），与 H.264 编码器共用 /dev/cedar_dev 但各自持有句柄；把它
+    // 塞进编码线程会让「拍一张静帧」排队等在当前这段 33 ms 的帧预算后面，
+    // 而快照的价值恰恰在于**事故刚触发**时立刻取到帧。
+    //
+    // 为什么按需而不是持续：持续编码 1640x1232 JPEG 约 10 ms/张，等于再砍
+    // 掉三分之一的帧预算；而快照天然是低频事件。平时什么都不做，事故来了
+    // 才去 hub 取当前那一帧。
+    std::unique_ptr<weaknet::SnapshotService> snapshot_service;
+
+    /// 快照落盘根目录（空 = 只编不落盘）。
+    std::string snapshot_dir;
 
     // ---------- 端侧确定性诊断引擎与证据生成服务 ----------
     std::shared_ptr<weaknet::ActionRegistry> action_registry;

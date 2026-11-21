@@ -228,12 +228,35 @@ add_executable(test_video_encoder_gtest
     unit/test_video_encoder_gtest.cpp)
 target_link_libraries(test_video_encoder_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+# 快照编码器契约：几何拒绝、短缓冲在 memcpy 之前被拒、产出必须是 JPEG
+# 形状、工厂永远非空且能说清为什么没走硬件。**不需要 VE 硬件**——
+# 真后端的能力缺失由工厂回落覆盖，其余语义用桩后端断言。
+add_executable(test_snapshot_encoder_gtest
+    unit/test_snapshot_encoder_gtest.cpp)
+target_link_libraries(test_snapshot_encoder_gtest PRIVATE ${TEST_COMMON_LIBS})
+
+# 快照服务：队列去重（事故巡检每 2 秒轮询，去重失效会写出上百张图）、
+# 路径穿越防护、租约必然归还（槽位泄漏是静默故障）、原子落盘不留 .tmp。
+add_executable(test_snapshot_service_gtest
+    unit/test_snapshot_service_gtest.cpp)
+target_link_libraries(test_snapshot_service_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # 留证上行器契约：URL 派生、分片规划、清单/分片报文形状、
 # base64 与 sha256 正确性、队列丢弃语义。**不需要网络也不需要开发板**——
 # 网络失败路径由「地址不可达」覆盖，云端契约由字段断言覆盖。
 add_executable(test_video_clip_exporter_gtest
     unit/test_video_clip_exporter_gtest.cpp)
 target_link_libraries(test_video_clip_exporter_gtest PRIVATE ${TEST_COMMON_LIBS})
+# WEAKNET_HAVE_TLS：与 `test_edge_telemetry_exporter_gtest` 同一理由——
+# 静帧上行的「有私钥 → 入队成功」这条正向路径需要现场生成真实 Ed25519 密钥。
+# 宏只加在 `server_lib` 上时，测试编译单元里 `makeTempEd25519Key()` 会走
+# `#else` 分支，于是两条正向用例**静默 SKIP**——它们看起来"绿"，但根本没跑。
+if(WEAKNET_TLS_FOUND)
+    target_compile_definitions(test_video_clip_exporter_gtest PRIVATE
+        WEAKNET_HAVE_TLS=1)
+    target_include_directories(test_video_clip_exporter_gtest PRIVATE
+        ${WEAKNET_TLS_INCLUDE_DIRS})
+endif()
 
 # MP4 封装器：无 ffmpeg 的机器上也能全绿（成功路径用 GTEST_SKIP 跳过）。
 # 不放进板端测试集之外的任何门禁，因为它调外部进程——但它的**失败**路径
@@ -378,6 +401,8 @@ foreach(test_target
     test_video_frame_dbus_gtest
     test_video_qoe_attribution_gtest
     test_video_encoder_gtest
+    test_snapshot_encoder_gtest
+    test_snapshot_service_gtest
     test_video_clip_exporter_gtest
     test_video_clip_muxer_gtest
     test_thermal_monitor_gtest

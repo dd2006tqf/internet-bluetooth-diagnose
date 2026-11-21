@@ -1756,6 +1756,38 @@ int start_server(int argc, char** argv) {
                      "camera capture unavailable (business continues): "
                      << ctx.frame_source->lastError());
         }
+
+        // ============================================================
+        // 事故静帧留证
+        //
+        // 与编码线程里的片段录制**并列独立**：片段回答「那几十秒怎么变化」，
+        // 静帧回答「现场长什么样」。两者的故障域也完全不同——片段依赖云端
+        // 上行与 ffmpeg，静帧只依赖本地盘与 VE 的 JPEG 通道。
+        //
+        // 为什么即使摄像头 start() 失败也要创建：摄像头可能稍后插上（或
+        // 首帧竞态自行恢复），届时 hub 开始发布，服务自然就能拍；提前创建
+        // 的代价只有一个空线程每 20 ms 醒一次的轮询。反过来「启动时摄像头
+        // 不在就永久不建」会让热插拔后静默无快照。
+        // ============================================================
+        {
+            ctx.snapshot_dir = resolveSnapshotDir(ctx.cfg.data_dir.get());
+            weaknet::SnapshotServiceConfig scfg;
+            scfg.output_dir = ctx.snapshot_dir;
+
+            ctx.snapshot_service = std::make_unique<weaknet::SnapshotService>(
+                weaknet::createHubFrameSource(ctx.video_hub.get()),
+                weaknet::createSnapshotEncoder(true), scfg);
+
+            if (ctx.snapshot_service->start()) {
+                LOG_INFO(LogModule::VIDEO,
+                         "事故静帧留证已启用: " << ctx.snapshot_service->describe());
+            } else {
+                LOG_WARNING(LogModule::VIDEO,
+                            "事故静帧留证启动失败（其余能力不受影响）: "
+                                << ctx.snapshot_service->describe());
+                ctx.snapshot_service.reset();
+            }
+        }
     }
 
     // ================================================================
@@ -2100,6 +2132,28 @@ int start_server(int argc, char** argv) {
             ctx.video_clip_exporter_slot.store(ctx.video_clip_exporter.get(),
                                                std::memory_order_release);
 
+            // 静帧上行接入**同一条**通路。
+            //
+            // 为什么在这里接而不是在创建 SnapshotService 的地方：静帧服务
+            // 早在编码消费者之前就被创建了（它不依赖编码器，见那段注释），
+            // 那时 exporter 还不存在。而「exporter 是否可用」恰恰就是
+            // 「静帧要不要上行」的判据——所以只能在这里、在 start() 成功
+            // 之后接上。
+            //
+            // 静帧服务的创建可能失败（`snapshot_service` 为空），那时跳过
+            // 即可：能力缺失体现在日志里，不是崩溃。
+            //
+            // 生命周期：exporter 在停机序列里**后于** snapshot_service 销毁
+            // （先停巡检线程 → 停静帧服务 → … → 停 exporter），所以这个裸
+            // 指针在工作线程使用期间始终有效。
+            if (ctx.snapshot_service) {
+                ctx.snapshot_service->setUploader(ctx.video_clip_exporter.get());
+                LOG_INFO(LogModule::VIDEO,
+                         "静帧云端上行已接入: url="
+                             << weaknet::VideoClipExporter::deriveSnapshotsUrl(
+                                    ctx.cfg.edge.url.get()));
+            }
+
             // 事故巡检：关联器确认的活跃事故 → 请求录一段。
             //
             // 为什么是轮询而不是回调：关联器由 bt_events 插件拥有。让插件去
@@ -2111,8 +2165,14 @@ int start_server(int argc, char** argv) {
             auto* pending_mutex = &ctx.video_pending_clip_mutex;
             auto* correlator_slot = &ctx.site_incident_correlator;
             auto* pointers_mutex = &ctx.monitor_pointers_mutex;
+            // 静帧服务的裸指针：它在上面那个块里已创建，且停止时**先**join
+            // 本线程、后销毁服务（见 stop 序列），所以这里捕获裸指针安全。
+            // 用空指针而不是「服务不存在就不拍」的开关：服务创建失败时
+            // 指针为空，下面分支自然跳过，不需要另一套标志。
+            auto* snapshot = ctx.snapshot_service.get();
             ctx.video_incident_watch_thread = std::thread(
-                [stop, pending, pending_mutex, correlator_slot, pointers_mutex]() {
+                [stop, pending, pending_mutex, correlator_slot, pointers_mutex,
+                 snapshot]() {
                     // 已触发过的 incident_id。只保留最近的一批：事故 ID 含
                     // 时间戳与随机码，不会重复使用，无限增长才是真问题。
                     std::deque<std::string> seen;
@@ -2152,7 +2212,25 @@ int start_server(int argc, char** argv) {
                         }
                         LOG_INFO(LogModule::VIDEO,
                                  "检测到活跃事故，请求留证 incident_id="
-                                     << target->incident_id << " active=" << active.size());
+                                     << target->incident_id
+                                     << " active=" << active.size());
+
+                        // 静帧留证：与片段留证**同时**触发，但走完全不同的
+                        // 链路（hub 租约 → VE JPEG → 本地盘），任何一侧失败
+                        // 都不影响另一侧。
+                        //
+                        // 在这里（而不是在编码线程里）请求的理由：编码线程
+                        // 只在**有帧可编**时才转，而事故的典型形态恰恰是
+                        // 画面卡死/丢帧——那正是最该拍到一张的时候，也正是
+                        // 编码线程可能卡住的时候。巡检线程每 2 秒必定醒来，
+                        // 不依赖采集是否还在推进。
+                        if (snapshot != nullptr && !snapshot->request(target->incident_id)) {
+                            // 重复入队是**正常**的（每 2 秒轮询同一事故），
+                            // 不算失败；真正的失败要看 stats/describe。
+                            LOG_INFO(LogModule::VIDEO,
+                                     "静帧请求未入队（多数是同一事故已拍过） incident_id="
+                                         << target->incident_id);
+                        }
                     }
                 });
         } else {
@@ -2330,6 +2408,17 @@ int start_server(int argc, char** argv) {
         ctx.video_incident_watch_thread.join();
     }
 
+    // 静帧服务同样持有 hub 的裸指针（经 HubFrameSource），必须在 hub 之前停。
+    //
+    // 巡检线程已 join，所以此刻不会再有新的 request()；stop() 会等当前那张
+    // 拍完——编码只要 10 ms，等得起，而中途放弃会泄漏一个 dma-buf 租约。
+    if (ctx.snapshot_service) {
+        ctx.snapshot_service->stop();
+        LOG_INFO(LogModule::VIDEO,
+                 "事故静帧留证已停止: " << ctx.snapshot_service->describe());
+        ctx.snapshot_service.reset();
+    }
+
     ctx.video_encode_stop.store(true, std::memory_order_release);
     if (ctx.video_encode_thread.joinable()) {
         ctx.video_encode_thread.join();
@@ -2373,7 +2462,11 @@ int start_server(int argc, char** argv) {
                  << " manifests=" << vstats.manifests_sent
                  << " chunks=" << vstats.chunks_sent
                  << " bytes=" << vstats.bytes_sent
-                 << " send_failures=" << vstats.send_failures);
+                 << " send_failures=" << vstats.send_failures
+                 << " | snapshots: enqueued=" << vstats.snapshots_enqueued
+                 << " uploaded=" << vstats.snapshots_uploaded
+                 << " dropped=" << vstats.snapshots_dropped
+                 << " bytes=" << vstats.snapshot_bytes_sent);
         ctx.video_clip_exporter.reset();
     }
 

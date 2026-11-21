@@ -108,6 +108,27 @@ TEST(VideoFrameHub, ConfigureRejectsZeroGeometry) {
     EXPECT_EQ(hub.backend(), "none");
 }
 
+TEST(VideoFrameHub, ConfiguredFlagDistinguishesUnconfiguredFromBroken) {
+    // ========================================================================
+    // `backend()=="none"` 有歧义，必须有第二个字段来消除它
+    // ========================================================================
+    //
+    // backend_name 的初值就是 "none"，只有 configure() 成功才会改写。于是
+    // 「还没收到首帧」与「分配方式真的没有」在 backend() 上是同一个字符串。
+    // 本板实测踩到：启动日志打出 `frames=hub:none`，看起来像快照后端坏了，
+    // 实际只是 hub 还没收到第一帧（几何要等 S_FMT 之后才知道）。
+    //
+    // 这里钉死：未 configure → (backend="none", configured=false)；
+    // configure 之后 → configured=true 且 backend 不再是 none。
+    VideoFrameHub hub(fastConfig());
+    EXPECT_EQ(hub.backend(), "none");
+    EXPECT_FALSE(hub.configured()) << "未 configure 时不能自报已配置";
+
+    ASSERT_TRUE(hub.configure(kW, kH, kStride, 0, kSize));
+    EXPECT_TRUE(hub.configured()) << "configure 成功后必须为 true";
+    EXPECT_NE(hub.backend(), "none") << "已配置后后端名不能残留 none";
+}
+
 TEST(VideoFrameHub, UvOffsetSurvivesTheLeaseBoundary) {
     // ========================================================================
     // uv_offset 是**事实值**，必须原样跨过租约边界

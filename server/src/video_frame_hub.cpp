@@ -440,6 +440,11 @@ std::string VideoFrameHub::backend() const {
     return impl_->backend_name;
 }
 
+bool VideoFrameHub::configured() const {
+    std::lock_guard<std::mutex> lk(impl_->mtx);
+    return impl_->configured;
+}
+
 std::string VideoFrameHub::describe() const {
     Impl& s = *impl_;
     std::lock_guard<std::mutex> lk(s.mtx);

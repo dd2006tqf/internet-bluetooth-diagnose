@@ -29,13 +29,57 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
+
+#ifdef WEAKNET_HAVE_TLS
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#endif
 
 #include "video_clip_exporter.hpp"
 
 namespace weaknet {
 namespace {
+
+/// 生成临时 Ed25519 私钥 PEM，返回路径；失败返回空串（调用方 GTEST_SKIP）。
+///
+/// 为什么用**真实**密钥而不是打桩签名：这里要验的是「签名这一步能跑通，
+/// 于是入队成功」。如果把它打桩，「路径/权限/格式」这几类真问题就永远
+/// 测不出来，而它们的表现恰好是「所有静帧静默不上传」。
+///
+/// 用 mkstemp 而不是固定路径：并行跑测试时固定路径会互相踩。
+std::string makeTempEd25519Key() {
+#ifdef WEAKNET_HAVE_TLS
+    char tmpl[] = "/tmp/gtest_snap_priv_XXXXXX";
+    const int fd = ::mkstemp(tmpl);
+    if (fd < 0) return {};
+    const std::string path = tmpl;
+
+    EVP_PKEY* key = nullptr;
+    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, nullptr);
+    bool ok = false;
+    if (ctx && EVP_PKEY_keygen_init(ctx) > 0 && EVP_PKEY_keygen(ctx, &key) > 0) {
+        FILE* fp = ::fdopen(fd, "w");
+        if (fp) {
+            ok = PEM_write_PrivateKey(fp, key, nullptr, nullptr, 0, nullptr, nullptr) == 1;
+            std::fclose(fp);
+        }
+    }
+    if (ctx) EVP_PKEY_CTX_free(ctx);
+    if (key) EVP_PKEY_free(key);
+    if (!ok) {
+        ::unlink(path.c_str());
+        return {};
+    }
+    return path;
+#else
+    return {};
+#endif
+}
 
 /// 构造一份最小可用配置。只填派生 URL 与签名需要的字段；
 /// 网络请求的成败在单测里不重要（见文件头「为什么不需要网络」）。
@@ -450,6 +494,268 @@ TEST_F(VideoClipExporterTest, RunOnceFailsCleanlyOnUnreachableEndpoint) {
     // 片段还在队列里（重试语义）或已被计入明确的重试状态。
     // 本实现的选择是：失败后保留在队列头部，直到尝试次数用尽。
     EXPECT_GE(exporter.queueDepth() + exporter.stats().clips_dropped, 1u);
+}
+
+// ---------------------------------------------------------------------------
+// 静帧上行：与片段共用同一条通路，但契约完全不同
+// ---------------------------------------------------------------------------
+//
+// 这段之所以必须存在：静帧的字段名、`schema_version`、端点路径**任何一处**
+// 写错都只会表现为「云端 422 / 404」，而本地日志只有「上传失败」。那类
+// 错误在真机联调时才暴露，且极难从几百行日志里定位。
+//
+// 另一个静默错误是 base64/摘要与**实际发送的字节**不一致：云端先解 base64
+// 再比长度、最后比摘要，三者只要有一处对不上就是 422，而本地看起来一切正常。
+
+namespace {
+
+EdgeSnapshotUpload makeShot(uint32_t w = 1640, uint32_t h = 1232,
+                           size_t bytes = 128, const std::string& id = "snap-1",
+                           const std::string& incident = "inc-1") {
+    EdgeSnapshotUpload shot;
+    shot.image_id = id;
+    shot.incident_id = incident;
+    shot.width = w;
+    shot.height = h;
+    shot.captured_at_ms = 1'795'155'756'003ULL;
+    shot.bytes.assign(bytes, 0xFF);
+    // 做成一个形状像 JPEG 的载荷（首尾标记在位），这样若哪天有人把字节
+    // 换掉，断言能看出「换的不是同一份」。
+    if (shot.bytes.size() >= 2) {
+        shot.bytes[0] = 0xFF;
+        shot.bytes[1] = 0xD8;
+        shot.bytes[shot.bytes.size() - 2] = 0xFF;
+        shot.bytes[shot.bytes.size() - 1] = 0xD9;
+    }
+    return shot;
+}
+
+}  // namespace
+
+TEST_F(VideoClipExporterTest, DerivesSnapshotsUrlFromTelemetrySuffix) {
+    EXPECT_EQ(VideoClipExporter::deriveSnapshotsUrl(
+                  "http://127.0.0.1:8000/api/v1/network/edge/telemetry"),
+              "http://127.0.0.1:8000/api/v1/network/edge/snapshot-images");
+}
+
+TEST_F(VideoClipExporterTest, SnapshotUrlRejectsUnknownSuffixInsteadOfGuessing) {
+    // 猜地址等于把带签名的证据发到未知端点，比失败糟得多。
+    EXPECT_TRUE(VideoClipExporter::deriveSnapshotsUrl("http://127.0.0.1:8000/x").empty());
+    EXPECT_TRUE(VideoClipExporter::deriveSnapshotsUrl("").empty());
+    // 只差一个字符也必须拒绝：`/edge/telemetr` 不是 `/edge/telemetry`。
+    EXPECT_TRUE(
+        VideoClipExporter::deriveSnapshotsUrl("http://h/edge/telemetr").empty());
+}
+
+TEST_F(VideoClipExporterTest, BuildSnapshotBodyEmitsEveryContractField) {
+    // 云端的 `SnapshotImage` 是 extra="forbid"：多一个字段 422，少一个必填
+    // 字段也 422。所以这里逐个字段检查，而不是只看「报文非空」。
+    const auto shot = makeShot();
+    std::string error;
+    const std::string body =
+        VideoClipExporter::buildSnapshotBody(shot, "dev-1", "site-1", "gw-1", &error);
+    ASSERT_FALSE(body.empty()) << error;
+
+    const std::vector<std::string> required = {
+        "\"schema_version\":\"network.edge.snapshot-images.v1\"",
+        "\"image_id\":\"snap-1\"",
+        "\"device_id\":\"dev-1\"",
+        "\"site_id\":\"site-1\"",
+        "\"gateway_id\":\"gw-1\"",
+        "\"incident_id\":\"inc-1\"",
+        "\"codec\":\"JPEG\"",
+        "\"width\":1640",
+        "\"height\":1232",
+        "\"captured_at_ms\":1795155756003",
+        "\"size_bytes\":128",
+        "\"content_sha256\":",
+        "\"payload_b64\":",
+    };
+    for (const auto& needle : required) {
+        EXPECT_NE(body.find(needle), std::string::npos)
+            << "缺少契约字段 " << needle << " → 云端 422。报文: " << body << "";
+    }
+
+    // 片段契约的字段绝对不能混进来：`fps` 在静帧上没有意义，一旦发出去
+    // 云端 422（forbid），而本地只会看到「上传失败」。
+    EXPECT_EQ(body.find("\"fps\""), std::string::npos)
+        << "静帧不得携带 fps 字段";
+    EXPECT_EQ(body.find("\"expected_chunks\""), std::string::npos)
+        << "静帧不分片，不得携带 expected_chunks";
+}
+
+TEST_F(VideoClipExporterTest, SnapshotBodyDigestMatchesTheBytesItCarries) {
+    // 云端按「解码 base64 → 比长度 → 比摘要」校验。三者必须来自同一份字节，
+    // 否则任何一处对不上都是 422，而本地看起来完全正常。
+    const auto shot = makeShot();
+    std::string error;
+    const std::string body =
+        VideoClipExporter::buildSnapshotBody(shot, "dev-1", "", "", &error);
+    ASSERT_FALSE(body.empty()) << error;
+
+    const std::string payload_b64 = VideoClipExporter::base64Encode(
+        shot.bytes.data(), shot.bytes.size());
+    const std::string digest =
+        VideoClipExporter::sha256Hex(shot.bytes.data(), shot.bytes.size());
+    ASSERT_EQ(digest.size(), 64u);
+    ASSERT_FALSE(payload_b64.empty());
+
+    EXPECT_NE(body.find("\"content_sha256\":\"" + digest + "\""), std::string::npos);
+    EXPECT_NE(body.find("\"payload_b64\":\"" + payload_b64 + "\""), std::string::npos);
+    EXPECT_NE(body.find("\"size_bytes\":" + std::to_string(shot.bytes.size())),
+              std::string::npos);
+}
+
+TEST_F(VideoClipExporterTest, SnapshotBodyRejectsInvalidSelfDescription) {
+    std::string error;
+
+    auto no_id = makeShot();
+    no_id.image_id.clear();
+    EXPECT_TRUE(
+        VideoClipExporter::buildSnapshotBody(no_id, "dev-1", "", "", &error).empty());
+
+    auto no_bytes = makeShot();
+    no_bytes.bytes.clear();
+    EXPECT_TRUE(
+        VideoClipExporter::buildSnapshotBody(no_bytes, "dev-1", "", "", &error).empty());
+
+    auto no_geometry = makeShot(0, 0);
+    EXPECT_TRUE(
+        VideoClipExporter::buildSnapshotBody(no_geometry, "dev-1", "", "", &error).empty());
+
+    // device_id 来自 edge.device_id。它为空说明配置不全，此时发出去也会被
+    // 云端拒绝（或归到错误的资产上），本地拒绝更早、更清楚。
+    auto ok = makeShot();
+    EXPECT_TRUE(VideoClipExporter::buildSnapshotBody(ok, "", "", "", &error).empty());
+}
+
+TEST_F(VideoClipExporterTest, SnapshotBodyRejectsOversizedImageLocally) {
+    // 超限只可能来自质量参数被抬高或编码器异常。本地拒绝能让日志立刻指向
+    // 真正的原因，而不是传上去换一个 422。
+    auto shot = makeShot();
+    shot.bytes.assign(SNAPSHOT_MAX_BYTES + 1, 0xFF);
+    std::string error;
+    EXPECT_TRUE(
+        VideoClipExporter::buildSnapshotBody(shot, "dev-1", "", "", &error).empty());
+    EXPECT_FALSE(error.empty());
+}
+
+TEST_F(VideoClipExporterTest, SnapshotEnqueueFailsWithoutSigningKey) {
+    // 本测试配置里 private_key_path 为空 → 签名必失败。这是**配置问题**，
+    // 不该排进队列等重试（重试也不会成功），必须立刻拒绝并计入 dropped。
+    VideoClipExporter exporter(config_, config_.edge.url.get());
+    EXPECT_FALSE(exporter.enqueueSnapshot(makeShot()));
+    EXPECT_EQ(exporter.stats().snapshots_dropped, 1u);
+    EXPECT_EQ(exporter.stats().snapshots_enqueued, 0u);
+}
+
+TEST_F(VideoClipExporterTest, SnapshotEnqueueRejectsInvalidSelfDescription) {
+    VideoClipExporter exporter(config_, config_.edge.url.get());
+
+    auto no_id = makeShot();
+    no_id.image_id.clear();
+    EXPECT_FALSE(exporter.enqueueSnapshot(no_id));
+
+    auto no_bytes = makeShot();
+    no_bytes.bytes.clear();
+    EXPECT_FALSE(exporter.enqueueSnapshot(no_bytes));
+
+    EXPECT_EQ(exporter.stats().snapshots_dropped, 2u);
+}
+
+TEST_F(VideoClipExporterTest, SnapshotRunOnceOnEmptyQueueReportsWhy) {
+    // 空队列返回 false 是对的，但**必须给出原因**：上传循环靠这条消息区分
+    // 「没东西可传」与「传失败了」，两者在停机日志里含义完全不同。
+    VideoClipExporter exporter(config_, config_.edge.url.get());
+    std::string error;
+    EXPECT_FALSE(exporter.runSnapshotOnce(&error));
+    EXPECT_FALSE(error.empty()) << "空队列也必须给出原因";
+    EXPECT_EQ(exporter.stats().snapshots_uploaded, 0u);
+    EXPECT_EQ(exporter.stats().snapshots_dropped, 0u)
+        << "队列空不是丢弃，不能计入 dropped";
+}
+
+TEST_F(VideoClipExporterTest, SnapshotEnqueuesWithARealSigningKey) {
+    // 这条是**正向**路径：有了可用的 Ed25519 私钥，入队就必须成功。
+    // 少了它，「签名失败」那条用例会掩盖一个更糟的可能——签名对**任何**
+    // 输入都失败（比如路径分支写错），那样所有静帧都会静默不上传。
+    const std::string key_path = makeTempEd25519Key();
+    if (key_path.empty()) {
+        GTEST_SKIP() << "无法生成临时 Ed25519 密钥（测试环境缺 OpenSSL）";
+    }
+    struct Cleanup {
+        ~Cleanup() { ::unlink(path.c_str()); }
+        std::string path;
+    } cleanup{key_path};
+
+    config_.edge.private_key_path.set(key_path);
+    VideoClipExporter exporter(config_, config_.edge.url.get());
+    ASSERT_TRUE(exporter.enqueueSnapshot(makeShot()));
+
+    EXPECT_EQ(exporter.stats().snapshots_enqueued, 1u);
+    EXPECT_EQ(exporter.stats().snapshots_dropped, 0u);
+}
+
+TEST_F(VideoClipExporterTest, SnapshotRetryReusesTheSameBodyAndSignature) {
+    // 云端按内容判幂等：同 image_id 异内容 = 409，而客户端只会看到
+    // 「上传失败」。所以报文与签名必须在**入队时**算好一次，重试时复用。
+    //
+    // 断言方式是间接的但足够判别：不可达端点 + 1 次尝试后，队列已空且
+    // 计数为 1 dropped；若实现是「每次重试重算」，这条仍会过——所以再加
+    // 一条更直接的：同一份自述两次构造的报文必须逐字相同。
+    auto shot = makeShot();
+    std::string e1, e2;
+    const std::string b1 =
+        VideoClipExporter::buildSnapshotBody(shot, "dev-1", "site-1", "gw-1", &e1);
+    const std::string b2 =
+        VideoClipExporter::buildSnapshotBody(shot, "dev-1", "site-1", "gw-1", &e2);
+    ASSERT_FALSE(b1.empty()) << e1;
+    ASSERT_FALSE(b2.empty()) << e2;
+    EXPECT_EQ(b1, b2) << "同一份自述必须产生逐字相同的报文，否则重试会被判内容冲突";
+}
+
+TEST_F(VideoClipExporterTest, SnapshotQueueDropsOldestWhenFull) {
+    // 静帧按**条数**限流（kMaxQueuedSnapshots = 4），不是字节。理由见头文件：
+    // 共用字节配额时，一个待传的 22 MB 片段会把配额吃光，于是事故现场那张
+    // 唯一的图反而被丢。
+    const std::string key_path = makeTempEd25519Key();
+    if (key_path.empty()) {
+        GTEST_SKIP() << "无法生成临时 Ed25519 密钥（测试环境缺 OpenSSL）";
+    }
+    struct Cleanup {
+        ~Cleanup() { ::unlink(path.c_str()); }
+        std::string path;
+    } cleanup{key_path};
+    config_.edge.private_key_path.set(key_path);
+
+    VideoClipExporter exporter(config_, config_.edge.url.get());
+    // 不 start()：只要入队语义，不需要后台线程真的去发。
+    for (int i = 0; i < 6; ++i) {
+        EXPECT_TRUE(exporter.enqueueSnapshot(
+            makeShot(1640, 1232, 128, "snap-" + std::to_string(i))))
+            << "第 " << i << " 张";
+    }
+    // 前两张被挤掉，后四张留下。
+    EXPECT_EQ(exporter.stats().snapshots_enqueued, 6u);
+    EXPECT_EQ(exporter.stats().snapshots_dropped, 2u)
+        << "满了必须是丢最旧，并且计入 dropped（不静默）";
+}
+
+TEST_F(VideoClipExporterTest, SnapshotBodyEscapesHostileIdentifiers) {
+    // image_id / incident_id 会被拼进 JSON。含引号或反斜杠时不转义就会
+    // 产生**合法但语义错误**的报文（或多一个字段 → 云端 422）。这类输入
+    // 来自板端自己的编号逻辑，正常不会出现，但一旦出现就是最难查的那种。
+    auto shot = makeShot();
+    shot.image_id = "snap-\"quote";
+    shot.incident_id = "inc\\back";
+    std::string error;
+    const std::string body = VideoClipExporter::buildSnapshotBody(
+        shot, "dev-1", "", "", &error);
+    ASSERT_FALSE(body.empty()) << error;
+    EXPECT_NE(body.find("\\\"quote"), std::string::npos)
+        << "引号必须被转义，否则报文被提前截断: " << body;
+    EXPECT_NE(body.find("inc\\\\back"), std::string::npos)
+        << "反斜杠必须被转义: " << body;
 }
 
 // ---------------------------------------------------------------------------

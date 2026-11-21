@@ -70,6 +70,7 @@ set(SERVER_SOURCES
     src/utils/json_escape.cpp
     src/video_frame_hub.cpp
     src/video_encoder.cpp
+    src/snapshot_service.cpp
     src/video_clip_exporter.cpp
     src/video_clip_muxer.cpp
     src/video_qoe_attribution.cpp

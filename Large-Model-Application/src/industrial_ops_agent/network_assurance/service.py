@@ -67,6 +67,10 @@ from industrial_ops_agent.network_assurance.contracts import (
     SiteGatewayItem,
     SiteSummary,
 )
+from industrial_ops_agent.network_assurance.snapshot_contracts import (
+    SnapshotImage,
+    SnapshotImageResult,
+)
 from industrial_ops_agent.network_assurance.video_contracts import (
     VideoClipChunk,
     VideoClipChunkResult,
@@ -93,6 +97,7 @@ from industrial_ops_agent.persistence.models import (
     NetworkGatewayCatalogVersionRecord,
     NetworkPendingActionRecord,
     NetworkSiteIncidentRecord,
+    NetworkSnapshotImageRecord,
     NetworkSnapshotRecord,
     NetworkVideoClipChunkRecord,
     NetworkVideoClipRecord,
@@ -768,6 +773,108 @@ class NetworkAssuranceService:
                 .order_by(NetworkVideoClipChunkRecord.chunk_index.asc())
             )
             return list(session.scalars(stmt).all())
+
+    def register_snapshot_image(
+        self,
+        context: TenantContext,
+        image: SnapshotImage,
+        *,
+        object_key: str,
+        key_id: str,
+        received_at: datetime | None = None,
+    ) -> SnapshotImageResult:
+        """登记一张已落盘的事故静帧；重放计 duplicate，内容冲突拒绝。
+
+        ``object_key`` 由调用方（路由层）在**写对象存储成功之后**传入。
+        顺序与分片端点一致且不可颠倒：先写库再写对象会得到「行存在但内容
+        不存在」，而那一行会声称证据已送达，实际取不出内容。
+
+        为什么「同 image_id 不同内容」要拒绝而不是覆盖：``image_id`` 是板端
+        生成的幂等键，同一个键出现两种内容意味着板端编号逻辑坏了（或者有人
+        重放了别的图）。覆盖之后「这个事故现场长什么样」就取决于到达顺序，
+        而证据不能这样。
+
+        冲突判定只看**板端自述、决定「这是哪张图」的字段**——``received_at``
+        这类服务端字段每次都会不同，拿它参与比对会让每一次重放都变成冲突。
+        """
+
+        now = as_utc(received_at or datetime.now(UTC))
+        with self._database.transaction(context) as session:
+            asset = self._ensure_uplink_asset(
+                session, context, device_id=image.device_id, key_id=key_id
+            )
+            existing = session.get(NetworkSnapshotImageRecord, image.image_id)
+            if existing is not None:
+                self._require_same_tenant(context, existing.tenant_id, image.image_id)
+                if self._snapshot_image_differs(existing, image):
+                    raise NetworkAssuranceConflict(
+                        f"snapshot image {image.image_id} was already registered "
+                        "with different content"
+                    )
+                return SnapshotImageResult(
+                    image_id=image.image_id,
+                    accepted=False,
+                    duplicate=True,
+                    size_bytes=existing.size_bytes,
+                )
+
+            session.add(
+                NetworkSnapshotImageRecord(
+                    image_id=image.image_id,
+                    tenant_id=context.tenant_id,
+                    asset_id=asset.asset_id,
+                    site_id=image.site_id,
+                    gateway_id=image.gateway_id,
+                    incident_id=image.incident_id,
+                    codec=image.codec,
+                    width=image.width,
+                    height=image.height,
+                    captured_at_ms=image.captured_at_ms,
+                    size_bytes=image.size_bytes,
+                    content_sha256=image.content_sha256,
+                    object_key=object_key,
+                    received_at=now,
+                )
+            )
+            try:
+                session.flush()
+            except IntegrityError as exc:
+                # 并发登记同一张图：唯一约束才是正确性保证，上面那次 get 只是
+                # 让常见路径的 duplicate 计数准确。撞到约束说明另一个请求先
+                # 提交了，语义等价于重放。
+                raise NetworkAssuranceConflict(
+                    f"snapshot image {image.image_id} was concurrently registered"
+                ) from exc
+
+            return SnapshotImageResult(
+                image_id=image.image_id,
+                accepted=True,
+                duplicate=False,
+                size_bytes=image.size_bytes,
+            )
+
+    @staticmethod
+    def _snapshot_image_differs(
+        existing: NetworkSnapshotImageRecord, image: SnapshotImage
+    ) -> bool:
+        """重放判定：只看板端自述的、决定「这是哪张图」的字段。
+
+        ``content_sha256`` 必须在比对之列——同一 image_id 配不同图片内容是
+        最需要拦住的情况（编号逻辑坏了，或者有人换了图）。
+        """
+
+        return (
+            existing.asset_id != image.device_id
+            or existing.site_id != image.site_id
+            or existing.gateway_id != image.gateway_id
+            or existing.incident_id != image.incident_id
+            or existing.codec != image.codec
+            or existing.width != image.width
+            or existing.height != image.height
+            or existing.captured_at_ms != image.captured_at_ms
+            or existing.size_bytes != image.size_bytes
+            or existing.content_sha256 != image.content_sha256
+        )
 
     @staticmethod
     def _video_clip_differs(

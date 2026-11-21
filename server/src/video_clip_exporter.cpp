@@ -38,6 +38,12 @@ namespace {
 
 constexpr const char* kVideoClipsSchemaVersion = "network.edge.video-clips.v1";
 
+/// 静帧信封。与片段**分域**：两者都用 base64 载荷，但一个是「一段码流、
+/// 要分片、要收齐」，一个是「一张图、一次 POST 就完」。共用一个
+/// schema_version 会让消费方必须先看 codec 才知道怎么解析。
+constexpr const char* kSnapshotImagesSchemaVersion =
+    "network.edge.snapshot-images.v1";
+
 // 重试轮次与退避参数已移入 `RetryPolicy`（见头文件）。编译期常量无法
 // 被单测缩短，会导致「验证失败路径」的用例真的等满两分钟退避。
 
@@ -329,6 +335,20 @@ std::string VideoClipExporter::deriveChunkUrl(const std::string& telemetry_url,
     return base + "/" + clip_id + "/chunks/" + std::to_string(chunk_index);
 }
 
+std::string VideoClipExporter::deriveSnapshotsUrl(const std::string& telemetry_url) {
+    // 与 deriveClipsUrl 逐字同一形态。两处都写一遍而不是抽一个共同 helper：
+    // 端点名不同，将来若某一侧要改（比如静帧加版本前缀），不希望另一侧
+    // 被顺带改掉——那正是「看起来能复用」造成静默错配的经典路径。
+    const std::string suffix = "/edge/telemetry";
+    if (telemetry_url.size() < suffix.size()) return {};
+    if (telemetry_url.compare(telemetry_url.size() - suffix.size(), suffix.size(),
+                              suffix) != 0) {
+        return {};
+    }
+    return telemetry_url.substr(0, telemetry_url.size() - suffix.size()) +
+           "/edge/snapshot-images";
+}
+
 std::string VideoClipExporter::makeClipId(const std::string& device_id,
                                           uint64_t epoch_ms) {
     // 云端正则要求首字符是字母数字，所以把 device_id 里的非合规字符压成 '-'，
@@ -518,6 +538,55 @@ std::string VideoClipExporter::buildChunkBody(const std::string& device_id,
         << ",\"clip_id\":" << jsonStr(clip_id)
         << ",\"chunk_index\":" << chunk_index
         << ",\"size_bytes\":" << payload_size
+        << ",\"content_sha256\":" << jsonStr(digest)
+        << ",\"payload_b64\":" << jsonStr(payload_b64)
+        << "}";
+    return oss.str();
+}
+
+std::string VideoClipExporter::buildSnapshotBody(const EdgeSnapshotUpload& shot,
+                                                 const std::string& device_id,
+                                                 const std::string& site_id,
+                                                 const std::string& gateway_id,
+                                                 std::string* error) {
+    if (!shot.valid()) {
+        if (error) *error = "静帧自述不合法（image_id/几何/字节）";
+        return {};
+    }
+    if (device_id.empty()) {
+        if (error) *error = "device_id 为空（edge.device_id 未配置）";
+        return {};
+    }
+    if (shot.bytes.size() > SNAPSHOT_MAX_BYTES) {
+        // 在本地就拒绝，而不是传上去等 422。这类超限只可能来自质量参数被
+        // 抬高或编码器异常，本地拒绝能让日志立刻指向真正的原因。
+        if (error) *error = "静帧超过单张上限 " + std::to_string(shot.bytes.size());
+        return {};
+    }
+
+    const std::string digest = sha256Hex(shot.bytes.data(), shot.bytes.size());
+    if (digest.empty()) {
+        if (error) *error = "sha256 计算失败（本构建未编译 OpenSSL？）";
+        return {};
+    }
+    const std::string payload_b64 = base64Encode(shot.bytes.data(), shot.bytes.size());
+
+    // 字段顺序与云端 `SnapshotImage` 逐字对应。云端是 extra="forbid"：
+    // 多一个字段 422，少一个必填字段也 422。所以这里既不能顺手带上
+    // `fps`（片段契约的字段），也不能省掉 `incident_id`（可空但有字段）。
+    std::ostringstream oss;
+    oss << "{"
+        << "\"schema_version\":" << jsonStr(kSnapshotImagesSchemaVersion)
+        << ",\"image_id\":" << jsonStr(shot.image_id)
+        << ",\"device_id\":" << jsonStr(device_id)
+        << ",\"site_id\":" << jsonStr(site_id)
+        << ",\"gateway_id\":" << jsonStr(gateway_id)
+        << ",\"incident_id\":" << jsonStr(shot.incident_id)
+        << ",\"codec\":\"JPEG\""
+        << ",\"width\":" << shot.width
+        << ",\"height\":" << shot.height
+        << ",\"captured_at_ms\":" << shot.captured_at_ms
+        << ",\"size_bytes\":" << shot.bytes.size()
         << ",\"content_sha256\":" << jsonStr(digest)
         << ",\"payload_b64\":" << jsonStr(payload_b64)
         << "}";
@@ -754,6 +823,13 @@ bool VideoClipExporter::enqueue(const VideoClipMeta& meta,
 
     queued_bytes_ += codec_bytes.size();
     queue_.push_back(PendingClip{meta, std::move(codec_bytes), 0});
+    // `clips_enqueued` 原先声明了却从没自增过，于是停机日志里这一项恒为 0——
+    // 「入队了没有」与「入队后又丢了没有」在日志上无法区分，而这两件事的
+    // 处置完全不同。补上自增，与 `snapshots_enqueued` 同一口径。
+    {
+        std::lock_guard<std::mutex> sl(stats_mutex_);
+        ++stats_.clips_enqueued;
+    }
     lock.unlock();
     cv_.notify_one();
     return true;
@@ -762,6 +838,157 @@ bool VideoClipExporter::enqueue(const VideoClipMeta& meta,
 size_t VideoClipExporter::queueDepth() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return queue_.size();
+}
+
+// ============================================================================
+// 静帧：入队
+// ============================================================================
+
+bool VideoClipExporter::enqueueSnapshot(EdgeSnapshotUpload shot) {
+    // 与 enqueue() 同一个纪律：每一条早退都要让计数涨。
+    auto reject = [this](const std::string& why, const std::string& image_id) {
+        LOG_WARNING(weaknet_dbus::LogModule::VIDEO,
+                    "静帧入队被拒：" << why << " image_id=" << image_id);
+        std::lock_guard<std::mutex> sl(stats_mutex_);
+        ++stats_.snapshots_dropped;
+        return false;
+    };
+
+    if (!shot.valid()) {
+        return reject("自述不合法（image_id/几何/字节）", shot.image_id);
+    }
+    if (shot.bytes.size() > SNAPSHOT_MAX_BYTES) {
+        return reject("超过单张上限 " + std::to_string(shot.bytes.size()),
+                      shot.image_id);
+    }
+
+    // ---- 报文与签名在这里算好，然后随队列项一起走 ----
+    //
+    // 为什么不在上传线程里算：`buildSnapshotBody` 会用掉那份 `bytes`，而
+    // 上传线程要的是「已经能发的字节」。更关键的是**重试必须复用同一份**：
+    // 云端按内容判幂等，重算一次 JSON 若字段顺序或 base64 换行有漂移，
+    // 同一张图会被判成「内容冲突」而永久卡死。
+    std::string error;
+    std::string body = buildSnapshotBody(shot, config_.edge.device_id.get(),
+                                         config_.edge.site_id.get(),
+                                         config_.edge.device_id.get(), &error);
+    if (body.empty()) {
+        return reject("报文构造失败: " + error, shot.image_id);
+    }
+
+    std::string sig = signBody(body, &error);
+    if (sig.empty()) {
+        // 签名失败是**配置/构建问题**（私钥不可读、未编 OpenSSL），不是网络
+        // 抖动。当成一次性失败报出来，不要排进队列等重试——重试也不会成功，
+        // 只会让一张 120 KB 的图在内存里滞留一小时。
+        return reject("签名失败: " + error, shot.image_id);
+    }
+
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (stop_requested_) return false;
+
+    // 队列满：丢**最旧**的那张。与片段同一理由——最新事故更相关。
+    // 静帧按条数限流（见头文件），所以这里不需要字节配额。
+    if (snapshot_queue_.size() >= kMaxQueuedSnapshots) {
+        const std::string victim = snapshot_queue_.front().shot.image_id;
+        snapshot_queue_.pop_front();
+        LOG_WARNING(weaknet_dbus::LogModule::VIDEO,
+                    "静帧队列满，丢弃最旧一张 image_id=" << victim);
+        std::lock_guard<std::mutex> sl(stats_mutex_);
+        ++stats_.snapshots_dropped;
+    }
+
+    PendingSnapshot pending;
+    pending.raw_bytes = shot.bytes.size();
+    pending.shot.image_id = std::move(shot.image_id);
+    pending.shot.incident_id = std::move(shot.incident_id);
+    pending.shot.width = shot.width;
+    pending.shot.height = shot.height;
+    pending.shot.captured_at_ms = shot.captured_at_ms;
+    // 字节已经在 body 里（base64）。这里**不保留**原始字节：
+    // 一张图约 160 KB base64，保留两份没有收益——上传只需要 body。
+    pending.body = std::move(body);
+    pending.signature = std::move(sig);
+
+    // 日志字段先取出来再入队：解锁之后 `snapshot_queue_.back()` 可能已被
+    // 另一个线程改掉（runSnapshotOnce 取走、或下一次 enqueueSnapshot 推入）。
+    const std::string log_image_id = pending.shot.image_id;
+    const std::string log_incident = pending.shot.incident_id;
+    const size_t log_body_bytes = pending.body.size();
+
+    snapshot_queue_.push_back(std::move(pending));
+    {
+        std::lock_guard<std::mutex> sl(stats_mutex_);
+        ++stats_.snapshots_enqueued;
+    }
+    lock.unlock();
+    cv_.notify_one();
+
+    LOG_INFO(weaknet_dbus::LogModule::VIDEO,
+             "静帧已入队 image_id=" << log_image_id << " incident=" << log_incident
+             << " body_bytes=" << log_body_bytes);
+    return true;
+}
+
+// ============================================================================
+// 静帧：上传
+// ============================================================================
+
+bool VideoClipExporter::runSnapshotOnce(std::string* error) {
+    PendingSnapshot shot;
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (snapshot_queue_.empty()) {
+            if (error) *error = "静帧队列为空";
+            return false;
+        }
+        shot = std::move(snapshot_queue_.front());
+        snapshot_queue_.pop_front();
+    }
+
+    const std::string url = deriveSnapshotsUrl(telemetry_url_);
+    if (url.empty()) {
+        if (error) *error = "snapshot-images URL 无法派生";
+        std::lock_guard<std::mutex> sl(stats_mutex_);
+        ++stats_.snapshots_dropped;
+        return false;
+    }
+
+    const size_t raw_bytes = shot.raw_bytes;
+    std::string last_error;
+    for (uint32_t attempt = 0; attempt < retry_policy_.max_attempts; ++attempt) {
+        if (attempt > 0) {
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(backoffMs(attempt, retry_policy_)));
+        }
+        std::string response;
+        if (postSigned(url, shot.body, shot.signature, &response, &last_error)) {
+            {
+                std::lock_guard<std::mutex> sl(stats_mutex_);
+                ++stats_.snapshots_uploaded;
+                // 与片段 `bytes_sent` 同口径：**裸字节**，不含 base64 膨胀。
+                stats_.snapshot_bytes_sent += raw_bytes;
+            }
+            LOG_INFO(weaknet_dbus::LogModule::VIDEO,
+                     "静帧已送达 image_id=" << shot.shot.image_id
+                     << " jpeg_bytes=" << raw_bytes
+                     << " body_bytes=" << shot.body.size());
+            return true;
+        }
+        {
+            std::lock_guard<std::mutex> sl(stats_mutex_);
+            ++stats_.send_failures;
+        }
+        LOG_WARNING(weaknet_dbus::LogModule::VIDEO,
+                    "静帧上传失败（第 " << (attempt + 1) << " 次）image_id="
+                    << shot.shot.image_id << ": " << last_error);
+        if (stop_requested_.load()) break;
+    }
+
+    if (error) *error = "静帧重试耗尽: " + last_error;
+    std::lock_guard<std::mutex> sl(stats_mutex_);
+    ++stats_.snapshots_dropped;
+    return false;
 }
 
 VideoClipExporterStats VideoClipExporter::stats() const {
@@ -981,19 +1208,64 @@ void VideoClipExporter::run() {
         {
             std::unique_lock<std::mutex> lock(mutex_);
             cv_.wait_for(lock, std::chrono::seconds(1), [this]() {
-                return stop_requested_.load() || !queue_.empty();
+                return stop_requested_.load() || !queue_.empty() ||
+                       !snapshot_queue_.empty();
             });
         }
         if (stop_requested_.load()) break;
 
+        // 静帧**优先**于片段。
+        //
+        // 一条 22 MB 的片段在跨公网 RTT 234 ms 的链路上要传几十秒，而
+        // 一张 120 KB 的静帧通常一秒内就完。事故现场那张图的价值随时间
+        // 衰减得比片段快（运营端第一时间要看的就是「现场长什么样」），
+        // 而片段本来就要几十秒，再排在一张图后面几乎看不出区别。
+        //
+        // 反过来的顺序会让「事故发生时恰好有一段片段在传」变成「现场图
+        // 排在几十秒后面」——而事故往往就是网络最差的时候。
+        std::string error;
+        // 队列状态必须在**锁内**读取：`std::deque::empty()` 与另一线程的
+        // push_back 并发是数据竞争（UB），而它的失效表现是「偶尔跳过一张」。
+        // 静帧只有在事故时才入队，所以这条分支 99.9% 的时候都是 false——
+        // 但正因为罕见，出问题时会表现为「某次事故的图没上传」，极难复盘。
+        bool has_snapshot = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            has_snapshot = !snapshot_queue_.empty();
+        }
+        if (has_snapshot) {
+            if (!runSnapshotOnce(&error) && !stop_requested_.load()) {
+                LOG_WARNING(weaknet_dbus::LogModule::VIDEO,
+                            "静帧本轮未完成: " << error);
+            }
+            continue;
+        }
+
         // 处理到队列空为止。每轮只取一个片段，让 stop() 能在片段之间
         // 及时生效——一次上传可能持续几十秒，不能在整批跑完才看停止标志。
-        std::string error;
         if (!runOnce(&error)) {
             if (!queue_.empty() && !stop_requested_.load()) {
                 LOG_WARNING(weaknet_dbus::LogModule::VIDEO,
                             "视频留证本轮未完成: " << error);
             }
+        }
+    }
+
+    // 停止时队列里剩下的静帧不静默丢弃：计入 dropped，让停机日志说清楚
+    // 有哪几张没送出去。与片段不同（片段的在途项由 stop_requested 中断、
+    // 剩余计入 dropped 是在 runOnce 里做的），静帧队列没有「在途」这个
+    // 中间态可以自然覆盖到，所以在这里统一收尾。
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& item : snapshot_queue_) {
+            LOG_WARNING(weaknet_dbus::LogModule::VIDEO,
+                        "停止时静帧未送达，计入丢弃 image_id="
+                            << item.shot.image_id);
+        }
+        if (!snapshot_queue_.empty()) {
+            std::lock_guard<std::mutex> sl(stats_mutex_);
+            stats_.snapshots_dropped += snapshot_queue_.size();
+            snapshot_queue_.clear();
         }
     }
 }

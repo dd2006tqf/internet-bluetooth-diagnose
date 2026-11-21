@@ -39242,6 +39242,36 @@
         "title": "SloObservationResponse",
         "type": "object"
       },
+      "SnapshotImageResult": {
+        "additionalProperties": false,
+        "description": "静帧投递的回执。",
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "image_id",
+          "accepted",
+          "duplicate",
+          "size_bytes"
+        ],
+        "title": "SnapshotImageResult",
+        "type": "object"
+      },
       "SpeechSynthesisEnvelope": {
         "properties": {
           "data": {
@@ -42410,6 +42440,181 @@
           "reason"
         ],
         "title": "VerifyBody",
+        "type": "object"
+      },
+      "VideoClipChunkResult": {
+        "additionalProperties": false,
+        "description": "分片投递的回执。``complete`` 为真表示该片段所有分片已到齐。",
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "chunk_index": {
+            "title": "Chunk Index",
+            "type": "integer"
+          },
+          "clip_id": {
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "expected_chunks": {
+            "title": "Expected Chunks",
+            "type": "integer"
+          },
+          "received_chunks": {
+            "title": "Received Chunks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "clip_id",
+          "chunk_index",
+          "accepted",
+          "duplicate",
+          "received_chunks",
+          "expected_chunks",
+          "complete"
+        ],
+        "title": "VideoClipChunkResult",
+        "type": "object"
+      },
+      "VideoClipItem": {
+        "additionalProperties": false,
+        "description": "运营端读到的片段摘要（只读事实，不含载荷）。",
+        "properties": {
+          "asset_id": {
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "clip_id": {
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "codec": {
+            "title": "Codec",
+            "type": "string"
+          },
+          "declared_content_sha256": {
+            "title": "Declared Content Sha256",
+            "type": "string"
+          },
+          "ended_at_ms": {
+            "title": "Ended At Ms",
+            "type": "integer"
+          },
+          "expected_chunks": {
+            "title": "Expected Chunks",
+            "type": "integer"
+          },
+          "fps": {
+            "title": "Fps",
+            "type": "integer"
+          },
+          "gateway_id": {
+            "title": "Gateway Id",
+            "type": "string"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "incident_id": {
+            "title": "Incident Id",
+            "type": "string"
+          },
+          "received_chunks": {
+            "title": "Received Chunks",
+            "type": "integer"
+          },
+          "site_id": {
+            "title": "Site Id",
+            "type": "string"
+          },
+          "started_at_ms": {
+            "title": "Started At Ms",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "total_bytes": {
+            "title": "Total Bytes",
+            "type": "integer"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "clip_id",
+          "asset_id",
+          "site_id",
+          "gateway_id",
+          "incident_id",
+          "codec",
+          "width",
+          "height",
+          "fps",
+          "started_at_ms",
+          "ended_at_ms",
+          "total_bytes",
+          "expected_chunks",
+          "received_chunks",
+          "state",
+          "declared_content_sha256"
+        ],
+        "title": "VideoClipItem",
+        "type": "object"
+      },
+      "VideoClipManifestResult": {
+        "additionalProperties": false,
+        "description": "清单投递的回执。板端据此决定「还需要补哪些分片」。",
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "clip_id": {
+            "title": "Clip Id",
+            "type": "string"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "expected_chunks": {
+            "title": "Expected Chunks",
+            "type": "integer"
+          },
+          "received_chunks": {
+            "title": "Received Chunks",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "clip_id",
+          "accepted",
+          "duplicate",
+          "expected_chunks",
+          "received_chunks",
+          "complete"
+        ],
+        "title": "VideoClipManifestResult",
         "type": "object"
       },
       "VideoEventResponse": {
@@ -68819,6 +69024,306 @@
         ]
       }
     },
+    "/api/v1/network/assets/{asset_id}/video-clips": {
+      "get": {
+        "description": "运营端列出某网关的留证片段（只读摘要，不含载荷）。\n\n这是**必须存在的消费者**：没有它，上面两个 edge 端点收上来的数据在\n平台里没有任何出口，那才是真正的「孤儿表面」——收得进来、看不到。\n按 ``incident_id`` 过滤是事故详情页的主要用法（\"这次事故有什么现场\n画面\"），所以它在这里是一等参数而不是让调用方自己再筛一遍。",
+        "operationId": "list_asset_video_clips_api_v1_network_assets__asset_id__video_clips_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "incident_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Incident Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/VideoClipItem"
+                  },
+                  "title": "Response List Asset Video Clips Api V1 Network Assets  Asset Id  Video Clips Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Invalid request precondition"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Action is not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Resource not found or not visible"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Idempotency or version conflict"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Media type mismatch"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Required dependency unavailable"
+          }
+        },
+        "summary": "List evidence video clips uploaded by this gateway asset",
+        "tags": [
+          "network-assurance"
+        ]
+      }
+    },
+    "/api/v1/network/assets/{asset_id}/video-clips/{clip_id}/content": {
+      "get": {
+        "description": "把分片按索引拼回完整码流交给运营端（MP4 或裸 Annex-B H.264）。\n\n为什么两种格式都要支持，而不是「统一转成 MP4 再给」：板端封装是**尽力**\n行为（缺 ffmpeg 或码流不合规时改传裸码流），而云端历史片段全是裸码流。\n强行在这里统一意味着云端要装 ffmpeg 并重封装——那是一台 API 服务器上\n不该有的 CPU 与依赖负担，而且对已存在的历史证据无效。所以云端只做\n一件事：**如实告诉浏览器这段字节是什么**。\n\n判据是字节本身（``ftyp`` box 落在 ``[4, 8)``），不是清单里的字段：\n容器类型是码流自身的事实，再在清单里声明一份就等于允许两者不一致，\n而不一致时以谁为准没有答案。\n\n为什么不是 ``StreamingResponse`` 逐块转出：对象存储的 ``get`` 是\n**整块读**，逐块 await 也只是一次性把 640 KiB 读进内存再写出，省不下\n什么。真正的流式需要存储层支持 range 读取，而那属于另一个改造。\n当前上限 256 MB，一次性拼装在可接受范围内，且实现简单到不会错。\n\n未收齐时返回 409 而不是返回半个文件：半段码流解不出画面，交给播放器\n只会得到\"文件损坏\"这种无法归因的错误。运营端应该看到\"还在传\"。",
+        "operationId": "download_asset_video_clip_api_v1_network_assets__asset_id__video_clips__clip_id__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "clip_id",
+            "required": true,
+            "schema": {
+              "title": "Clip Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "video/h264": {},
+              "video/mp4": {}
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Invalid request precondition"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Action is not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Resource not found or not visible"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Idempotency or version conflict"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Media type mismatch"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Required dependency unavailable"
+          }
+        },
+        "summary": "Download the reassembled bitstream of an evidence clip",
+        "tags": [
+          "network-assurance"
+        ]
+      }
+    },
     "/api/v1/network/assets/{asset_id}/wireless-devices": {
       "get": {
         "operationId": "list_asset_wireless_devices_api_v1_network_assets__asset_id__wireless_devices_get",
@@ -70924,6 +71429,108 @@
         ]
       }
     },
+    "/api/v1/network/edge/snapshot-images": {
+      "post": {
+        "description": "接收一张事故静帧。\n\n这张图不走 ``video-clips`` 那条清单 + 分片两段式，理由见\n:mod:`industrial_ops_agent.network_assurance.snapshot_contracts`：静帧是\n单张、百 KB 量级，引入分片只是把两个失败点换成一个失败点，而且\n``fps`` / ``expected_chunks`` 这些字段在图片上没有意义——没有意义的字段\n一旦落库就会被下游当事实读。\n\n三重校验的顺序与分片端点完全一致，且必须在**写对象存储之前**全部通过，\n否则一个坏载荷会留下孤儿对象：\n\n1. base64 解码（``validate=True``，不接受缺 padding 或非法字符）；\n2. 解码后字节数 == ``size_bytes``（防 pad 截断把截短的内容说成完整）；\n3. sha256(解码后字节) == ``content_sha256``（防内容被换）。\n\n先解 base64、再算摘要、最后比对声明值。先比长度的话，一个只改了\npadding 的报文就能让两者都\"看起来对\"。",
+        "operationId": "upload_edge_snapshot_image_api_v1_network_edge_snapshot_images_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotImageResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Invalid request precondition"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Action is not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Resource not found or not visible"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Idempotency or version conflict"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Media type mismatch"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Required dependency unavailable"
+          }
+        },
+        "summary": "Upload one signed still image captured at an incident",
+        "tags": [
+          "network-assurance"
+        ]
+      }
+    },
     "/api/v1/network/edge/telemetry": {
       "post": {
         "description": "Accept a batch, tolerating replay after a lost acknowledgement.",
@@ -71021,6 +71628,230 @@
           }
         },
         "summary": "Ingest a signed batch of edge network assessments",
+        "tags": [
+          "network-assurance"
+        ]
+      }
+    },
+    "/api/v1/network/edge/video-clips": {
+      "post": {
+        "description": "登记一个待上传的留证片段清单。\n\n为什么清单和分片是两个端点而不是一个：片段是几十 MB 量级，而所有 edge\n端点共享 1 MB 的原始体上限。抬掉这个上限会同时抬掉**每个** edge 端点的\n内存与解析代价——一次畸形请求就能让一个 worker 占住几十 MB。清单很小\n（几百字节），分片才大，所以只有分片需要拆。\n\n为什么分片载荷是 base64 而不是裸二进制：``_read_verified_body`` 靠报文里\n的 ``device_id`` 把签名绑定到设备。二进制报文里没有 JSON 可解析，设备身份\n就只能改从 header 取，于是同一套 Ed25519 信任锚在两类端点上出现两种绑定\n方式。代价是 33% 体积膨胀，而留证是事件触发的偶发行为，不是持续推流。",
+        "operationId": "register_edge_video_clip_api_v1_network_edge_video_clips_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoClipManifestResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Invalid request precondition"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Action is not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Resource not found or not visible"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Idempotency or version conflict"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Media type mismatch"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Required dependency unavailable"
+          }
+        },
+        "summary": "Register a signed manifest for an edge evidence video clip",
+        "tags": [
+          "network-assurance"
+        ]
+      }
+    },
+    "/api/v1/network/edge/video-clips/{clip_id}/chunks/{chunk_index}": {
+      "post": {
+        "description": "接收片段中的一个分片。\n\n``clip_id`` / ``chunk_index`` 出现在路径里是**冗余**的（报文里也有），\n这是刻意的：看起来更啰嗦，但让路径本身就能作为幂等键被网关/重试层使用，\n并且允许在解析 1 MB 报文之前先做一次廉价的形状校验。两者不一致直接\n拒绝——接受它就等于允许\"报到 A 片段名下、实际写进 B 片段\"。\n\n写入顺序是 **对象存储 → 数据库**，不可颠倒：先写库再写对象会得到\n「行存在但内容不存在」，那比孤儿对象糟得多——行会声称分片已送达，\n片段可能被判成 COMPLETE 而实际取不出内容。",
+        "operationId": "upload_edge_video_clip_chunk_api_v1_network_edge_video_clips__clip_id__chunks__chunk_index__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "clip_id",
+            "required": true,
+            "schema": {
+              "title": "Clip Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "chunk_index",
+            "required": true,
+            "schema": {
+              "title": "Chunk Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoClipChunkResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Invalid request precondition"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Action is not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Resource not found or not visible"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Idempotency or version conflict"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Media type mismatch"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Required dependency unavailable"
+          }
+        },
+        "summary": "Upload one signed chunk of an edge evidence video clip",
         "tags": [
           "network-assurance"
         ]

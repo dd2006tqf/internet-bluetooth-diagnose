@@ -51,6 +51,7 @@
  */
 
 #include "video_encoder.hpp"
+#include "snapshot_encoder.hpp"
 
 #include <dlfcn.h>
 
@@ -203,6 +204,14 @@ enum : unsigned {
     kIdxH264Param = 0x100,        ///< VENC_IndexParamH264Param
     kIdxH264SpsPps = 0x101,       ///< VENC_IndexParamH264SPSPPS, VencHeaderData (只读)
     kIdxH264ProfileLevel = 0x103, ///< VENC_IndexParamH264ProfileLevel
+
+    /// VENC_IndexParamJpegQuality，取值为 int 1~100。
+    ///
+    /// 板端实测：VideoEncSetParameter(0x200, 85) → rc=0；产出的 JPEG 由
+    /// `file(1)` 判定为 `JFIF standard 1.01, baseline, 640x480, 3 components`。
+    /// 注意它属于 JPEG 段，与上面 H.264 的 0x100 段**互不相干**——JPEG 的
+    /// 0x100 不是 H264Param，别拿同一个常量跨编解码器复用。
+    kIdxJpegQuality = 0x200,      ///< VENC_IndexParamJpegQuality, int (1~100)
 };
 
 /// VencRect（crop 信息，未使用时全零）
@@ -1377,6 +1386,506 @@ private:
 };
 
 // ===========================================================================
+// CedarSnapshotEncoder：板厂 VE 的 JPEG 单帧编码器
+// ===========================================================================
+//
+// 为什么和 CedarVideoEncoder 放在同一个文件里：ABI 声明（VencHandle /
+// VencBaseConfig / ScMemOpsS / VencApi）与 VencLibrary 单例都定义在本
+// 文件的匿名命名空间里。另起一个 .cpp 就得把那一整片声明复制一份，
+// 两份布局迟早漂移——而布局错位在这里的后果是**静默产出坏图**，
+// 不是编译错误。
+
+class CedarSnapshotEncoder : public ISnapshotEncoder {
+public:
+    CedarSnapshotEncoder() = default;
+    ~CedarSnapshotEncoder() override { teardown(); }
+
+    bool configure(const SnapshotEncoderConfig& config) override {
+        // 幂等：已配置成功时重复调用直接成功。理由与 IVideoEncoder 一致——
+        // D-Bus 长驻进程里 configure 可能在每次取图前被调用，重建编码器
+        // 会把 `/dev/cedar_dev_ve2` 反复 open/close，纯属浪费且有过失败先例。
+        if (m_enc) return true;
+
+        if (config.width == 0 || config.height == 0) {
+            setError("zero geometry");
+            return false;
+        }
+
+        const VencLibrary& lib = VencLibrary::instance();
+        if (!lib.available()) {
+            setError("cedar VE unavailable: " + lib.error());
+            return false;
+        }
+        const VencApi& api = lib.api();
+
+        m_config = config;
+
+        // 与视频编码器同一套对齐规则：JPEG 也是按 16 对齐的 Y/C 缓冲。
+        // 板端实测 640x480 时 nSizeY=307200=640*480，16 对齐后不变；
+        // 1640x1232 时 nSizeY=2030336=1648*1232，与 V4L2 的 sizeimage 吻合。
+        m_align_w = align16(config.width);
+        m_y_size = static_cast<uint64_t>(m_align_w) * config.height;
+        m_c_size = m_y_size / 2;
+
+        m_uv_offset = config.uv_offset
+                          ? config.uv_offset
+                          : static_cast<uint64_t>(config.stride) * config.height;
+
+        if (config.frame_bytes && config.frame_bytes < m_uv_offset + m_c_size) {
+            char buf[192];
+            snprintf(buf, sizeof(buf),
+                     "frame_bytes=%u < uv_offset+chroma=%llu: frame layout "
+                     "inconsistent with driver-reported geometry",
+                     config.frame_bytes,
+                     static_cast<unsigned long long>(m_uv_offset + m_c_size));
+            setError(buf);
+            return false;
+        }
+
+        m_memops = api.MemAdapterGetOpsS();
+        if (!m_memops) {
+            setError("MemAdapterGetOpsS returned null");
+            return false;
+        }
+        if (CdcMemOpen(m_memops) != 0) {
+            setError("CdcMemOpen (memops->open) failed");
+            m_memops = nullptr;
+            return false;
+        }
+        m_mem_open = true;
+
+        // ---- 创建 JPEG 编码器 ----
+        //
+        // `kCodecJpeg = 1` 对应 VENC_CODEC_JPEG（见 vencoder.h 的
+        // VENC_CODEC_TYPE：H264=0, JPEG=1, H264_VER2=2, H265=3）。
+        //
+        // 板端实测：四个 codec 全部返回非空，但**非空不代表能用**。
+        // 判据在 capture() 里——必须取到 FF D8 FF 开头的字节流。
+        m_enc = api.VideoEncCreate(kCodecJpeg);
+        if (!m_enc) {
+            setError("VideoEncCreate(JPEG) returned null — check dmesg for "
+                     "cedar errors, or the VE may be wedged");
+            teardown();
+            return false;
+        }
+
+        // ---- 质量参数 ----
+        //
+        // 必须在 VideoEncInit **之前**设：实测 Init 之后再设虽然也返回 0，
+        // 但部分版本的量化表在 Init 时就固化了，后设的值不生效。
+        // 这里按「先设参数再初始化」的顺序，与板厂 demo 一致。
+        int quality = config.quality ? config.quality : kDefaultQuality;
+        if (quality < 1) quality = 1;
+        if (quality > 100) quality = 100;
+        m_quality = quality;
+        {
+            const int rc = api.VideoEncSetParameter(m_enc, kIdxJpegQuality, &quality);
+            if (rc != 0) {
+                // 不致命：库有默认质量（通常 90）。记下来但不失败——
+                // 「质量参数没设上」比「取不到图」轻得多。
+                char buf[128];
+                snprintf(buf, sizeof(buf),
+                         "VideoEncSetParameter(JpegQuality=%d) rc=%d "
+                         "(continuing with library default)", quality, rc);
+                m_notes = buf;
+            }
+        }
+
+        // ---- 初始化 ----
+        VencBaseConfig base;
+        std::memset(&base, 0, sizeof(base));
+        // bEncH264Nalu 对 JPEG 无意义，保持 0。
+        base.bEncH264Nalu = 0;
+        base.nInputWidth = config.width;
+        base.nInputHeight = config.height;
+        base.nDstWidth = config.width;
+        base.nDstHeight = config.height;
+        base.nStride = config.stride ? config.stride : config.width;
+        base.eInputFormat = kPixelYuv420Sp;
+        base.memops = m_memops;
+        base.nFrameNumInGroup = 1;
+
+        const int irc = api.VideoEncInit(m_enc, &base);
+        if (irc != 0) {
+            char buf[160];
+            snprintf(buf, sizeof(buf), "VideoEncInit(JPEG) rc=%d", irc);
+            setError(buf);
+            teardown();
+            return false;
+        }
+        m_inited = true;
+
+        // ---- 输入缓冲 ----
+        //
+        // 只给 1 个：快照是同步的，一次一张，用完立刻还。
+        // 给多个只会让「硬件还在读」的窗口变大，没有收益。
+        VencAllocateBufferParam abp;
+        std::memset(&abp, 0, sizeof(abp));
+        abp.nBufferNum = 1;
+        abp.nSizeY = static_cast<unsigned>(m_y_size);
+        abp.nSizeC = static_cast<unsigned>(m_c_size);
+        const int arc = api.AllocInputBuffer(m_enc, &abp);
+        if (arc != 0) {
+            char buf[160];
+            snprintf(buf, sizeof(buf), "AllocInputBuffer(Y=%u C=%u) rc=%u",
+                     abp.nSizeY, abp.nSizeC, static_cast<unsigned>(arc));
+            setError(buf);
+            teardown();
+            return false;
+        }
+        m_alloc = true;
+
+        return true;
+    }
+
+    bool capture(const SnapshotFrameView& frame, SnapshotImage& out) override {
+        out = SnapshotImage{};
+
+        // 上一次 capture() 可能因为描述符状态不确定而主动销毁了实例
+        // （见下面「编码失败」那段）。这里重建一次，让单张图的失败不至于
+        // 让编码器永久退化成「必须重启进程」。
+        //
+        // 重建是**有界**的：每次 capture() 最多一次，频率由调用方决定。
+        // 真正的硬件故障会在 configure() 里报出具体原因，而不是变成
+        // 「之后每次都说没 configure」这种掩盖真相的错误。
+        if (!m_enc) {
+            if (m_config.width == 0) {
+                setError("capture() before configure()");
+                ++m_stats.failed;
+                return false;
+            }
+            if (!configure(m_config)) {
+                ++m_stats.failed;
+                return false;
+            }
+        }
+        if (!frame.data) {
+            setError("frame.data is null");
+            ++m_stats.failed;
+            return false;
+        }
+
+        const VencApi& api = VencLibrary::instance().api();
+
+        const size_t need = static_cast<size_t>(m_uv_offset + m_c_size);
+        if (frame.size < need) {
+            // 边界检查必须在 memcpy 之前：喂短缓冲给硬件是读到别处内存，
+            // 产出的图会带随机色块且**不会报错**。
+            char buf[160];
+            snprintf(buf, sizeof(buf), "frame too small: have=%zu need=%zu",
+                     frame.size, need);
+            setError(buf);
+            ++m_stats.failed;
+            return false;
+        }
+
+        const int64_t t0 = nowMs();
+
+        VencInputBuffer in;
+        std::memset(&in, 0, sizeof(in));
+        const int grc = api.GetOneAllocInputBuffer(m_enc, &in);
+        if (grc != 0) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "GetOneAllocInputBuffer rc=%d", grc);
+            setError(buf);
+            ++m_stats.failed;
+            return false;
+        }
+        // 从这里开始每条失败路径都必须归还缓冲，否则下一次 capture()
+        // 会因为池子空而永久失败——症状是「第一张图成功，之后全失败」。
+        auto give_back = [&]() {
+            if (m_alloc) api.ReturnOneAllocInputBuffer(m_enc, &in);
+        };
+
+        if (!in.pAddrVirY) {
+            give_back();
+            setError("GetOneAllocInputBuffer returned null Y address");
+            ++m_stats.failed;
+            return false;
+        }
+
+        if (!in.pAddrVirC) {
+            // 不能像「有则拷、没有就跳过」那样静默继续。跳过的后果是整张图
+            // UV 平面全零（或残留上一帧的值），画面偏色或发灰，而
+            // **没有任何一步会报错**——这正是本仓库反复踩过的那一类坑。
+            give_back();
+            setError("GetOneAllocInputBuffer returned null C address");
+            ++m_stats.failed;
+            return false;
+        }
+
+        // Y 与 UV 分段拷贝：中间那 9856 字节对齐空洞（1640 宽时）留在
+        // 编码器缓冲的原值。理由与视频编码器完全相同——UV 起点是驱动的
+        // 对齐事实值，用 width*height 推会整帧偏色且不报错。
+        std::memcpy(in.pAddrVirY, frame.data, m_y_size);
+        std::memcpy(in.pAddrVirC,
+                    static_cast<const unsigned char*>(frame.data) + m_uv_offset,
+                    m_c_size);
+        api.FlushCacheAllocInputBuffer(m_enc, &in);
+
+        const int adrc = api.AddOneInputBuffer(m_enc, &in);
+        if (adrc != 0) {
+            give_back();
+            char buf[128];
+            snprintf(buf, sizeof(buf), "AddOneInputBuffer rc=%d", adrc);
+            setError(buf);
+            ++m_stats.failed;
+            return false;
+        }
+
+        int erc = api.VideoEncodeOneFrame(m_enc);
+
+        // 描述符回收：与 H.264 路径同一约束。JPEG 每次只编一帧，理论上
+        // 不会累积到 4 个上限，但跳过这一步会让描述符**逐次泄漏**——
+        // 第 5 次 capture() 起 AddOneInputBuffer 就会永久返回 -1。
+        // 板厂自己的 JPEG 封装（AWJpecEnc）里也有这一步。
+        bool desc_lost = false;
+        {
+            VencInputBuffer used;
+            std::memset(&used, 0, sizeof(used));
+            if (api.AlreadyUsedInputBuffer(m_enc, &used) == 0) {
+                api.ReturnOneAllocInputBuffer(m_enc, &used);
+            } else {
+                // 回收失败：这块描述符归谁不明确，宁可泄漏这一次
+                // 也不要 double-free 一块硬件可能还在读的内存。
+                //
+                // 但**不能就这么继续用**：4 个槽位的队列一旦开始丢，
+                // 后面每一次 capture() 都在同一个坏状态上失败，症状是
+                // 「第一张成功，之后全失败」——那会让排查方向完全跑偏
+                // （看起来像几何配置错了，其实是描述符池空了）。
+                // 所以这里直接拆掉实例，下一次 capture() 会重建一个
+                // 全新的描述符池（见函数开头）。
+                m_notes = "AlreadyUsedInputBuffer failed — encoder torn down "
+                          "to reset descriptor pool";
+                desc_lost = true;
+            }
+        }
+        if (desc_lost) {
+            teardown();
+            ++m_stats.failed;
+            return false;
+        }
+
+        if (erc != 0) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "VideoEncodeOneFrame rc=%d", erc);
+            setError(buf);
+            ++m_stats.failed;
+            return false;
+        }
+
+        // ---- 取码流 ----
+        VencOutputBuffer ob;
+        std::memset(&ob, 0, sizeof(ob));
+        const int brc = api.GetOneBitstreamFrame(m_enc, &ob);
+        if (brc != 0) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "GetOneBitstreamFrame rc=%d", brc);
+            setError(buf);
+            ++m_stats.failed;
+            return false;
+        }
+
+        const size_t size = static_cast<size_t>(ob.nSize0) + ob.nSize1;
+        if (size == 0 || ob.pData0 == nullptr) {
+            api.FreeOneBitStreamFrame(m_enc, &ob);
+            setError("empty bitstream");
+            ++m_stats.failed;
+            return false;
+        }
+
+        out.bytes.assign(ob.pData0, ob.pData0 + size);
+        // nSize1 非零时是第二段（本板实测 JPEG 恒为 0，但不能假设）。
+        // 两段之间没有分隔符，直接拼接。
+        if (ob.nSize1 > 0 && ob.pData1 != nullptr) {
+            out.bytes.insert(out.bytes.end(), ob.pData1, ob.pData1 + ob.nSize1);
+        }
+        api.FreeOneBitStreamFrame(m_enc, &ob);
+
+        // 最后一道守门：**后端说成功不等于产出是 JPEG**。
+        // 板厂库在错误配置下可能返回 0 却给出一段非 JPEG 内存，
+        // 而这张图会被落盘/上传，事后无法与真图区分。
+        if (out.bytes.size() < 3 || out.bytes[0] != 0xFF ||
+            out.bytes[1] != 0xD8 || out.bytes[2] != 0xFF) {
+            char buf[160];
+            snprintf(buf, sizeof(buf),
+                     "bitstream is not JPEG (size=%zu head=%02x %02x %02x)",
+                     out.bytes.size(),
+                     out.bytes.size() > 0 ? out.bytes[0] : 0,
+                     out.bytes.size() > 1 ? out.bytes[1] : 0,
+                     out.bytes.size() > 2 ? out.bytes[2] : 0);
+            setError(buf);
+            out.bytes.clear();
+            ++m_stats.failed;
+            return false;
+        }
+
+        out.width = m_config.width;
+        out.height = m_config.height;
+        out.sequence = frame.sequence;
+        out.timestamp_ns = frame.timestamp_ns;
+        out.encode_ms = static_cast<int>(nowMs() - t0);
+
+        // 体积超限**不改返回值**：这张图本身是好的，落盘完全没问题，
+        // 只有「走线上传」这一条路会失败。把它变成 capture 失败会让
+        // 本地留证也一起丢掉，那是更糟的结果。所以只记进 notes 让
+        // describe()/日志能看见，由上传方自己决定分片还是重编。
+        if (!out.fitsSingleChunk()) {
+            m_notes = "snapshot " + std::to_string(out.bytes.size()) +
+                       "B exceeds single-chunk limit " +
+                       std::to_string(kMaxSnapshotChunkBytes) +
+                       "B (chunked upload required)";
+            LOG_WARNING(weaknet_dbus::LogModule::VIDEO,
+                        "CedarSnapshotEncoder: " << m_notes);
+        }
+
+        ++m_stats.captured;
+        return true;
+    }
+
+    std::string backend() const override { return "cedar-ve-jpeg"; }
+
+    std::string describe() const override {
+        std::ostringstream os;
+        os << "cedar-ve-jpeg";
+        if (m_enc && m_inited) {
+            os << " " << m_config.width << "x" << m_config.height
+               << " quality=" << m_quality
+               << " align_w=" << m_align_w
+               << " uv_offset=" << m_uv_offset
+               << " captured=" << m_stats.captured
+               << " failed=" << m_stats.failed;
+        }
+        if (!m_notes.empty()) os << " | " << m_notes;
+        if (!m_error.empty()) os << " | error: " << m_error;
+        return os.str();
+    }
+
+    Stats stats() const override { return m_stats; }
+
+private:
+    /// 默认 JPEG 质量。
+    ///
+    /// **不是**「越高越清晰就越好」的旋钮：本板 1640x1232 实测
+    /// quality=85 产出 686 KB，已超过云端单分片 640 KiB 上限（655360 字节），
+    /// 会把「传一张图」变成「一次分片上传」。70 产出 624 KB，留 31 KB 余量。
+    /// 完整实测表见 snapshot_encoder.hpp 头注释。
+    static constexpr int kDefaultQuality = 70;
+
+    void setError(const std::string& e) {
+        m_error = e;
+        LOG_WARNING(weaknet_dbus::LogModule::VIDEO, "CedarSnapshotEncoder: " << e);
+    }
+
+    void teardown() {
+        const VencLibrary& lib = VencLibrary::instance();
+        if (!lib.available()) return;
+        const VencApi& api = lib.api();
+        if (m_enc) {
+            if (m_alloc) {
+                api.ReleaseAllocInputBuffer(m_enc);
+                m_alloc = false;
+            }
+            if (m_inited) {
+                api.VideoEncUnInit(m_enc);
+                m_inited = false;
+            }
+            api.VideoEncDestroy(m_enc);
+            m_enc = nullptr;
+        }
+        if (m_mem_open && m_memops) {
+            CdcMemClose(m_memops);
+            m_mem_open = false;
+            m_memops = nullptr;
+        }
+    }
+
+    SnapshotEncoderConfig m_config{};
+    Stats m_stats{};
+    struct VencHandle* m_enc{nullptr};
+    struct ScMemOpsS* m_memops{nullptr};
+    bool m_mem_open{false};
+    bool m_inited{false};
+    bool m_alloc{false};
+    int m_quality{kDefaultQuality};
+    uint32_t m_align_w{0};
+    uint64_t m_y_size{0};
+    uint64_t m_c_size{0};
+    uint64_t m_uv_offset{0};
+    std::string m_notes;
+    std::string m_error;
+};
+
+// ===========================================================================
+// FakeSnapshotEncoder：无硬件时的桩实现
+// ===========================================================================
+
+class FakeSnapshotEncoder : public ISnapshotEncoder {
+public:
+    explicit FakeSnapshotEncoder(std::string reason = {})
+        : m_reason(std::move(reason)) {}
+
+    bool configure(const SnapshotEncoderConfig& config) override {
+        if (config.width == 0 || config.height == 0) {
+            m_error = "zero geometry";
+            return false;
+        }
+        m_config = config;
+        m_configured = true;
+        return true;
+    }
+
+    bool capture(const SnapshotFrameView& frame, SnapshotImage& out) override {
+        out = SnapshotImage{};
+        if (!m_configured) {
+            m_error = "capture() before configure()";
+            ++m_stats.failed;
+            return false;
+        }
+        if (!frame.data) {
+            m_error = "frame.data is null";
+            ++m_stats.failed;
+            return false;
+        }
+        // 产出一段**结构上像 JPEG** 但内容无意义的字节：以 FF D8 FF 开头、
+        // 以 FF D9 结尾。这样「落盘/上传」路径的校验逻辑能被真实执行，
+        // 而不是被一个明显假的空数组短路掉。
+        //
+        // 它**不是**可解码的 JPEG——所以绝不能让这个后端进生产产物。
+        out.bytes = {0xFF, 0xD8, 0xFF, 0xE0, 'F', 'A', 'K', 'E', 0xFF, 0xD9};
+        out.width = m_config.width;
+        out.height = m_config.height;
+        out.sequence = frame.sequence;
+        out.timestamp_ns = frame.timestamp_ns;
+        out.encode_ms = 0;
+        ++m_stats.captured;
+        return true;
+    }
+
+    std::string backend() const override { return "fake"; }
+
+    std::string describe() const override {
+        std::ostringstream os;
+        os << "fake";
+        if (m_configured) {
+            os << " " << m_config.width << "x" << m_config.height;
+        }
+        if (!m_reason.empty()) os << " | " << m_reason;
+        if (!m_error.empty()) os << " | error: " << m_error;
+        return os.str();
+    }
+
+    Stats stats() const override { return m_stats; }
+
+private:
+    SnapshotEncoderConfig m_config{};
+    Stats m_stats{};
+    bool m_configured{false};
+    std::string m_reason;
+    std::string m_error;
+};
+
+// ===========================================================================
 // 工厂
 // ===========================================================================
 
@@ -1398,6 +1907,57 @@ std::unique_ptr<IVideoEncoder> createVideoEncoder(bool prefer_hardware) {
 
 std::unique_ptr<IVideoEncoder> createFakeVideoEncoder() {
     return std::make_unique<FakeVideoEncoder>();
+}
+
+// ---------------------------------------------------------------------------
+// 快照编码器工厂
+//
+// 与 createVideoEncoder 同一策略：硬件优先、失败回落、保证非空。
+//
+// 但**回落语义不同**，值得写下来：
+//
+//   createVideoEncoder 回落 → FakeVideoEncoder 产出的假 H.264 字节流仍会被
+//   recorder/上传链路当作真码流处理，所以「回落到桩」本身就是一条需要在
+//   日志里显眼的降级。
+//
+//   快照这边，桩产出的字节虽然带着 FF D8 FF 头（为了让下游校验路径可执行），
+//   但它**不是**可解码的 JPEG。一旦落盘就是坏文件、一旦上传云端就是脏数据。
+//   所以这里的回落必须带上明确的 reason，并且**落到日志里**——不能静默。
+//
+// 另一个必须保证的点：`describe()` 在硬件可用但没 configure 过时也要能读，
+// 因此回落的判定放在**创建时**而不是第一次 configure 时。否则调用方要么先
+// configure 才能知道后端是谁，要么永远读不到 reason。
+// ---------------------------------------------------------------------------
+
+std::unique_ptr<ISnapshotEncoder> createSnapshotEncoder(bool prefer_hardware) {
+    if (!prefer_hardware) {
+        return std::make_unique<FakeSnapshotEncoder>("hardware not preferred");
+    }
+
+    // 只做「符号表是否就绪」这一层判定，**不**在这里 VideoEncCreate。
+    //
+    // 理由：创建编码器需要几何参数，而几何来自 V4L2 的 G_FMT，此刻未必
+    // 已经拿到。提前建一个无法 configure 的对象只会让「后端是 cedar」
+    // 这个事实变成假象——它可能根本开不起来。
+    //
+    // 所以判定标准是「符号表齐 + libvencoder.so 加载成功」，这与
+    // CedarSnapshotEncoder::configure() 里的第一道检查完全一致。
+    const VencLibrary& lib = VencLibrary::instance();
+    if (!lib.available()) {
+        const std::string why = "cedar VE unavailable: " + lib.error();
+        LOG_WARNING(weaknet_dbus::LogModule::VIDEO,
+                    "SnapshotEncoder: " << why << "，回落到桩后端（产出的字节"
+                    "不是合法 JPEG，不得落盘/上传）");
+        return std::make_unique<FakeSnapshotEncoder>(why);
+    }
+
+    LOG_INFO(weaknet_dbus::LogModule::VIDEO,
+             "SnapshotEncoder: 使用 cedar VE JPEG 后端（符号表就绪）");
+    return std::make_unique<CedarSnapshotEncoder>();
+}
+
+std::unique_ptr<ISnapshotEncoder> createFakeSnapshotEncoder() {
+    return std::make_unique<FakeSnapshotEncoder>();
 }
 
 }  // namespace weaknet

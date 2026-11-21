@@ -4048,6 +4048,69 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network/assets/{asset_id}/video-clips": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List evidence video clips uploaded by this gateway asset
+         * @description 运营端列出某网关的留证片段（只读摘要，不含载荷）。
+         *
+         *     这是**必须存在的消费者**：没有它，上面两个 edge 端点收上来的数据在
+         *     平台里没有任何出口，那才是真正的「孤儿表面」——收得进来、看不到。
+         *     按 ``incident_id`` 过滤是事故详情页的主要用法（"这次事故有什么现场
+         *     画面"），所以它在这里是一等参数而不是让调用方自己再筛一遍。
+         */
+        get: operations["list_asset_video_clips_api_v1_network_assets__asset_id__video_clips_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/assets/{asset_id}/video-clips/{clip_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the reassembled bitstream of an evidence clip
+         * @description 把分片按索引拼回完整码流交给运营端（MP4 或裸 Annex-B H.264）。
+         *
+         *     为什么两种格式都要支持，而不是「统一转成 MP4 再给」：板端封装是**尽力**
+         *     行为（缺 ffmpeg 或码流不合规时改传裸码流），而云端历史片段全是裸码流。
+         *     强行在这里统一意味着云端要装 ffmpeg 并重封装——那是一台 API 服务器上
+         *     不该有的 CPU 与依赖负担，而且对已存在的历史证据无效。所以云端只做
+         *     一件事：**如实告诉浏览器这段字节是什么**。
+         *
+         *     判据是字节本身（``ftyp`` box 落在 ``[4, 8)``），不是清单里的字段：
+         *     容器类型是码流自身的事实，再在清单里声明一份就等于允许两者不一致，
+         *     而不一致时以谁为准没有答案。
+         *
+         *     为什么不是 ``StreamingResponse`` 逐块转出：对象存储的 ``get`` 是
+         *     **整块读**，逐块 await 也只是一次性把 640 KiB 读进内存再写出，省不下
+         *     什么。真正的流式需要存储层支持 range 读取，而那属于另一个改造。
+         *     当前上限 256 MB，一次性拼装在可接受范围内，且实现简单到不会错。
+         *
+         *     未收齐时返回 409 而不是返回半个文件：半段码流解不出画面，交给播放器
+         *     只会得到"文件损坏"这种无法归因的错误。运营端应该看到"还在传"。
+         */
+        get: operations["download_asset_video_clip_api_v1_network_assets__asset_id__video_clips__clip_id__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/network/assets/{asset_id}/wireless-devices": {
         parameters: {
             query?: never;
@@ -4324,6 +4387,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network/edge/snapshot-images": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload one signed still image captured at an incident
+         * @description 接收一张事故静帧。
+         *
+         *     这张图不走 ``video-clips`` 那条清单 + 分片两段式，理由见
+         *     :mod:`industrial_ops_agent.network_assurance.snapshot_contracts`：静帧是
+         *     单张、百 KB 量级，引入分片只是把两个失败点换成一个失败点，而且
+         *     ``fps`` / ``expected_chunks`` 这些字段在图片上没有意义——没有意义的字段
+         *     一旦落库就会被下游当事实读。
+         *
+         *     三重校验的顺序与分片端点完全一致，且必须在**写对象存储之前**全部通过，
+         *     否则一个坏载荷会留下孤儿对象：
+         *
+         *     1. base64 解码（``validate=True``，不接受缺 padding 或非法字符）；
+         *     2. 解码后字节数 == ``size_bytes``（防 pad 截断把截短的内容说成完整）；
+         *     3. sha256(解码后字节) == ``content_sha256``（防内容被换）。
+         *
+         *     先解 base64、再算摘要、最后比对声明值。先比长度的话，一个只改了
+         *     padding 的报文就能让两者都"看起来对"。
+         */
+        post: operations["upload_edge_snapshot_image_api_v1_network_edge_snapshot_images_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/network/edge/telemetry": {
         parameters: {
             query?: never;
@@ -4338,6 +4437,65 @@ export interface paths {
          * @description Accept a batch, tolerating replay after a lost acknowledgement.
          */
         post: operations["ingest_edge_telemetry_api_v1_network_edge_telemetry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/edge/video-clips": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register a signed manifest for an edge evidence video clip
+         * @description 登记一个待上传的留证片段清单。
+         *
+         *     为什么清单和分片是两个端点而不是一个：片段是几十 MB 量级，而所有 edge
+         *     端点共享 1 MB 的原始体上限。抬掉这个上限会同时抬掉**每个** edge 端点的
+         *     内存与解析代价——一次畸形请求就能让一个 worker 占住几十 MB。清单很小
+         *     （几百字节），分片才大，所以只有分片需要拆。
+         *
+         *     为什么分片载荷是 base64 而不是裸二进制：``_read_verified_body`` 靠报文里
+         *     的 ``device_id`` 把签名绑定到设备。二进制报文里没有 JSON 可解析，设备身份
+         *     就只能改从 header 取，于是同一套 Ed25519 信任锚在两类端点上出现两种绑定
+         *     方式。代价是 33% 体积膨胀，而留证是事件触发的偶发行为，不是持续推流。
+         */
+        post: operations["register_edge_video_clip_api_v1_network_edge_video_clips_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/edge/video-clips/{clip_id}/chunks/{chunk_index}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload one signed chunk of an edge evidence video clip
+         * @description 接收片段中的一个分片。
+         *
+         *     ``clip_id`` / ``chunk_index`` 出现在路径里是**冗余**的（报文里也有），
+         *     这是刻意的：看起来更啰嗦，但让路径本身就能作为幂等键被网关/重试层使用，
+         *     并且允许在解析 1 MB 报文之前先做一次廉价的形状校验。两者不一致直接
+         *     拒绝——接受它就等于允许"报到 A 片段名下、实际写进 B 片段"。
+         *
+         *     写入顺序是 **对象存储 → 数据库**，不可颠倒：先写库再写对象会得到
+         *     「行存在但内容不存在」，那比孤儿对象糟得多——行会声称分片已送达，
+         *     片段可能被判成 COMPLETE 而实际取不出内容。
+         */
+        post: operations["upload_edge_video_clip_chunk_api_v1_network_edge_video_clips__clip_id__chunks__chunk_index__post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -19644,6 +19802,20 @@ export interface components {
             /** Window */
             window: string;
         };
+        /**
+         * SnapshotImageResult
+         * @description 静帧投递的回执。
+         */
+        SnapshotImageResult: {
+            /** Accepted */
+            accepted: boolean;
+            /** Duplicate */
+            duplicate: boolean;
+            /** Image Id */
+            image_id: string;
+            /** Size Bytes */
+            size_bytes: number;
+        };
         /** SpeechSynthesisEnvelope */
         SpeechSynthesisEnvelope: {
             data: components["schemas"]["SpeechSynthesisResponse"];
@@ -20827,6 +20999,82 @@ export interface components {
             passed: boolean;
             /** Reason */
             reason: string;
+        };
+        /**
+         * VideoClipChunkResult
+         * @description 分片投递的回执。``complete`` 为真表示该片段所有分片已到齐。
+         */
+        VideoClipChunkResult: {
+            /** Accepted */
+            accepted: boolean;
+            /** Chunk Index */
+            chunk_index: number;
+            /** Clip Id */
+            clip_id: string;
+            /** Complete */
+            complete: boolean;
+            /** Duplicate */
+            duplicate: boolean;
+            /** Expected Chunks */
+            expected_chunks: number;
+            /** Received Chunks */
+            received_chunks: number;
+        };
+        /**
+         * VideoClipItem
+         * @description 运营端读到的片段摘要（只读事实，不含载荷）。
+         */
+        VideoClipItem: {
+            /** Asset Id */
+            asset_id: string;
+            /** Clip Id */
+            clip_id: string;
+            /** Codec */
+            codec: string;
+            /** Declared Content Sha256 */
+            declared_content_sha256: string;
+            /** Ended At Ms */
+            ended_at_ms: number;
+            /** Expected Chunks */
+            expected_chunks: number;
+            /** Fps */
+            fps: number;
+            /** Gateway Id */
+            gateway_id: string;
+            /** Height */
+            height: number;
+            /** Incident Id */
+            incident_id: string;
+            /** Received Chunks */
+            received_chunks: number;
+            /** Site Id */
+            site_id: string;
+            /** Started At Ms */
+            started_at_ms: number;
+            /** State */
+            state: string;
+            /** Total Bytes */
+            total_bytes: number;
+            /** Width */
+            width: number;
+        };
+        /**
+         * VideoClipManifestResult
+         * @description 清单投递的回执。板端据此决定「还需要补哪些分片」。
+         */
+        VideoClipManifestResult: {
+            /** Accepted */
+            accepted: boolean;
+            /** Clip Id */
+            clip_id: string;
+            /** Complete */
+            complete: boolean;
+            /** Duplicate */
+            duplicate: boolean;
+            /** Expected Chunks */
+            expected_chunks: number;
+            /** Received Chunks */
+            received_chunks: number;
         };
         /** VideoEventResponse */
         VideoEventResponse: {
@@ -35519,6 +35767,204 @@ export interface operations {
             };
         };
     };
+    list_asset_video_clips_api_v1_network_assets__asset_id__video_clips_get: {
+        parameters: {
+            query?: {
+                incident_id?: string | null;
+                limit?: number;
+            };
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VideoClipItem"][];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    download_asset_video_clip_api_v1_network_assets__asset_id__video_clips__clip_id__content_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                asset_id: string;
+                clip_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "video/h264": unknown;
+                    "video/mp4": unknown;
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
     list_asset_wireless_devices_api_v1_network_assets__asset_id__wireless_devices_get: {
         parameters: {
             query?: never;
@@ -37072,6 +37518,98 @@ export interface operations {
             };
         };
     };
+    upload_edge_snapshot_image_api_v1_network_edge_snapshot_images_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnapshotImageResult"];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
     ingest_edge_telemetry_api_v1_network_edge_telemetry_post: {
         parameters: {
             query?: never;
@@ -37088,6 +37626,193 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EdgeTelemetryAcceptedResponse"];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    register_edge_video_clip_api_v1_network_edge_video_clips_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VideoClipManifestResult"];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    upload_edge_video_clip_chunk_api_v1_network_edge_video_clips__clip_id__chunks__chunk_index__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                clip_id: string;
+                chunk_index: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VideoClipChunkResult"];
                 };
             };
             /** @description Invalid request precondition */

@@ -54,6 +54,7 @@ from industrial_ops_agent.api.errors import STANDARD_ERROR_RESPONSES, AppError
 from industrial_ops_agent.api.versions import numeric_precondition as _version
 from industrial_ops_agent.auth.identity import IdentityContext
 from industrial_ops_agent.auth.policy import Action, Authorizer, ResourceContext
+from industrial_ops_agent.media.service import TenantObjectStore
 from industrial_ops_agent.network_assurance.contracts import (
     MAX_TELEMETRY_BODY_BYTES,
     NetworkActionResults,
@@ -85,6 +86,10 @@ from industrial_ops_agent.network_assurance.signing import (
     EdgeTelemetryVerifier,
     NetworkSignatureError,
 )
+from industrial_ops_agent.network_assurance.snapshot_contracts import (
+    SnapshotImage,
+    SnapshotImageResult,
+)
 from industrial_ops_agent.network_assurance.video_contracts import (
     VideoClipChunk,
     VideoClipChunkResult,
@@ -98,10 +103,10 @@ from industrial_ops_agent.network_assurance.wireless_contracts import (
     WirelessEventUplinkBatch,
 )
 from industrial_ops_agent.object_store.keys import (
+    edge_snapshot_image_object_key,
     edge_video_chunk_object_key,
     tenant_object_key_from_value,
 )
-from industrial_ops_agent.media.service import TenantObjectStore
 from industrial_ops_agent.persistence.tenant import TenantContext, validate_boundary_identifier
 
 router = APIRouter(prefix="/network", tags=["network-assurance"])
@@ -651,6 +656,108 @@ async def report_edge_action_results(
         raise _bad_request("edge_tenant_invalid") from exc
     service.record_action_results(context, results)
     return Response(status_code=204)
+
+
+@router.post(
+    "/edge/snapshot-images",
+    response_model=SnapshotImageResult,
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="Upload one signed still image captured at an incident",
+)
+async def upload_edge_snapshot_image(
+    request: Request,
+    verifier: Annotated[EdgeTelemetryVerifier, Depends(get_edge_telemetry_verifier)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+    object_store: Annotated[TenantObjectStore, Depends(get_object_store)],
+) -> SnapshotImageResult:
+    """接收一张事故静帧。
+
+    这张图不走 ``video-clips`` 那条清单 + 分片两段式，理由见
+    :mod:`industrial_ops_agent.network_assurance.snapshot_contracts`：静帧是
+    单张、百 KB 量级，引入分片只是把两个失败点换成一个失败点，而且
+    ``fps`` / ``expected_chunks`` 这些字段在图片上没有意义——没有意义的字段
+    一旦落库就会被下游当事实读。
+
+    三重校验的顺序与分片端点完全一致，且必须在**写对象存储之前**全部通过，
+    否则一个坏载荷会留下孤儿对象：
+
+    1. base64 解码（``validate=True``，不接受缺 padding 或非法字符）；
+    2. 解码后字节数 == ``size_bytes``（防 pad 截断把截短的内容说成完整）；
+    3. sha256(解码后字节) == ``content_sha256``（防内容被换）。
+
+    先解 base64、再算摘要、最后比对声明值。先比长度的话，一个只改了
+    padding 的报文就能让两者都"看起来对"。
+    """
+
+    raw = await _read_verified_body(request, verifier)
+
+    try:
+        image = SnapshotImage.model_validate_json(raw)
+    except ValidationError as exc:
+        logging.getLogger("uvicorn.error").error(
+            "422 edge snapshot image validation failure: %s, "
+            "payload_sha256=%s bytes=%d errors=%d",
+            exc.errors(),
+            hashlib.sha256(raw).hexdigest()[:16],
+            len(raw),
+            exc.error_count(),
+        )
+        raise AppError(
+            status_code=422,
+            code="edge_payload_invalid",
+            category="validation",
+            message="Edge snapshot image failed contract validation",
+            details={"errors": exc.error_count()},
+        ) from exc
+
+    try:
+        payload = base64.b64decode(image.payload_b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise AppError(
+            status_code=422,
+            code="edge_snapshot_image_payload_not_base64",
+            category="validation",
+            message="Snapshot image payload is not valid base64",
+        ) from exc
+
+    if len(payload) != image.size_bytes:
+        raise AppError(
+            status_code=422,
+            code="edge_snapshot_image_size_mismatch",
+            category="validation",
+            message="Snapshot image payload length does not match its declared size",
+            details={"declared": image.size_bytes, "actual": len(payload)},
+        )
+    if hashlib.sha256(payload).hexdigest() != image.content_sha256:
+        raise AppError(
+            status_code=422,
+            code="edge_snapshot_image_digest_mismatch",
+            category="validation",
+            message="Snapshot image payload digest does not match its declared sha256",
+        )
+
+    try:
+        context = TenantContext(
+            tenant_id=_edge_tenant_id(request, verifier),
+            subject_id=edge_subject_id(image.device_id),
+        )
+    except ValueError as exc:
+        raise _bad_request("edge_tenant_invalid") from exc
+
+    key = edge_snapshot_image_object_key(context, image.image_id)
+    await object_store.put(context, key, payload)
+
+    try:
+        return service.register_snapshot_image(
+            context, image, object_key=key.value, key_id=verifier.key_id
+        )
+    except NetworkAssuranceConflict as exc:
+        raise AppError(
+            status_code=409,
+            code="edge_snapshot_image_conflict",
+            category="conflict",
+            message="Snapshot image conflicts with an existing upload",
+        ) from exc
 
 
 # ----------------------------------------------------------------------

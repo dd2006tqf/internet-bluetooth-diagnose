@@ -195,7 +195,18 @@ public:
     void release(uint32_t slot);
 
     /// 实际使用的分配方式：`dma-heap` / `memfd` / `none`
+    ///
+    /// **`none` 不等于「后端不可用」**：它只表示还没有收到过第一帧，于是
+    /// 分配方式尚未确定（几何只有 S_FMT 之后才知道，见 configure()）。
+    /// 要区分「还没收到帧」与「分配真的失败了」请用 configured()。
     std::string backend() const;
+
+    /// 是否已经按真实几何完成过 configure（即至少收到过一帧）
+    ///
+    /// 存在的唯一理由：`backend()` 在 configure 之前恒为 `none`，把它直接
+    /// 打进日志会让人误读成「快照后端坏了」。本板实测启动日志里
+    /// `frames=hub:none` 就是这个假象——那时 hub 只是还没收到首帧。
+    bool configured() const;
 
     /// 人类可读状态（写进 evidence，说明这条通路到底有没有真的在工作）
     std::string describe() const;

@@ -6629,6 +6629,60 @@ class NetworkVideoClipChunkRecord(TenantScopedMixin, Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class NetworkSnapshotImageRecord(TenantScopedMixin, Base):
+    """【留证】一张已落盘的事故静帧（单张图，不含分片）。
+
+    与 ``NetworkVideoClipRecord`` + ``NetworkVideoClipChunkRecord`` 的一对多
+    不同，这里是**一张图一行**：静帧没有分片，也没有「收齐了没有」这个状态。
+    把两者合并成一张表会让 ``expected_chunks``/``fps`` 这类字段在图片行上
+    全是无意义的占位值——而占位值会被下游当事实读。
+
+    主键与 ``network_video_clips`` 同形：裸 ``image_id``，``tenant_id`` 由
+    mixin 提供。跨租户撞号按既有规则处理（``_require_same_tenant`` 判冲突，
+    而不是悄悄覆盖）。
+
+    行在对象存储**写成功之后**才插入，与分片端点同一个理由：先写库再写对象
+    会得到「行存在但内容不存在」，那比孤儿对象糟得多——行会声称证据已送达，
+    而实际取不出内容。
+    """
+
+    __tablename__ = "network_snapshot_images"
+    __table_args__ = (
+        Index(
+            "ix_network_snapshot_images_asset",
+            "tenant_id",
+            "asset_id",
+            "captured_at_ms",
+        ),
+        Index(
+            "ix_network_snapshot_images_incident",
+            "tenant_id",
+            "incident_id",
+        ),
+    )
+
+    image_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    #: 上传该图的网关（= network_assets.asset_id，也就是 device_id）
+    asset_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    site_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    gateway_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    #: 关联的区域事故；空串表示"没有关联事故"，不是"关联到空事故"
+    incident_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    #: v1 只有 JPEG。列仍留着是为了将来加格式时不用改表结构。
+    codec: Mapped[str] = mapped_column(String(16), nullable=False, default="JPEG")
+    width: Mapped[int] = mapped_column(Integer, nullable=False)
+    height: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 板端自述的拍摄时刻（墙钟毫秒）。**不是**窗口——一张图没有时长。
+    captured_at_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 图片字节的 sha256。与片段的分片同一套校验顺序。
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: 对象存储键（已规范化，读回时用 ``tenant_object_key_from_value`` 重建）
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    #: 云端收到图片的时刻（≠ captured_at_ms：那是板端自述的拍摄时间）
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 TENANT_TABLE_NAMES = frozenset(
     table_name for table_name in Base.metadata.tables if table_name != TenantRecord.__tablename__
 )

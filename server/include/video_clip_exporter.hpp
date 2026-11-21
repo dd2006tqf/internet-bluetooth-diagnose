@@ -117,6 +117,7 @@
 #include <thread>
 #include <vector>
 
+#include "edge_snapshot_upload.hpp"
 #include "weaknet_config.hpp"
 #include "video_clip_muxer.hpp"
 
@@ -161,6 +162,17 @@ struct VideoClipExporterStats {
     /// 完全不同——这一项涨说明板端缺 ffmpeg 或编码器产出不合规，
     /// 而 `clips_dropped` 涨才是留证真的丢了。
     uint64_t mux_failures{0};
+
+    // ---- 静帧（与片段同一条上行通路，独立计数）----
+    //
+    // 为什么必须独立计数而不是并进 clips_*：一个静帧传不上去与一段码流传
+    // 不上去，处置完全不同。片段的失败多半是带宽/体积问题，静帧的失败多半
+    // 是契约字段问题（120 KB 在任何链路上都传得动）。混在一起计数会让
+    // 「静帧全挂了但片段正常」表现为「总体成功率还行」。
+    uint64_t snapshots_enqueued{0};  ///< 入队的静帧数
+    uint64_t snapshots_uploaded{0};  ///< 确认送达的静帧数
+    uint64_t snapshots_dropped{0};   ///< 被丢弃/放弃的静帧数
+    uint64_t snapshot_bytes_sent{0}; ///< 静帧已送达的裸字节
 };
 
 /// 一个待上传片段的自述（清单字段）。
@@ -340,7 +352,7 @@ private:
  * 用法（单测）：直接调 `runOnce()` 而不 `start()` 后台线程——与
  * `EdgeWirelessUplinkExporter` 同一可测性先例。
  */
-class VideoClipExporter {
+class VideoClipExporter : public ISnapshotUploader {
 public:
     /// @param config     运行时配置（只读 edge.* 字段，与既有上行器同源）
     /// @param telemetry_url `edge.url`；本类从中派生 `/video-clips` 端点。
@@ -400,6 +412,26 @@ public:
      */
     bool enqueue(const VideoClipMeta& meta, std::vector<uint8_t> codec_bytes);
 
+    /**
+     * @brief 入队一张事故静帧（`ISnapshotUploader` 的实现）
+     *
+     * 与 `enqueue()` 共用**同一条**上行通路、同一套凭据、同一个超时与重试
+     * 策略——两条通路会让签名/超时/退避语义各说各话，而它们漂移时不会报错。
+     *
+     * 与片段的差别只有两处，都是语义上的：
+     *   - 静帧**不分片**（单张 120 KB 量级，分片只会多一个失败点）；
+     *   - 静帧**不做 MP4 封装**（它已经是最终交付形态的 JPEG）。
+     *
+     * @return false 表示未接收（未启动 / 队列满 / 自述不合法 / 超单张上限），
+     *         拒绝一律计入 `stats().snapshots_dropped`，不静默。
+     */
+    bool enqueueSnapshot(EdgeSnapshotUpload shot) override;
+
+    /// 执行一轮静帧上传：从静帧队列取一张并 POST。
+    ///
+    /// 公开以便单测同步驱动（与 `runOnce()` 同一可测性做法）。
+    bool runSnapshotOnce(std::string* error);
+
     /// 执行一轮：从队列取一个片段并完整上传（清单 + 全部分片）。
     ///
     /// 公开以便单测同步驱动（不起线程）。生产路径由 `run()` 循环调用。
@@ -420,6 +452,24 @@ public:
     /// 从 telemetry 端点派生「某片段某分片」的端点。
     static std::string deriveChunkUrl(const std::string& telemetry_url,
                                       const std::string& clip_id, size_t chunk_index);
+
+    /// 从 telemetry 端点派生静帧端点（`/edge/snapshot-images`）。
+    ///
+    /// 与 `deriveClipsUrl` 同一纪律：形态不符时返回**空串**，绝不猜地址。
+    static std::string deriveSnapshotsUrl(const std::string& telemetry_url);
+
+    /// 构造静帧报文字节（`network.edge.snapshot-images.v1`）。
+    ///
+    /// 公开以便单测直接断言字段名与取值：这些是**对外契约**，字段名写错只有
+    /// 云端 422 才会发现，而本地日志只会留下「上传失败」。
+    ///
+    /// `payload` 必须就是将要传输的那份字节——摘要与 base64 都从它算，
+    /// 不接受「声明一个、发另一个」。
+    static std::string buildSnapshotBody(const EdgeSnapshotUpload& shot,
+                                         const std::string& device_id,
+                                         const std::string& site_id,
+                                         const std::string& gateway_id,
+                                         std::string* error);
 
     /// 生成一个合规的 `clip_id`（`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`）。
     ///
@@ -459,6 +509,22 @@ private:
         uint32_t attempts{0};
     };
 
+    /// 一张待上传静帧。与 `PendingClip` 分开而不是加个 flag：
+    /// 两者的上传流程不同（一张要走清单+分片+封装，一张只发一个 POST），
+    /// 合在一个结构里会让 `runOnce` 里到处是 `if (is_snapshot)`，
+    /// 而那种分支最容易被后来的改动漏掉一半。
+    struct PendingSnapshot {
+        EdgeSnapshotUpload shot;
+        std::string body;            ///< **预序列化**的报文（重试必须复用同一份字节）
+        std::string signature;       ///< 对 `body` 的签名，与 body 同寿命
+        /// 裸 JPEG 字节数。`body` 是 base64 之后的大小（约 1.33 倍），
+        /// 而计数要与片段的 `bytes_sent` 同一口径——否则「静帧只占了几百 KB」
+        /// 这种结论会凭 base64 膨胀被高估三成。原始字节在 `body` 构造完就
+        /// 不再需要，只留这个数字。
+        size_t raw_bytes{0};
+        uint32_t attempts{0};
+    };
+
     void run();
     bool uploadManifestOnce(const PendingClip& clip, size_t total_bytes,
                             size_t expected_chunks, const std::string& content_sha,
@@ -490,6 +556,18 @@ private:
     std::condition_variable cv_;
     std::deque<PendingClip> queue_;
     size_t queued_bytes_{0};
+
+    /// 静帧队列。**独立于片段队列**，理由有两条：
+    ///   - 片段可能几十 MB，静帧只有 120 KB。共用一个字节配额时，一个待传
+    ///     的 22 MB 片段会把配额吃光，于是事故现场那张唯一的图反而被丢；
+    ///   - 两者的时效性不同：片段是「那几十秒怎么变化」，晚几分钟仍有价值；
+    ///     静帧是「现场长什么样」，同一事故只要一张，丢一张就没有替代品。
+    /// 所以静帧用**条数**上限（`kMaxQueuedSnapshots`）而不是字节上限。
+    std::deque<PendingSnapshot> snapshot_queue_;
+    /// 一次只排这么几张。事故是偶发的，正常不会同时有第二张；能排到 4 张
+    /// 说明上行已经堵了一阵，此时再多排也只是把「几小时前的现场」往后堆。
+    static constexpr size_t kMaxQueuedSnapshots = 4;
+
     /// 用 atomic 而不是 bool：`stop()` 与上传线程并发访问它。
     /// 普通 bool 在这里是数据竞争（UB），而它的失效表现是「停止信号
     /// 偶尔看不到」——那种 bug 在压力下才复现，且无法从日志定位。
