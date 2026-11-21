@@ -38,6 +38,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal, Self
 
 from pydantic import Field, model_validator
@@ -125,3 +126,31 @@ class SnapshotImageResult(_ClosedModel):
     accepted: bool
     duplicate: bool
     size_bytes: int
+
+
+class SnapshotImageItem(_ClosedModel):
+    """运营端读到的一张静帧摘要（只读事实，不含载荷）。
+
+    字段与 ``VideoClipItem`` 刻意**不**对齐：那边有 ``fps`` /
+    ``expected_chunks`` / ``received_chunks`` / ``state``，因为它们描述
+    「一段码流收齐了没有」。一张图没有时长、没有分片、也没有中间状态——
+    行存在就代表内容已落对象存储。硬凑几个恒真字段只会让运营端去读
+    不存在的信息。
+    """
+
+    image_id: str
+    asset_id: str
+    site_id: str
+    gateway_id: str
+    #: 空串表示「没有关联事故」，与上传契约同一约定。
+    incident_id: str
+    codec: str
+    width: int
+    height: int
+    #: 板端自述的拍摄时刻（墙钟毫秒）。
+    captured_at_ms: int
+    size_bytes: int
+    content_sha256: str
+    #: 云端收到的时刻。与 ``captured_at_ms`` 并列给出，是因为两者不相等本身
+    #: 就是一条线索（板端时钟漂移、或上行堵了一阵）。
+    received_at: datetime

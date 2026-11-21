@@ -69,6 +69,7 @@ from industrial_ops_agent.network_assurance.contracts import (
 )
 from industrial_ops_agent.network_assurance.snapshot_contracts import (
     SnapshotImage,
+    SnapshotImageItem,
     SnapshotImageResult,
 )
 from industrial_ops_agent.network_assurance.video_contracts import (
@@ -852,6 +853,82 @@ class NetworkAssuranceService:
                 duplicate=False,
                 size_bytes=image.size_bytes,
             )
+
+    def list_snapshot_images(
+        self,
+        context: TenantContext,
+        *,
+        asset_id: str | None = None,
+        incident_id: str | None = None,
+        limit: int = 50,
+    ) -> list[SnapshotImageItem]:
+        """运营端读取：某网关或某事故下的事故静帧摘要（不含载荷）。
+
+        与 ``list_video_clips`` 的差别不在写法，在**没有 ``received_chunks``
+        那一列**：静帧是单张对象，行存在就代表内容已落对象存储，不存在
+        「收了一半」这个中间状态。所以这里连计数查询都不需要——一次
+        select 就是全部开销。
+
+        按 ``captured_at_ms`` 倒序而不是 ``received_at``：运营端看的是
+        「现场什么时候这样」，不是「云端什么时候收到的」。上行拥堵时两者
+        可能差几分钟，而事故时间线只认前者。
+        """
+
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        with self._database.transaction(context) as session:
+            stmt = select(NetworkSnapshotImageRecord).where(
+                NetworkSnapshotImageRecord.tenant_id == context.tenant_id
+            )
+            if asset_id is not None:
+                stmt = stmt.where(NetworkSnapshotImageRecord.asset_id == asset_id)
+            if incident_id is not None:
+                stmt = stmt.where(NetworkSnapshotImageRecord.incident_id == incident_id)
+            stmt = stmt.order_by(
+                NetworkSnapshotImageRecord.captured_at_ms.desc()
+            ).limit(limit)
+            records = session.scalars(stmt).all()
+            return [
+                SnapshotImageItem(
+                    image_id=r.image_id,
+                    asset_id=r.asset_id,
+                    site_id=r.site_id,
+                    gateway_id=r.gateway_id,
+                    incident_id=r.incident_id,
+                    codec=r.codec,
+                    width=r.width,
+                    height=r.height,
+                    captured_at_ms=r.captured_at_ms,
+                    size_bytes=r.size_bytes,
+                    content_sha256=r.content_sha256,
+                    received_at=r.received_at,
+                )
+                for r in records
+            ]
+
+    def get_snapshot_image(
+        self,
+        context: TenantContext,
+        image_id: str,
+    ) -> NetworkSnapshotImageRecord:
+        """按 ``image_id`` 取一行静帧记录（下载路径用它拿 ``object_key``）。
+
+        找不到抛 ``NetworkAssuranceNotFound``，与 ``list_video_clip_chunks``
+        同一风格。跨租户撞号按既有规则处理：先取到行、再判租户，
+        不能靠 ``image_id`` 是否可见来反推存在性。
+
+        返回的是**记录行**而不是摘要模型：下载路径需要 ``object_key``
+        （摘要模型刻意不含它，因为它不该流到运营端接口的响应里）。
+        """
+
+        with self._database.transaction(context) as session:
+            record = session.get(NetworkSnapshotImageRecord, image_id)
+            if record is None:
+                raise NetworkAssuranceNotFound(
+                    f"snapshot image {image_id} is not registered"
+                )
+            self._require_same_tenant(context, record.tenant_id, image_id)
+            return record
 
     @staticmethod
     def _snapshot_image_differs(

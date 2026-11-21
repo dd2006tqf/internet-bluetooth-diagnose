@@ -88,6 +88,7 @@ from industrial_ops_agent.network_assurance.signing import (
 )
 from industrial_ops_agent.network_assurance.snapshot_contracts import (
     SnapshotImage,
+    SnapshotImageItem,
     SnapshotImageResult,
 )
 from industrial_ops_agent.network_assurance.video_contracts import (
@@ -101,6 +102,10 @@ from industrial_ops_agent.network_assurance.wireless_contracts import (
     PredictionResult,
     WirelessEventIngestResult,
     WirelessEventUplinkBatch,
+)
+from industrial_ops_agent.object_store.integrity import (
+    DigestMismatchError,
+    verify_retrieved_digest,
 )
 from industrial_ops_agent.object_store.keys import (
     edge_snapshot_image_object_key,
@@ -1479,6 +1484,150 @@ async def download_asset_video_clip(
         headers={
             "Cache-Control": "private, no-store",
             "Content-Disposition": f'inline; filename="{clip_id}.{suffix}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get(
+    "/assets/{asset_id}/snapshot-images",
+    response_model=list[SnapshotImageItem],
+    responses=STANDARD_ERROR_RESPONSES,
+    summary="List incident snapshot images uploaded by this gateway asset",
+)
+async def list_asset_snapshot_images(
+    request: Request,
+    asset_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+    incident_id: Annotated[str | None, Query(max_length=128)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[SnapshotImageItem]:
+    """运营端列出某网关的事故静帧（只读摘要，不含载荷）。
+
+    这是 ``POST /edge/snapshot-images`` 的**消费者**。没有它，收上来的图在
+    平台里没有任何出口——那才是真正的孤儿表面：收得进来、看不到。
+
+    按 ``incident_id`` 过滤是事故详情页的主要用法（"这次事故的现场画面
+    是什么"），所以它是一等参数而不是让调用方自己再筛一遍。
+    """
+
+    _require_read_scope(request, identity, authorizer, asset_id)
+    return service.list_snapshot_images(
+        identity.tenant_context,
+        asset_id=asset_id,
+        incident_id=incident_id,
+        limit=limit,
+    )
+
+
+@router.get(
+    "/assets/{asset_id}/snapshot-images/{image_id}/content",
+    responses={
+        **STANDARD_ERROR_RESPONSES,
+        200: {"content": {"image/jpeg": {}}},
+    },
+    summary="Download the JPEG bytes of an incident snapshot image",
+)
+async def download_asset_snapshot_image(
+    request: Request,
+    asset_id: str,
+    image_id: str,
+    identity: Annotated[IdentityContext, Depends(get_identity)],
+    authorizer: Annotated[Authorizer, Depends(get_authorizer)],
+    service: Annotated[NetworkAssuranceService, Depends(get_network_assurance_service)],
+    object_store: Annotated[TenantObjectStore, Depends(get_object_store)],
+) -> Response:
+    """把一张静帧的原始 JPEG 字节交给运营端。
+
+    与片段下载三点不同，每一点都是「一张图」与「一段码流」的差别：
+
+    1. 没有「未收齐」这个状态，所以没有 409。行存在 = 内容已落对象存储
+       （写入顺序在路由层强制）。真取不到对象是**已登记的证据丢了**，报 500。
+    2. 媒体类型固定 ``image/jpeg``，不需要按字节猜容器。契约层只接受
+       ``codec == "JPEG"``，而字节在入库前已经解 base64 + 验长度 + 验摘要。
+    3. **下载时重算摘要并与行里的 ``content_sha256`` 比对**。这是整条留证
+       链路的最后一步，也是「证据可长期取回」唯一能拿出证据的地方。取回
+       成功但摘要不符 != 文件不存在：前者要立刻查是谁改的，后者只需再等。
+       混淆两者会让篡改看起来像延迟。
+
+    为什么在下载路径里做校验而不是后台任务：证据被读取的那一刻是最需要
+    确认它没变形的时刻。后台巡检能让问题更早暴露，但替代不了这一刻的判据。
+    """
+
+    _require_read_scope(request, identity, authorizer, asset_id)
+    context = identity.tenant_context
+    try:
+        record = service.get_snapshot_image(context, image_id)
+    except NetworkAssuranceNotFound as exc:
+        # 与 ``download_asset_video_clip`` 不同，那里靠「列表里找不到」报 404，
+        # 这里直接抛出再转。为什么不先在列表里找：静帧列表按 ``captured_at_ms``
+        # 排序且 limit 封顶，用列表做存在性判断会让「图很多时找不到最老那张」
+        # 变成一次假的 404。
+        raise AppError(
+            status_code=404,
+            code="network_snapshot_image_not_found",
+            category="not_found",
+            message="Snapshot image not found for this asset",
+            details={"image_id": image_id},
+        ) from exc
+    if record.asset_id != asset_id:
+        # 图存在但属于别的网关：对这条 URL 而言就是不存在。用 404 而不是
+        # 403——403 会确认「这张图存在」，让 URL 可枚举。
+        raise AppError(
+            status_code=404,
+            code="network_snapshot_image_not_found",
+            category="not_found",
+            message="Snapshot image not found for this asset",
+            details={"image_id": image_id},
+        )
+
+    key = tenant_object_key_from_value(context, record.object_key)
+    payload = await object_store.get(context, key)
+
+    if payload is None:
+        # 行说已送达、对象却不在：这是真正的数据丢失，不能当成 404 悄悄
+        # 返回——运营端看到 404 会以为图不存在，而实际上证据丢了。
+        raise AppError(
+            status_code=500,
+            code="network_snapshot_image_object_missing",
+            category="dependency",
+            message="A stored snapshot image is missing from object storage",
+            retryable=True,
+            details={"image_id": image_id},
+        )
+
+    # 长度先判再算摘要：长度不符是比摘要更便宜、也更确定的一条判据。
+    if len(payload) != record.size_bytes:
+        raise AppError(
+            status_code=500,
+            code="network_snapshot_image_size_mismatch",
+            category="dependency",
+            message="Retrieved snapshot image length does not match the registered size",
+            details={"expected_bytes": record.size_bytes, "actual_bytes": len(payload)},
+        )
+
+    try:
+        verify_retrieved_digest(payload, record.content_sha256)
+    except DigestMismatchError as exc:
+        raise AppError(
+            status_code=500,
+            code="network_snapshot_image_digest_mismatch",
+            category="dependency",
+            message="Retrieved snapshot image does not match its registered digest",
+            details={"image_id": image_id, "detail": str(exc)},
+        ) from exc
+
+    return Response(
+        content=payload,
+        media_type="image/jpeg",
+        headers={
+            # 证据图片不可变：摘要即身份，同一 URL 的字节永不变。
+            # 仍标 private（租户隔离），但允许客户端缓存——重复查看同一
+            # 事故现场不该反复下载。
+            "Cache-Control": "private, max-age=3600",
+            "Content-Disposition": f'inline; filename="{image_id}.jpg"',
             "X-Content-Type-Options": "nosniff",
         },
     )

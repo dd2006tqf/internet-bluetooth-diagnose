@@ -102,6 +102,7 @@
 | 文件 | 一句话 |
 | --- | --- |
 | [resolver-whitelist-attribution-gap.md](resolver-whitelist-attribution-gap.md) | 诊断规则的字段解析器只认 SLE evidence，没有字段等于永远无法归因 |
+| [in-memory-store-hides-ordering-and-retrieval.md](in-memory-store-hides-ordering-and-retrieval.md) | 内存对象存储永不失败、重启即丢，于是「写入顺序」与「取回重算摘要」两条不变量从未被执行过 |
 
 ### 线程接线与生命周期
 

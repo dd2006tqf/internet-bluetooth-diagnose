@@ -71,6 +71,7 @@ def _state_dep(attr: str):
             override = request.headers.get("X-Rehearsal-Subject")
             if override and hasattr(value, "subject_id"):
                 from dataclasses import replace
+
                 return replace(value, subject_id=override)
         return value
 
@@ -335,19 +336,33 @@ def build_app() -> FastAPI:
     app.state.edge_telemetry_verifier = verifier
     app.state.wireless_diagnosis_service = WirelessDiagnosisService(database)
 
-    # 视频留证分片的落点是对象存储。排练环境用**真实**的 InMemory 实现，
-    # 不是 None 也不是桩：分片路由的执行顺序是「对象存储 → 数据库」，
+    # 视频留证分片与事故静帧的落点是对象存储。排练环境用**真实**的实现，
+    # 不是 None 也不是桩：路由的执行顺序是「对象存储 → 数据库」，
     # 装配 None 就只能验证到 503，验不到写入顺序与幂等这两条真正要守的约束。
     #
-    # 用 InMemory 而不是 MinIO 的理由：排练服务的存在意义是「一条最小闭环」，
-    # 它已经在同一份 docstring 里拒绝为了这个闭环拉起重依赖；而且它的断言
-    # 对象是数据库行与路由语义，不是对象存储的持久性。代价是**进程重启后
-    # 分片对象丢失（数据库行还在）**——这正是本环境的一条已知边界，不假装没有。
+    # 默认仍是 InMemory：排练服务的存在意义是「一条最小闭环」，为它拉起
+    # MinIO 会让「想跑一下」变成一个部署任务。但 InMemory 有一个**它掩盖
+    # 掉的语义**——对象永不写入失败、重启即丢，于是「取回对象再重算 sha256」
+    # 这条留证链路的最后一步根本做不了。
+    #
+    # 所以给出 ``REHEARSAL_OBJECT_STORE_DIR``：设了这个变量就切到落盘实现，
+    # 对象跨重启存活，取回校验才有意义。不设则维持 InMemory 的老行为，
+    # 现场与 CI 的既有跑法一个字都不用改。
     from industrial_ops_agent.object_store.memory import (  # noqa: PLC0415
         InMemoryTenantObjectStore,
     )
 
-    app.state.object_store = InMemoryTenantObjectStore()
+    object_store_dir = os.environ.get("REHEARSAL_OBJECT_STORE_DIR", "")
+    if object_store_dir:
+        from industrial_ops_agent.object_store.local_disk import (  # noqa: PLC0415
+            LocalDiskTenantObjectStore,
+        )
+
+        app.state.object_store = LocalDiskTenantObjectStore(object_store_dir)
+        LOGGER.info("object store: local disk at %s", object_store_dir)
+    else:
+        app.state.object_store = InMemoryTenantObjectStore()
+        LOGGER.info("object store: in-memory (objects lost on restart)")
 
     # 下行签名器：本排练环境没有生成下行密钥对，诚实置 None。
     # 真实平台在同一种情况下的行为就是「不受理签名、回未签名响应」。

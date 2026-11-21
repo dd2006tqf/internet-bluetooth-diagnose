@@ -39242,6 +39242,77 @@
         "title": "SloObservationResponse",
         "type": "object"
       },
+      "SnapshotImageItem": {
+        "additionalProperties": false,
+        "description": "运营端读到的一张静帧摘要（只读事实，不含载荷）。\n\n字段与 ``VideoClipItem`` 刻意**不**对齐：那边有 ``fps`` /\n``expected_chunks`` / ``received_chunks`` / ``state``，因为它们描述\n「一段码流收齐了没有」。一张图没有时长、没有分片、也没有中间状态——\n行存在就代表内容已落对象存储。硬凑几个恒真字段只会让运营端去读\n不存在的信息。",
+        "properties": {
+          "asset_id": {
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "captured_at_ms": {
+            "title": "Captured At Ms",
+            "type": "integer"
+          },
+          "codec": {
+            "title": "Codec",
+            "type": "string"
+          },
+          "content_sha256": {
+            "title": "Content Sha256",
+            "type": "string"
+          },
+          "gateway_id": {
+            "title": "Gateway Id",
+            "type": "string"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "string"
+          },
+          "incident_id": {
+            "title": "Incident Id",
+            "type": "string"
+          },
+          "received_at": {
+            "format": "date-time",
+            "title": "Received At",
+            "type": "string"
+          },
+          "site_id": {
+            "title": "Site Id",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "image_id",
+          "asset_id",
+          "site_id",
+          "gateway_id",
+          "incident_id",
+          "codec",
+          "width",
+          "height",
+          "captured_at_ms",
+          "size_bytes",
+          "content_sha256",
+          "received_at"
+        ],
+        "title": "SnapshotImageItem",
+        "type": "object"
+      },
       "SnapshotImageResult": {
         "additionalProperties": false,
         "description": "静帧投递的回执。",
@@ -68880,6 +68951,305 @@
           }
         },
         "summary": "Latest deep kernel observations (process top-N, skb drop attribution)",
+        "tags": [
+          "network-assurance"
+        ]
+      }
+    },
+    "/api/v1/network/assets/{asset_id}/snapshot-images": {
+      "get": {
+        "description": "运营端列出某网关的事故静帧（只读摘要，不含载荷）。\n\n这是 ``POST /edge/snapshot-images`` 的**消费者**。没有它，收上来的图在\n平台里没有任何出口——那才是真正的孤儿表面：收得进来、看不到。\n\n按 ``incident_id`` 过滤是事故详情页的主要用法（\"这次事故的现场画面\n是什么\"），所以它是一等参数而不是让调用方自己再筛一遍。",
+        "operationId": "list_asset_snapshot_images_api_v1_network_assets__asset_id__snapshot_images_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "incident_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Incident Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SnapshotImageItem"
+                  },
+                  "title": "Response List Asset Snapshot Images Api V1 Network Assets  Asset Id  Snapshot Images Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Invalid request precondition"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Action is not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Resource not found or not visible"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Idempotency or version conflict"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Media type mismatch"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Required dependency unavailable"
+          }
+        },
+        "summary": "List incident snapshot images uploaded by this gateway asset",
+        "tags": [
+          "network-assurance"
+        ]
+      }
+    },
+    "/api/v1/network/assets/{asset_id}/snapshot-images/{image_id}/content": {
+      "get": {
+        "description": "把一张静帧的原始 JPEG 字节交给运营端。\n\n与片段下载三点不同，每一点都是「一张图」与「一段码流」的差别：\n\n1. 没有「未收齐」这个状态，所以没有 409。行存在 = 内容已落对象存储\n   （写入顺序在路由层强制）。真取不到对象是**已登记的证据丢了**，报 500。\n2. 媒体类型固定 ``image/jpeg``，不需要按字节猜容器。契约层只接受\n   ``codec == \"JPEG\"``，而字节在入库前已经解 base64 + 验长度 + 验摘要。\n3. **下载时重算摘要并与行里的 ``content_sha256`` 比对**。这是整条留证\n   链路的最后一步，也是「证据可长期取回」唯一能拿出证据的地方。取回\n   成功但摘要不符 != 文件不存在：前者要立刻查是谁改的，后者只需再等。\n   混淆两者会让篡改看起来像延迟。\n\n为什么在下载路径里做校验而不是后台任务：证据被读取的那一刻是最需要\n确认它没变形的时刻。后台巡检能让问题更早暴露，但替代不了这一刻的判据。",
+        "operationId": "download_asset_snapshot_image_api_v1_network_assets__asset_id__snapshot_images__image_id__content_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "image_id",
+            "required": true,
+            "schema": {
+              "title": "Image Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "image/jpeg": {}
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Invalid request precondition"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication required"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Action is not allowed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Resource not found or not visible"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Idempotency or version conflict"
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Media type mismatch"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Required dependency unavailable"
+          }
+        },
+        "summary": "Download the JPEG bytes of an incident snapshot image",
         "tags": [
           "network-assurance"
         ]

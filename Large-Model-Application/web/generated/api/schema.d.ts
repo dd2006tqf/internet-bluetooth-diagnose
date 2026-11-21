@@ -4031,6 +4031,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/network/assets/{asset_id}/snapshot-images": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List incident snapshot images uploaded by this gateway asset
+         * @description 运营端列出某网关的事故静帧（只读摘要，不含载荷）。
+         *
+         *     这是 ``POST /edge/snapshot-images`` 的**消费者**。没有它，收上来的图在
+         *     平台里没有任何出口——那才是真正的孤儿表面：收得进来、看不到。
+         *
+         *     按 ``incident_id`` 过滤是事故详情页的主要用法（"这次事故的现场画面
+         *     是什么"），所以它是一等参数而不是让调用方自己再筛一遍。
+         */
+        get: operations["list_asset_snapshot_images_api_v1_network_assets__asset_id__snapshot_images_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/network/assets/{asset_id}/snapshot-images/{image_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the JPEG bytes of an incident snapshot image
+         * @description 把一张静帧的原始 JPEG 字节交给运营端。
+         *
+         *     与片段下载三点不同，每一点都是「一张图」与「一段码流」的差别：
+         *
+         *     1. 没有「未收齐」这个状态，所以没有 409。行存在 = 内容已落对象存储
+         *        （写入顺序在路由层强制）。真取不到对象是**已登记的证据丢了**，报 500。
+         *     2. 媒体类型固定 ``image/jpeg``，不需要按字节猜容器。契约层只接受
+         *        ``codec == "JPEG"``，而字节在入库前已经解 base64 + 验长度 + 验摘要。
+         *     3. **下载时重算摘要并与行里的 ``content_sha256`` 比对**。这是整条留证
+         *        链路的最后一步，也是「证据可长期取回」唯一能拿出证据的地方。取回
+         *        成功但摘要不符 != 文件不存在：前者要立刻查是谁改的，后者只需再等。
+         *        混淆两者会让篡改看起来像延迟。
+         *
+         *     为什么在下载路径里做校验而不是后台任务：证据被读取的那一刻是最需要
+         *     确认它没变形的时刻。后台巡检能让问题更早暴露，但替代不了这一刻的判据。
+         */
+        get: operations["download_asset_snapshot_image_api_v1_network_assets__asset_id__snapshot_images__image_id__content_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/network/assets/{asset_id}/timeline": {
         parameters: {
             query?: never;
@@ -19801,6 +19861,45 @@ export interface components {
             unit: string;
             /** Window */
             window: string;
+        };
+        /**
+         * SnapshotImageItem
+         * @description 运营端读到的一张静帧摘要（只读事实，不含载荷）。
+         *
+         *     字段与 ``VideoClipItem`` 刻意**不**对齐：那边有 ``fps`` /
+         *     ``expected_chunks`` / ``received_chunks`` / ``state``，因为它们描述
+         *     「一段码流收齐了没有」。一张图没有时长、没有分片、也没有中间状态——
+         *     行存在就代表内容已落对象存储。硬凑几个恒真字段只会让运营端去读
+         *     不存在的信息。
+         */
+        SnapshotImageItem: {
+            /** Asset Id */
+            asset_id: string;
+            /** Captured At Ms */
+            captured_at_ms: number;
+            /** Codec */
+            codec: string;
+            /** Content Sha256 */
+            content_sha256: string;
+            /** Gateway Id */
+            gateway_id: string;
+            /** Height */
+            height: number;
+            /** Image Id */
+            image_id: string;
+            /** Incident Id */
+            incident_id: string;
+            /**
+             * Received At
+             * Format: date-time
+             */
+            received_at: string;
+            /** Site Id */
+            site_id: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Width */
+            width: number;
         };
         /**
          * SnapshotImageResult
@@ -35593,6 +35692,203 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    list_asset_snapshot_images_api_v1_network_assets__asset_id__snapshot_images_get: {
+        parameters: {
+            query?: {
+                incident_id?: string | null;
+                limit?: number;
+            };
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SnapshotImageItem"][];
+                };
+            };
+            /** @description Invalid request precondition */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Authentication required */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Action is not allowed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Resource not found or not visible */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Idempotency or version conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Media type mismatch */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+            /** @description Required dependency unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"];
+                };
+            };
+        };
+    };
+    download_asset_snapshot_image_api_v1_network_assets__asset_id__snapshot_images__image_id__content_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                Authorization?: string | null;
+            };
+            path: {
+                asset_id: string;
+                image_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "image/jpeg": unknown;
                 };
             };
             /** @description Invalid request precondition */

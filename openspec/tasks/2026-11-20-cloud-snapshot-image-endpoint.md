@@ -1,8 +1,10 @@
 # 云端事故静帧端点（`/edge/snapshot-images`）
 
-> 日期：2026-11-20（云端契约）/ 2026-11-21（端侧接入 + 真机联调）
+> 日期：2026-11-20（云端契约）/ 2026-11-21（端侧接入 + 真机联调 + 运营端取回 + 落盘存储真机闭环）
 > 分类：工作流外实施
-> 结果：已完成并**已在真机端到端验证**；对象存储为内存实现，持久化未验证
+> 结果：已完成。**真机 + 真 Postgres + 落盘对象存储**的端到端链路已跑通
+> （板端私钥签名 → 公网 → 落库落盘 → 取回 → 板端重算摘要比对），并验证了
+> 跨服务重启的对象持久化。唯一仍缺的是**保留/配额策略**（见遗留 7）。
 
 ## 构思
 
@@ -66,6 +68,19 @@
 | `tests/test_snapshot_image_ingest.py` | 10 项服务层语义测试 |
 | `contracts/openapi.json` + 生成的客户端 | 契约产物 |
 
+后续一轮（2026-11-21，补运营端取回 + 落盘存储）：
+
+| 文件 | 内容 |
+| --- | --- |
+| `object_store/local_disk.py` | 新文件。`LocalDiskTenantObjectStore`：三重路径防护 + 原子写入 |
+| `object_store/integrity.py` | 新文件。`verify_retrieved_digest` + `DigestMismatchError`（判据与存储介质解耦） |
+| `network_assurance/snapshot_contracts.py` | 新增 `SnapshotImageItem`（运营端摘要，不含 `object_key`） |
+| `network_assurance/service.py` | `list_snapshot_images()` + `get_snapshot_image()` |
+| `api/routes/network_assurance.py` | `GET /assets/{asset_id}/snapshot-images` 与 `.../{image_id}/content` |
+| `scripts/rehearsal_server.py` | `REHEARSAL_OBJECT_STORE_DIR` 开关，默认仍是 InMemory |
+| `tests/test_local_disk_object_store.py` | 20 项（路径穿越 / 软链接 / 原子性 / 取回摘要） |
+| `tests/test_snapshot_image_operator_routes.py` | 15 项（列表语义 + 下载四类失败） |
+
 ### 关键决策
 
 #### 1. 一行一张图，不复用片段那对表
@@ -124,6 +139,21 @@ scripts/generate_openapi_client.sh --check       # 通过
 
 模型列与迁移列逐项比对一致（16 列），迁移链 `0100` 是唯一 head。
 
+2026-11-21 补运营端取回端点 + 落盘对象存储后重跑：
+
+```
+./.venv/bin/python -m pytest tests/ -q -m "not live"   # 386 passed, 2 deselected
+./.venv/bin/python -m pytest tests/test_local_disk_object_store.py \
+    tests/test_snapshot_image_operator_routes.py -q    # 35 passed
+./.venv/bin/python -m ruff check …                     # 通过
+./.venv/bin/python -m ruff format --check …            # 通过
+scripts/generate_openapi.sh --check                    # 通过
+scripts/generate_openapi_client.sh --check             # 通过
+```
+
+`contracts/openapi.json` 这一轮只增不改（+370 行，两个新 path），
+没有上一轮那种夹带的既有漂移。
+
 ## 结果
 
 ### 已完成
@@ -132,6 +162,9 @@ scripts/generate_openapi_client.sh --check       # 通过
 - 新表 + 迁移（含行级安全）+ 对象键 + 服务层 + 路由，全链路打通；
 - 21 项新增测试；云端全量 **351 passed / 2 skipped**；
 - OpenAPI 契约与客户端产物已同步，两个 `--check` 门通过。
+- **运营端取回端点已补**（列表 + 下载，下载时重算摘要）；
+- **落盘对象存储已补**（`LocalDiskTenantObjectStore`，跨重启存活）；
+- 再新增 35 项测试；云端全量 **386 passed / 2 deselected**。
 
 ### 端侧接入（同一任务的后半段）
 
@@ -280,25 +313,145 @@ content_sha256 前缀 | 5fc7b202a5742f49
 
 最后再查一次库：仍然只有那 1 行，被拒的请求**没有留下任何行**。
 
-### 一个必须说明的验证缺口
+### 验证缺口已补（2026-11-21 后续一轮）
 
-线上 rehearsal 服务装配的是 `InMemoryTenantObjectStore`
-（`scripts/rehearsal_server.py:350`）：**对象只存在进程内存里，重启即丢**。
+上一轮记下的那条边界是：rehearsal 装的是 `InMemoryTenantObjectStore`
+（`scripts/rehearsal_server.py:350`），**对象只存在进程内存里，重启即丢**，
+于是「取回 → 重算 sha256 → 比对」做不了，「写入顺序：对象存储 → 数据库」
+那个 503 分支也从没被走到过。
 
-后果是：
+这一轮把它补上了，三件事：
 
-- ✅ 行的字段与板端事实逐字一致；
-- ✅ 内容摘要与板端字节一致（板端自己算的，被云端存下来）；
-- ❌ **无法从云端把对象取回来验证**——没有持久化后端，也就没有「取回 → 重算
-  sha256 → 比对」这一步。
+| 新增 | 作用 |
+| --- | --- |
+| `object_store/local_disk.py` | `LocalDiskTenantObjectStore`：真落盘，跨重启存活 |
+| `object_store/integrity.py` | `verify_retrieved_digest` + `DigestMismatchError`，判据与存储介质解耦 |
+| `GET /assets/{asset_id}/snapshot-images` 与 `.../{image_id}/content` | 运营端列表 + 下载；下载时**重算摘要并与行里的 `content_sha256` 比对** |
 
-所以「写入顺序：对象存储 → 数据库」这条设计**在真机上没有被真正检验**：
-那个 503 分支（对象写失败就不写库）在内存实现下几乎不会触发。要补这条证据，
-必须先把服务切到真 MinIO（或在 rehearsal 里加一个落盘实现）。
+`rehearsal_server.py` 的装配改为读 `REHEARSAL_OBJECT_STORE_DIR`：设了就切落盘，
+不设仍是 InMemory。默认行为一个字没改，CI 与既有跑法不受影响。两种模式的
+装配都实测过（`type: LocalDiskTenantObjectStore` / `type: InMemoryTenantObjectStore`）。
 
-不得据此宣称「静帧证据已可长期取回」。已落库的这 1 行会在下次服务重启后
-留下一个指向不存在对象的 `object_key`——这恰好是本文档第 3 条关键决策
-（先写对象再写库）想避免的那种状态，只是成因不同（不是顺序错，是后端不持久）。
+#### 落盘实现为什么值得单独写，而不是“加个 dict 到文件”
+
+三重路径防护，每一层挡的东西不同：
+
+1. `key.assert_owned_by(context)` —— 租户边界；
+2. 逐段拒绝 `""` / `"."` / `".."` / 反斜杠 —— 挡「键本身写得坏」；
+3. `resolve()` 之后 `is_relative_to(root)` —— 挡「根目录内的某个中间目录
+   是软链接」。前两层完全挡不住这一条，而一旦有人在存储根里造一条软链接，
+   前两层就全废了。
+
+写入用 `mkstemp(dir=path.parent)` + `write` + `flush` + `fsync` + `os.replace`：
+临时文件必须与目标**同一文件系统**，否则 `os.replace` 退化成复制+删除、不再原子；
+少了 `fsync`，ext4 delayed allocation 会留下「名字在、内容空」的文件——那比
+0 个文件危险，因为它看起来像真图。
+
+测试用真目录、真文件、真 fsync，不 mock 文件系统，20 项。其中两项直接钉住
+上一轮没验过的性质：`test_round_trip_digest_matches`（写进去→取回来→重算→比）
+与 `test_no_partial_file_survives_a_failed_write`（`os.replace` 抛错后目标路径必须不存在）。
+
+#### 下载路径做摘要校验，而不是交给后台任务
+
+证据被读取的那一刻是最需要确认它没变形的时刻。后台巡检能让问题更早暴露，
+但替代不了这一刻的判据。
+
+三条错误码刻意分开，因为处置完全相反：
+
+| 情形 | 状态码 | 含义 |
+| --- | --- | --- |
+| 对象不存在 | 500 `..._object_missing` | 行说已送达但内容丢了，要查存储 |
+| 长度不符 | 500 `..._size_mismatch` | 截断，比摘要更便宜也更确定的判据 |
+| 摘要不符 | 500 `..._digest_mismatch` | 内容被换过，要查是谁改的 |
+
+**都不能报 404**：404 会让运营端以为「这张图从来没有过」，而实际上它存在过、
+丢了。前者什么都不用做，后者要立刻查。
+
+#### 「503 分支」这个叫法是错的（2026-11-21 第二轮纠正）
+
+上一轮把「对象写失败 → 不写库」记成「503 分支从未被走到」。补上之后发现
+**它本来就不是 503**：
+
+| 情形 | 状态码 | 谁负责 |
+| --- | --- | --- |
+| store 没装配（`app.state.object_store is None`） | 503 `object_store_unavailable` | 部署/装配错误，板端可重试 |
+| store 写入失败（`put` 抛异常） | 500 `internal_error` | 存储故障，重试不会立刻好 |
+
+路由里写对象那一行是裸的 `await object_store.put(...)`，没有 try/except。
+`put` 抛什么都会一路冒到全局处理器，变成 `500 internal_error`。真正的 503
+只来自 `get_object_store` 取不到 store，那是「存储没装配」，与「存储写失败」
+是两件事。
+
+状态码是次要的。**真正要守的不变量是「库里不能有行」。** 一条指向不存在对象
+的行会声称证据已送达，而实际取不出内容——这比直接失败糟得多，因为它不可观测。
+
+新增 `tests/test_snapshot_image_write_failure.py`（3 项）钉住这条：
+
+| 用例 | 断言 |
+| --- | --- |
+| `test_object_write_failure_leaves_no_row` | `put` 被调用过、响应 ≥500、表里 0 行 |
+| `test_object_write_failure_leaves_no_object_on_disk` | 失败路径不留任何残留文件 |
+| `test_successful_write_still_creates_exactly_one_row` | **对照组**：换健康存储必须恰好 1 行且能取回校验 |
+
+对照组不是凑数：没有它，上面两条「0 行」可能因为任何原因通过（签名没过、
+路由 401 了，库里当然没有行）。
+
+失败桩的实现本身踩过一个坑，值得记：第一版在 `_write_atomically` **成功之后**
+再抛错，测出来磁盘上留了一个**完整**对象，于是「无残留」失败。那不是产品缺陷，
+是桩选错了失败点——那个场景是「对象已送达、回执失败」，残留是必然且无害的
+（孤儿对象，可回收；不会出现「有行没内容」）。最终把桩的失败点定在
+`os.replace`，那才是 `_write_atomically` 的 except 清理分支唯一会被走到的地方。
+
+#### 仍然没有验证的部分（不要把上面的当成“缺口全关”）
+
+- ~~真机 + 真 Postgres + 落盘实现~~ —— **已验**（见下节「真机 + 落盘存储」）。
+- **静帧的保留/配额策略不存在**。落盘实现会让磁盘占用持续增长，
+  目前没有任何清理逻辑——这也是把它做成`可选开关`而不是默认的原因之一。
+
+#### 真机 + 落盘存储（2026-11-21 第三轮，已闭环）
+
+前两轮的缺口是「真 Postgres 验过，但对象存在进程内存里」。这一轮把云端切到
+落盘实现后重跑，链路每一段都是真的：
+
+```
+板端私钥 → RFC 8032 签名 → 板端 curl 经公网 → 云端真 Postgres + 真落盘
+→ 运营端取回 → 板端重算 sha256 与原始字节比对
+```
+
+签名工具是**纯标准库实现**（板端 Python 3.9 没有 `cryptography`，OpenSSL 1.1.1
+的 `pkeyutl` 不支持 EdDSA）。用它对 RFC 8032 第 7.1 节 TEST 1 / TEST 2 两组
+官方向量、以及与 `cryptography` 库交叉比对四项（种子 / 公钥 / 签名 / SPKI PEM），
+全部逐字节一致之后才拿它当证据工具。
+
+**先确认信任锚**：从板端真实私钥推导出的公钥
+`MCowBQYDK2VwAyEA3qGprOxMQlNmiKZmxOSwr6SeSHk5F8bXq0ysBGvUzC4=`
+与云端 `/etc/weaknet-cloud/edge_pub.pem`、仓库内 `secrets/edge_pub.pem`
+**逐字一致**。这一步不能跳：公钥对不上时，后面任何签名失败都分不清是代码错
+还是密钥错。
+
+实测结果：
+
+| 场景 | 期望 | 实测 |
+| --- | --- | --- |
+| 板端真实静帧上传 | 200 accepted | `200 {"accepted":true,"duplicate":false,"size_bytes":119573}` |
+| 取回后板端重算摘要 | 与原始一致 | `True`，且 `got == data` 字节级为 `True` |
+| InMemory 时代旧行下载 | 500 `object_missing` | `500 network_snapshot_image_object_missing`，`retryable:true` |
+| 改 1 字节（长度不变） | 500 `digest_mismatch` | `500 ..._digest_mismatch`，`retryable:false`，详情给出两个摘要前缀 |
+| 截断到 100000 字节 | 500 `size_mismatch` | `500 ..._size_mismatch`，`expected 119573 / actual 100000` |
+| **重启服务后**取回 | 仍可取回 | `200`，`119573` 字节，摘要仍 `5fc7b202a5742f49` |
+
+最后一行的对照价值最大：同一次重启之后，落盘写入的图能取回，而 InMemory
+时代留下的那行仍然 `object_missing`。**持久化生效了，「有行没内容」也不会
+因为重启而自愈。**
+
+对象在磁盘上的布局也核对过：
+`/var/lib/weaknet-cloud/objects/tenant/tenant-m1-demo/quarantine/snapshot-images/<image_id>`，
+119573 字节，与行里的 `size_bytes` 一致，**没有 `.tmp-*` 残留**。
+
+> 云端落盘目录是 `/var/lib/weaknet-cloud/objects`，通过 systemd drop-in
+> 设 `REHEARSAL_OBJECT_STORE_DIR` 启用。这是**验证用**配置，不是生产存储方案
+> （无保留期、无配额）。
+
 
 ### 遗留问题
 
@@ -306,13 +459,21 @@ content_sha256 前缀 | 5fc7b202a5742f49
 2. ~~上游凭据路径未验证~~ —— 已验证：复用 `config_.edge.*`，
    `private_key_path` 为空时 `enqueueSnapshot()` 立即拒绝并计入 dropped
    （配置问题不该排进队列等重试）。
-3. **运营端还没有查看入口**。图在对象存储里可按前缀枚举，但没有列表 API，
-   也没有前端入口。要「能看见」还需要一个 `GET /assets/{asset_id}/snapshot-images`。
-4. ~~未做端到端联调~~ —— 已做（见「真机端到端验证」）。真 Postgres 已验；
-   对象存储仍是 `InMemoryTenantObjectStore`，**「取回对象再算 sha256」这条
-   没做成**（见「一个必须说明的验证缺口」）。
+3. ~~运营端还没有查看入口~~ —— 已补：`GET /assets/{asset_id}/snapshot-images`
+   （列表，支持 `incident_id` 过滤）与 `.../{image_id}/content`（下载 JPEG 并
+   校验摘要）。前端入口仍未做（见 6）。
+4. ~~未做端到端联调~~ —— 已做（见「真机端到端验证」与「真机 + 落盘存储」）。
+   真 Postgres 已验；落盘实现的持久化、跨重启存活、三条错误码分支
+   （`object_missing` / `size_mismatch` / `digest_mismatch`）都已在真机验过。
+   对象写失败 → 不写库的不变量由 `tests/test_snapshot_image_write_failure.py`
+   钉住（3 项，含对照组）；注意那是 500 不是 503，原因见「「503 分支」这个叫法是错的」。
 5. **`hardware_disconnected` 判定未进生产 `V4l2FrameSource`**（与本任务无关，
-   但静帧要「拍到」的前提是摄像头在出帧）。
+   但静帧要「拍到」的前提是摄像头在出帧）。用户 2026-11-21 确认摄像头问题
+   已解决（排线未插紧），镜头链路正常。
+6. **前端还没有静帧查看入口**。API 已备，Web 侧未接——这是「能看见」的
+   最后一公里，但不属于云端契约范围。
+7. **静帧保留/配额策略不存在**。落盘实现会让磁盘占用持续增长，
+   目前没有任何清理逻辑。
 
 ### 一个必须说明的副作用
 
@@ -356,4 +517,5 @@ mDNS `.local` 也解析不到（云端与板子本就不在同一网段，属已
 
 暂不。这是新增能力，不改既有接口契约（`VideoClipManifest` 一个字没动），
 端侧也只是一条独立入口（`ISnapshotUploader`），没有改动任何既有上行语义。
-若后续要把静帧纳入运营端可检索的证据列表（需要新列表 API + 前端），再评估。
+运营端列表 + 下载端点这一轮也补上了，仍属于同一条链路的两端，
+没有改动任何既有行为。
