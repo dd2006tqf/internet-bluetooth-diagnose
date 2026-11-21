@@ -367,6 +367,29 @@ constexpr int kExitBreakerOpen = 98;
  */
 constexpr int kTripHistoryResetSec = 30 * 60;
 
+/*
+ * 墙钟跳变判定阈值（秒）。
+ *
+ * 每轮比较「墙钟增量」与「单调钟增量」，两者不符即判定本轮机钟跳变。
+ * 一轮 kTickSeconds=2，正常情况下两个增量都约等于 2，差值接近 0；
+ * 取 5 秒是为了吸收 sleep 抖动与判据执行耗时，同时远小于任何一次
+ * NTP 校正幅度（板端实测一次校正前跳 9785 秒）。
+ */
+constexpr int kClockStepThresholdSec = 5;
+
+/*
+ * 连续墙钟跳变的容忍轮数上限。
+ *
+ * 豁免本身是有代价的：做豁免的那一轮，所有基于墙钟的判据都不生效。
+ * 若时钟**每一轮**都在跳（例如有人手工反复 `date`、或 timesyncd 陷入
+ * 反复校正），无限豁免就等于把判据永久关掉 —— 保护在，判据不在。
+ *
+ * 3 轮 = 6 秒。正常的 NTP 校正是**一次性**的，跳完下一轮就恢复，
+ * 因此 3 轮足够覆盖「跳变 + 稳定」；超过 3 轮说明时钟本身不可信，
+ * 这时应当恢复判定（让判据的失败被看见），而不是继续装作健康。
+ */
+constexpr int kClockStepMaxStreak = 3;
+
 /* ---- 单项检查状态 ---- */
 struct CheckState {
     const char* name;
@@ -412,6 +435,78 @@ int64_t MonotonicNs()
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return static_cast<int64_t>(ts.tv_sec) * 1000000000LL + ts.tv_nsec;
 }
+
+int64_t WallClockSeconds()
+{
+    struct timespec ts {};
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return static_cast<int64_t>(ts.tv_sec);
+}
+
+/*
+ * 墙钟跳变检测器。
+ *
+ * 为什么必须有：
+ *   本板**没有 RTC 电池**，开机后墙钟先由 systemd-timesyncd 用「记录时间戳」
+ *   恢复，再等 NTP 真正同步。同步完成的那一瞬间，墙钟会一次性前跳（板端
+ *   2026-11-21 实测前跳 9785 秒）。凡是用「当前墙钟 − 文件 mtime」算年龄的
+ *   判据，都会把这次跳变幅度当成「文件已经陈旧了 9785 秒」。
+ *
+ *   受影响的判定不止一处，而且是三处语义完全不同的地方：
+ *     1) wal_mtime   → 假失败，去抖两轮后停喂 → 整机复位；
+ *     2) 维护标记    → 被误判为 EXPIRED，维护模式静默失效，
+ *                       此时一次 systemctl restart 就会变成整机复位；
+ *     3) OTA 回执    → 被误判为 STALLED，恢复判定；若升级正停在
+ *                       服务已停的阶段，板子会被复位在升级中途 —— 比升级
+ *                       失败更糟（可能落在指针已翻转、release 未转正的位置）。
+ *
+ *   三处都无法靠「放大阈值」解决：跳变幅度可达数小时，任何合理阈值都会被
+ *   穿透；而把阈值放大到几小时又等于废掉判据本身。
+ *
+ * 做法：
+ *   单调钟（CLOCK_MONOTONIC）不受墙钟校正影响，因此
+ *       step = 墙钟增量 − 单调钟增量
+ *   就是本轮发生的墙钟跳变幅度。绝对值超过 kClockStepThresholdSec 时，
+ *   **本轮所有基于墙钟年龄的判定都不可信**，直接豁免、不去猜文件真实年龄；
+ *   下一轮墙钟已经稳定，年龄恢复正常。
+ *
+ * 为什么是「豁免一轮」而不是「换算回真实年龄」：
+ *   换算需要知道每个 mtime 是在跳变前还是跳变后写入的，而那需要为每个
+ *   文件维护影子时间戳 —— 引入的状态越多，出错面越大。豁免一轮的代价是
+ *   最多 2 秒的判定延迟，而 NTP 同步是开机阶段的一次性事件，不是常态。
+ *
+ * 上限 kClockStepMaxStreak 的理由见该常量：防止「每轮都跳」把保护永久关掉。
+ */
+struct ClockStepDetector {
+    int64_t last_wall = 0;
+    int64_t last_mono = 0;
+    int     streak    = 0;   /* 连续跳变轮数 */
+};
+
+/** 返回本轮墙钟跳变秒数；0 表示正常。首轮只建立基线。 */
+long DetectClockStep(ClockStepDetector& d)
+{
+    int64_t wall = WallClockSeconds();
+    int64_t mono = MonotonicNs() / 1000000000LL;
+
+    if (d.last_mono == 0 && d.last_wall == 0) {
+        d.last_wall = wall;
+        d.last_mono = mono;
+        return 0;
+    }
+
+    long step = static_cast<long>((wall - d.last_wall) - (mono - d.last_mono));
+    d.last_wall = wall;
+    d.last_mono = mono;
+
+    if (step > kClockStepThresholdSec || step < -kClockStepThresholdSec) {
+        ++d.streak;
+        return step;
+    }
+    d.streak = 0;
+    return 0;
+}
+
 
 /*
  * 执行命令并整段读取 stdout，**带硬超时**。调用方负责 free(buf)。
@@ -584,12 +679,47 @@ char* RunCommand(const char* cmd, size_t cap, int timeout_ms, int* out_rc)
 
 /* ---- 判据 1：落库推进 ---- */
 
-bool CheckWalMtime(CheckState& st)
+/*
+ * 墙钟跳变豁免。三处判据（WAL 年龄 / 维护标记 / OTA 回执）共用同一个
+ * 语义：本轮不能用墙钟推年龄。统一走这一个函数，避免各写各的日志。
+ *
+ * 返回 true 表示「本轮已豁免」，调用方直接按通过处理。
+ */
+bool ClockStepExempt(long step, int streak, const char* who)
+{
+    if (step == 0) {
+        return false;
+    }
+    if (streak > kClockStepMaxStreak) {
+        /*
+         * 连续跳变超过上限：不再豁免。此时判定结果**不可信**，
+         * 但继续豁免等于永久关掉保护，两害相权取「让失败被看见」。
+         * 硬件复位后时钟从头再跳一次，仍会走正常的单轮豁免。
+         */
+        fprintf(stderr,
+                "CLOCK_STEP %s step=%lds streak=%d (> %d) -> exemption exhausted,"
+                " judgement resumes (results may be unreliable)\n",
+                who, step, streak, kClockStepMaxStreak);
+        return false;
+    }
+    fprintf(stderr,
+            "CLOCK_STEP %s step=%lds streak=%d/%d -> exempt this round"
+            " (wall clock jumped; mtime age is meaningless)\n",
+            who, step, streak, kClockStepMaxStreak);
+    return true;
+}
+
+bool CheckWalMtime(CheckState& st, long clock_step, int clock_streak)
 {
     struct stat sb {};
     if (::stat(kWalPath, &sb) != 0) {
         snprintf(st.detail, sizeof(st.detail), "stat failed errno=%d", errno);
         return false;
+    }
+    if (ClockStepExempt(clock_step, clock_streak, "wal_mtime")) {
+        snprintf(st.detail, sizeof(st.detail),
+                 "clock_step=%lds, age unknown (exempt)", clock_step);
+        return true;
     }
     time_t now = ::time(nullptr);
     long age = static_cast<long>(now - sb.st_mtime);
@@ -1264,12 +1394,23 @@ int OpenWatchdog()
  * 不看 mtime 是绝对错误的：标记一旦因 Ctrl-C 残留，保护就永久消失。
  * 过期时在 out_reason 里说明原因，由调用方打进日志。
  */
-bool MaintenanceRequested(char* out_reason, size_t len)
+bool MaintenanceRequested(char* out_reason, size_t len,
+                         long clock_step, int clock_streak)
 {
     struct stat sb {};
     if (::stat(kMaintFlag, &sb) != 0) {
         snprintf(out_reason, len, "absent");
         return false;
+    }
+    /*
+     * 墙钟跳变时年龄不可信。这里的方向必须是「按新鲜处理」：
+     * 维护模式的价值是「人在现场、要它别复位」，误判为过期会把
+     * 一次正常维护变成整机复位；而误判为新鲜的代价只是保护多暂停一轮。
+     */
+    if (ClockStepExempt(clock_step, clock_streak, "maintenance")) {
+        snprintf(out_reason, len, "present (age unknown, clock_step=%lds)",
+                 clock_step);
+        return true;
     }
     time_t now = ::time(nullptr);
     long age = static_cast<long>(now - sb.st_mtime);
@@ -1291,7 +1432,8 @@ bool MaintenanceRequested(char* out_reason, size_t len)
  * OTA 是否正在受控进行（见 kOtaProgressMaxAgeSec 注释）。
  * 返回 true 时把进度写进 out_detail 供日志使用。
  */
-bool OtaUpgradeInProgress(char* out_detail, size_t len)
+bool OtaUpgradeInProgress(char* out_detail, size_t len,
+                          long clock_step, int clock_streak)
 {
     struct stat sb {};
     if (::stat(kOtaReceipt, &sb) != 0) {
@@ -1307,6 +1449,19 @@ bool OtaUpgradeInProgress(char* out_detail, size_t len)
     if (!strstr(buf, "\"IN_PROGRESS\"")) {
         snprintf(out_detail, len, "receipt finished");
         return false;
+    }
+
+    /*
+     * 墙钟跳变时年龄不可信，方向同样取「按新鲜处理」：
+     * 把一次仍在进行的升级误判成 STALLED，会让守卫恢复判定；若此时
+     * 服务正处在「已 stop、尚未 start」的阶段，12 秒宽限一过就停喂，
+     * 板子被复位在升级中途。误判为新鲜的代价只是判据多暂停一轮。
+     */
+    if (ClockStepExempt(clock_step, clock_streak, "ota_receipt")) {
+        snprintf(out_detail, len,
+                 "IN_PROGRESS (age unknown, clock_step=%lds, exempt)",
+                 clock_step);
+        return true;
     }
 
     time_t now = ::time(nullptr);
@@ -1596,11 +1751,19 @@ bool BreakerOpen(char* out_reason, size_t len)
 }
 
 /** 健康运行满 kTripHistoryResetSec 后清空历史（见该常量的注释）。 */
-void ResetTripHistoryIfHealthy()
+void ResetTripHistoryIfHealthy(long clock_step, int clock_streak)
 {
     struct stat sb {};
     if (::stat(kTripHistory, &sb) != 0) {
         return;   /* 没有历史，无需清理 */
+    }
+    /*
+     * 墙钟跳变时不清：方向取「不清」是对的 —— 清早了会把刚累积的
+     * 真实复位历史抹掉，熔断阈值（连续 3 次）就永远攒不够。
+     * 不清的代价只是历史多留一轮，无保护风险。
+     */
+    if (ClockStepExempt(clock_step, clock_streak, "trip_history")) {
+        return;
     }
     time_t now = ::time(nullptr);
     long age = static_cast<long>(now - sb.st_mtime);
@@ -1847,13 +2010,27 @@ int main(int argc, char** argv)
     int64_t inactive_since_ns = 0;   /* 服务首次被发现不在 active 的时刻 */
     RestartTracker restart_tracker;  /* 见 InRestartWarmup */
     int pid_unknown_streak = 0;      /* 见 kPidUnknownMaxStreak */
+    ClockStepDetector clock_det;     /* 见 DetectClockStep */
 
     while (!g_stop_requested) {
         ++round;
 
+        /*
+         * 墙钟跳变检测必须放在**所有**依赖墙钟年龄的判定之前。
+         *
+         * 本板无 RTC 电池，开机后 timesyncd 先恢复记录时间戳、再等 NTP
+         * 真正同步；同步完成那一瞬间墙钟一次性前跳（板端实测 9785 秒）。
+         * 该跳变会同时污染 WAL 年龄、维护标记有效期、OTA 回执新鲜度三处
+         * 判定，方向各不相同，后果从「假失败误复位」到「保护静默失效」。
+         * 详见 DetectClockStep 的注释。
+         */
+        const long clock_step = DetectClockStep(clock_det);
+        const int  clock_streak = clock_det.streak;
+
         /* 维护模式优先于一切判据：标记有效就只喂狗不做判定 */
         char maint_detail[128];
-        if (MaintenanceRequested(maint_detail, sizeof(maint_detail))) {
+        if (MaintenanceRequested(maint_detail, sizeof(maint_detail),
+                                 clock_step, clock_streak)) {
             if (inactive_since_ns != 0) {
                 inactive_since_ns = 0;
             }
@@ -1920,7 +2097,8 @@ int main(int argc, char** argv)
              * 判据交给升级自己的进度刷新，见 kOtaProgressMaxAgeSec。
              */
             char ota_detail[128];
-            if (OtaUpgradeInProgress(ota_detail, sizeof(ota_detail))) {
+            if (OtaUpgradeInProgress(ota_detail, sizeof(ota_detail),
+                                     clock_step, clock_streak)) {
                 inactive_since_ns = 0;
                 fprintf(stderr,
                         "[round %d] service %s absent but OTA in progress (%s) "
@@ -2005,7 +2183,7 @@ int main(int argc, char** argv)
                 continue;
             }
 
-            g_checks[0].ok = CheckWalMtime(g_checks[0]);
+            g_checks[0].ok = CheckWalMtime(g_checks[0], clock_step, clock_streak);
             g_checks[1].ok = CheckSampleNs(g_checks[1]);
             g_checks[2].ok = CheckCpuDelta(g_checks[2], pid, cpu_prev);
             g_checks[3].ok = CheckDState(g_checks[3], pid);
@@ -2050,7 +2228,7 @@ int main(int argc, char** argv)
                  * 不每轮 stat 是为了让这条路径的开销可以忽略。
                  */
                 if ((round % 15) == 0) {
-                    ResetTripHistoryIfHealthy();
+                    ResetTripHistoryIfHealthy(clock_step, clock_streak);
                 }
             }
         }

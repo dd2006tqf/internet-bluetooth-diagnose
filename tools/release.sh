@@ -187,9 +187,19 @@ PKG_NAME="weaknet-${VERSION}-arm64.tar.zst"
 PKG_PATH="${ARTIFACTS_DIR}/${PKG_NAME}"
 SIG_PATH="${PKG_PATH}.sig"
 
-# 临时复制 dist 目录以准备发布包
+# 临时复制 dist 目录以准备发布包。
+#
+# 必须用 `cp -a`（保留软链），不能用 `cp -rL`（解引用）：dist-arm64 里
+# `libweaknet.so` / `libweaknet.so.1` → `libweaknet.so.1.1.0`、`libbpf.so`
+# / `libbpf.so.1` → `libbpf.so.1.3.0` 是 SONAME 链，板端 adopt 后也是
+# 同样的软链形态。用 -L 会把每个软链摊成一份完整副本：包从 5 MB 涨到
+# 12 MB（重复 3 份 libweaknet + 3 份 libbpf），且制品布局与板端 release
+# 目录不一致 —— 制品就不再能如实复现现场。
+#
+# `package` 里的 manifest 用 `find . -type f`，本就跳过软链；tar 默认保留
+# 软链；板端 `tar --no-same-owner -xf` 也保留。整条链不依赖 -L。
 TEMP_DIST="$(mktemp -d /tmp/wn-rel-dist-XXXXXX)"
-cp -rL "${ROOT}/dist-arm64/." "${TEMP_DIST}/"
+cp -a "${ROOT}/dist-arm64/." "${TEMP_DIST}/"
 
 WEAKNET_RELEASE_PRIV="${PRIV_KEY}" "${ROOT}/tools/weaknet-local-update.sh" package "${TEMP_DIST}" "${VERSION}" "${PKG_PATH}"
 rm -rf "${TEMP_DIST}"

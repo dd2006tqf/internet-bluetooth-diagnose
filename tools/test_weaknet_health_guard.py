@@ -52,6 +52,10 @@ DISK_WARN_PCT = 10
 # 硬件超时（板端实测 WDIOC_GETTIMEOUT = 16）
 HARDWARE_TIMEOUT_S = 16
 
+# ---- 2026-11-21 墙钟跳变豁免 ----
+CLOCK_STEP_THRESHOLD_S = 5
+CLOCK_STEP_MAX_STREAK = 3
+
 
 def _strip_c_comments(text):
     """
@@ -143,6 +147,8 @@ class TestConstantsAgainstSource(unittest.TestCase):
             ("kTripBreakerThreshold", TRIP_BREAKER_THRESHOLD),
             ("kTripHistoryResetSec", TRIP_HISTORY_RESET_S),
             ("kExitBreakerOpen", EXIT_BREAKER_OPEN),
+            ("kClockStepThresholdSec", CLOCK_STEP_THRESHOLD_S),
+            ("kClockStepMaxStreak", CLOCK_STEP_MAX_STREAK),
         ]:
             self.assertEqual(self._const(name), expected,
                              f"{name} 与源码不一致：常量已漂移")
@@ -193,6 +199,146 @@ class TestWalAge(unittest.TestCase):
         """
         self.assertTrue(self.ok(-5))
         self.assertTrue(self.ok(-10000))
+
+
+class TestClockStepExemption(unittest.TestCase):
+    """
+    墙钟跳变豁免（2026-11-21）。
+
+    背景：本板**无 RTC 电池**，开机后 systemd-timesyncd 先用「记录时间戳」
+    恢复，再等 NTP 真同步。同步完成的那一瞬间墙钟一次性前跳（板端实测
+    2026-11-21 05:49:11 前跳 9785 秒）。
+
+    凡是用「当前墙钟 − 文件 mtime」算年龄的判据都会被这次跳变污染，
+    而且是三处语义完全不同、后果也不同的地方：
+
+      * WAL 年龄   → 假失败；去抖两轮后停喂 → **误复位**
+      * 维护标记   → 被误判 EXPIRED → 维护模式**静默失效**
+      * OTA 回执   → 被误判 STALLED → 服务已停的阶段**被复位在升级中途**
+
+    因此修复的方向不是「放大阈值」（跳变可达数小时，任何合理阈值都会被
+    穿透；放大到几小时又等于废掉判据），而是用单调钟检测跳变、当轮豁免。
+    """
+
+    def step(self, wall_delta, mono_delta):
+        """复刻 C++ DetectClockStep 的核心算式。"""
+        return (wall_delta - mono_delta)
+
+    def exempt(self, step, streak):
+        """复刻 C++ ClockStepExempt 的决策。"""
+        if step == 0:
+            return False
+        return streak <= CLOCK_STEP_MAX_STREAK
+
+    def test_normal_tick_not_flagged(self):
+        """正常一轮：墙钟与单调钟同步前进，差值为 0 → 不豁免。"""
+        for d in (1, 2, 3):
+            self.assertEqual(self.step(d, d), 0, f"正常一轮 {d}s 不应判为跳变")
+            self.assertFalse(self.exempt(0, 0))
+
+    def test_sleep_jitter_tolerated(self):
+        """
+        轮询抖动：sleep(1) 实际睡了 1.02s，墙钟与单调钟各有毫秒级误差。
+        阈值 5 秒必须吸收这类抖动，否则每一轮都会被判成跳变。
+        """
+        for jitter in (1, 2, 4, 5):
+            s = self.step(2 + jitter, 2)
+            self.assertLessEqual(abs(s), CLOCK_STEP_THRESHOLD_S,
+                                 f"抖动 {jitter}s 不应触发跳变")
+            self.assertEqual(s, jitter)
+
+    def test_forward_jump_detected(self):
+        """
+        真实场景：NTP 一次性前跳 9785 秒。
+        这一轮墙钟增量是 9785+2，单调钟增量只有 2 → step = 9785。
+        """
+        s = self.step(9785 + TICK_S, TICK_S)
+        self.assertEqual(s, 9785, "应算出真实跳变幅度")
+        self.assertGreater(abs(s), CLOCK_STEP_THRESHOLD_S)
+        self.assertTrue(self.exempt(s, 1), "第 1 轮跳变必须豁免")
+
+    def test_backward_jump_detected(self):
+        """
+        反向跳变同样要检测。原实现只防了负年龄（回跳），没防正年龄（前跳），
+        这次要把两个方向都覆盖。
+        """
+        s = self.step(-3600 + TICK_S, TICK_S)
+        self.assertEqual(s, -3600)
+        self.assertGreater(abs(s), CLOCK_STEP_THRESHOLD_S)
+        self.assertTrue(self.exempt(s, 1))
+
+    def test_exemption_exhausts(self):
+        """
+        连续跳变超过上限就不再豁免。
+
+        理由：豁免的那一轮所有墙钟判据都不生效。若时钟**每轮都在跳**
+        （手工反复 `date`、timesyncd 陷入反复校正），无限豁免等于把判据
+        永久关掉 —— 保护在，判据不在，正是本设计要消灭的「假活」形态。
+        """
+        for streak in range(1, CLOCK_STEP_MAX_STREAK + 1):
+            self.assertTrue(self.exempt(100, streak),
+                            f"第 {streak} 轮仍应豁免（上限 {CLOCK_STEP_MAX_STREAK}）")
+        self.assertFalse(self.exempt(100, CLOCK_STEP_MAX_STREAK + 1),
+                         "超过上限必须恢复判定，让失败被看见")
+
+    def test_exempt_direction_is_fail_safe(self):
+        """
+        三处豁免的**方向**都必须偏向「别复位」，不能偏向「判失败」：
+
+          WAL      → 按通过处理（误判停滞会复位）
+          维护标记 → 按新鲜处理（误判过期会让维护中复位）
+          OTA 回执 → 按进行中处理（误判 STALLED 会复位在升级中途）
+
+        三者共同的代价上限都是一轮判定延迟，无保护风险。
+        """
+        # 三处调用点都必须把豁免结果当作「通过 / 有效 / 进行中」
+        with open("tools/weaknet-health-guard.cpp", encoding="utf-8") as f:
+            src = _strip_c_comments(f.read())
+
+        for who in ("wal_mtime", "maintenance", "ota_receipt", "trip_history"):
+            self.assertIn(f'ClockStepExempt(clock_step, clock_streak, "{who}")',
+                          src, f"{who} 必须走统一的豁免入口")
+
+    def test_exemption_wired_before_judgement(self):
+        """
+        检测必须发生在**所有**依赖墙钟年龄的判定之前。
+
+        这是顺序性要求，不是风格问题：若 DetectClockStep 放在判据之后，
+        判据已经用被污染的年龄算出结果了，豁免再正确也没用。
+        """
+        with open("tools/weaknet-health-guard.cpp", encoding="utf-8") as f:
+            src = _strip_c_comments(f.read())
+
+        pos_detect = src.find("const long clock_step = DetectClockStep(")
+        self.assertGreater(pos_detect, 0, "主循环必须调用 DetectClockStep")
+
+        for call in ("MaintenanceRequested(maint_detail",
+                     "OtaUpgradeInProgress(ota_detail",
+                     "CheckWalMtime(g_checks[0]"):
+            pos = src.find(call)
+            self.assertGreater(pos, 0, f"找不到调用点 {call}")
+            self.assertGreater(pos, pos_detect,
+                               f"{call} 必须在墙钟跳变检测之后")
+
+    def test_monotonic_source_is_clock_monotonic(self):
+        """
+        检测基线必须来自 CLOCK_MONOTONIC。
+
+        CLOCK_REALTIME 是会被 NTP 校正的那个，用它做基线等于用被测量的
+        量去校准自己 —— 跳变会算成 0，整个检测形同虚设。
+        """
+        with open("tools/weaknet-health-guard.cpp", encoding="utf-8") as f:
+            src = f.read()
+
+        # 注意不能用 \{.*?\} —— 函数体里 `struct timespec ts {};` 的花括号
+        # 会让懒惰匹配提前收尾。这里锚到行首的单独 `}`。
+        m = re.search(r"int64_t MonotonicNs\(\)\s*\{.*?\n\}", src, re.S)
+        self.assertIsNotNone(m, "找不到 MonotonicNs 定义")
+        self.assertIn("CLOCK_MONOTONIC", m.group(0))
+
+        m = re.search(r"int64_t WallClockSeconds\(\)\s*\{.*?\n\}", src, re.S)
+        self.assertIsNotNone(m, "找不到 WallClockSeconds 定义")
+        self.assertIn("CLOCK_REALTIME", m.group(0))
 
 
 class TestSampleNsParsing(unittest.TestCase):

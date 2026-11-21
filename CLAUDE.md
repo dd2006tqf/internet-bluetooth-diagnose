@@ -438,6 +438,34 @@ sudo systemctl restart weaknet-server
 > `/var/lib/weaknet/health-guard-last-failure.json`（`reason: service_absent`，
 > `busctl rc=256`）。
 
+> ⚠️ **墙钟跳变豁免：本板没有 RTC 电池，每次开机的 NTP 校正都是一次性大跳变。**
+>
+> 2026-11-21 05:49:11 实测跳了 **9785 秒**。这会让所有依赖「文件 mtime 距现在
+> 多久」的判据算出差值 —— `wal_mtime` 会看到 `age_s=9785` 判 FAIL。当时只靠
+> `kDebounceK=2` 去抖捡回一条命，但同一次跳变还会：让维护标记提前过期（在
+> `systemctl restart` 中途悄悄撤掉保护）、把正在进行的 OTA 回执判成 `STALLED`
+> （服务正停着就恢复判定 → 升级中途复位）。
+>
+> 修法：守卫每轮比较**墙钟增量**与**单调钟增量**（`CLOCK_REALTIME` vs
+> `CLOCK_MONOTONIC`），差值超过 5 秒即判定本轮机钟跳变，对四条受影响路径
+> （`wal_mtime` / 维护标记 / OTA 回执 / trip 历史清理）一律**按"新鲜"方向豁免一轮**
+> （fail-safe 方向：宁可少判一次，不可误撤保护）。豁免最多连续 3 轮（6 秒）——
+> NTP 校正是一次性的，跳完下一轮就恢复；超过 3 轮说明时钟本身不可信，这时必须
+> 让判据的失败被看见，而不是继续装作健康。
+>
+> 日志形态：`CLOCK_STEP wal_mtime step=500s streak=1/3 -> exempt this round`，
+> 随后判据行变成 `wal_mtime=ok(clock_step=500s, age unknown (exempt),f0)`。
+>
+> 板端实测验证方式（会短暂改系统时间，**做完必须恢复并重开 timesyncd**）：
+> ```bash
+> ssh board 'sudo systemctl stop systemd-timesyncd'
+> ssh board 'sudo /home/radxa/weaknet/current/client/bin/weaknet-health-guard --dry-run'
+> # 另开一路：sudo date -u -s "+500 seconds"   → 应看到 CLOCK_STEP 行
+> ssh board 'sudo date -u -s "-500 seconds"; sudo systemctl start systemd-timesyncd'
+> ```
+> **注意**：`systemd-timesyncd` 若仍在运行，手动改的时间会被它在一个 tick 内改回来
+> （实测 20 秒单调跨度只对应 21 秒墙钟），看不到 CLOCK_STEP 行不代表没有缺陷。
+
 **实时调参（部署后即可使用，无需重启服务）：**
 ```bash
 # 查看所有可调监控器

@@ -32,8 +32,47 @@ WeakNet 的 OTA 升级采用轻量级软件双槽位（Slot）设计，避免在
 
 系统路径（不随 OTA 制品变化）：
 ├── /usr/local/lib/weaknet/weaknet-ota-ctl   # 升级事务控制器（P0-A，唯一的指针/状态写入口）
-└── /var/lib/weaknet-ota/transaction.json    # 事务状态（schema v1，root 独占 0600）
+├── /usr/local/lib/weaknet/weaknet-ota-gate  # 启动门禁判定体（P0-C1）
+├── /usr/local/lib/weaknet/weaknet-ota-recover # 开机恢复器（P0-B）
+├── /var/lib/weaknet-ota/transaction.json    # 事务状态（schema v1，root 独占 0600）
+└── /etc/systemd/system/weaknet-ota-{gate,recover}.service
 ```
+
+### 1.0 制品边界：包内放什么、不放什么
+
+OTA 包（`weaknet-<ver>-arm64.tar.zst`）与 systemd 单元是**两套不同生命周期的东西**，
+这条边界是刻意划的，不是遗漏：
+
+| 内容 | 位置 | 随包发布 | 更新方式 |
+| :--- | :--- | :---: | :--- |
+| 服务/客户端二进制、eBPF 对象、kmod、共享库 | `releases/<ver>/` | ✅ | 原子翻转 + 健康窗口 |
+| `weaknet-local-update.sh` | `releases/<ver>/` + `$ROOT/` | ✅ | 随包自更新（带控制器感知门禁） |
+| `.service` / `.timer` 单元 | `/etc/systemd/system/` | ❌ | `ci.sh` 部署链落盘 + `daemon-reload` |
+| `weaknet-ota-ctl` / `-gate` / `-recover` | `/usr/local/lib/weaknet/` | ❌ | `ci.sh` 部署链落盘 |
+
+**为什么单元与控制器不进包**（三条都是硬理由）：
+
+1. **事务控制器必须不随版本变化**。`transaction.json` 只有一个 schema，恢复服务读
+   的也是同一份。若控制器随包升级，1.1.0 与 1.2.0 的事务语义就可能不同，而设备
+   崩在两者之间时没有任何一方能正确判定。
+2. **单元是 systemd 的输入，不是应用的输入**。改单元需要 `daemon-reload`；把单元
+   放进 release 目录意味着翻转 `current` 时 systemd 还在用旧 unit 文件，直到下次
+   reload —— 中间那段时间的系统行为是未定义的。
+3. **单元是「引导层」，release 是「应用层」**。引导层坏掉的恢复路径必须独立于
+   应用层存在（这正是 P0-B 恢复器不依赖 `weaknet-server` 的原因）。
+
+**因此存在一条必须承认的边界**：
+
+> 只通过远程 OTA 升级、从未跑过 `ci.sh` 的设备，**拿不到**新的 systemd 单元、
+> 新的门禁/恢复器代码。远程 OTA 能更新业务二进制，不能更新保护业务的那一层。
+>
+> 这不是可以靠"再发一个包"解决的问题 —— 那需要一个能改 `/etc/systemd/system`
+> 的提权执行体，而它本身就是比 OTA 更大的攻击面。当前设计选择是：**单元与控制器
+> 的更新走部署链（`ci.sh`），并在文档里明确写出来**，而不是假装包是完整的。
+
+`ci.sh` 的落盘顺序是强制的，不能重排：门禁单元必须先于带 `Requires=` 的
+`weaknet-server` 单元落盘，否则 `daemon-reload` 后新 unit 因找不到依赖单元起不来。
+
 
 ### 1.1 为什么需要事务控制器（P0-A）
 
@@ -555,6 +594,39 @@ with eng.begin() as c:
 #   artifacts/weaknet-1.1.0-arm64.tar.zst.sig
 #   artifacts/SHA256SUMS
 ```
+
+**发布后必做的一步：用真实包跑一次 `apply`。** 打包成功、验签通过、manifest
+全绿，都不能证明这个包能被装上。
+
+实测教训（2026-11-21）：`install_self_script` 里 `local rel="$1" src="$rel/..."`
+是 bash 的经典陷阱 —— 同一行 `local` 的展开发生在变量创建之前，`$rel` 取的是
+**外层作用域**的值。`cmd_adopt` 外层恰好有 `local rel=`（`:761`），动态作用域
+让 `ci.sh` 的部署路径侥幸正确；而 `cmd_apply` —— **云端下发 OTA 的唯一路径** ——
+外层没有任何 `rel`，`set -u` 直接致命退出。
+
+它在最坏的位置失败：事务已是 `PREPARED`、服务已 `stop`、`materialize` 已把目录
+落位，脚本死在「落位成功但没翻指针、没重启、没写回执终态」。门禁把 `PREPARED`
+当活跃阶段放行，服务照常起来 —— 但**跑的还是旧版**。云端记的是「动作已下发」，
+现场什么都没变。
+
+所以发布验收不是 `verify`，而是：
+
+```bash
+# 隔离沙盒里真跑一遍，指针翻转与 .committed 必须真的发生
+W=$(mktemp -d); chmod 0777 "$W"
+sudo env PATH="/tmp/shim:$PATH" \
+  WEAKNET_ROOT="$W/weaknet" WEAKNET_OTA_STATE_DIR="$W/ota-state" \
+  WEAKNET_OTA_CTL="$PWD/tools/weaknet-ota-ctl" \
+  WEAKNET_RELEASE_PUB="$PWD/certs/release_pub.pem" \
+  ./tools/weaknet-local-update.sh apply artifacts/weaknet-<ver>-arm64.tar.zst
+readlink "$W/weaknet/current"                      # 必须是 releases/<ver>
+test -f "$W/weaknet/releases/<ver>/.committed" && echo 转正
+```
+
+`/tmp/shim` 只需两个假命令（本机无板端服务）：`systemctl is-active` 输出
+`active`、`busctl GetUpdateStatus` 输出目标版本 JSON，其余一律 `exit 0`。
+**不要用 `WEAKNET_UPDATE_DRYRUN=1` 做这一步** —— 它把控制器一并短路，
+指针根本不会翻转，等于什么都没验证。
 
 ### 4.3 GitHub Actions 自动化发布流水线
 推送 Git Tag 触发自动构建、签名与发布：

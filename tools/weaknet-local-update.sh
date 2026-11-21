@@ -441,7 +441,25 @@ stage_package() {
 }
 
 install_self_script() {  # $1=新 release 目录：自更新脚本到稳定路径
-    local rel="$1" src="$rel/weaknet-local-update.sh"
+    # **必须分成两行**：bash 的 `local` 是内建命令，同一行里 `local a=.. b=$a`
+    # 的展开发生在 `local` 真正创建 a 之前，于是 `$a` 取的是**外层作用域**的 a。
+    #
+    # 这不是风格问题，是会让云端 OTA 100% 失败的真实缺陷：
+    #   - cmd_adopt 外层有 `local rel="$RELEASES/$ver"`（:761），动态作用域
+    #     让这里的 $src 侥幸取到正确值 —— 所以 ci.sh 部署从未暴露问题。
+    #   - cmd_apply（云端下发 `system.ota_upgrade_url` 的唯一路径）外层**没有**
+    #     任何名为 rel 的变量，`set -u` 直接致命退出：
+    #         ./tools/weaknet-local-update.sh: line 444: rel: unbound variable
+    #     此时事务已是 PREPARED、服务已 stop、materialize 已把目录落位，
+    #     脚本死在「落位成功但没翻指针、没重启、没写回执终态」的位置。
+    #     门禁把 PREPARED 视为活跃阶段放行，服务照常起来 —— 但**跑的还是旧版**，
+    #     而回执因 CONFIG_KEYS 未登记从未产生，2 秒宽限一过守卫判服务缺席，
+    #     16 秒后整机复位在升级中途。云端记的是"动作已下发"，现场是复位循环。
+    #
+    # 实测：2026-11-21 在隔离沙盒用真实签名制品跑 `apply` 复现，bash 5.1.4
+    # 与 5.2.15 行为一致（两次独立复现，非解释器差异）。
+    local rel="$1"
+    local src="$rel/weaknet-local-update.sh"
     [ -f "$src" ] || return 0
     if [ "$(readlink -f "$src")" = "$(readlink -f "$0")" ]; then
         return 0

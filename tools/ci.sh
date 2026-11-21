@@ -32,6 +32,7 @@ LOCAL_ONLY=false
 SKIP_PUSH=false
 SKIP_DEPLOY=false
 SKIP_TEST=false
+ENABLE_GUARD=false
 for arg in "$@"; do
     case $arg in
         --commit) DO_COMMIT=true ;;
@@ -39,14 +40,16 @@ for arg in "$@"; do
         --skip-push) SKIP_PUSH=true ;;
         --skip-deploy) SKIP_DEPLOY=true ;;
         --skip-test) SKIP_TEST=true ;;
+        --enable-guard) ENABLE_GUARD=true ;;
         --help|-h)
-            echo "用法: $0 [--commit] [--local-only] [--skip-push] [--skip-deploy] [--skip-test]"
+            echo "用法: $0 [--commit] [--local-only] [--skip-push] [--skip-deploy] [--skip-test] [--enable-guard]"
             echo ""
             echo "  --commit      git commit + push（归档后使用）"
             echo "  --local-only  只编译不部署"
             echo "  --skip-push   不 push"
             echo "  --skip-deploy 不部署到开发板"
             echo "  --skip-test   不运行开发板测试"
+            echo "  --enable-guard 落盘并 enable 系统健康看门狗（默认只落盘不启用）"
             echo ""
             echo "环境变量:"
             echo "  SYSROOT_DIR=路径   ARM64 Bullseye Sysroot（默认: /opt/sysroot-bullseye-arm64）"
@@ -475,16 +478,18 @@ if [ "$SKIP_DEPLOY" = false ]; then
         sudo systemctl enable weaknet-server"
     pass "weaknet-server 单元已落盘（依赖 weaknet-ota-gate.service）"
 
-    # ---- 系统健康看门狗单元：落盘但**不 enable** ----
+    # ---- 系统健康看门狗单元：落盘；enable 需显式开关 ----
     #
     # 为什么落盘：单元、二进制、接管脚本必须同源同版本发布，否则会出现
     # 「新单元引用旧脚本路径」这类跨版本错配。
     #
-    # 为什么**不自动 enable**：这是行为改变型能力——它会在判定不健康时
+    # 为什么**默认不 enable**：这是行为改变型能力——它会在判定不健康时
     # 复位整机。启用与否是一个运维决策，不该由一次常规部署静默完成。
-    # 首次启用必须由人显式执行：
-    #   ssh board 'sudo systemctl enable --now weaknet-health-guard'
-    # 并在启用前先跑 --dry-run 观察判据是否稳定。
+    #
+    # 但「默认不启用」不等于「没有启用路径」。历史问题是：新板走完 ci.sh
+    # 部署后拿不到任何保护，而文档只在注释里写了「需人工 systemctl enable」，
+    # 换一台新板就得靠人记住这件事。--enable-guard 把这条路径显式化，
+    # 并且**强制先跑 dry-run 观察判据**，不允许盲启。
     #
     # 已经 enable 过的板子不受影响：cp 只覆盖文件，enable 状态在
     # /etc/systemd/system/*.wants/ 里独立存在，不会被这次 cp 改变。
@@ -496,8 +501,47 @@ if [ "$SKIP_DEPLOY" = false ]; then
                 /etc/systemd/system/weaknet-health-guard.service && sudo systemctl daemon-reload" 2>/dev/null; then
             if ssh "${BOARD}" "systemctl is-enabled -q weaknet-health-guard 2>/dev/null"; then
                 pass "health-guard 单元已更新（当前为启用状态，会在下次服务重启后生效）"
+            elif [ "$ENABLE_GUARD" = true ]; then
+                # 显式启用路径：先 dry-run 观察判据，再 enable。
+                #
+                # dry-run 的作用不是「测试」，而是让人在**不打开硬件**的前提下
+                # 看到四项判据在真实板子上的取值。判据若持续失败，说明这台板子
+                # 的采集形态与守卫假设不符；此时直接 enable 会导致 16 秒后复位。
+                # 因此 dry-run 失败就**中止启用**，但不算部署失败（业务已就绪）。
+                info "启用前先 dry-run 观察判据（不打开看门狗设备）..."
+                #
+                # 必须跑够时长：dry-run 前 12 秒是 WARMUP 期（见 kRestartWarmupSec），
+                # 期间判定被挂起、只打 WARMUP 行。跑几秒就 grep 只会看到 WARMUP，
+                # 等于没检查。20 秒 = 12 秒预热 + 至少 4 轮真实判据。
+                # timeout 兜底：万一判据卡住也不会把部署挂死。
+                GUARD_DRY=""
+                GUARD_DRY=$(ssh "${BOARD}" \
+                    "sudo timeout 20 /home/radxa/weaknet/current/client/bin/weaknet-health-guard --dry-run" \
+                    2>&1 || true)
+
+                # 至少要看得到判据行，否则「没看到 FAIL」就成了假绿灯。
+                if ! printf '%s' "$GUARD_DRY" | grep -q 'wal_mtime='; then
+                    warn "dry-run 未产出任何判据行，**拒绝自动启用**（无法确认板端判据健康）"
+                    warn "dry-run 原始输出（末尾 6 行）："
+                    printf '%s\n' "$GUARD_DRY" | tail -6 | sed 's/^/    /'
+                elif printf '%s' "$GUARD_DRY" | grep -q '=FAIL'; then
+                    warn "dry-run 观察到判据失败，**拒绝自动启用**（启用后会 16 秒复位）"
+                    printf '%s\n' "$GUARD_DRY" | grep '=FAIL' | tail -4 | sed 's/^/    /'
+                    warn "请先排查上面 FAIL 的判据，确认无误后手工："
+                    warn "  ssh board 'sudo systemctl enable --now weaknet-health-guard'"
+                else
+                    pass "dry-run 判据全绿：$(printf '%s' "$GUARD_DRY" | grep -c 'wal_mtime=ok') 轮通过"
+                    if ssh "${BOARD}" "sudo systemctl enable weaknet-health-guard" 2>/dev/null; then
+                        # 不 --now：当前进程是临时 dry-run 拉起的短命进程，
+                        # 直接 start 会与 OTA 收尾的 restart 抢设备（内核 single-open）。
+                        pass "health-guard 已 enable（下次启动生效；如需立即生效：sudo systemctl start weaknet-health-guard）"
+                    else
+                        warn "health-guard enable 失败（不影响业务）"
+                    fi
+                fi
             else
                 info "health-guard 单元已落盘但未启用（需人工 systemctl enable --now weaknet-health-guard）"
+                info "  或下次部署加 --enable-guard（会先 dry-run 观察判据再启用）"
             fi
         else
             warn "health-guard 单元落盘失败（不影响业务；看门狗功能不可用）"
