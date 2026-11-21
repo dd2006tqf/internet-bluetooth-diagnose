@@ -72,12 +72,9 @@
 | [dmesg-not-history-and-nonmonotonic-counters.md](dmesg-not-history-and-nonmonotonic-counters.md) | 用 `dmesg` 与单次 `/proc/interrupts` 采样断言「从未发生」，把可自愈故障判成硬件损坏（149 次错误被读成 0 次） |
 | [journal-log-date-attribution.md](journal-log-date-attribution.md) | 统计日志只给总数不给时间，把 5 天前（11-11）的 55771 条报错当成本次重启的现场，据此虚构出「两种失败形态」 |
 | [lsof-v4l2-kills-board.md](lsof-v4l2-kills-board.md) | `lsof /dev/video0` 看起来完全无害，实际两次导致整板失联，只能物理重启 |
+| [v4l2-ctl-all-kills-board.md](v4l2-ctl-all-kills-board.md) | 同族第 3 次：`v4l2-ctl --all` 让日志戛然而止、热点断联；但 `--list-formats` / `--info` 多次安全，同工具不同子命令风险差一个整板断电 |
 | [register-value-semantics-not-verified.md](register-value-semantics-not-verified.md) | 不知道寄存器/时钟值的语义就当判据，一天内错 7 次且全部静默通过 |
 | [two-similarly-named-reset-functions.md](two-similarly-named-reset-functions.md) | `grep` 给的是行号不是作用域——拿 A 行的 `if` 去解释 B 行的打印，把 `work_mode` 判反，方向整个反了 |
-| [tunnel-probe-gatewayports-no.md](tunnel-probe-gatewayports-no.md) | `-R` 在 `GatewayPorts no` 下只绑云端回环，探测直连公网地址时**隧道健康也超时**，判据两边输出相同 |
-| [empty-dir-grep-false-negative.md](empty-dir-grep-false-negative.md) | `grep -r` 一个**空目录**同样返回 0 命中，「我搜了没有」与「那里根本没东西」输出完全一致 |
-| [ssh-n-silent-so-logs-are-not-a-criterion.md](ssh-n-silent-so-logs-are-not-a-criterion.md) | `ssh -N` 成功时零日志，「日志静默」同时兼容健康/半死/卡在建连，把缺席当成了证据 |
-| [journald-cr-message-blob.md](journald-cr-message-blob.md) | 含 CR 的日志被 journald 存成字节数组，`grep 健康` 得到 0 条，差点据此得出「隧道从未健康」的反向结论 |
 
 ### 帧统计与 V4L2
 
@@ -96,6 +93,9 @@
 | [black-frame-is-lens-film.md](black-frame-is-lens-film.md) | 全黑帧的 `max=60` vs `max=252` 是镜头保护膜的判据，不是 sensor 故障 |
 | [v4l2-sizeimage-selfconsistent-wrong.md](v4l2-sizeimage-selfconsistent-wrong.md) | `S_FMT` 后读到的 `sizeimage` 是个**自洽的错值**（3030720 而非 3045504），能通过为它写的每一道 guard |
 | [tdm-silent-skip-on-zero-pixel.md](tdm-silent-skip-on-zero-pixel.md) | TDM 有一处 `if (!speed_dn_en) return 0;`：`STREAMON` 成功、无日志、中断零次，整条链看不出任何异常 |
+| [silent-return-and-sticky-state-bit.md](silent-return-and-sticky-state-bit.md) | 静默 `return 0` 的第二形态：失败分支改写成功标志 `streaming`，导致清除路径永久提前返回，状态位锁死不可恢复（**实测本板未触发**，见文首） |
+| [kprobe-zero-count-false-negative.md](kprobe-zero-count-false-negative.md) | kprobe 计到 0 次可能是**假否定**：事件名写坏/探针没装进去，照样会输出 0；判「没调用」前必须有对照探针 |
+| [ribbon-contact-zero-frame-looks-like-software.md](ribbon-contact-zero-frame-looks-like-software.md) | 排线接触不良时所有 ioctl 都成功、`s_stream on` 正常打，只有中断计数**完全静止**；它会让「重开/重启/换驱动」的修法全部白做，并且污染零帧实验结论 |
 
 ### 归因与数据可达性
 
@@ -103,6 +103,7 @@
 | --- | --- |
 | [resolver-whitelist-attribution-gap.md](resolver-whitelist-attribution-gap.md) | 诊断规则的字段解析器只认 SLE evidence，没有字段等于永远无法归因 |
 | [in-memory-store-hides-ordering-and-retrieval.md](in-memory-store-hides-ordering-and-retrieval.md) | 内存对象存储永不失败、重启即丢，于是「写入顺序」与「取回重算摘要」两条不变量从未被执行过 |
+| [delete-order-not-observable-from-final-state.md](delete-order-not-observable-from-final-state.md) | 先删行还是先删对象，两种顺序收敛到同一个最终状态；把实现改反，29 条用例**全绿**，包括那条名字写着「钉住删除顺序」的 |
 
 ### 线程接线与生命周期
 

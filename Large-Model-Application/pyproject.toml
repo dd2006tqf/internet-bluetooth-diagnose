@@ -125,6 +125,7 @@ industrial-ops-model-inspect = "industrial_ops_agent.training.model_inspect_cli:
 industrial-ops-supply-chain-verify = "industrial_ops_agent.supply_chain.cli:run"
 industrial-ops-staging-attestation-verify = "industrial_ops_agent.staging_acceptance.attestation_cli:run"
 industrial-ops-simulated-enterprise-closure = "industrial_ops_agent.simulation.closure_cli:run"
+industrial-ops-snapshot-retention = "industrial_ops_agent.network_assurance.snapshot_retention_cli:run"
 industrial-ops-project-assurance-lab = "industrial_ops_agent.simulation.project_assurance_lab_cli:run"
 industrial-ops-maintenance-planning-value-lab = "industrial_ops_agent.simulation.maintenance_planning_value_lab_cli:run"
 industrial-ops-multimodal-dataset = "industrial_ops_agent.simulation.multimodal_fault_dataset_cli:run"
