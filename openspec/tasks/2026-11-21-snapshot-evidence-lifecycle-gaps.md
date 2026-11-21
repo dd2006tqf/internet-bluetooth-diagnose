@@ -216,6 +216,11 @@ scripts/generate_openapi_client.sh --check              → 无漂移
 - 前端静帧查看器：API 客户端 + 面板组件 + 两处接入，typecheck 与生产构建通过。
 - `CLAUDE.md` 补「事故静帧留证」运维表（含「两个判据不一样」与「时间窗不能调小」
   两条警示）。
+- **孤儿清扫器在真实 Postgres 上闭环**：隔离探针租户覆盖五种情形，dry-run 与
+  apply 逐项印证前缀边界 / 时间窗 / 行存在 / 租户过滤四道保护，幂等性成立。
+- **两个 systemd timer 已装进生产并实测触发过**：补齐单元缺失的 `Environment=`
+  与 `PATH`（含一次 venv entry point 缺失的修复），手工跑通后 `enable --now`，
+  并用临时短触发 drop-in 验证了 timer→service 的真实触发链路。
 
 ### 诚实的边界（不得淡化）
 
@@ -229,14 +234,110 @@ scripts/generate_openapi_client.sh --check              → 无漂移
    原封不动、维护标记最后才摘、临时目录与 /tmp 测试二进制清理干净）。
    **能说的是**：接线由变异验证过的单元/集成测试保证，二进制在真机上跑通；
    **不能说的是**「一次真实事故触发了真实回收」。
-2. **云端保留期与孤儿清扫都只在 SQLite 上验证过「删得对不对」。** 保留期的
-   真实 Postgres dry-run/apply 在前序会话对隔离探针租户做过；孤儿清扫器**没有**
-   在真实 Postgres 上跑过。它的查询很简单（一次 `IN`，分片 500），但这是
-   推断，不是证据。
-3. **两个 systemd timer 都没有在生产环境安装过。** 单元文件与包装脚本写好了、
-   包装脚本的控制流有 19 项测试，但 `systemctl enable --now` 没执行过。
+2. ~~云端保留期与孤儿清扫都只在 SQLite 上验证过「删得对不对」。~~
+   **孤儿清扫器已在真实 Postgres 上验证完毕（2026-11-21）。** 见下节「边界 3」。
+   保留期的真实 Postgres dry-run/apply 在前序会话对隔离探针租户做过。
+3. ~~两个 systemd timer 都没有在生产环境安装过。~~
+   **两个 timer 已安装并真的触发过（2026-11-21）。** 见下节「边界 2」。
 4. **`getSnapshotImageObjectUrl` 没有浏览器端验证。** 类型与构建通过，实际
    图片渲染、blob URL 回收、500 时的错误文案都没有在真实浏览器里点过。
+
+### 边界 3：孤儿清扫器在真实 Postgres 上（已闭环）
+
+真实租户 `tenant-m1-demo` 上先跑 dry-run：`scanned=1 orphans=0 remaining=0`，
+那个「有行且已老」的对象被 `IN` 查询正确保护。但这只证明「不误删」，**没有
+执行到删除路径**。所以按保留期的先例另起了一个隔离探针租户
+`probe-sweep-1795264464`，铺了五种情形：
+
+| 对象 | 年龄 | 库里有行？ | 预期 |
+| --- | --- | --- | --- |
+| `probe-ancient-orphan` | 2 天 | 无（本租户） | **删** |
+| `probe-fresh-orphan` | 30 秒 | 无（本租户） | 留（在时间窗内，模拟正在上传） |
+| `probe-ancient-tracked` | 2 天 | 有（本租户） | 留 |
+| `probe-tenantmirror` | 2 天 | 行存在但 `tenant_id` **是别的租户** | **删**（脏行不得保护它） |
+| `snapshot-images-evil/probe-decoy` | 3 天 | 无 | 留（不在前缀内） |
+
+dry-run 结果与预测逐项吻合：`scanned=4`（诱饵未计入）、`orphans=2`、
+`deleted=0`、`remaining=2`、`rc=0`。四种保护同时成立：前缀边界、时间窗、
+行存在、租户过滤。
+
+`--apply` 结果：`deleted=2`、`remaining=0`、`rc=0`。磁盘核对确认两个该删的
+没了，`probe-ancient-tracked`（有行）与 `probe-fresh-orphan`（窗内）**都还在**，
+诱饵还在，生产租户对象与两行记录原封不动。第二次 `--apply` 得
+`scanned=2 orphans=0 deleted=0`（幂等）。
+
+另外两条拒绝路径也在真实运行时验证过：`--min-age-seconds 0` → `rc=1` 附
+「a zero window would delete objects that are still being uploaded」；
+`REHEARSAL_OBJECT_STORE_DIR` 未设 → `rc=1`，且**先于**任何数据库连接就拒绝。
+
+探针数据已全部清理（2 行记录、2 个租户、对象目录），残留检查为 0。
+
+> **顺带发现的一条生产事实**：`network_snapshot_images.tenant_id` 有外键指向
+> `tenants`，所以探针租户必须先建 `TenantRecord` 才能插行。这解释了为什么
+> 真实孤儿只能来自「put 成功、insert 失败」——insert 失败时外键也会一起失败，
+> 行根本插不进来。
+
+### 边界 2：两个 systemd timer 已装进生产并真的触发过（已闭环）
+
+**装之前先补了两个会让单元根本跑不起来的缺口**（原来的单元文件只有注释、
+没有实配）：
+
+1. **缺 `Environment=`**。包装脚本硬要求 `IOAP_DATABASE_URL` /
+   `REHEARSAL_OBJECT_STORE_DIR` / `SNAPSHOT_*`，缺一个就 `exit 1`。现在单元里
+   显式给了 `REHEARSAL_OBJECT_STORE_DIR`（必须与上传端同一个目录），DSN 与业务
+   参数走 `EnvironmentFile=/etc/weaknet-cloud/snapshot-{retention,sweep}.env`。
+   **密码没有写进仓库**——那两个 env 文件是 `root:root 0640`、只在机器上生成，
+   内容由正在运行的 `weaknet-cloud-api.service` 的 `ALEMBIC_DB_URL` 提取而来。
+2. **systemd 的默认 PATH 找不到 venv 里的命令**。`industrial-ops-snapshot-*`
+   装在项目 venv 下，systemd 默认 `PATH=/usr/local/bin:/usr/bin:/bin`。不显式给
+   PATH，单元会在第一行 `command not found`，而 `systemctl status` 只会说
+   `status=127`，看不出是路径问题。两个单元都加了显式 `PATH`。
+
+还有一个真缺口：`industrial-ops-snapshot-sweep` **在 venv 里根本不存在**。
+`pyproject.toml` 里注册了，但包是以 editable 装的、entry point 没重新生成
+（`entry_points.txt` 里只有 retention）。重跑 `pip install -e . --no-deps` 后
+才出现。
+
+验证顺序是「先手工跑、再启用定时器」：
+
+```
+# 上线前 dry-run（单元注释里写明的必做步骤）
+snapshot-retention --tenant-id tenant-m1-demo --retention-days 90
+  → expired=0 orphaned_objects=0 remaining=0    ← 不会删掉任何真实证据
+snapshot-sweep --tenant-id tenant-m1-demo
+  → scanned=1 orphans=0 remaining=0
+
+# 手工启动两个 service（此刻还不启用 timer）
+systemctl start weaknet-snapshot-retention.service  → Result=success ExecMainStatus=0
+  [snapshot-retention] start: days=90 tenants=tenant-m1-demo store=/var/lib/weaknet-cloud/objects
+  [snapshot-retention] tenant=tenant-m1-demo round=1 done: {..., "deleted": 0, "expired": 0}
+systemctl start weaknet-snapshot-sweep.service      → Result=success ExecMainStatus=0
+  [snapshot-sweep] start: min_age=86400s tenants=tenant-m1-demo store=/var/lib/weaknet-cloud/objects
+  [snapshot-sweep] tenant=tenant-m1-demo round=1 done: {..., "deleted": 0, "scanned": 1}
+
+# 启用
+systemctl enable --now weaknet-snapshot-retention.timer
+systemctl enable --now weaknet-snapshot-sweep.timer
+  → 两个 timers.target.wants 软链已创建；enabled=enabled active=active
+```
+
+**触发机制是实测的，不是推断的。** 临时加了一个
+`weaknet-snapshot-sweep.timer.d/zz-trigger-verification.conf`
+（`OnActiveSec=70s`），75 秒后 `LastTriggerUSec` 从 `20:42:18` 跳到 `20:53:17`，
+service 被 timer 拉起且 `Result=success`、`ExecMainStatus=0`，日志完整。验证后
+drop-in 与目录**已删除**、`daemon-reload`、timer 重新锚定，确认目录不存在。
+
+> **排查过程中的一次自我纠错（值得记下来）**：`systemctl list-timers` 一开始
+> 显示 `NEXT=-`，看着像 timer 坏了。实际是 `NextElapseUSecRealtime` 为空——纯
+> `OnBootSec`/`OnUnitActiveSec` 的 timer 只有**单调**触发点，而 `list-timers`
+> 的 NEXT 列按墙钟渲染，渲染不出来就显示 `-`。`SubState=waiting` 与
+> `NextElapseUSecMonotonic` 才是可信判据。算出来后是 23.84 小时后触发，
+> 完全正常。
+
+> **一个已知的运维特性（不是缺陷，但要知道）**：`OnUnitActiveSec=24h` 是相对
+> service 的**上次完成时刻**锚定的。这台机器已开机 15 天，`OnBootSec=10min/20min`
+> 早已过期，所以安装后首轮要等将近一天才自动跑。想让首轮立刻发生，就手工
+> `systemctl start` 一次（本次已这样做了，所以下一轮锚在 24 小时后）。
 
 ### 顺带发现、故意没修
 
@@ -247,7 +348,8 @@ scripts/generate_openapi_client.sh --check              → 无漂移
 
 ### 后续是否值得升格为正式 OpenSpec change
 
-值得，但不是现在。上面第 1~4 条边界里有三条依赖**外部条件**（摄像头接上、
-生产 Postgres 可用、生产机允许装 timer），不是补代码能解决的。等摄像头恢复
-后，建议走一次正式 change 把「真实事故 → 真实回收 → 真实孤儿清扫 → 前端
-渲染」端到端钉一遍证据，那时才谈得上「留证链路已验证」。
+值得，但不是现在。原本第 1~4 条边界里有两条（生产 Postgres、生产装 timer）**已经
+在本轮闭环**；剩下的两条依赖**外部条件**：摄像头接上（板端真实回收）与真实浏览器
+（前端渲染），不是补代码能解决的。等摄像头恢复后，建议走一次正式 change 把「真实
+事故 → 真实回收 → 真实孤儿清扫 → 前端渲染」端到端钉一遍证据，那时才谈得上
+「留证链路已验证」。

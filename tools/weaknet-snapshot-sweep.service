@@ -58,6 +58,17 @@
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now weaknet-snapshot-sweep.timer
 #
+# **先手工 `systemctl start` 一次，再 `enable --now`**：`OnUnitActiveSec=24h`
+# 是相对 service 上次完成时刻锚定的，`OnBootSec=20min` 只在开机 20 分钟内有效。
+# 在一台已开机很久的机器上直接启用，首轮要等将近一天才发生。
+#
+# DSN 不写在本文件里（本文件要提交，写进来等于把密码提交进 git 历史）。
+# 先创建 /etc/weaknet-cloud/snapshot-sweep.env（root:root 0640），内容：
+#   IOAP_DATABASE_URL=postgresql+psycopg://...
+#   SNAPSHOT_SWEEP_MIN_AGE_SECONDS=86400
+#   SNAPSHOT_SWEEP_ALL=1
+#   SNAPSHOT_SWEEP_TENANT=<tid>
+#
 # 部署前**必须**先用 dry-run 手工跑一次，确认 orphans 数量符合预期：
 #
 #   sudo -u ubuntu IOAP_DATABASE_URL=... REHEARSAL_OBJECT_STORE_DIR=... \
@@ -71,6 +82,27 @@ Description=Sweep orphan incident snapshot objects (no database row, cloud side)
 
 [Service]
 Type=oneshot
+
+# 包装脚本靠 PATH 找 `industrial-ops-snapshot-sweep`，而 systemd 的默认
+# PATH 只有 /usr/local/bin:/usr/bin:/bin —— 那个命令装在项目 venv 里，不在
+# PATH 上。不显式给 PATH 的话，单元会在第一行就 `command not found`，而
+# `systemctl status` 只会说「exited with status 127」，看不出是路径问题。
+Environment="PATH=/home/ubuntu/个人学习/AI-powered-Network-Diagnostics/Large-Model-Application/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+# 落盘对象存储根目录。与 weaknet-cloud-api.service 的 drop-in **必须同一个
+# 目录**：清扫器枚举并删除的是上传端写进去的对象，指错了目录就是「报告删了
+# 0 个孤儿」的绿灯，而真实孤儿一个没少。
+Environment="REHEARSAL_OBJECT_STORE_DIR=/var/lib/weaknet-cloud/objects"
+
+# DSN 与业务参数从这个文件读。**密码不写进仓库**：本单元文件是要提交的，
+# 把 DSN 明文写进来等于把数据库密码提交进 git 历史。
+# 该文件由部署步骤在机器上创建（root:root 0640），内容形如：
+#   IOAP_DATABASE_URL=postgresql+psycopg://weaknet:<password>@127.0.0.1:5432/industrial_ops
+#   SNAPSHOT_SWEEP_MIN_AGE_SECONDS=86400
+#   SNAPSHOT_SWEEP_ALL=1
+#   SNAPSHOT_SWEEP_TENANT=tenant-m1-demo
+EnvironmentFile=/etc/weaknet-cloud/snapshot-sweep.env
+
 # 包装脚本负责：注入 DSN 与对象存储目录、按租户逐个跑、把退出码翻译成
 # systemd 能理解的结论（见 tools/snapshot_orphan_sweep.sh）。
 ExecStart=/usr/local/bin/weaknet-snapshot-sweep
