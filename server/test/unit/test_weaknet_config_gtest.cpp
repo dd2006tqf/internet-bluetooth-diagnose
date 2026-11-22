@@ -338,6 +338,110 @@ TEST(WeakNetConfigTest, SerializeMonitorJsonHostPressure) {
 }
 
 // ============================================================================
+// l2_probe 配置（二层回流探测）
+// ============================================================================
+//
+// 这个 monitor 的配置入口比一般插件更容易漏接线：它同时走 YAML、`get`/`set`、
+// 运行时 setConfigValue 三条路径，还要在 JSON 里可查。2026-11-22 真机部署时
+// 就发现 `weaknet-cli get l2_probe` 能读、但 `weaknet-cli list` 里没有它
+// ——用户无从发现这个能力存在。这里把配置层的语义固化下来。
+
+TEST(L2ProbeConfigTest, DefaultsAreDisabledAndHaveNoTargets) {
+    WeakNetConfig cfg;
+    // 默认关闭是安全上界的一部分，不是"还没配好"。
+    EXPECT_FALSE(cfg.l2_probe.enabled.load());
+    // 不内置任何默认出口/对端：自定义 EtherType 裸帧在生产网络里是异常流量，
+    // 硬编码默认目标等于偷偷往客户网络发包。
+    EXPECT_TRUE(cfg.l2_probe.egress_ifaces.get().empty());
+    EXPECT_TRUE(cfg.l2_probe.probe_peers.get().empty());
+    EXPECT_TRUE(cfg.l2_probe.vlan_ids.get().empty());
+    EXPECT_EQ(cfg.l2_probe.interval_ms.load(), 30000u);
+    EXPECT_EQ(cfg.l2_probe.timeout_ms.load(), 2000u);
+    EXPECT_EQ(cfg.l2_probe.max_frames_per_round.load(), 8u);
+    EXPECT_EQ(cfg.l2_probe.rate_limit_pps.load(), 4u);
+}
+
+TEST(L2ProbeConfigTest, SerializeMonitorJsonHasL2Probe) {
+    WeakNetConfig cfg;
+    std::string err;
+    std::string json = serializeMonitorJson(cfg, "l2_probe", &err);
+    EXPECT_TRUE(err.empty()) << err;
+    EXPECT_NE(json.find("\"enabled\":false"), std::string::npos);
+    EXPECT_NE(json.find("\"egress_ifaces\":\"\""), std::string::npos);
+    EXPECT_NE(json.find("\"rate_limit_pps\":4"), std::string::npos);
+
+    // get all 也必须带上它（否则 `weaknet-cli get all` 看不到这个能力）
+    std::string all = serializeMonitorJson(cfg, "all", &err);
+    EXPECT_NE(all.find("\"l2_probe\""), std::string::npos);
+}
+
+TEST(L2ProbeConfigTest, RuntimeSetRejectsOutOfRangeValues) {
+    WeakNetConfig cfg;
+    std::string err;
+    // 硬上限：速率 ≤20pps、单轮 ≤64 帧。超限必须拒收而不是静默钳制，
+    // 否则运维以为配了 100pps、实际是 20pps，两者对现场的影响完全不同。
+    EXPECT_FALSE(setMonitorParam(&cfg, "l2_probe.rate_limit_pps", "100", &err));
+    EXPECT_FALSE(err.empty());
+    EXPECT_FALSE(setMonitorParam(&cfg, "l2_probe.max_frames_per_round", "128", &err));
+    EXPECT_FALSE(setMonitorParam(&cfg, "l2_probe.interval_ms", "10", &err));
+    EXPECT_FALSE(setMonitorParam(&cfg, "l2_probe.timeout_ms", "1", &err));
+
+    // 边界内必须接受
+    EXPECT_TRUE(setMonitorParam(&cfg, "l2_probe.rate_limit_pps", "20", &err)) << err;
+    EXPECT_EQ(cfg.l2_probe.rate_limit_pps.load(), 20u);
+    EXPECT_TRUE(setMonitorParam(&cfg, "l2_probe.max_frames_per_round", "64", &err)) << err;
+    EXPECT_EQ(cfg.l2_probe.max_frames_per_round.load(), 64u);
+}
+
+TEST(L2ProbeConfigTest, YamlAndRuntimeShareTheSameRanges) {
+    // YAML 与 `weaknet-cli set` 必须用同一套区间。曾经 YAML 分支用
+    // setDurationField（无范围检查）而运行期分支有检查，于是
+    // "yaml 能写、cli 拒收"——两套标准，且差异只在超限值上暴露。
+    //
+    // 这里走真实的 loadWeakNetConfig（applyYamlKey 是文件内符号，测试够不到），
+    // 超限值必须让**整份配置加载失败**，而不是被静默忽略或钳制。
+    {
+        WeakNetConfig cfg;
+        std::string err;
+        EXPECT_FALSE(parse("monitors:\n  l2_probe:\n    rate_limit_pps: 100\n", &cfg, &err));
+        EXPECT_FALSE(err.empty());
+    }
+    {
+        WeakNetConfig cfg;
+        std::string err;
+        EXPECT_FALSE(parse("monitors:\n  l2_probe:\n    interval_ms: 10\n", &cfg, &err));
+        EXPECT_FALSE(err.empty());
+    }
+    {
+        // 边界内必须加载成功并与 YAML 里的值一致
+        WeakNetConfig cfg;
+        std::string err;
+        ASSERT_TRUE(parse("monitors:\n  l2_probe:\n    rate_limit_pps: 20\n"
+                          "    max_frames_per_round: 64\n"
+                          "    egress_ifaces: \"eth0,eth1\"\n"
+                          "    probe_peers: \"aa:bb:cc:dd:ee:ff\"\n",
+                          &cfg, &err))
+            << err;
+        EXPECT_EQ(cfg.l2_probe.rate_limit_pps.load(), 20u);
+        EXPECT_EQ(cfg.l2_probe.max_frames_per_round.load(), 64u);
+        EXPECT_EQ(cfg.l2_probe.egress_ifaces.get(), "eth0,eth1");
+        EXPECT_EQ(cfg.l2_probe.probe_peers.get(), "aa:bb:cc:dd:ee:ff");
+    }
+}
+
+TEST(L2ProbeConfigTest, VlanZeroIsNotEmptySemantics) {
+    // VLAN 0 是合法的 priority-tagged 语义，与"不打 tag"严格区分。
+    // 配置层只做透传，不能把 "0" 当成"未配置"吞掉——那会让"给 VLAN 0
+    // 打 tag"这个需求无法表达，且与项目「未采集 != 零值」的约束冲突。
+    WeakNetConfig cfg;
+    std::string err;
+    EXPECT_TRUE(setMonitorParam(&cfg, "l2_probe.vlan_ids", "0", &err)) << err;
+    EXPECT_EQ(cfg.l2_probe.vlan_ids.get(), "0");
+    std::string json = serializeMonitorJson(cfg, "l2_probe", &err);
+    EXPECT_NE(json.find("\"vlan_ids\":\"0\""), std::string::npos);
+}
+
+// ============================================================================
 // 引号剥离回归（真机缺陷，2026-09-13）
 //
 // 缺陷：解析器不剥离值两端引号，于是

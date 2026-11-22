@@ -33,6 +33,10 @@
 #include "edge_telemetry_exporter.hpp"
 #include "edge_wireless_uplink_exporter.hpp"
 #include "assurance/edge_ai_scheduler.hpp"
+// L2ProbeEngine 用 unique_ptr 持有 → 需要完整定义；
+// L2LoopResult 直接作为 ServerContext 成员 → 同样需要完整定义。
+#include "l2_probe_engine.hpp"
+#include "assurance/l2_loop_attribution.hpp"
 #include "video_frame_hub.hpp"
 #include "video_clip_exporter.hpp"
 #include "snapshot_service.hpp"
@@ -90,6 +94,7 @@ struct ServerContext {
     // MonitorManager/各插件分别持有监控 worker；这里只保留历史持久化线程。
     std::thread history_thread;                 ///< 每 5 秒将 iface_list 快照写入 DB
     std::thread active_probe_thread;            ///< 受控主动连通性探测
+    std::thread l2_probe_thread;                ///< 二层回流探测（l2_probe）
 
     // ---------- 监控器插件生命周期 ----------
     std::unique_ptr<MonitorManager> monitor_manager; ///< 静态插件实例与生命周期协调器
@@ -131,6 +136,20 @@ struct ServerContext {
 
     /// 受控主动连通性探测（宿主能力证据的唯一来源）
     std::unique_ptr<ActiveConnectivityMonitor> active_probe;
+
+    /// 二层回流探测引擎（l2_probe）。
+    ///
+    /// 与 active_probe 并列但**完全不同域**：active_probe 走 IP 栈问"外面通不通"，
+    /// 本引擎发裸二层帧问"这一帧会不会从别的口回来"。产物是 L1 事实，
+    /// 结论由 attributeL2Loop() 给出，引擎本身不下判断。
+    ///
+    /// 所有权：ServerContext 独占。探测线程只调 runRound()，不持有指针副本。
+    std::unique_ptr<weaknet_dbus::L2ProbeEngine> l2_probe;
+    /// 最近一轮的归因结论（供 quality 线程读取；由探测线程写）。
+    /// 用 mutex 而不是原子：结论是结构体（含 vector<string>），
+    /// 拆分原子化会让"结论与解释不同步"的窗口可见。
+    std::mutex l2_loop_mutex;
+    weaknet::L2LoopResult l2_loop_result;
 
     // ---------- 权威评估快照（W2 单一事实源）----------
     // quality 线程是唯一 evaluator 执行点；每轮评估后发布不可变快照。
@@ -304,6 +323,7 @@ struct ServerContext {
     std::atomic<bool> tcp_rtt_stop{false};
     std::atomic<bool> bt_events_stop{false};
     std::atomic<bool> active_probe_stop{false};
+    std::atomic<bool> l2_probe_stop{false};
 
     // ---------- 频段冲突检测快照 ----------
     std::mutex conflict_mutex;
@@ -370,6 +390,12 @@ void start_tcp_connect_monitor_thread(ServerContext* ctx, std::thread* worker, T
 void start_tcp_rtt_monitor_thread(ServerContext* ctx, std::thread* worker, TcpRttMonitor* monitor);           ///< 被动 TCP RTT（tcp_rtt.bpf.o）
 void start_active_probe_thread(ServerContext* ctx, std::thread* worker);   ///< 受控主动连通性探测
 void applyActiveProbeConfig(ServerContext* ctx);                           ///< 根据当前配置更新并下发主动探测参数
+/// 二层回流探测线程（l2_probe）。配置无效时直接不启动线程（保持 disabled）。
+void start_l2_probe_thread(ServerContext* ctx, std::thread* worker);
+/// 按当前配置重建引擎。**仅在探测线程未运行时调用**（启动/关闭阶段）。
+void applyL2ProbeConfig(ServerContext* ctx);
+/// 运行期参数变更（限流三参数）。绝不销毁引擎——探测线程可能正持有它。
+void applyL2ProbeRuntimeConfig(ServerContext* ctx);
 
 void start_history_persistence_thread(ServerContext* ctx);     ///< 历史数据持久化（非监控器，server.cpp 单独启动）
 

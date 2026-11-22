@@ -144,6 +144,7 @@ tcp_conn
 skb_drop
 tcp_connect
 active_probe
+l2_probe
 edge
 server
 all
@@ -284,7 +285,7 @@ $ weaknet-cli get all
 }
 ```
 
-**支持的监控器名**：`rtt` `rssi` `tcp_loss` `traffic` `quality` `host_pressure` `bluetooth` `dns` `wifi_loss` `http_latency` `process_profiler` `tcp_retrans` `tcp_conn` `skb_drop` `tcp_connect` `tcp_rtt` `bt_events` `bt_hci_traffic` `active_probe` `edge` `server` `all`
+**支持的监控器名**：`rtt` `rssi` `tcp_loss` `traffic` `quality` `host_pressure` `bluetooth` `dns` `wifi_loss` `http_latency` `process_profiler` `tcp_retrans` `tcp_conn` `skb_drop` `tcp_connect` `tcp_rtt` `bt_events` `bt_hci_traffic` `active_probe` `l2_probe` `edge` `server` `all`
 
 **输出字段说明**（以 `rtt` 为例）：
 
@@ -358,6 +359,14 @@ ok
 | `active_probe` | `portal_targets` | string | URL 列表 | portal 探测目标 |
 | `active_probe` | `portal_path` | string | 路径 | portal 探测路径 |
 | `active_probe` | `portal_expect_body` | string | 字符串 | portal 期望响应体 |
+| `l2_probe` | `enabled` | bool | `true` / `false` | 启用开关（默认关闭） |
+| `l2_probe` | `interval`/`interval_ms` | duration | `1000ms` ~ `3600000ms` | 探测周期 |
+| `l2_probe` | `timeout`/`timeout_ms` | duration | `100ms` ~ `30000ms` | 单轮收包窗口 |
+| `l2_probe` | `egress_ifaces` | string | 逗号分隔接口名 | 参与探测的出口网卡（**至少 2 个**才有判定资格） |
+| `l2_probe` | `probe_peers` | string | 逗号分隔**单播** MAC | 探测对端（无默认值，必须显式配置） |
+| `l2_probe` | `vlan_ids` | string | 逗号分隔 VLAN ID | 要打 802.1Q tag 的 VLAN；空 = 不打 tag |
+| `l2_probe` | `max_frames_per_round` | uint | `1` ~ `64` | 单轮帧数上限（硬上限 64） |
+| `l2_probe` | `rate_limit_pps` | uint | `1` ~ `20` | 发送速率上限 pps（硬上限 20） |
 | `edge` | `enabled` | bool | `true` / `false` | 启用开关 |
 | `edge` | `url` | string | URL | 上行端点（如 `http://<cloud>:8000/api/v1/network/edge/telemetry`） |
 | `edge` | `tenant` | string | 租户 ID | 租户标识 |

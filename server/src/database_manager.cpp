@@ -382,6 +382,68 @@ bool DatabaseManager::ensureSchema() {
         );
         CREATE INDEX IF NOT EXISTS idx_bt_data_path_ts ON bt_data_path_metrics(ts);
         CREATE INDEX IF NOT EXISTS idx_bt_data_path_dev ON bt_data_path_metrics(device_address);
+
+        -- ==================================================================
+        -- 二层回流探测（l2_probe）事实表
+        -- ==================================================================
+        --
+        -- 为什么**不**复用 device_events：那张表的 device_address 是 NOT NULL、
+        -- protocol 是无线协议族、event_type 是蓝牙事件类型。二层探测帧不属于
+        -- 任何无线设备，硬塞进去会让 SiteIncidentCorrelator 的错误关联逻辑
+        -- 把二层环路事故与蓝牙断连事故混为一谈——那正是"同一现实故障被记多份"
+        -- 的反面。主动测量域必须有独立的落库路径。
+        --
+        -- 同样不建 FOREIGN KEY（与其余表一致）：两张表都有保留期清理。
+
+        -- l2_probe_rounds: 一轮探测的完整事实（append-only）
+        --
+        -- vlan_id 默认 NULL 而不是 0：VLAN 0 是合法的 priority-tagged 语义，
+        -- 用 0 冒充"无 tag"违反项目「未采集 != 零值」硬约束。
+        --
+        -- verdict / degraded_reason 是两个独立维度：
+        --   verdict 回答"看到了什么"（NO_RETURN/SINGLE_RETURN/MULTI_RETURN）；
+        --   degraded_reason 非空则表示"这轮不可信"，此时 verdict 不参与归因。
+        -- 把两者合并成一个字段，会让「没测准」塌缩成「没问题」。
+        CREATE TABLE IF NOT EXISTS l2_probe_rounds (
+            round_id        TEXT PRIMARY KEY,
+            ts_start_ms     INTEGER NOT NULL,
+            ts_end_ms       INTEGER NOT NULL,
+            site_id         TEXT    DEFAULT '',
+            gateway_id      TEXT    DEFAULT '',
+            egress_iface    TEXT    NOT NULL,
+            vlan_id         INTEGER DEFAULT NULL,
+            sent_count      INTEGER NOT NULL DEFAULT 0,
+            recv_count      INTEGER NOT NULL DEFAULT 0,
+            verdict         TEXT    NOT NULL DEFAULT 'NO_RETURN',
+            return_pairs    TEXT    DEFAULT '',
+            degraded_reason TEXT    DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_l2_rounds_ts ON l2_probe_rounds(ts_end_ms);
+
+        -- l2_probe_frames: 逐帧账本（有界保留，仅最近若干轮）
+        --
+        -- ingress_ifindex 为 NULL 表示"发出去了但没回来"，这是**事实**，
+        -- 不是缺失值——不能用 0 冒充（0 不是合法 ifindex）。
+        --
+        -- sent 必须单列一维，不能靠 sent_ms 是否为 0 推断：
+        --   0 会被读成"1970 年发出的"，而"sendto 失败、根本没出去"
+        --   与"发出去了但没人回"是两种完全不同的证据缺口。
+        --   sent=0 → 本轮不完整；sent=1 且 ingress NULL → 真的没回流。
+        CREATE TABLE IF NOT EXISTS l2_probe_frames (
+            round_id        TEXT    NOT NULL,
+            seq             INTEGER NOT NULL,
+            egress_ifindex  INTEGER NOT NULL,
+            egress_iface    TEXT    DEFAULT '',
+            vlan_id         INTEGER DEFAULT NULL,
+            sent            INTEGER NOT NULL DEFAULT 0,
+            ingress_ifindex INTEGER DEFAULT NULL,
+            ingress_iface   TEXT    DEFAULT '',
+            sent_ms         INTEGER DEFAULT NULL,
+            recv_ms         INTEGER DEFAULT NULL,
+            rtt_us          INTEGER DEFAULT NULL,
+            PRIMARY KEY (round_id, seq)
+        );
+        CREATE INDEX IF NOT EXISTS idx_l2_frames_round ON l2_probe_frames(round_id);
     )";
     if (!exec(schema)) return false;
 
@@ -818,7 +880,7 @@ int DatabaseManager::cleanup(int retention_days) {
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // 清理必须是原子的：六张表要么一起老化，要么一动不动。
+    // 清理必须是原子的：八张表要么一起老化，要么一动不动。
     // 逐条 DELETE 不加事务时，中途一条失败会留下"事故行已删、回链还在"
     // 或"事件已删、事故仍在"的半清理状态——比不清理更坏，因为追溯查询
     // 会返回一个看起来完整、实际缺证据的空壳。
@@ -911,13 +973,31 @@ int DatabaseManager::cleanup(int retention_days) {
         "bt_data_path_metrics", "DELETE FROM bt_data_path_metrics WHERE ts < " + cutoff);
     if (bt_metrics_deleted < 0) return abort("bt_data_path_metrics");
 
+    // 7) 二层探测帧账本：只删属于过期轮次的帧。
+    //    顺序与事故表同理——先删证据（帧），再删本体（轮）。
+    //    反向顺序会留下永久孤儿帧：轮次行没了，没有任何查询能再定位到它们，
+    //    而 idx_l2_frames_round 上的堆积只增不减。
+    //    子查询用 ts_end_ms（不是 ts_start_ms）：一轮跨过 cutoff 边界时，
+    //    以"什么时候测完"为准，与 l2_probe_rounds 的清理条件严格一致，
+    //    否则会出现"轮次还在、帧已被删"的半轮。
+    int64_t l2_frames_deleted = runDelete(
+        "l2_probe_frames",
+        "DELETE FROM l2_probe_frames WHERE round_id IN "
+        "(SELECT round_id FROM l2_probe_rounds WHERE ts_end_ms < " + cutoff + ")");
+    if (l2_frames_deleted < 0) return abort("l2_probe_frames");
+
+    // 8) 二层探测轮次本体
+    int64_t l2_rounds_deleted = runDelete(
+        "l2_probe_rounds", "DELETE FROM l2_probe_rounds WHERE ts_end_ms < " + cutoff);
+    if (l2_rounds_deleted < 0) return abort("l2_probe_rounds");
+
     if (!exec("COMMIT")) {
         exec("ROLLBACK");
         return -1;
     }
 
     if (history_deleted + bt_history_deleted + events_deleted + links_deleted +
-            incidents_deleted + bt_metrics_deleted >
+            incidents_deleted + bt_metrics_deleted + l2_frames_deleted + l2_rounds_deleted >
         0) {
         LOG_INFO(LogModule::SYSTEM,
                  "DatabaseManager::cleanup(" << retention_days << "d) removed "
@@ -926,11 +1006,13 @@ int DatabaseManager::cleanup(int retention_days) {
                                             << " device_events=" << events_deleted
                                             << " site_incident_events=" << links_deleted
                                             << " site_incidents=" << incidents_deleted
-                                            << " bt_data_path_metrics=" << bt_metrics_deleted);
+                                            << " bt_data_path_metrics=" << bt_metrics_deleted
+                                            << " l2_probe_frames=" << l2_frames_deleted
+                                            << " l2_probe_rounds=" << l2_rounds_deleted);
     }
 
     // 返回值沿用既有契约：只报 network_history 的删除行数。
-    // 其余五张表的删除量见上面这条日志（调用方 history_query_tool 打印的是它）。
+    // 其余七张表的删除量见上面这条日志（调用方 history_query_tool 打印的是它）。
     return static_cast<int>(history_deleted);
 }
 
@@ -2089,6 +2171,203 @@ std::string DatabaseManager::queryBtDataPathMetrics(const std::string& device_ad
     sqlite3_finalize(stmt);
     json << "]";
     return json.str();
+}
+
+// ======================================================================
+// 二层回流探测事实（l2_probe）
+// ======================================================================
+
+bool DatabaseManager::insertL2ProbeRound(const L2ProbeRoundRow& round,
+                                        const std::vector<L2ProbeFrameRow>& frames) {
+    if (!db_) return false;
+    if (round.round_id.empty()) {
+        // 空 round_id 会撞 PRIMARY KEY：第二次写进来的是空字符串，
+        // INSERT OR REPLACE 会静默覆盖前一轮，两轮的事实塌缩成一条。
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::insertL2ProbeRound rejected empty round_id");
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // 单事务：round 行与帧账本要么一起进，要么一起不进。
+    // 半轮数据（有 round 但帧缺失）会让审计无法解释"为什么判了 MULTI_RETURN"，
+    // 而错误日志里看不出缺失——比没有数据更坏。
+    if (!exec("BEGIN IMMEDIATE")) return false;
+
+    auto abort = [&](const char* what) -> bool {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::insertL2ProbeRound rolled back on " << what
+                                                                      << ": " << sqlite3_errmsg(db_));
+        exec("ROLLBACK");
+        return false;
+    };
+
+    {
+        // INSERT OR REPLACE：round_id 含进程实例随机码，正常情况下不会重复；
+        // 但调用方重试同一轮（例如写库失败后整轮补写）时不该报错，
+        // 帧账本是 (round_id, seq) 主键，重写天然幂等。
+        const char* sql = R"(
+            INSERT OR REPLACE INTO l2_probe_rounds (
+                round_id, ts_start_ms, ts_end_ms, site_id, gateway_id,
+                egress_iface, vlan_id, sent_count, recv_count,
+                verdict, return_pairs, degraded_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        )";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            return abort("l2_probe_rounds prepare");
+        }
+
+        sqlite3_bind_text(stmt, 1, round.round_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 2, round.ts_start_ms);
+        sqlite3_bind_int64(stmt, 3, round.ts_end_ms);
+        sqlite3_bind_text(stmt, 4, round.site_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 5, round.gateway_id.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 6, round.egress_iface.c_str(), -1, SQLITE_TRANSIENT);
+
+        // VLAN 0 是合法的 priority-tagged 语义，不能用 0 冒充"无 tag"。
+        if (round.vlan_is_null) {
+            sqlite3_bind_null(stmt, 7);
+        } else {
+            sqlite3_bind_int(stmt, 7, round.vlan_id);
+        }
+
+        sqlite3_bind_int(stmt, 8, round.sent_count);
+        sqlite3_bind_int(stmt, 9, round.recv_count);
+        sqlite3_bind_text(stmt, 10, round.verdict.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 11, round.return_pairs.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 12, round.degraded_reason.c_str(), -1, SQLITE_TRANSIENT);
+
+        const int rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+        if (rc != SQLITE_DONE) return abort("l2_probe_rounds step");
+    }
+
+    if (!frames.empty()) {
+        const char* sql = R"(
+            INSERT OR REPLACE INTO l2_probe_frames (
+                round_id, seq, egress_ifindex, egress_iface, vlan_id,
+                sent, ingress_ifindex, ingress_iface,
+                sent_ms, recv_ms, rtt_us
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        )";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            return abort("l2_probe_frames prepare");
+        }
+
+        for (const auto& f : frames) {
+            sqlite3_reset(stmt);
+            sqlite3_clear_bindings(stmt);
+
+            sqlite3_bind_text(stmt, 1, f.round_id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 2, f.seq);
+            sqlite3_bind_int(stmt, 3, f.egress_ifindex);
+            sqlite3_bind_text(stmt, 4, f.egress_iface.c_str(), -1, SQLITE_TRANSIENT);
+
+            if (f.vlan_is_null) {
+                sqlite3_bind_null(stmt, 5);
+            } else {
+                sqlite3_bind_int(stmt, 5, f.vlan_id);
+            }
+
+            // sent 单列一维：0 = sendto 失败（证据缺口），
+            // 1 + ingress NULL = 真的没回流（NO_RETURN 的正证据）。
+            sqlite3_bind_int(stmt, 6, f.sent ? 1 : 0);
+
+            if (f.unreceived) {
+                sqlite3_bind_null(stmt, 7);
+            } else {
+                sqlite3_bind_int(stmt, 7, f.ingress_ifindex);
+            }
+            sqlite3_bind_text(stmt, 8, f.ingress_iface.c_str(), -1, SQLITE_TRANSIENT);
+
+            // 未发出的帧不该带"发出时刻"：0 会被读成 1970 年。
+            if (f.sent) {
+                sqlite3_bind_int64(stmt, 9, f.sent_ms);
+            } else {
+                sqlite3_bind_null(stmt, 9);
+            }
+            if (f.unreceived) {
+                sqlite3_bind_null(stmt, 10);
+                sqlite3_bind_null(stmt, 11);
+            } else {
+                sqlite3_bind_int64(stmt, 10, f.recv_ms);
+                sqlite3_bind_int64(stmt, 11, f.rtt_us);
+            }
+
+            const int rc = sqlite3_step(stmt);
+            if (rc != SQLITE_DONE) {
+                sqlite3_finalize(stmt);
+                return abort("l2_probe_frames step");
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    if (!exec("COMMIT")) {
+        exec("ROLLBACK");
+        return false;
+    }
+    return true;
+}
+
+std::vector<DatabaseManager::L2ProbeRoundRow> DatabaseManager::queryL2ProbeRounds(
+    const std::string& for_gateway_id, int64_t since_ms, int limit) {
+    std::vector<L2ProbeRoundRow> out;
+    if (!db_) return out;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // 倒序取"最近 N 轮"再交给调用方：归因窗口关心的是刚刚发生了什么，
+    // 按 ts_end_ms DESC + LIMIT 才是"最近 N 轮"。正序 + LIMIT 会取到窗口
+    // 最老的那几轮，探测一跑起来就永远看不到新数据。
+    std::ostringstream sql;
+    sql << "SELECT round_id, ts_start_ms, ts_end_ms, site_id, gateway_id, "
+        << "egress_iface, vlan_id, sent_count, recv_count, verdict, "
+        << "return_pairs, degraded_reason FROM l2_probe_rounds WHERE ts_end_ms >= ?";
+    if (!for_gateway_id.empty()) sql << " AND gateway_id = ?";
+    sql << " ORDER BY ts_end_ms DESC LIMIT ?;";
+
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql.str().c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        LOG_ERROR(LogModule::SYSTEM,
+                  "DatabaseManager::queryL2ProbeRounds prepare failed: " << sqlite3_errmsg(db_));
+        return out;
+    }
+
+    int idx = 1;
+    sqlite3_bind_int64(stmt, idx++, since_ms);
+    if (!for_gateway_id.empty()) {
+        sqlite3_bind_text(stmt, idx++, for_gateway_id.c_str(), -1, SQLITE_TRANSIENT);
+    }
+    sqlite3_bind_int(stmt, idx++, limit > 0 ? limit : 32);
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        auto textOrEmpty = [&](int col) -> std::string {
+            const char* v = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
+            return v ? v : "";
+        };
+
+        L2ProbeRoundRow row;
+        row.round_id = textOrEmpty(0);
+        row.ts_start_ms = sqlite3_column_int64(stmt, 1);
+        row.ts_end_ms = sqlite3_column_int64(stmt, 2);
+        row.site_id = textOrEmpty(3);
+        row.gateway_id = textOrEmpty(4);
+        row.egress_iface = textOrEmpty(5);
+        row.vlan_is_null = (sqlite3_column_type(stmt, 6) == SQLITE_NULL);
+        row.vlan_id = row.vlan_is_null ? 0 : sqlite3_column_int(stmt, 6);
+        row.sent_count = sqlite3_column_int(stmt, 7);
+        row.recv_count = sqlite3_column_int(stmt, 8);
+        row.verdict = textOrEmpty(9);
+        row.return_pairs = textOrEmpty(10);
+        row.degraded_reason = textOrEmpty(11);
+        out.push_back(std::move(row));
+    }
+    sqlite3_finalize(stmt);
+    return out;
 }
 
 std::string DatabaseManager::getDbInfo() {

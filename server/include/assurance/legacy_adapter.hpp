@@ -2,6 +2,7 @@
 
 #include "assurance/network_experience.hpp"
 #include "network_quality_result.hpp"
+#include "utils/json_escape.hpp"
 #include <string>
 #include <sstream>
 #include <iomanip>
@@ -269,6 +270,29 @@ public:
         for (size_t i = 0; i < exp.video_qoe_issues.size(); ++i) {
             json << "\"" << exp.video_qoe_issues[i] << "\"";
             if (i + 1 < exp.video_qoe_issues.size()) json << ",";
+        }
+        json << "],";
+
+        // 二层回流归因（主动测量域）。
+        //
+        // 与前三者并列的第四个归因，必须进这里：本函数是 GetNetworkExperience
+        // 的唯一出口，不序列化就是孤儿字段。
+        //
+        // 这里用 escapeJsonString，而不是像上面三个 detail 那样裸拼：
+        // l2_loop_detail 会带端口对（"eth0->eth1"）与降级原因，虽然当前
+        // 不含引号，但该字符串由 attributeL2Loop 拼装、未来加入接口名
+        // （可含任意字符）时会立刻打断 JSON。新增字段不该继承既有裸拼缺陷。
+        //
+        // NONE 不是 "healthy"：上层必须呈现为 unavailable，并在 detail 里
+        // 看到具体原因（未配置 / socket 不可用 / 窗口全降级 / 样本不足）。
+        json << "\"l2_loop_attribution\":\""
+             << l2LoopAttributionToString(exp.l2_loop_attribution) << "\",";
+        json << "\"l2_loop_detail\":"
+             << "\"" << weaknet_utils::escapeJsonString(exp.l2_loop_detail) << "\",";
+        json << "\"l2_loop_issues\":[";
+        for (size_t i = 0; i < exp.l2_loop_issues.size(); ++i) {
+            json << "\"" << weaknet_utils::escapeJsonString(exp.l2_loop_issues[i]) << "\"";
+            if (i + 1 < exp.l2_loop_issues.size()) json << ",";
         }
         json << "],";
 

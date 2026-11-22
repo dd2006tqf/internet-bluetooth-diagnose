@@ -131,6 +131,34 @@ monitors:
     portal_path: "/success.txt"
     portal_expect_body: "success"
 
+  # 二层回流探测（l2_probe）：向有线端口注入自定义 EtherType(0x88B5) 的裸二层帧，
+  # 按 seq 配对回收帧，产出「从 A 口出、从 B 口回」这一 L1 事实。
+  # 归因（NONE / NO_LOOP / LOOP_SUSPECTED）由 attributeL2Loop() 给出，
+  # 与 thermal/observer/video_qoe 同构：只追加旁证，不参与 SLE 评分、不执行隔离。
+  #
+  # **默认关闭，且不内置任何默认出口/对端**。三个理由：
+  #   1. 自定义 EtherType 的裸二层帧在生产网络里属异常流量，可能触发客户 IDS；
+  #   2. 出口网卡选错就真的往业务链路注入探测帧；
+  #   3. "向谁发"必须是部署方显式声明的系统事实（与 active_probe.targets 同一纪律）。
+  #
+  # egress_ifaces 至少 2 个**不同**接口才有判定资格：单口永远看不到跨口回流，
+  # 每轮必然得出「未回流」，那是把「不知道」说成「一切正常」——引擎会直接拒绝启动。
+  # 同一接口配多个 VLAN 仍算一个出口（判据看去重后的接口数）。
+  # probe_peers 必须是**单播** MAC（不发广播/组播，否则回流无法归因到具体路径）。
+  # vlan_ids 为空 = 不打 802.1Q tag；VLAN 0 是合法的 priority-tagged 语义，
+  # 与"无 tag"严格区分，故写 0 与不写不是一回事。
+  #
+  # 安全上界在代码里硬钳制，改配置也突破不了：速率 ≤20pps、单轮 ≤64 帧。
+  # l2_probe:
+  #   enabled: false
+  #   interval_ms: 30000                # 1000 ~ 3600000
+  #   timeout_ms: 2000                  # 100 ~ 30000
+  #   egress_ifaces: "eth0,eth1"
+  #   probe_peers: "aa:bb:cc:dd:ee:ff,11:22:33:44:55:66"
+  #   vlan_ids: ""                      # 例："100,200"
+  #   max_frames_per_round: 8           # 1 ~ 64
+  #   rate_limit_pps: 4                 # 1 ~ 20
+
 edge:
   enabled: true
   # 上行必须指向**云端可达地址**，不能是板子自己的回环。

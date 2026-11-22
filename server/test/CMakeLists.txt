@@ -172,6 +172,13 @@ add_executable(test_observer_attribution_gtest
     unit/test_observer_attribution_gtest.cpp)
 target_link_libraries(test_observer_attribution_gtest PRIVATE ${TEST_COMMON_LIBS})
 
+# 二层回流探测的纯逻辑层：调度计划器（令牌桶/覆盖完整性）+ 归因纯函数。
+# **不需要 CAP_NET_RAW、不需要第二块网卡**——AF_PACKET 走不到的部分都在这里。
+# 重点是断言「覆盖不全」与「拒绝归因」不会被静默地说成「没问题」。
+add_executable(test_l2_probe_plan_gtest
+    unit/test_l2_probe_plan_gtest.cpp)
+target_link_libraries(test_l2_probe_plan_gtest PRIVATE ${TEST_COMMON_LIBS})
+
 # 视频 QoE L2/L3 层：IFrameSource 契约 + SyntheticFrameSource 四种丢帧模式。
 # 无硬件依赖，纯时间推进（不 sleep），CI 上结果确定。
 add_executable(test_frame_source_gtest
@@ -401,6 +408,7 @@ foreach(test_target
     test_captive_portal_evaluator_gtest
     test_assurance_policy_source_gtest
     test_observer_attribution_gtest
+    test_l2_probe_plan_gtest
     test_frame_source_gtest
     test_v4l2_frame_source_gtest
     test_media_topology_gtest

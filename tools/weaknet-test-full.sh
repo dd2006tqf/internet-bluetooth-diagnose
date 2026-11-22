@@ -31,6 +31,27 @@ skip()  { echo -e "  \033[1;33m[SKIP]\033[0m $1"; ((SKIP++)); }
 
 ulimit -l unlimited 2>/dev/null || true
 
+# ---- 测试期间暂停健康判据（必须在停服**之前**）----
+#
+# 本脚本的核心手法是「停掉 systemd 常驻实例，再手动前台起一个 server 做测试」。
+# 但 weaknet-health-guard 把「weaknet-server 不在 active」当硬失效判据，
+# 容忍窗口只有 kInactiveGraceSec(12s)，超时即停喂狗、sunxi_wdt 16 秒内复位整机。
+#
+# 后果实测：2026-11-22 02:37 一次完整 ci.sh 跑到本脚本时整机复位，
+# 守卫记录 wal_mtime/sample_ns/cpu_delta/d_state 四条同时 FAIL
+# （手动起的进程没有 WAL、不在 D-Bus 上、pid 与 systemd 记录的不一致），
+# 看上去像「服务大面积损坏」，实际只是「服务被测试脚本按设计停掉了」。
+#
+# 判据方向必须与 ci.sh Step 3 一致：这是**人工声明的受控过渡**，
+# 期间只喂狗不判定。标记有 30 分钟自动过期，所以清理仍必须走 EXIT 陷阱。
+_HEALTH_FLAG=/var/lib/weaknet/health-guard-maintenance
+_HEALTH_FLAG_ARMED=false
+if mkdir -p /var/lib/weaknet 2>/dev/null && touch "$_HEALTH_FLAG" 2>/dev/null; then
+    _HEALTH_FLAG_ARMED=true
+else
+    echo "  [WARN] 无法创建健康判据维护标记；若 health-guard 已启用，本次测试可能触发整机复位"
+fi
+
 # 系统总线上只允许一个 com.example.WeakNet：先停掉 systemd 常驻实例。
 # 注意：pkill -f 的模式用 [s] 方括号 trick，避免匹配到脚本自身
 # （内层 bash -lc 的命令行里包含模式文本，无 trick 会把自己杀掉导致脚本无输出退出）。
@@ -67,7 +88,26 @@ cleanup() {
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
     # 恢复 systemd 常驻实例（生产状态）
+    #
+    # 顺序不能反：**先**等 systemd 实例真的起来（is-active 轮询到 active），
+    # **再**撤维护标记。反过来的话，标记一撤，守卫立刻看到
+    # 「weaknet-server 不在 active」，12 秒后复位整机——测试明明全绿了却整机
+    # 重启，且复位会把真因抹掉（运维只看到"板子自己重启了"）。
+    # 这与 ci.sh 的 cleanup_maint_flag 是同一条契约。
     systemctl restart weaknet-server 2>/dev/null || true
+    if [ "$_HEALTH_FLAG_ARMED" = true ]; then
+        for _i in $(seq 1 40); do
+            systemctl is-active -q weaknet-server 2>/dev/null && break
+            sleep 0.5
+        done
+        if systemctl is-active -q weaknet-server 2>/dev/null; then
+            rm -f "$_HEALTH_FLAG" 2>/dev/null || true
+        else
+            # 服务真起不来：**保留**标记。让它继续保护，比撤标记后
+            # 被守卫复位更可诊断——复位会抹掉失败现场。
+            echo "  [WARN] weaknet-server 未能恢复 active，保留维护标记（30 分钟内自动过期）"
+        fi
+    fi
 }
 trap cleanup EXIT
 

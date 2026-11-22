@@ -379,6 +379,74 @@ public:
      */
     int cleanup(int retention_days = 7);
 
+    // ---------- 二层回流探测事实（l2_probe）----------
+    //
+    // 这两个方法与 device_events 的插入路径**完全独立**。主动测量域的事实
+    // 绝不进无线事件表：那会让 SiteIncidentCorrelator 的二层/无线事件错误关联
+    // 逻辑把两种互不相干的事故搅在一起。
+    //
+    // 为什么落库的是**轮**而不是单帧：归因只需要"这一轮有没有跨口回流"，
+    // 单帧账本用于事后审计与解释，不需要参与判定。
+
+    /// l2_probe_rounds 的一行（对应 L2ProbeRoundRecord 的聚合视图）
+    struct L2ProbeRoundRow {
+        std::string round_id;
+        int64_t ts_start_ms = 0;
+        int64_t ts_end_ms = 0;
+        std::string site_id;
+        std::string gateway_id;
+        std::string egress_iface;
+        /// true 表示该行 vlan_id 为 NULL（不带 tag），与 vlan_id=0 严格区分
+        bool vlan_is_null = true;
+        int32_t vlan_id = 0;
+        int32_t sent_count = 0;
+        int32_t recv_count = 0;
+        std::string verdict;         ///< NO_RETURN / SINGLE_RETURN / MULTI_RETURN
+        std::string return_pairs;    ///< 逗号分隔，如 "eth0->eth1"
+        std::string degraded_reason; ///< 非空 → 本轮不参与归因
+    };
+
+    /// l2_probe_frames 的一行
+    struct L2ProbeFrameRow {
+        std::string round_id;
+        int32_t seq = 0;
+        int32_t egress_ifindex = 0;
+        std::string egress_iface;
+        bool vlan_is_null = true;
+        int32_t vlan_id = 0;
+        /// true 表示该帧确认发出（DB 中 sent=1）。
+        /// false 且 unreceived=true → sendto 失败，这轮不可用于归因；
+        /// true  且 unreceived=true → 真的没回流，是 NO_RETURN 的正证据。
+        bool sent = false;
+        /// true 表示未回收（DB 中 ingress_ifindex 为 NULL），与 ifindex=0 区分
+        bool unreceived = true;
+        int32_t ingress_ifindex = 0;
+        std::string ingress_iface;
+        int64_t sent_ms = 0;
+        int64_t recv_ms = 0;
+        int64_t rtt_us = -1;
+    };
+
+    /**
+     * @brief 写入一轮探测事实（round + 逐帧账本，单事务）
+     *
+     * @return true 全部写入成功；false 时整轮回滚（不留半轮数据）
+     *
+     * 为什么必须单事务：半轮数据（有 round 行但帧账本缺失）会让后续
+     * 审计无法解释「为什么这轮判了 MULTI_RETURN」，而错误日志里看不出缺失。
+     */
+    bool insertL2ProbeRound(const L2ProbeRoundRow& round,
+                            const std::vector<L2ProbeFrameRow>& frames);
+
+    /**
+     * @brief 读取最近 N 轮的探测事实（供归因装配 L2ProbeWindow）
+     * @param for_gateway_id 为空则不限网关
+     * @param since_ms       只取 ts_end_ms >= 此值的轮次（0 = 不限）
+     * @param limit          最多返回轮数（<=0 用默认 32）
+     */
+    std::vector<L2ProbeRoundRow> queryL2ProbeRounds(const std::string& for_gateway_id,
+                                                    int64_t since_ms, int limit = 32);
+
     /// 总记录数（SELECT COUNT(*) FROM snapshots）
     int64_t getRecordCount();
 

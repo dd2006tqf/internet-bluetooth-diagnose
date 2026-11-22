@@ -66,7 +66,7 @@ static void printUsage(const char* prog) {
         "        dns, wifi_loss, http_latency, process_profiler, tcp_retrans,\n"
         "        tcp_conn, skb_drop, tcp_connect\n"
         "  常驻服务/全局组件（仅支持 get/set 调参，非插件）：\n"
-        "        active_probe, edge, server, all\n"
+        "        active_probe, l2_probe, edge, server, all\n"
         "\n"
         "示例：\n"
         "  sudo %s set rtt.interval 5s\n"
@@ -550,10 +550,12 @@ int main(int argc, char** argv) {
         // 必须与 serializers 端的有效名集合保持一致（weaknet_config.cpp 的
         // serializeMonitorJson）。此前这里漏了 skb_drop / tcp_connect /
         // active_probe / edge——它们可以被 `set` 但 `list` 不显示，用户无从发现。
+        // 2026-11-22 又漏了一次 l2_probe（`get l2_probe` 能读、`list` 里没有）。
+        // 这类漏接线只会在真机上由人肉对账发现，故两处改动必须同时做。
         printf("rtt\nrssi\ntcp_loss\ntraffic\nquality\nhost_pressure\n"
                "bluetooth\ndns\nwifi_loss\nhttp_latency\nprocess_profiler\n"
                "tcp_retrans\ntcp_conn\nskb_drop\ntcp_connect\ntcp_rtt\n"
-               "active_probe\nedge\nserver\nall\n");
+               "active_probe\nl2_probe\nedge\nserver\nall\n");
         ok = true;
     } else {
         fprintf(stderr, "未知命令: %s\n", cmd);

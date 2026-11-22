@@ -403,6 +403,52 @@ bool applyMonitorField(WeakNetConfig* cfg, const std::string& mon,
         *error = "active_probe: unknown field '" + field + "'";
         return false;
     }
+    if (mon == "l2_probe") {
+        // 区间校验与运行时的 applyMonitorParam / setConfigValue 逐字保持一致，
+        // 避免"yaml 能写、weaknet-cli set 拒收"的双标准。
+        if (field == "enabled") return setBoolField(cfg->l2_probe.enabled, val, error);
+        if (field == "interval" || field == "interval_sec" || field == "interval_ms") {
+            uint32_t ms = 0;
+            if (!parseDurationMs(val, &ms) || ms < 1000 || ms > 3600000) {
+                *error = "l2_probe.interval: must be 1000ms~3600000ms";
+                return false;
+            }
+            cfg->l2_probe.interval_ms.store(ms);
+            return true;
+        }
+        if (field == "timeout" || field == "timeout_sec" || field == "timeout_ms") {
+            uint32_t ms = 0;
+            if (!parseDurationMs(val, &ms) || ms < 100 || ms > 30000) {
+                *error = "l2_probe.timeout: must be 100ms~30000ms";
+                return false;
+            }
+            cfg->l2_probe.timeout_ms.store(ms);
+            return true;
+        }
+        if (field == "egress_ifaces") { cfg->l2_probe.egress_ifaces.set(trim(val)); return true; }
+        if (field == "probe_peers") { cfg->l2_probe.probe_peers.set(trim(val)); return true; }
+        if (field == "vlan_ids") { cfg->l2_probe.vlan_ids.set(trim(val)); return true; }
+        if (field == "max_frames_per_round") {
+            uint32_t v = 0;
+            if (!parseUint(val, &v) || v < 1 || v > 64) {
+                *error = "l2_probe.max_frames_per_round: must be 1~64";
+                return false;
+            }
+            cfg->l2_probe.max_frames_per_round.store(v);
+            return true;
+        }
+        if (field == "rate_limit_pps") {
+            uint32_t v = 0;
+            if (!parseUint(val, &v) || v < 1 || v > 20) {
+                *error = "l2_probe.rate_limit_pps: must be 1~20";
+                return false;
+            }
+            cfg->l2_probe.rate_limit_pps.store(v);
+            return true;
+        }
+        *error = "l2_probe: unknown field '" + field + "'";
+        return false;
+    }
     if (mon == "tcp_connect") {
         if (field == "enabled") return setBoolField(cfg->tcp_connect.enabled, val, error);
         if (field == "bpf_obj") { cfg->tcp_connect.bpf_obj.set(trim(val)); return true; }
@@ -715,6 +761,7 @@ bool getMonitorEnabled(const WeakNetConfig& cfg, const std::string& monitor, boo
     else if (monitor == "dns") *enabled = cfg.dns.enabled.load();
     else if (monitor == "tcp_connect") *enabled = cfg.tcp_connect.enabled.load();
     else if (monitor == "active_probe") *enabled = cfg.active_probe.enabled.load();
+    else if (monitor == "l2_probe") *enabled = cfg.l2_probe.enabled.load();
     else if (monitor == "wifi_loss") *enabled = cfg.wifi_loss.enabled.load();
     else if (monitor == "http_latency") *enabled = cfg.http_latency.enabled.load();
     else if (monitor == "process_profiler") *enabled = cfg.process_profiler.enabled.load();
@@ -741,6 +788,7 @@ bool setMonitorEnabled(WeakNetConfig* cfg, const std::string& monitor, bool enab
     else if (monitor == "dns") cfg->dns.enabled.store(enabled);
     else if (monitor == "tcp_connect") cfg->tcp_connect.enabled.store(enabled);
     else if (monitor == "active_probe") cfg->active_probe.enabled.store(enabled);
+    else if (monitor == "l2_probe") cfg->l2_probe.enabled.store(enabled);
     else if (monitor == "wifi_loss") cfg->wifi_loss.enabled.store(enabled);
     else if (monitor == "http_latency") cfg->http_latency.enabled.store(enabled);
     else if (monitor == "process_profiler") cfg->process_profiler.enabled.store(enabled);
@@ -838,6 +886,21 @@ static bool applyMonitorParam(WeakNetConfig* cfg, const std::string& key,
         if (field == "portal_targets") { cfg->active_probe.portal_targets.set(trim(value)); return true; }
         if (field == "portal_path") { cfg->active_probe.portal_path.set(trim(value)); return true; }
         if (field == "portal_expect_body") { cfg->active_probe.portal_expect_body.set(trim(value)); return true; }
+    }
+    if (mon == "l2_probe") {
+        // 与 applyMonitorParam 的 l2_probe 分支保持一致的可见边界：
+        // 这里额外放开 egress_ifaces/probe_peers/vlan_ids 的**文本**写入，
+        // 但写入后必须由调用方重启探测线程才生效。不放开会让
+        // `weaknet-cli set` 与 YAML 加载出现两套可写集合，
+        // 部署方无法理解"为什么同一个键在 YAML 里能写、在 CLI 里不能写"。
+        if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "l2_probe.enabled: invalid bool"; return false; } cfg->l2_probe.enabled.store(b); return true; }
+        if (field == "interval" || field == "interval_sec" || field == "interval_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 1000, 3600000)) { if (error) *error = "l2_probe.interval: must be 1000ms~3600000ms"; return false; } cfg->l2_probe.interval_ms.store(ms); return true; }
+        if (field == "timeout" || field == "timeout_sec" || field == "timeout_ms") { uint32_t ms; if (!parseDurationMs(value, &ms) || !checkRange(ms, 100, 30000)) { if (error) *error = "l2_probe.timeout: must be 100ms~30000ms"; return false; } cfg->l2_probe.timeout_ms.store(ms); return true; }
+        if (field == "egress_ifaces") { cfg->l2_probe.egress_ifaces.set(trim(value)); return true; }
+        if (field == "probe_peers") { cfg->l2_probe.probe_peers.set(trim(value)); return true; }
+        if (field == "vlan_ids") { cfg->l2_probe.vlan_ids.set(trim(value)); return true; }
+        if (field == "max_frames_per_round") { uint32_t v; if (!parseUint(value, &v) || !checkRange(v, 1, 64)) { if (error) *error = "l2_probe.max_frames_per_round: must be 1~64"; return false; } cfg->l2_probe.max_frames_per_round.store(v); return true; }
+        if (field == "rate_limit_pps") { uint32_t v; if (!parseUint(value, &v) || !checkRange(v, 1, 20)) { if (error) *error = "l2_probe.rate_limit_pps: must be 1~20"; return false; } cfg->l2_probe.rate_limit_pps.store(v); return true; }
     }
     if (mon == "tcp_connect") {
         if (field == "enabled") { bool b; if (!parseBool(value, &b)) { if (error) *error = "tcp_connect.enabled: invalid bool"; return false; } cfg->tcp_connect.enabled.store(b); return true; }
@@ -993,6 +1056,7 @@ const std::vector<std::string>& trialableKeyNames() {
     // 不放 enabled（开关型参数可能直接关闭监控回路）
     // 不放 bpf_obj（eBPF 程序路径变化需要重启加载，不属于运行时事务）
     // 不放 active_probe.*（探测目标变更可能让探针失联）
+    // 不放 l2_probe.*（同理：出口网卡/对端变更会改变探测帧落到哪条链路）
     static const std::vector<std::string> trialable = {
         "rtt.interval_ms", "rtt.interval", "rtt.timeout_ms", "rtt.timeout", "rtt.target",
         "rtt.window_size", "rtt.window",
@@ -1403,7 +1467,7 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
     static const std::set<std::string> valid = {
         "all", "server", "rtt", "rssi", "tcp_loss", "traffic", "quality",
         "bluetooth", "dns", "wifi_loss", "http_latency", "process_profiler", "host_pressure",
-        "tcp_retrans", "tcp_conn", "skb_drop", "tcp_connect", "tcp_rtt", "active_probe", "edge"
+        "tcp_retrans", "tcp_conn", "skb_drop", "tcp_connect", "tcp_rtt", "active_probe", "l2_probe", "edge"
     };
     if (valid.find(monitor) == valid.end()) {
         if (error) *error = "unknown monitor: " + monitor;
@@ -1513,6 +1577,18 @@ std::string serializeMonitorJson(const WeakNetConfig& cfg, const std::string& mo
         writeString("portal_targets", cfg.active_probe.portal_targets.get());
         writeString("portal_path", cfg.active_probe.portal_path.get());
         writeString("portal_expect_body", cfg.active_probe.portal_expect_body.get());
+        json.seekp(-1, std::ios_base::cur); json << "},";
+    }
+    if (monitor == "all" || monitor == "l2_probe") {
+        json << "\"l2_probe\":{";
+        writeBool("enabled", cfg.l2_probe.enabled.load());
+        writeUint("interval_ms", cfg.l2_probe.interval_ms.load());
+        writeUint("timeout_ms", cfg.l2_probe.timeout_ms.load());
+        writeString("egress_ifaces", cfg.l2_probe.egress_ifaces.get());
+        writeString("probe_peers", cfg.l2_probe.probe_peers.get());
+        writeString("vlan_ids", cfg.l2_probe.vlan_ids.get());
+        writeUint("max_frames_per_round", cfg.l2_probe.max_frames_per_round.load());
+        writeUint("rate_limit_pps", cfg.l2_probe.rate_limit_pps.load());
         json.seekp(-1, std::ios_base::cur); json << "},";
     }
     if (monitor == "all" || monitor == "tcp_connect") {

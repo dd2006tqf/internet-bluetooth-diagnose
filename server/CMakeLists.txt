@@ -10,6 +10,8 @@ set(SERVER_SOURCES
     src/assurance/action_registry.cpp
     src/assurance/dns_transaction_tracker.cpp
     src/assurance/edge_ai_scheduler.cpp
+    src/assurance/l2_loop_attribution.cpp
+    src/assurance/l2_probe_plan.cpp
     src/assurance/observer_attribution.cpp
     src/band_conflict_detector.cpp
     src/bt_audio_analyzer.cpp
@@ -32,6 +34,7 @@ set(SERVER_SOURCES
     src/http_latency_monitor.cpp
     src/host_pressure_monitor.cpp
     src/iface_type.cpp
+    src/l2_probe_engine.cpp
     src/logger.cpp
     src/looper.cpp
     src/monitor_ebpf_plugins.cpp

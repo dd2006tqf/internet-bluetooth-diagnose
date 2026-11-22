@@ -96,6 +96,7 @@
 #include "net_wifiriss.h"
 #include <iomanip>
 #include <map>
+#include <set>
 #include "metrics/metric_normalizer.hpp"
 
 using namespace std::chrono_literals;
@@ -893,6 +894,39 @@ void start_network_quality_thread(ServerContext* ctx, std::thread* worker) {
                     last_topo_iface = active_iface;
                 }
 
+                // 二层回流归因（主动测量域，第四个并列归因）。
+                //
+                // 取自探测线程发布的 ctx->l2_loop_result，**不在此处重新计算**：
+                // 探测轮次与 quality 评估节律无关（30s vs 3s），现场重算会让
+                // 同一轮探测在多次评估里得出不同结论。这里只做拷贝。
+                //
+                // 与前三者的关键区别：前三者每轮必有结论（至少 NONE + 原因），
+                // 本字段在**未配置探测时**恒为 NONE + 空 detail —— 因为
+                // 探测线程压根没启动，l2_loop_result 保持默认值。
+                // 这会让 "未启用" 与 "启用但无有效轮次" 在输出上无法区分，
+                // 所以下面按 l2_probe 是否真的在跑补一条 detail。
+                {
+                    std::lock_guard<std::mutex> lock(ctx->l2_loop_mutex);
+                    exp.l2_loop_attribution = ctx->l2_loop_result.attribution;
+                    exp.l2_loop_detail = ctx->l2_loop_result.explanation;
+                    exp.l2_loop_issues = ctx->l2_loop_result.issues;
+
+                    if (ctx->l2_loop_result.attribution ==
+                            weaknet::L2LoopAttribution::NONE &&
+                        exp.l2_loop_detail.empty()) {
+                        // 两种情况都落到这里，但必须区分开：
+                        //   - 配置没启用（enabled=false 或 configure 被拒）
+                        //   - 启用了但引擎不可用（socket 起不来）
+                        // 前者是部署形态，后者是能力缺失，排障方向完全不同。
+                        if (!ctx->cfg.l2_probe.enabled.load()) {
+                            exp.l2_loop_detail = "l2_probe disabled by config";
+                        } else if (!ctx->l2_probe) {
+                            exp.l2_loop_detail =
+                                "l2_probe enabled but engine unavailable";
+                        }
+                    }
+                }
+
                 // W2: 发布权威评估快照（单一事实源）。
                 // quality 线程是唯一 evaluator 执行点；HealthCheck /
                 // GetNetworkExperience / history persistence 全部只读本快照。
@@ -1415,6 +1449,216 @@ void start_active_probe_thread(ServerContext* ctx, std::thread* worker) {
     });
 }
 
+/**
+ * @brief 二层回流探测线程
+ *
+ * 每轮做三件事：
+ *   1. runRound() 拿事实账本；
+ *   2. 落库（单事务，半轮不入库）；
+ *   3. 从库里读回最近若干轮，装配 L2ProbeWindow 交给归因纯函数，
+ *      把结论发布到 ctx->l2_loop_result。
+ *
+ * 为什么第 3 步从**库**读而不是在内存里攒：
+ *   归因窗口需要跨进程重启仍然成立（现场排障常常是"重启后再看看"）。
+ *   内存攒的窗口一重启就归零，结论会从 LOOP_SUSPECTED 塌回 NONE，
+ *   看上去像"环路自己好了"——那是假的。
+ */
+void start_l2_probe_thread(ServerContext* ctx, std::thread* worker) {
+    *worker = std::thread([ctx]() {
+        LOG_INFO(LogModule::NETWORK, "l2_probe thread started");
+
+        // 每轮开始前重置停止标志之外的瞬时状态。
+        // 首轮不等 interval：配置刚被启用就应尽快给出第一份事实，
+        // 否则前 30 秒的归因窗口恒为空，看起来像"没配置"。
+        bool first = true;
+
+        while (ctx->running.load() && !ctx->l2_probe_stop.load()) {
+            if (!first) {
+                const uint32_t interval_ms =
+                    std::max(1000u, ctx->cfg.l2_probe.interval_ms.load());
+                const int ticks = static_cast<int>(interval_ms / 100);
+                for (int i = 0; i < ticks &&
+                                ctx->running.load() && !ctx->l2_probe_stop.load(); ++i) {
+                    std::this_thread::sleep_for(100ms);
+                }
+                if (!ctx->running.load() || ctx->l2_probe_stop.load()) break;
+            }
+            first = false;
+
+            if (!ctx->l2_probe || !ctx->l2_probe->isUsable()) {
+                // 引擎不在 = 配置没通过校验或被禁用。不刷日志（否则每 interval
+                // 一条），只等下一轮——applyL2ProbeConfig 变更时会重建。
+                continue;
+            }
+
+            // 墙钟时刻由调用方提供，便于将来做时间注入测试。
+            const uint64_t now_ms = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+
+            L2ProbeRoundRecord rec = ctx->l2_probe->runRound(now_ms);
+
+            // ---- 落库 ----
+            if (ctx->db_mgr && ctx->db_mgr->isOpen() && !rec.round_id.empty()) {
+                DatabaseManager::L2ProbeRoundRow row;
+                row.round_id = rec.round_id;
+                row.ts_start_ms = static_cast<int64_t>(rec.ts_start_ms);
+                row.ts_end_ms = static_cast<int64_t>(rec.ts_end_ms);
+                row.site_id = ctx->cfg.edge.site_id.get();
+                if (row.site_id.empty()) row.site_id = ctx->cfg.edge.device_id.get();
+                row.gateway_id = ctx->cfg.edge.device_id.get();
+
+                // egress_iface 列在轮级是"本轮涉及的口"的聚合视图：
+                // 逐帧真值在 l2_probe_frames。这里用逗号串便于按口做粗筛。
+                {
+                    std::ostringstream oss;
+                    for (const auto& fr : rec.frames) {
+                        if (oss.tellp() > 0) oss << ",";
+                        oss << fr.egress_ifname;
+                    }
+                    row.egress_iface = oss.str();
+                }
+
+                // 轮级 vlan_id：多个 target 可能带不同 VLAN，
+                // 轮级列取**唯一值**时才有意义，否则留 NULL（未采集≠零值）。
+                {
+                    bool any = false, mixed = false;
+                    int32_t one = -1;
+                    for (const auto& fr : rec.frames) {
+                        if (!any) { one = fr.vlan_id; any = true; }
+                        else if (fr.vlan_id != one) { mixed = true; break; }
+                    }
+                    if (any && !mixed && one >= 0) {
+                        row.vlan_is_null = false;
+                        row.vlan_id = one;
+                    }
+                }
+
+                int sent = 0, recvd = 0;
+                std::vector<DatabaseManager::L2ProbeFrameRow> frame_rows;
+                frame_rows.reserve(rec.frames.size());
+                for (const auto& fr : rec.frames) {
+                    DatabaseManager::L2ProbeFrameRow f;
+                    f.round_id = rec.round_id;
+                    f.seq = static_cast<int32_t>(fr.seq);
+                    f.egress_ifindex = fr.egress_ifindex;
+                    f.egress_iface = fr.egress_ifname;
+                    f.vlan_is_null = (fr.vlan_id < 0);
+                    f.vlan_id = fr.vlan_id;
+                    f.sent = fr.sent;
+                    f.unreceived = (fr.ingress_ifindex < 0);
+                    f.ingress_ifindex = fr.ingress_ifindex;
+                    f.ingress_iface = fr.ingress_ifname;
+                    f.sent_ms = static_cast<int64_t>(fr.sent_ms);
+                    f.recv_ms = static_cast<int64_t>(fr.recv_ms);
+                    f.rtt_us = fr.rtt_us;
+                    if (fr.sent) ++sent;
+                    if (!f.unreceived) ++recvd;
+                    frame_rows.push_back(std::move(f));
+                }
+                row.sent_count = sent;
+                row.recv_count = recvd;
+
+                // verdict：只描述"看到了什么"，不描述"意味着什么"。
+                if (rec.has_multi_return) {
+                    row.verdict = "MULTI_RETURN";
+                } else if (recvd > 0) {
+                    row.verdict = "SINGLE_RETURN";
+                } else {
+                    row.verdict = "NO_RETURN";
+                }
+
+                {
+                    std::ostringstream oss;
+                    for (size_t i = 0; i < rec.return_pairs.size(); ++i) {
+                        if (i > 0) oss << ",";
+                        oss << rec.return_pairs[i];
+                    }
+                    row.return_pairs = oss.str();
+                }
+                row.degraded_reason = rec.degraded_reason;
+
+                if (!ctx->db_mgr->insertL2ProbeRound(row, frame_rows)) {
+                    LOG_WARNING(LogModule::NETWORK,
+                                "l2_probe: failed to persist round " << rec.round_id);
+                }
+            }
+
+            // ---- 归因 ----
+            //
+            // 窗口长度用 **8 轮**：环路判定需要"多次重复"才能压掉偶发串扰，
+            // 但窗口太长会让"刚接上环"迟迟不出结论。8 轮 × 30s ≈ 4 分钟。
+            weaknet::L2ProbeWindow window;
+            window.window_end_ms = rec.ts_end_ms;
+            if (ctx->db_mgr && ctx->db_mgr->isOpen()) {
+                constexpr int kWindowRounds = 8;
+                auto rows = ctx->db_mgr->queryL2ProbeRounds("", 0, kWindowRounds);
+                window.total_rounds = static_cast<int>(rows.size());
+                if (!rows.empty()) {
+                    window.window_start_ms = static_cast<uint64_t>(rows.back().ts_end_ms);
+                }
+                std::set<std::string> pairs;
+                std::set<std::string> egress;
+                for (const auto& r : rows) {
+                    const bool degraded = !r.degraded_reason.empty();
+                    if (degraded) ++window.degraded_rounds;
+                    // 降级轮**不得**计入分子。它自己已经因为
+                    // self_egress_loop 之类的原因被判定不可信，却还带着
+                    // verdict=MULTI_RETURN；若照收，就会出现
+                    // 「全部回流证据都来自不可信轮次，却仍判出环路」——
+                    // 分母把降级轮剔掉了、分子没剔，两边口径必须一致。
+                    // 这与头文件 L2ProbeWindow 的字段注释是同一条契约。
+                    if (!degraded && r.verdict == "MULTI_RETURN") {
+                        ++window.multi_return_rounds;
+                    }
+                    // return_pairs 是逗号分隔串，拆开去重后交给归因解释用
+                    size_t pos = 0;
+                    while (pos <= r.return_pairs.size() && !r.return_pairs.empty()) {
+                        const size_t comma = r.return_pairs.find(',', pos);
+                        const std::string item = r.return_pairs.substr(
+                            pos, comma == std::string::npos ? std::string::npos : comma - pos);
+                        if (!item.empty()) pairs.insert(item);
+                        if (comma == std::string::npos) break;
+                        pos = comma + 1;
+                    }
+                    size_t epos = 0;
+                    while (epos <= r.egress_iface.size() && !r.egress_iface.empty()) {
+                        const size_t comma = r.egress_iface.find(',', epos);
+                        const std::string item = r.egress_iface.substr(
+                            epos, comma == std::string::npos ? std::string::npos : comma - epos);
+                        if (!item.empty()) egress.insert(item);
+                        if (comma == std::string::npos) break;
+                        epos = comma + 1;
+                    }
+                }
+                window.return_pairs.assign(pairs.begin(), pairs.end());
+                window.egress_ifaces.assign(egress.begin(), egress.end());
+            } else {
+                // 没有库时仍然用本轮结果做单轮归因——但 total_rounds 只能是 0，
+                // 于是归因返回 NONE/no_probe_data。这是正确的：
+                // 单轮不足以支撑环路结论，且"没有可查窗口"本身要如实报告。
+                window.total_rounds = 0;
+                window.window_end_ms = rec.ts_end_ms;
+                if (rec.has_multi_return) window.multi_return_rounds = 1;
+            }
+
+            const weaknet::L2LoopResult result = weaknet::attributeL2Loop(window);
+            {
+                std::lock_guard<std::mutex> lock(ctx->l2_loop_mutex);
+                ctx->l2_loop_result = result;
+            }
+
+            if (result.attribution == weaknet::L2LoopAttribution::LOOP_SUSPECTED) {
+                LOG_WARNING(LogModule::NETWORK,
+                            "l2_probe: LOOP_SUSPECTED - " << result.explanation);
+            }
+        }
+
+        LOG_INFO(LogModule::NETWORK, "l2_probe thread stopped");
+    });
+}
+
 void start_history_persistence_thread(ServerContext* ctx) {
     ctx->history_thread = std::thread([ctx](){
         LOG_INFO(LogModule::SYSTEM, "History persistence thread started");
@@ -1699,6 +1943,28 @@ int start_server(int argc, char** argv) {
         ctx.active_probe = std::make_unique<ActiveConnectivityMonitor>();
         applyActiveProbeConfig(&ctx);
         start_active_probe_thread(&ctx, &ctx.active_probe_thread);
+    }
+
+    // ================================================================
+    // 二层回流探测（l2_probe）：主动测量，归属 L1 观测
+    //
+    // 与 active_probe 并列但完全不同域：active_probe 走 IP 栈问
+    // "外面通不通"，本引擎发裸二层帧（自定义 EtherType 0x88B5）问
+    // "这一帧会不会从别的口回来"。后者只产出**回流证据**，
+    // 结论由 attributeL2Loop() 给出，隔离动作永不在本产品内实现
+    // （见 docs/产品定位-工业无线诊断网关.md 三之三）。
+    //
+    // 默认关闭且不内置默认出口/对端；applyL2ProbeConfig 校验失败时
+    // 保持 disabled，不半启用。
+    // ================================================================
+    {
+        applyL2ProbeConfig(&ctx);
+        if (ctx.l2_probe) {
+            start_l2_probe_thread(&ctx, &ctx.l2_probe_thread);
+        } else {
+            LOG_INFO(LogModule::NETWORK,
+                     "l2_probe: not started (disabled or config invalid)");
+        }
     }
 
     // ================================================================
@@ -2388,6 +2654,19 @@ int start_server(int argc, char** argv) {
 
     // 服务级历史线程与受控主动探测线程由 ServerContext 统一 join；插件线程已由各自 stop() 完成。
     if (ctx.active_probe_thread.joinable())             ctx.active_probe_thread.join();
+
+    // l2_probe：必须先置停止标志再 join。
+    // 这与其他线程不同，不能只靠 running=false：runRound() 会在
+    // poll(timeout_ms) 里阻塞最长 30 秒，期间不检查 running。
+    // 只 join 不置标志的后果是每次退出都多等一整个超时窗口。
+    // 置标志后 runRound 的 poll 循环仍会跑完本轮（不能让半轮账本落库），
+    // 但下一轮进不来 —— 这是刻意保留的"让本轮写完"语义。
+    ctx.l2_probe_stop.store(true);
+    if (ctx.l2_probe_thread.joinable())                 ctx.l2_probe_thread.join();
+    if (ctx.l2_probe) {
+        ctx.l2_probe->stop();
+        ctx.l2_probe.reset();
+    }
 
     // 历史持久化线程：只读 weak_mgr 快照 + 写 DB，不依赖其他线程资源，最后 join 最安全。
     // 此前缺失该 join，导致 ~ServerContext 析构时该线程可能仍持 ctx* 访问 → 悬垂/terminate。

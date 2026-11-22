@@ -4,6 +4,7 @@
 #include "assurance/dns_types.hpp"
 #include "assurance/observer_attribution.hpp"
 #include "assurance/thermal_attribution.hpp"
+#include "assurance/l2_loop_attribution.hpp"
 #include "video_qoe_attribution.hpp"
 #include <string>
 #include <vector>
@@ -105,6 +106,37 @@ struct NetworkExperience {
 
     /// 机器可读问题清单（如 SEQ_GAP_BURST / CORRUPT_FRAMES）
     std::vector<std::string> video_qoe_issues;
+
+    /**
+     * @brief 二层回流归因（主动测量域证据）
+     *
+     * 与前三个归因并列的第四种，回答一个只有裸二层帧能回答的问题：
+     * 「从 A 口发出的帧，会不会从 B 口回来」。
+     *
+     * 与前三者的关系：前三个都在**被动证据**域（CPU / 温度 / 视频帧），
+     * 本字段来自**主动测量**（自定义 EtherType 0x88B5 探测帧）。
+     * 主动测量是方法不是层，按产物归属 L1 观测（见
+     * docs/架构设计-五层权责契约.md 的「主动测量的层归属」）。
+     *
+     * 值域与边界：
+     *   NO_LOOP         → 窗口内没有跨口回流（**有证据的否定**）
+     *   LOOP_SUSPECTED  → 多数有效轮次都观察到跨口回流（推断，非确认）
+     *   NONE            → 没有可用窗口（未配置 / 全部降级 / 样本不足）
+     *
+     * 为什么叫 SUSPECTED 而不是 CONFIRMED：L2 回流与"环路"之间还隔着
+     * 拓扑与 STP 状态，本产品只观测到"帧从别的口回来了"这一事实。
+     * 写成 CONFIRMED 就是把推断伪装成事实。
+     *
+     * 边界同前三者：**不参与** OverallPolicy 的评分与 veto，
+     * 也**绝不**写 site_incidents.suspected_cause（那是 Phase 4b 的权限）。
+     */
+    L2LoopAttribution l2_loop_attribution{L2LoopAttribution::NONE};
+
+    /// 归因的人类可读解释（含端口对，NONE 时说明为什么没有结论）
+    std::string l2_loop_detail;
+
+    /// 机器可读问题清单（如 MULTI_PORT_RETURN）
+    std::vector<std::string> l2_loop_issues;
 };
 
 } // namespace weaknet

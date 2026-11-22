@@ -2378,6 +2378,15 @@ bool DbusService::handleSetMonitorParam(DBusConnection* conn, DBusMessage* msg) 
         applyActiveProbeConfig(ctx_);
     }
 
+    // l2_probe 必须走**运行期**入口，不能走 applyL2ProbeConfig：
+    // 后者会 stop+reset 引擎，而探测线程此刻可能正在 runRound() 里
+    // 持有该引擎的裸指针 —— 那是 UAF，且崩溃点在内核 sendto 里，
+    // 回溯会把排障引向完全无关的地方。
+    // 运行期入口只更新限流三参数；出口网卡/对端/VLAN 在配置层已被拒收。
+    if (std::string(key).rfind("l2_probe.", 0) == 0) {
+        applyL2ProbeRuntimeConfig(ctx_);
+    }
+
     LOG_INFO(LogModule::DBUS, "SetMonitorParam applied: " << key << " = " << value);
 
     // 本地调参同样是一条 L1 事实，且是唯一一条"未经云端队列"的写入路径：

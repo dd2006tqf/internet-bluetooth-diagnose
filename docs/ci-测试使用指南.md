@@ -184,6 +184,7 @@ ci-reports/
 | test_v4l2_frame_source_gtest | V4L2 真机帧源失败路径与配置语义：构造不碰 `/dev/video*`、缺设备时 `start()` 优雅失败、停止后快照不得伪装健康、`describe()` 带 `v4l2:` 前缀、默认 1640x1232 且逐条排除本板实测零帧的 binning 模式、零 buffer 数被钳制、帧率基线一次性校准（含「不得吸收真实丢帧」）；32 项中 17 项无设备依赖，15 项真机用例（`WEAKNET_V4L2_TEST_DEVICE` 门控）覆盖窗口语义、帧率协商、出队延迟、多平面、DMABUF 三级落点、`S_INPUT` 契约与 fps 校准 |
 | test_media_topology_gtest | media controller 拓扑纯算法（纯函数、不打开任何设备）：`media_entity_desc.type` 位域分类真值表、按 `st_rdev` 而非 `st_dev` 认领节点、多上游优先 ENABLED、成环跳数有界、缺实体优雅停止 |
 | test_video_qoe_attribution_gtest | 视频 QoE 五行真值表 + 三条拒绝归因前置（帧缺失/窗口错位/网络不可用）+ `issues` 只报实际超阈项 |
+| test_l2_probe_plan_gtest | 二层回流探测纯逻辑：令牌桶限速与单轮批次上限不得静默吞帧、覆盖完整性、三值归因真值表（`NONE` 绝不冒充 `NO_LOOP`、单轮不足以判定）+ 三条 netns 实测回归（`ip_forward` 不得否决二层观测、桥转发是真证据不是假阳性、`self_egress_loop` 是唯一真假阳性）。**不需要 CAP_NET_RAW、不需要第二块网卡** |
 | test_thermal_monitor_gtest | 采集端热状态：sysfs 读取真值表（缺数据不得回落成 0℃/0%）+ 归因五分支真值表（节流/低温满载/高温停转/正常/不可用） |
 | test_update_status_gtest | OTA 版本号数值比较（非字典序）+ apply 策略矩阵 + manifest 全量校验 |
 

@@ -284,6 +284,36 @@ struct WeakNetConfig {
         ConfigString portal_expect_body{""};
     } active_probe;
 
+    // ---------- 二层回流探测（l2_probe）----------
+    //
+    // 主动测量能力，归属 L1 观测（见 docs/架构设计-五层权责契约.md 的
+    // 「主动测量的层归属」）。它**只产出回流证据**，不做任何隔离动作。
+    //
+    // 默认 **关闭**，且**不内置任何默认出口 / 对端**。三个理由：
+    //   1. 自定义 EtherType（0x88B5）裸二层帧在生产网络里属于异常流量，
+    //      可能触发客户的 IDS / 审计告警，必须由部署方显式开启；
+    //   2. 出口网卡选错会真的往业务链路注入探测帧；
+    //   3. 与 active_probe 一致：主动测量"向谁发"必须是显式配置的系统事实。
+    //
+    // egress_ifaces 格式：逗号分隔的接口名（"eth0,eth1"）。**至少 2 个**才有
+    // 判定资格——单口永远看不到跨口回流，探了也只能给出"不知道"。
+    // probe_peers 格式：逗号分隔的**单播** MAC（"aa:bb:cc:dd:ee:ff,..."）。
+    // 不发广播/组播：广播帧会被所有口收到，回流现象无法归因到具体路径。
+    struct {
+        std::atomic<bool> enabled{false};
+        std::atomic<uint32_t> interval_ms{30000};
+        std::atomic<uint32_t> timeout_ms{2000};
+        ConfigString egress_ifaces{""};   ///< "eth0,eth1"
+        ConfigString probe_peers{""};     ///< 单播 MAC 列表
+        /// 要打 802.1Q tag 的 VLAN 列表（"100,200"）；空 = 不打 tag。
+        /// VLAN 0 是合法的 priority-tagged 语义，与"无 tag"严格区分。
+        ConfigString vlan_ids{""};
+        /// 单轮帧数上限（硬上限 64，超出被 clamp）
+        std::atomic<uint32_t> max_frames_per_round{8};
+        /// 发送速率上限 pps（硬上限 20，超出被 clamp）
+        std::atomic<uint32_t> rate_limit_pps{4};
+    } l2_probe;
+
     // ---------- 边缘遥测上报（WeakNet → 中心平台）----------
     //
     // 默认 **关闭**，且**不内置任何默认服务端地址**。理由与 active_probe
