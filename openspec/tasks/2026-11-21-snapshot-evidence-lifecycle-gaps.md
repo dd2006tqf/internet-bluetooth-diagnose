@@ -2,7 +2,8 @@
 
 > 日期：2026-11-21
 > 分类：工作流外实施
-> 结果：已完成（其中「真机端到端回收」受硬件缺失限制，边界见末节）
+> 结果：已完成（板端真实回收 / 生产 timer / 真实 Postgres 清扫三项均已真机闭环；
+> 剩余边界：前端没有真实浏览器验证，见末节）
 
 ## 构思
 
@@ -221,11 +222,23 @@ scripts/generate_openapi_client.sh --check              → 无漂移
 - **两个 systemd timer 已装进生产并实测触发过**：补齐单元缺失的 `Environment=`
   与 `PATH`（含一次 venv entry point 缺失的修复），手工跑通后 `enable --now`，
   并用临时短触发 drop-in 验证了 timer→service 的真实触发链路。
+- **板端「真实事故 → 真实静帧 → 真实回收」已在真机上闭环**：摄像头七跳链路
+  全部 `[ENABLED]` 并出帧，两次 forge 事故各产出一张真实 JPEG；端到端 sha256
+  在板端原图 / 对象存储 / 库中记录三处逐字相同；临时把上限降到 250000 后，
+  写入路径真实删掉 3 张最旧图（`freed=365800`），目录 498621 → 232205 字节，
+  随后完整回滚且全程未触发看门狗复位。见下节「板端真实回收 · 真机证据」。
 
 ### 诚实的边界（不得淡化）
 
-1. **板端「真实事故触发真实回收」没有被验证。** 现场**摄像头未接**
-   （`/dev/video0: No such file or directory`，
+1. ~~板端「真实事故触发真实回收」没有被验证。~~ **已在真机闭环（2026-11-22）。**
+   摄像头接好后重新上电，`imx219 → sunxi_mipi.1 → sunxi_csi.1 → sunxi_tdm_rx.0
+   → sunxi_isp.0 → sunxi_scaler.0 → vin_cap.0 → vin_video0` 七跳链路全部
+   `[ENABLED]`，`video frame hub configured: 1640x1232 stride=1640
+   uv_offset=2030336 backend=dma-heap`，`frame stats: received=279 lost=0`。
+
+   见下节「板端真实回收 · 真机证据」。原记录保留在下方作为对照：
+
+   现场**摄像头未接**（`/dev/video0: No such file or directory`，
    `dmesg: sunxi:vin:[ERR]: registering imx219, No such device!`），
    `frames=hub:unconfigured`，所以无法产生一张真实的图供回收。已做的是：
    临时 drop-in 把上限调到 250000、重启、确认 `quota=250000` 生效（即配置确实
@@ -276,6 +289,69 @@ dry-run 结果与预测逐项吻合：`scanned=4`（诱饵未计入）、`orphan
 > `tenants`，所以探针租户必须先建 `TenantRecord` 才能插行。这解释了为什么
 > 真实孤儿只能来自「put 成功、insert 失败」——insert 失败时外键也会一起失败，
 > 行根本插不进来。
+
+### 板端真实回收 · 真机证据（已闭环）
+
+摄像头接好后，链路上**每一环都留下了可核对的证据**：
+
+**① 摄像头出帧。** 重新上电后 imx219 probe 成功，media 拓扑七跳 `[ENABLED]`：
+
+```
+imx219 [SRGGB10_1X10/3280x2464] -> sunxi_mipi.1 -> sunxi_csi.1
+       -> sunxi_tdm_rx.0 -> sunxi_isp.0 -> sunxi_scaler.0 -> vin_cap.0 -> vin_video0
+camera capture started: v4l2:/dev/video0@1640x1232/30fps/1000ms mplane {…7 hops}
+video frame hub configured: 1640x1232 stride=1640 uv_offset=2030336 size=3045504 backend=dma-heap
+frame stats: window_ms=15033 expected=271 received=279 lost=0 bytes=849695616
+```
+
+后排线松过一次，现象是 `expected=451 received=0 lost=451 bytes=0` 并持续十几分钟——
+`V4l2FrameSource` 已经 `STREAMON`，驱动不再给帧时它只会一直 `DQ`，**不会热恢复**，
+插好排线也必须重新上电。
+
+**② 真实事故触发真实静帧。** 用 `tools/weaknet-incident-forge --apply` 开出合格事故：
+
+```
+事故已开出：sitinc_…_1795313275749（受影响设备 3 台）
+板端新图：…/sitinc_…_1795313275749/1795313290397_3060.jpg  112341 字节
+静帧留证已停止: … requested=1 captured=1 written=1 upload=on handed_off=1
+```
+
+**③ 端到端 sha256 三处一致**（板端原图 / 对象存储 / 库中记录）：
+
+```
+aa9c0f78ffe885c1d1a3757d2c77978b50bb460eadc96bc8eb67837d48d10cbd
+file -> JPEG image data, JFIF 1.01, baseline, 1640x1232, components 3
+```
+
+**④ 真实回收。** 临时 drop-in 把上限调到 250000，再开一次事故让写入路径走到回收：
+
+```
+静帧容量回收 limit=250000 before=585717 after=219917 deleted=3 freed=365800 dirs_removed=3
+静帧已入队 image_id=snap-1795313697947-980 body_bytes=143861
+静帧已送达 image_id=snap-1795313697947-980 jpeg_bytes=107576
+事故静帧留证已停止: … quota=250000 pruned=3 pruned_bytes=365800
+```
+
+文件级数字由生产日志给出：`before=585717 after=219917 freed=365800`。剩下的两张
+是最新的 `112341 + 107576 = 219917`，与 `after` **逐字节相等**；被删的是最旧的
+**3 张**（合计 365800 字节）。删的是「最旧」，不是「最大」也不是任意一张——与设计一致。
+
+`du -sb` 的目录计数 498621 → **232205** 与上面对得上：232205 − 219917 = 12288，
+正是 3 个目录各自的 4096 字节开销（`dirs_removed=3` 删掉的是空目录，不是文件）。
+
+**⑤ 完整回滚。** drop-in 删除 → `daemon-reload` → 重启 → 上限复原
+`WEAKNET_SNAPSHOT_MAX_BYTES=2147483648` → 确认出帧（`received=279 lost=0`）
+→ 目录停在 232205 不再缩减 → **最后**才摘维护标记。全程未触发看门狗整机复位
+（开机时刻 02:05:10，事后 `up 14 minutes`）。
+
+> **操作纪律复盘**：停/重启 `weaknet-server` 前必须先 `touch
+> /var/lib/weaknet/health-guard-maintenance`。这次建了标记并**在确认服务稳定后
+> 才摘**，所以中间两次服务重启都没有让板子复位。
+
+> **一处需要单独记住的事实**：板端被删的 3 张里，`1795230105185_7478.jpg` 在云端
+> **本来就没有对应对象**（库里有行、对象存储里没有）。这是既有的反向孤儿，
+> 不是本次回收造成的——回收只删板端文件，从不碰云端对象。它也不会被孤儿清扫器
+> 处理（清扫器删的是「有对象没行」，这是「有行没对象」的反方向）。
 
 ### 边界 2：两个 systemd timer 已装进生产并真的触发过（已闭环）
 
@@ -348,8 +424,14 @@ drop-in 与目录**已删除**、`daemon-reload`、timer 重新锚定，确认�
 
 ### 后续是否值得升格为正式 OpenSpec change
 
-值得，但不是现在。原本第 1~4 条边界里有两条（生产 Postgres、生产装 timer）**已经
-在本轮闭环**；剩下的两条依赖**外部条件**：摄像头接上（板端真实回收）与真实浏览器
-（前端渲染），不是补代码能解决的。等摄像头恢复后，建议走一次正式 change 把「真实
-事故 → 真实回收 → 真实孤儿清扫 → 前端渲染」端到端钉一遍证据，那时才谈得上
-「留证链路已验证」。
+**门槛已经降到只剩一条，而且不再需要任何外部硬件条件。** 原本四条边界里三条
+（板端真实回收、真实 Postgres 清扫、生产装 timer）都在本轮闭环了；剩下唯一一条
+是前端 `getSnapshotImageObjectUrl` 没有在真实浏览器里点过——这条**不需要摄像头、
+不需要真机、不需要等任何人**，起一个本地服务点一次就能关掉。
+
+所以现在的建议是：**先花十分钟把前端那条关掉，再决定要不要升格。** 如果关掉之后
+仍觉得需要一次正式 change 把「真实事故 → 真实回收 → 真实孤儿清扫 → 前端渲染」
+端到端重钉一遍证据，那是因为**想要一条可复跑的验收门禁**（本次全部是工作流外
+实施，证据散在这份记录里，不具备 harness 的验收效力），而不是因为还有未知项。
+反过来说，如果只是想让「留证链路已验证」这句话站得住，补完前端那条之后这句话
+就够了——工作流外任务的记录本来就不承担验收效力，这一点本次不改变。
